@@ -1,0 +1,50 @@
+# agent — reference configuration.
+#
+# Every setting is listed with its default. Values shown uncommented are the
+# ones this file actually sets; commented ones document the default.
+#
+# Precedence (lowest → highest):
+#   built-in defaults < this file < conf.d fragments < environment
+#
+# conf.d: every *.yaml in `confd_path` is merged over this file in file-name
+# order. Maps merge, lists append (so each app's fragment can add its own tags,
+# checks and log sources), and a scalar set in two files is an error naming
+# both. Per-app settings belong in deploy/agent.d/<app>.yaml, never here.
+#
+# Environment: any leaf can be overridden as OZY_AGENT_<PATH>, e.g.
+# OZY_AGENT_INTAKE_URL=http://ozyd:9400. Lists are comma-separated.
+# Unknown OZY_AGENT_* variables are only a warning — the SDKs'
+# OZY_AGENT_HOST shares the prefix and must not stop the agent.
+
+http:
+  # Listen address for trace intake from SDKs (POST /v1/traces, from M5),
+  # /healthz and /debug/vars. The statsd UDP port is configured separately
+  # (from M1).
+  addr: ":8126"
+  # Grace period for in-flight requests after SIGTERM. Must be positive.
+  shutdown_timeout: 10s
+
+intake:
+  # ozyd's base URL; the forwarder POSTs to /v1/* under it (from M1).
+  url: http://localhost:9400
+
+# Value of the `host` tag on everything this agent sends. Empty means the OS
+# hostname — set it explicitly in a container, where that is a random id.
+hostname: ""
+
+# Tags added to everything this agent sends. conf.d fragments append to this
+# list. Each is "key:value" or a bare "key".
+tags: []
+# tags:
+#   - env:dev
+
+# Directory of per-app fragments (see the header). Relative to the working
+# directory. A missing directory simply means "no fragments". Cannot be set
+# from inside a fragment.
+confd_path: ./deploy/agent.d
+
+log:
+  # debug | info | warn | error
+  level: info
+  # text | json
+  format: text

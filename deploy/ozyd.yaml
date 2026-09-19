@@ -1,0 +1,43 @@
+# ozyd — reference configuration.
+#
+# Every setting is listed with its default. Values shown uncommented are the
+# ones this file actually sets; commented ones document the default.
+#
+# Precedence (lowest → highest):  built-in defaults < this file < environment.
+# Any leaf can be overridden from the environment as OZY_<PATH>, the YAML
+# path upper-cased and joined with "_", e.g. OZY_HTTP_ADDR=:9400.
+# Lists are comma-separated in the environment.
+#
+# Unknown keys in this file are an error (a typo must not silently fall back
+# to a default). Unknown OZY_* variables are only a warning.
+#
+# Used as-is by deploy/docker-compose.yml; `make dev` runs with it too.
+
+http:
+  # Listen address for everything ozyd serves: intake (/v1/*, from M1),
+  # the query API (/api/v1/*), /healthz, /debug/vars and the web UI.
+  addr: ":9400"
+  # How long in-flight requests get to finish after SIGTERM before the
+  # remaining connections are cut. Must be positive.
+  shutdown_timeout: 10s
+
+# Root of all on-disk state: TSDB (M2), log store (M4), trace store (M5),
+# metadata DB, queue (M7). Created at startup if missing; must be writable.
+# The container overrides this to /data (a named volume).
+data_dir: ./data/ozyd
+
+log:
+  # ozyd's own log level: debug | info | warn | error
+  level: info
+  # text (human-readable) | json (for anything that parses it, including
+  # ozymandias's own log pipeline from M4)
+  format: text
+
+provisioning:
+  # Directories of dashboard (M3) and monitor (M6) JSON definitions, upserted
+  # by `uid` at startup. Several are allowed, so an app can mount its own
+  # directory next to ozymandias's. Nothing reads these until M3.
+  paths: []
+  # paths:
+  #   - ./deploy/dashboards
+  #   - ./deploy/monitors

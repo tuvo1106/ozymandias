@@ -6,8 +6,8 @@ alerting. Built to be app-agnostic; first used on [app-node](../app-node) (Node 
 [app-python](../app-python) (Python SDK) and [app-ruby](../app-ruby) (Ruby — no SDK: Prometheus
 scrape, stdout logs, OpenTelemetry).
 
-**Status: planning.** No code yet. Start with [PLAN.md](PLAN.md); the per-milestone specs are
-in [docs/plan/](docs/plan/).
+**Status: M0 (skeleton).** Both binaries run with config, health and a UI shell. Telemetry arrives
+in M1. The design as built is in [DESIGN.md](DESIGN.md), and the plan in [PLAN.md](PLAN.md).
 
 ## Stack
 
@@ -23,29 +23,39 @@ in [docs/plan/](docs/plan/).
 
 ## Setup
 
-<!-- Filled in by M0 (docs/plan/M0-skeleton.md). Planned shape: -->
+Requirements: Go 1.27+, Node 24 (`web/.nvmrc`), Docker with Compose,
+golangci-lint 2.x and lefthook.
 
 ```bash
-lefthook install        # once, after cloning
-make up                 # ozyd on :9400 (UI + API), agent on :8125/udp + :8126
+lefthook install        # once: commit-msg, pre-commit and pre-push hooks
+make up                 # build the image; ozyd on :9400 (UI + API), agent on :8126 and :8125/udp
+make dev                # or run both natively, with the Vite dev server on :9401
 ```
+
+[docs/operations.md](docs/operations.md) covers configuration, ports and
+troubleshooting, including a Colima UDP limitation.
 
 ## Testing
 
-<!-- Filled in by M0. Planned shape: -->
-
 ```bash
-make test lint          # go test -race + coverage gates, golangci-lint
-make smoke              # end-to-end against the compose stack
+make ci                 # the full gate: lint, race tests + coverage gates, docs checks, web, short fuzz
+make smoke              # end to end against the compose stack (after `make up`)
+make fuzz-long          # every fuzz target for 10 minutes
 ```
+
+There's no remote CI: the git hooks are the gate
+([ADR-0010](docs/adr/0010-local-first-ci.md)). Every commit runs the fast
+checks for what's staged, and every push runs `make ci`.
 
 ## Docs
 
+- [DESIGN.md](DESIGN.md) — how it works, as built
 - [PLAN.md](PLAN.md) — architecture, decisions, milestone map
 - [AGENTS.md](AGENTS.md) — how to work in this repo
 - [CONTRIBUTING.md](CONTRIBUTING.md) — commits, PRs, ADRs
 - [docs/wire-protocol.md](docs/wire-protocol.md) — every payload on every hop
 - [docs/adr/](docs/adr/) — decision log
+- [docs/operations.md](docs/operations.md) — running and configuring it
 
 ## License
 

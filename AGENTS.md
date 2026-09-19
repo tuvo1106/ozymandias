@@ -52,13 +52,22 @@ what "done" means:
 
 1. Work milestones in order. Do not start M(n+1) until every acceptance
    criterion of M(n) passes and is demonstrated (command + output in the notes).
-2. A milestone is **several PRs, not one**: one PR per coherent feature slice
-   (e.g. `feat/statsd-parser`, `feat/aggregator`, `feat/forwarder`,
-   `feat/naive-store`, `docs/m1-notes`), each green on its own, each with its
-   tests and docs. Scopes are package-ish: `feat(agent): …`, `test(tsdb): …`,
-   `feat(sdk-python): …`, `feat(web): …`. Ask the owner once, at M0, how they
-   want pushes and PR merges handled (remote name, who merges); until a remote
-   exists, keep the same branch discipline locally and merge with `--no-ff`.
+2. **GitHub Actions minutes are scarce** (private repo on the Free plan,
+   shared with the owner's other private repos). So:
+   - **Batch.** One PR per milestone, or per large coherent chunk of one, not
+     one per feature slice. Slices are still separate, well-described
+     *commits* on the branch, so history stays reviewable.
+   - **The git hooks are the CI** (ADR-0010). GitHub Actions doesn't run on
+     PRs. pre-commit runs the fast gates for what you staged, and pre-push
+     runs the full `make ci`. Never `--no-verify` a push. Put the local
+     evidence (`make ci`, and `make smoke` when runtime behaviour changed)
+     in the PR description, because nothing else will verify it.
+   - Scopes are package-ish: `feat(agent): …`, `test(tsdb): …`,
+     `feat(sdk-python): …`, `feat(web): …`.
+   - The repo is `github.com/tuvo1106/ozymandias` (private). Open PRs with `gh`.
+     **Merging:** you may merge a PR yourself (`gh pr merge --merge`) once a
+     `/code-review` of its changes has run and every finding is fixed or
+     explicitly answered. Otherwise the owner merges.
 3. If a spec is wrong, ambiguous, or blocked by reality: pick the simplest
    option consistent with PLAN.md §4 principles, write an ADR for it (the
    plan's version is the rejected alternative; note the impact on later
@@ -162,14 +171,25 @@ generators, statsd libraries.
 - Keep each integration change minimal and confined to the seams listed in
   `docs/plan/integrations.md`.
 
-## 7. Commands (kept current as the repo grows)
+## 7. Commands
 
 ```
-make build          go build ./cmd/...
-make test           go test -race ./...
-make lint           golangci-lint run
-make up / down      docker compose -f deploy/docker-compose.yml up -d --build / down
-make dev            run ozyd + agent natively with deploy/*.yaml, plus vite
-make smoke          scripts/smoke.sh
-make sdk-release    scripts/release-sdk.sh  (build wheel + tgz, copy into the apps' vendor/ dirs)
+make help           list every target
+make build          go build ./cmd/... into ./bin (embeds the UI if built)
+make web            build the UI into internal/api/ui/dist
+make ci             the full local gate; lefthook runs it on git push
+make test / lint / docs-check / web-check / fuzz / fuzz-long
+make up / down / down-v   the compose stack (waits until healthy)
+make smoke          end-to-end checks against the running stack
+make dev            ozyd + agent natively, plus Vite on :9401
+make sdk-release    (M1) build SDK artifacts into the apps' vendor/ dirs
 ```
+
+Environment gotchas, found the hard way:
+
+- **Colima doesn't forward UDP from the Mac** into containers (ssh port
+  forwarder). See docs/operations.md.
+- macOS ships bash 3.2 and no `timeout` command, so scripts must not rely on
+  `wait -n`, `mapfile` or `timeout`.
+- `web/node_modules` contains a Go package (npm's `flatted`). `go.mod`'s
+  `ignore` directive and `.golangci.yml` exclude it.

@@ -1,0 +1,49 @@
+# CI — manual only. The gate is the git hooks (lefthook.yml, ADR-0010):
+# pre-commit runs every fast check on each commit, pre-push runs `make ci`.
+#
+# GitHub Actions minutes don't fit this project: the repo is private on the
+# Free plan, whose minutes are shared with (and used up by) the owner's other
+# private repos. So this workflow does not run on pushes or pull requests. It
+# stays as the remote runbook, for a manual run
+# (`gh workflow run ci --ref <branch>`) or for turning back on:
+#
+#   * If minutes become available (public repo, paid plan, self-hosted
+#     runner), restore the `pull_request:` trigger below.
+#   * Keep it one job: each job is billed rounded up to a whole minute.
+name: ci
+
+on:
+  workflow_dispatch:
+  # pull_request:
+  #   paths-ignore: ["**.md", "docs/**", "LICENSE", ".github/ISSUE_TEMPLATE/**", ".github/PULL_REQUEST_TEMPLATE.md"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13.2
+      - run: scripts/check-no-app-coupling.sh
+      - run: make docs-check
+      - run: make test
+      - name: web
+        working-directory: web
+        run: npm ci && npm run typecheck && npm run lint && npm run test:coverage && npm run build

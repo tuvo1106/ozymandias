@@ -22,14 +22,60 @@ commit-msg:
           exit 1
         fi
 
+# The hooks ARE the CI (ADR-0010): GitHub Actions is off while the repo is
+# private on the Free plan. pre-commit runs every fast gate on each commit;
+# pre-push runs the complete `make ci`. `--no-verify` skips them — don't,
+# except for a WIP commit you will fix before pushing.
+#
+# The gates check the working tree, not only what's staged: stash or commit
+# unrelated edits first, or a commit can pass or fail because of them.
+
+pre-push:
+  commands:
+    make-ci:
+      run: make ci
+
 pre-commit:
   parallel: true
   commands:
-    # Add a language-specific lint/format command here, e.g.:
-    #   lint:
-    #     glob: "*.py"
-    #     run: uv run ruff check --fix {staged_files}
-    #     stage_fixed: true
+    # --- Go ------------------------------------------------------------------
+    # Formatting is fixed in place and re-staged.
+    go-fmt:
+      glob: "*.go"
+      run: gofmt -w {staged_files}
+      stage_fixed: true
+    go-lint:
+      glob: "*.{go,mod,sum}"
+      run: golangci-lint run ./...
+    # Race tests + the coverage gates. Go's test cache (which also covers
+    # -coverprofile runs) re-runs only packages affected by the change, so
+    # this is a second or two when warm.
+    go-test:
+      glob: "*.{go,mod,sum,yaml}"
+      run: scripts/check-coverage.sh > /tmp/ozymandias-precommit-test.log 2>&1 || { grep -E "✗|FAIL|panic|--- " /tmp/ozymandias-precommit-test.log; exit 1; }
+
+    # --- repo-wide checks (grep-based, instant) --------------------------------
+    docs-check:
+      glob: "*.{go,md,yaml,yml}"
+      run: scripts/check-docs.sh
+    no-app-coupling:
+      glob: "*.{go,ts,tsx,py}"
+      run: scripts/check-no-app-coupling.sh
+
+    # --- Web UI ----------------------------------------------------------------
+    web-typecheck:
+      root: "web/"
+      glob: "*.{ts,tsx}"
+      run: npx --no-install tsc -b --noEmit
+    web-lint:
+      root: "web/"
+      glob: "*.{ts,tsx,js}"
+      run: npx --no-install eslint {staged_files}
+    # Only the tests that import the staged files.
+    web-test:
+      root: "web/"
+      glob: "*.{ts,tsx}"
+      run: npx --no-install vitest related --run --passWithNoTests {staged_files}
 
     # Treat this repo as public: no secrets committed, ever — not "temporarily",
     # not in a branch you plan to squash.
