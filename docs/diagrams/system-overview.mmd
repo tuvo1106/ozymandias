@@ -1,0 +1,31 @@
+flowchart TB
+    subgraph apps["Instrumented apps"]
+        CB["app-node<br/>Node SDK"]
+        LC["app-python<br/>Python SDK"]
+        BG["app-ruby<br/>no SDK: /metrics, stdout, OTel"]
+    end
+
+    subgraph agent["agent (one per host)"]
+        SD["statsd :8125/udp<br/>→ aggregator"]
+        TR["traces :8126<br/>→ stats → sampler"]
+        CO["collectors + checks<br/>host · docker · openmetrics"]
+        TA["log tailer → pipeline"]
+        FW["forwarder<br/>batch · gzip · retry · buffer"]
+    end
+
+    subgraph dd["ozyd :9400"]
+        IN["intake /v1/*"]
+        ST[("TSDB · sketches · logs · traces<br/>metadata (SQLite)")]
+        Q["query API /api/v1/*"]
+        MO["monitors → notifiers"]
+        UI["web UI (embedded)"]
+    end
+
+    CB -- "UDP statsd, HTTP spans" --> SD & TR
+    LC -- "UDP statsd, HTTP spans" --> SD & TR
+    BG -. "scraped / tailed" .-> CO & TA
+    SD & TR & CO & TA --> FW
+    FW -- "HTTP /v1/series · sketches · logs · traces" --> IN
+    IN --> ST
+    ST --> Q --> UI
+    ST --> MO

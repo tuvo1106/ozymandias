@@ -93,7 +93,8 @@ file → `/api/v1/logs` out; span POSTed → trace API out; monitor transitions 
 fake notifier captures.
 
 ### L9 — End-to-end smoke (`scripts/smoke.sh`, real binaries, docker compose)
-Grows each milestone; must stay under 2 minutes. Sends real UDP/HTTP traffic,
+Grows each milestone; must stay under 2 minutes. Run by hand (`make up && make smoke`) and
+quoted in the PR; there is no remote CI (§4). Sends real UDP/HTTP traffic,
 polls the public API until data appears, exits non-zero with diagnostics on
 timeout. Runs in CI on every push.
 
@@ -135,14 +136,22 @@ milestone) so regressions are visible.
 - Tests are documented too: a non-obvious test gets a comment stating what
   failure mode it guards against.
 
-## 4. CI pipeline (`.github/workflows/ci.yml`)
+## 4. The gate: git hooks (no remote CI)
 
-1. `lint`: golangci-lint, ruff, eslint/tsc, markdown link check.
-2. `test-go`: `go test -race -coverprofile` + coverage gate + 30s fuzz per target.
-3. `test-sdk-python`, `test-sdk-node`, `test-web`: with coverage gates.
-4. `crash`: L5 crash loop (50 iterations).
-5. `smoke`: compose up + `scripts/smoke.sh`.
-6. `docs`: doc checks from `docs/plan/documentation.md` §5.
+GitHub Actions is off (ADR-0010). The repo is private and the Free plan's
+minutes are used up by other repos. **The git hooks are the CI:**
+
+| Hook | Runs | Typical cost |
+|---|---|---|
+| pre-commit | Only the checks the staged file types need: gofmt, golangci-lint, race tests with coverage gates (cached, so only affected packages re-run), docs drift, no app coupling, web typecheck, ESLint and related Vitest tests | 1–3 s warm |
+| pre-push | `make ci`: everything, over the whole tree, plus web coverage thresholds and a 10 s-per-target fuzz pass | tens of seconds |
+| by hand | `make smoke` (L9), `make fuzz-long` (L4), the crash loop (L5, from M2) | per milestone |
+
+The PR description carries the evidence: `make ci` output, plus `make smoke`
+when runtime behaviour changed. The one-job workflow in
+`.github/workflows/ci.yml` stays for manual runs. Restore its `pull_request`
+trigger if minutes ever become available, and move smoke, the crash loop and
+fuzz back into it.
 
 Every milestone spec has a **Test plan** section naming the concrete tests
 required at each layer. A milestone is not done until those tests exist and pass.

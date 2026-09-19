@@ -5,3 +5,35 @@ credentials/
 
 .env*
 !.env.example
+
+# Go
+/bin/
+*.test
+*.out
+coverage.*
+!coverage-thresholds.txt
+/testdata/fuzz-cache/
+
+# Runtime state (ozyd/agent data dirs when run natively)
+/data/
+
+# Web UI
+node_modules/
+web/coverage/
+web/playwright-report/
+web/test-results/
+*.tsbuildinfo
+# Vite builds straight into the Go embed dir; only the placeholder is tracked
+# so `go build` works before the UI has ever been built.
+internal/api/ui/dist/*
+!internal/api/ui/dist/.gitkeep
+
+# Python (SDK, from M1)
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+# SDK build output. Scoped: a bare `dist/` would also swallow the tracked
+# internal/api/ui/dist/.gitkeep that keeps `go build` working.
+sdk/**/dist/

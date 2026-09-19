@@ -135,7 +135,13 @@ straight to the forwarder as gauges/rates (bypassing statsd aggregation).
   by `interface` (rates computed from counter deltas), `system.uptime`.
   Note in docs: inside the Colima VM these describe the VM, not macOS; running
   the agent natively (`make dev`) reports the Mac.
-- **docker** — raw HTTP over `/var/run/docker.sock` (no client library):
+- **docker** — raw HTTP over `/var/run/docker.sock` (no client library).
+  *Carried over from M0:* compose doesn't mount the socket yet. This milestone
+  adds the mount (read-only) and decides, with an ADR, how the non-root
+  distroless agent may read it: `group_add` with the socket's GID, a root
+  agent, or a socket proxy. Socket access is root-equivalent on the host
+  whichever is chosen.
+  Endpoints:
   `GET /containers/json` for discovery (refreshed every 10s and on
   `GET /events` stream `start`/`die`), `GET /containers/{id}/stats?stream=false`
   per container, bounded concurrency. Metrics: `container.cpu.usage` (% of one
