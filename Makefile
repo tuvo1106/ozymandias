@@ -56,8 +56,13 @@ fuzz-long: ## Every fuzz target for 10 minutes
 web-check: ## Web typecheck + lint + tests with coverage
 	cd web && npm run typecheck && npm run lint && npm run test:coverage
 
+.PHONY: sdk-check
+sdk-check: ## Both SDKs: install, typecheck, lint, tests with their 90% gates
+	cd sdk/node && npm ci --silent && npm run typecheck && npm run lint && npm run test:coverage
+	cd sdk/python && uv sync --locked -q && uv run ruff check && uv run ruff format --check && uv run mypy && uv run pytest -q
+
 .PHONY: ci
-ci: lint test docs-check web-check ## The full local gate (runs on git push via lefthook)
+ci: lint test docs-check web-check sdk-check ## The full local gate (runs on git push via lefthook)
 	$(MAKE) fuzz FUZZTIME=$(CI_FUZZTIME)
 
 # --- run ---------------------------------------------------------------------
@@ -83,8 +88,8 @@ smoke: ## End-to-end checks against the running compose stack
 	scripts/smoke.sh
 
 .PHONY: sdk-release
-sdk-release: ## Build SDK artifacts and copy them into app vendor dirs (M1)
-	@echo "✗ the SDKs arrive in M1 (docs/plan/M1-metrics-tracer-bullet.md)"; exit 1
+sdk-release: ## Build SDK artifacts and copy them into app vendor dirs
+	scripts/release-sdk.sh
 
 .PHONY: clean
 clean: ## Remove build output

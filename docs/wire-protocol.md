@@ -74,7 +74,30 @@ agent ──(F) POST :9400/v1/traces ───► ozyd
 | `d` | distribution | DDSketch | sketch (hop D) — from M2; in M1 treated as `h` |
 
 Parse errors drop only the offending line and increment
-`ozy.agent.statsd.parse_errors`.
+`ozy.agent.statsd.parse_errors`. A value that isn't a finite number
+(`NaN`, `Inf`) is a parse error, and so is an empty name, value or tag
+section, or a sample rate outside (0,1].
+
+### What a client sends (both SDKs; any client may do the same)
+
+- **Section order:** `name:value|type`, then `|@rate` (only when rate < 1), then
+  `|#tags`. The agent accepts any order; the SDKs write this one so their
+  output is byte-for-byte testable.
+- **Numbers:** integral values print without a decimal point (`1`, not
+  `1.0`), and everything else as the shortest string that round-trips a
+  float64 (`12.4`, `0.30000000000000004`). NaN and ±Inf are dropped
+  client-side, never sent.
+- **Tags:** the call's tags, then the `init()`/`OZY_TAGS` tags, then
+  `service:`, `env:` and `version:` for whichever of those are set.
+- **Sampling:** with `sample_rate < 1`, send when `random() < rate` and
+  write `|@rate`.
+- **Sanitation:** `|`, `,` and newline become `_` in names, tags and set
+  members. `:` also becomes `_` in names, since it ends the name. That is all
+  a client does; the agent normalizes the rest.
+- `timing` sends `|ms`; `decrement(n)` sends `-n|c`.
+
+The exact bytes for each call are in `pkg/wire/testdata/statsd/sdk-cases.json`,
+which the Go parser tests and both SDK test suites load.
 
 Examples:
 

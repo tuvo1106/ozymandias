@@ -9,10 +9,23 @@ cd "$(dirname "$0")/.."
 
 mkdir -p data
 pids=()
+# Job control, so each child below lands in its own process group. Without it
+# they share this script's group, Ctrl-C reaches all three at once, and the
+# shutdown order this script exists to impose never happens — ozyd starts
+# draining at the same instant the agent starts its final flush.
+set -m
+
+# Stop in reverse pipeline order: the agent's final flush needs ozyd
+# still listening, or its last buckets are lost (compose gets the same order
+# from depends_on). The `:-` defaults matter under `set -u`: the trap is armed
+# before the three processes exist, so an early Ctrl-C would otherwise abort
+# cleanup on an unbound element and leave whatever did start running.
 cleanup() {
   trap - INT TERM EXIT
-  kill -TERM "${pids[@]}" 2>/dev/null || true
-  wait "${pids[@]}" 2>/dev/null || true
+  kill -TERM "${pids[1]:-}" "${pids[2]:-}" 2>/dev/null || true
+  wait "${pids[1]:-}" "${pids[2]:-}" 2>/dev/null || true
+  kill -TERM "${pids[0]:-}" 2>/dev/null || true
+  wait "${pids[0]:-}" 2>/dev/null || true
 }
 trap cleanup INT TERM EXIT
 

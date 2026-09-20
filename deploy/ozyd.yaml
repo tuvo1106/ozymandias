@@ -14,15 +14,16 @@
 # Used as-is by deploy/docker-compose.yml; `make dev` runs with it too.
 
 http:
-  # Listen address for everything ozyd serves: intake (/v1/*, from M1),
-  # the query API (/api/v1/*), /healthz, /debug/vars and the web UI.
+  # Listen address for everything ozyd serves: intake (/v1/*), the
+  # query API (/api/v1/*), /healthz, /debug/vars and the web UI.
   addr: ":9400"
   # How long in-flight requests get to finish after SIGTERM before the
   # remaining connections are cut. Must be positive.
   shutdown_timeout: 10s
 
-# Root of all on-disk state: TSDB (M2), log store (M4), trace store (M5),
-# metadata DB, queue (M7). Created at startup if missing; must be writable.
+# Root of all on-disk state: meta.db (metric types; later dashboards and
+# monitors), metrics-naive.db (M1's metric store, replaced by the TSDB in M2),
+# and later the log store (M4), trace store (M5) and queue (M7). Created at startup if missing; must be writable.
 # The container overrides this to /data (a named volume).
 data_dir: ./data/ozyd
 

@@ -30,6 +30,11 @@ linters:
         - (io.Closer).Close
         - (io.ReadCloser).Close
         - (net.Listener).Close
+        - (net.Conn).Close
+        - (*compress/gzip.Reader).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (github.com/tuvo1106/ozymandias/internal/tsdb.SeriesSet).Close
     revive:
       rules:
         - name: exported
@@ -51,6 +56,7 @@ linters:
     # ours and not in this module.
     paths:
       - web/node_modules
+      - sdk/node/node_modules
     rules:
       # Test helpers and tests don't need exported-symbol prose.
       - path: _test\.go

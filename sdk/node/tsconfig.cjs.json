@@ -1,0 +1,11 @@
+{
+  // CommonJS build for require() consumers. scripts/build.mjs drops a
+  // {"type":"commonjs"} package.json into dist/cjs so Node (and TypeScript)
+  // read these .js/.d.ts files as CommonJS.
+  "extends": "./tsconfig.esm.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "bundler",
+    "outDir": "dist/cjs"
+  }
+}

@@ -58,4 +58,69 @@ for svc in ozyd agent; do
   check "$svc healthy again after restart" healthy "$svc"
 done
 
+# --- M1: statsd in, query out --------------------------------------------------
+# Every send below runs *inside* a container on the ozymandias network, not from
+# the Mac: Colima's ssh port forwarder drops UDP, so `nc` on the host would
+# silently send into a void (docs/operations.md). busybox is the smallest image
+# with an `nc` that speaks UDP.
+#
+# `-w1`, not `-w0`: busybox reads -w0 as "wait forever" (BSD nc reads it as
+# "don't wait"), so -w0 hangs the container. -w1 costs a second per datagram,
+# which is why sends are batched into as few containers as possible.
+statsd() { # <line>... — all lines in ONE datagram (statsd is newline-framed)
+  printf '%s\n' "$@" | docker run --rm -i --network ozymandias busybox nc -u -w1 agent 8125
+}
+statsd_burst() { # <datagrams> <lines each> <line> — separate datagrams, one container
+  docker run --rm --network ozymandias -e D="$1" -e L="$2" -e LINE="$3" busybox sh -c '
+    i=0
+    while [ "$i" -lt "$D" ]; do
+      j=0
+      while [ "$j" -lt "$L" ]; do printf "%s\n" "$LINE"; j=$((j + 1)); done |
+        nc -u -w1 agent 8125
+      i=$((i + 1))
+    done'
+}
+# query_sum <metric> — Σ since this run started, "null" if the metric is unknown.
+# Scoped to the run, not to a fixed window: two smoke runs in a row would
+# otherwise sum to 50 and fail. One interval of slack, because the bucket that
+# holds the first sample starts before we do.
+query_sum() {
+  curl -fsS --max-time 5 "$OZY_URL/api/v1/query?metric=$1&agg=sum&from=$((M1_T0 - 10))&to=$(date +%s)" |
+    python3 -c 'import json,sys
+d = json.load(sys.stdin)
+pts = [p[1] for s in d.get("series", []) for p in s["points"] if p[1] is not None]
+print(int(sum(pts)) if pts else "null")'
+}
+# wait_sum <metric> <expected> — poll until the agent flushes (10s) and the
+# intake stores it. Generous: a cold SQLite write on a loaded laptop is slow.
+wait_sum() {
+  for _ in $(seq 1 30); do
+    [[ "$(query_sum "$1")" == "$2" ]] && return 0
+    sleep 1
+  done
+  echo "  $1: Σ = $(query_sum "$1"), expected $2" >&2
+  return 1
+}
+
+# Send everything first, then assert: one 10s flush covers all of it, so the
+# whole M1 block costs one flush rather than one per check.
+M1_T0=$(date +%s)
+N=25
+statsd_burst 5 5 'smoke.test:1|c|#source:smoke'          # 5 datagrams × 5 lines
+statsd 'smoke.gauge:1|g' 'smoke.gauge:2|g' 'smoke.gauge:7|g'
+# The protocol is the interface: no SDK, no library, just a shell script and nc.
+check "examples/cron-script.sh runs"       docker run --rm --network ozymandias \
+  -e OZY_AGENT_HOST=agent -e JOB=smoke \
+  -v "$PWD/examples:/examples:ro" busybox sh /examples/cron-script.sh
+
+check "statsd counter queries back (Σ=$N)" wait_sum smoke.test "$N"
+# A gauge is last-write-wins within a flush, not a sum: three values, one point.
+check "gauge keeps the last value"         wait_sum smoke.gauge 7
+check "the cron script's counter landed"   wait_sum cron.job.runs 1
+check "metric appears in the catalogue"    body_has "$OZY_URL/api/v1/metrics?prefix=smoke" '"smoke.test"'
+check "its tag key is listed"              body_has "$OZY_URL/api/v1/tags?metric=smoke.test" '"source"'
+check "its tag value is listed"            body_has "$OZY_URL/api/v1/tags/values?metric=smoke.test&key=source" '"smoke"'
+check "the histogram became percentiles"   body_has "$OZY_URL/api/v1/metrics?prefix=cron.job.duration" '"cron.job.duration.95percentile"'
+check "the agent counts what it parsed"    body_has "$AGENT_URL/debug/vars" 'ozy.agent.statsd.messages_received'
+
 echo "smoke: $pass checks passed"

@@ -31,7 +31,7 @@ export function Home() {
         )}
       </section>
 
-      <h2 className="mt-8 text-lg font-semibold">What's coming</h2>
+      <h2 className="mt-8 text-lg font-semibold">Sections</h2>
       <ul className="mt-3 grid gap-3 sm:grid-cols-2">
         {NAV_ITEMS.map((item) => (
           <li key={item.path}>
@@ -40,7 +40,9 @@ export function Home() {
               className="block rounded-lg border border-zinc-200 p-4 hover:border-violet-400 dark:border-zinc-800"
             >
               <span className="font-medium">{item.label}</span>
-              <span className="ml-2 text-xs text-zinc-500">{item.milestone}</span>
+              <span className={`ml-2 text-xs ${item.live ? "text-emerald-600 dark:text-emerald-400" : "text-zinc-500"}`}>
+                {item.live ? "live" : item.milestone}
+              </span>
               <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">{item.description}</p>
             </Link>
           </li>

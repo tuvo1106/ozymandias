@@ -1,0 +1,31 @@
+%% The path one metric takes, from an app's function call to a stored point.
+%% Kept identical to the copy in DESIGN.md §9.
+flowchart TB
+    subgraph app["Instrumented app"]
+        CALL["statsd.increment('http.request.count', tags)"]
+        FMT["SDK: format + validate<br/>fire-and-forget UDP"]
+    end
+
+    subgraph ag["agent"]
+        direction TB
+        RD["readers × N<br/>ReadFromUDP into a 64 KiB buffer"]
+        Q{{"bounded queue<br/>full → drop + count"}}
+        WK["workers × N<br/>split lines · Parse · normalize"]
+        AGG["aggregator<br/>sharded contexts<br/>10s buckets"]
+        FLUSH["flush every 10s<br/>counters · gauges · histograms"]
+        FWQ{{"retry queue<br/>≤ 64 MiB, drop oldest"}}
+        FW["forwarder<br/>split ≤5000 series / 2 MiB<br/>gzip · POST · backoff"]
+    end
+
+    subgraph dd["ozyd"]
+        IN["intake POST /v1/series<br/>decode · validate · per-series reject"]
+        META[("meta.db<br/>metric → type")]
+        ST[("MetricStore<br/>naive SQLite (M1)")]
+        QRY["query /api/v1/query<br/>bucket · group · aggregate"]
+    end
+
+    CALL --> FMT -- "UDP datagram, may be lost" --> RD
+    RD --> Q --> WK --> AGG --> FLUSH --> FWQ --> FW
+    FW -- "HTTPS + gzip, retried" --> IN
+    IN --> META & ST
+    ST --> QRY

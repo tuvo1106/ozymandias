@@ -6,8 +6,16 @@ alerting. Built to be app-agnostic; first used on [app-node](../app-node) (Node 
 [app-python](../app-python) (Python SDK) and [app-ruby](../app-ruby) (Ruby — no SDK: Prometheus
 scrape, stdout logs, OpenTelemetry).
 
-**Status: M0 (skeleton).** Both binaries run with config, health and a UI shell. Telemetry arrives
-in M1. The design as built is in [DESIGN.md](DESIGN.md), and the plan in [PLAN.md](PLAN.md).
+**Status: M1 (metrics tracer bullet).** Metrics flow end to end: an app sends extended StatsD over UDP,
+the agent aggregates into 10s buckets and forwards batched and gzipped, `ozyd` stores the
+points, and the Metrics Explorer graphs them. Logs, traces, monitors and the real TSDB are still
+ahead. The design as built is in [DESIGN.md](DESIGN.md), and the plan in [PLAN.md](PLAN.md).
+
+```bash
+# no SDK required — the protocol is the interface
+printf 'my.metric:1|c|#env:dev\n' | nc -u -w1 localhost 8125
+open http://localhost:9400/metrics/explorer
+```
 
 ## Stack
 
@@ -56,6 +64,11 @@ checks for what's staged, and every push runs `make ci`.
 - [docs/wire-protocol.md](docs/wire-protocol.md) — every payload on every hop
 - [docs/adr/](docs/adr/) — decision log
 - [docs/operations.md](docs/operations.md) — running and configuring it
+- [docs/api.md](docs/api.md) — the HTTP API
+- [docs/metrics-catalog.md](docs/metrics-catalog.md) — every metric ozymandias emits about itself
+- [docs/sdk/python.md](docs/sdk/python.md), [docs/sdk/node.md](docs/sdk/node.md) — the SDKs
+- [docs/benchmarks.md](docs/benchmarks.md) — measured numbers for the hot paths
+- [docs/notes/](docs/notes/) — what each milestone taught
 
 ## License
 

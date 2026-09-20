@@ -1,0 +1,11 @@
+{
+  // ESM build: package.json has "type": "module", so NodeNext emits ESM.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist/esm",
+    "declaration": true
+  },
+  "include": ["src"]
+}
