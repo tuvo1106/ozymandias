@@ -5,8 +5,10 @@ say what is planned; this file describes what exists. It grows with every
 milestone, and a section still waiting for its milestone says so. Decisions
 and the alternatives they beat are in [docs/adr/](docs/adr/).
 
-**Status: M0 (skeleton).** Both binaries run, load configuration and report
-their health. No telemetry flows yet.
+**Status: M1 (metrics tracer bullet).** One metric type flows end to end: a
+statsd counter from an app reaches the agent, is aggregated, forwarded, stored
+and queried back through the UI. Logs, traces, monitors and the real TSDB are
+still ahead.
 
 ---
 
@@ -47,9 +49,10 @@ flowchart TB
 ```
 
 (Source: [docs/diagrams/system-overview.mmd](docs/diagrams/system-overview.mmd);
-the two copies are kept identical.) This is the target shape. As of M0 only
-the process boundaries exist: the agent and ozyd each serve `/healthz`
-and `/debug/vars`, and ozyd serves the UI shell.
+the two copies are kept identical.) This is the target shape. As of M1 the
+statsd path through it is real — SDK → aggregator → forwarder → intake →
+store → query API → UI (§9) — and the rest is still process boundaries:
+`/healthz`, `/debug/vars`, and the UI's remaining sections.
 
 There are two binaries (ADR-0004):
 
@@ -135,7 +138,11 @@ The reference files [deploy/ozyd.yaml](deploy/ozyd.yaml) and
 sorted JSON snapshot at `GET /debug/vars`. Every HTTP request is counted by
 matched route pattern, never the raw path, which would create a series per
 URL. The full list is in [docs/metrics-catalog.md](docs/metrics-catalog.md).
-From M1 the agent ships these through its own pipeline.
+Both binaries now ship these through the metric path itself, tagged
+`host:<name>`: the agent adds them to each flush, and ozyd feeds its own
+straight into the intake every 10s. ozymandias watching itself with its own
+pipeline is the cheapest possible end-to-end test — if the graphs are empty,
+the pipeline is broken.
 
 ## 6. Web UI
 
@@ -149,8 +156,11 @@ embedded with `go:embed`. `internal/api.UI` serves it as follows:
 - Without a UI build, the embed holds only a tracked `.gitkeep`, and `/`
   explains how to build it. `go build` never needs Node.
 
-In M0 the UI shows every planned section with its milestone, and ozyd's
-live health on the home page.
+The UI shows every planned section with its milestone, ozyd's live
+health on the home page, and (M1) a working Metrics Explorer at
+`/metrics/explorer`: metric and tag autocomplete, filter chips, group-by,
+aggregator, time range and a uPlot chart, with the whole query state in the
+URL so a graph can be pasted into a message.
 
 ## 7. Deployment
 
@@ -173,6 +183,130 @@ in the PR.
 
 ---
 
-*Sections added by later milestones: metric write path and aggregation (M1),
-TSDB internals (M2), query pipeline (M3), log path (M4), traces (M5),
-monitors (M6), the queued pipeline (M7), OTLP (M8).*
+## 9. Metric write path
+
+```mermaid
+flowchart TB
+    subgraph app["Instrumented app"]
+        CALL["statsd.increment('http.request.count', tags)"]
+        FMT["SDK: format + validate<br/>fire-and-forget UDP"]
+    end
+
+    subgraph ag["agent"]
+        direction TB
+        RD["readers × N<br/>ReadFromUDP into a 64 KiB buffer"]
+        Q{{"bounded queue<br/>full → drop + count"}}
+        WK["workers × N<br/>split lines · Parse · normalize"]
+        AGG["aggregator<br/>sharded contexts<br/>10s buckets"]
+        FLUSH["flush every 10s<br/>counters · gauges · histograms"]
+        FWQ{{"retry queue<br/>≤ 64 MiB, drop oldest"}}
+        FW["forwarder<br/>split ≤5000 series / 2 MiB<br/>gzip · POST · backoff"]
+    end
+
+    subgraph dd["ozyd"]
+        IN["intake POST /v1/series<br/>decode · validate · per-series reject"]
+        META[("meta.db<br/>metric → type")]
+        ST[("MetricStore<br/>naive SQLite (M1)")]
+        QRY["query /api/v1/query<br/>bucket · group · aggregate"]
+    end
+
+    CALL --> FMT -- "UDP datagram, may be lost" --> RD
+    RD --> Q --> WK --> AGG --> FLUSH --> FWQ --> FW
+    FW -- "HTTPS + gzip, retried" --> IN
+    IN --> META & ST
+    ST --> QRY
+```
+
+(Source: [docs/diagrams/metric-write-path.mmd](docs/diagrams/metric-write-path.mmd);
+the two copies are kept identical.)
+
+The shape of the whole path follows from one decision: **the app must never
+wait.** Everything downstream of `increment()` is allowed to lose data under
+pressure, and each stage is explicit about how.
+
+1. **The SDK** formats one line per call and writes a UDP datagram
+   (`docs/wire-protocol.md` §A). No connection, no reply, no retry — a send
+   into a full socket buffer is dropped and the app never learns. That is the
+   trade: instrumentation cannot slow down or break the thing it measures.
+   Both SDKs wrap every public entry point so a bug in them cannot throw into
+   the host app.
+2. **The readers** (`internal/agent/statsd`) each own a `ReadFromUDP` loop.
+   More than one, because a single goroutine cannot drain a busy socket, and
+   the kernel drops what it cannot hand over. A datagram may hold many
+   newline-separated lines; batching is what makes 50k msgs/s only 2.5k
+   datagrams/s.
+3. **The queue** between readers and workers is bounded. When it fills, the
+   reader drops the datagram and counts it
+   (`ozy.agent.statsd.packets_dropped`). An unbounded queue would trade
+   a visible, counted drop for an invisible memory leak.
+4. **The workers** split lines and call `Parse`, which allocates nothing: the
+   `Message` aliases the read buffer. Unknown sections (`|c:` container id,
+   `|card:`) are ignored rather than rejected, because a receiver that rejects
+   what it does not understand breaks every time a client gains a feature.
+   Names and tags are normalized here, not rejected — a stray `-` costs a
+   cosmetic `_` (`pkg/wire`).
+5. **The aggregator** is where volume collapses. See §10.
+6. **The forwarder** takes each flush, splits it into payloads of at most
+   5000 series or 2 MiB, gzips them, and POSTs them to `/v1/series`. Failures
+   go back on a queue capped at 64 MiB that drops *oldest* first, and are
+   retried with full-jitter backoff from 1s to 60s, honouring `Retry-After`.
+   Only network errors, 408, 429 and 5xx are retried; any other 4xx is the
+   agent's own fault and retrying it would just repeat the mistake.
+7. **The intake** (`internal/intake`) validates each series independently and
+   rejects only the bad ones, returning a per-series reason. An all-or-nothing
+   batch would let one malformed series from one app discard another app's
+   data. A storage failure is a 503 — the one case where the agent *should*
+   retry.
+8. **The meta DB** records the first type seen for a metric name and rejects
+   later contradictions (`ErrTypeConflict`), so `x` cannot be a counter on one
+   host and a gauge on another.
+
+Shutdown runs this pipeline in reverse: the statsd listener stops, the
+aggregator does a final flush of every open bucket, and the forwarder gets one
+last attempt within its budget. The agent must therefore stop *before*
+ozyd, or that final flush has nowhere to go — `make dev` and compose both
+encode that order.
+
+## 10. Aggregation model
+
+The agent sends one point per series per 10 seconds, no matter how many times
+the app called `increment()`. At 50k msgs/s across 100 series that is 3M
+messages reduced to 10 points per flush. This is the single largest reason a
+real agent exists at all.
+
+- **Context.** A context is `kind + name + canonical tags`; tags are sorted
+  and de-duplicated, so the same tags in any order are the same series. The
+  map of contexts is sharded to spread lock contention across the workers.
+- **Buckets** are `floor(ts/10)*10`. A flush closes every bucket that started
+  before `now`, and leaves the current one open.
+- **Late samples.** A sample older than the watermark goes into the oldest
+  still-open bucket rather than being dropped. It is a small lie about *when*,
+  chosen over a certain loss of *what*. The watermark is read under the shard
+  lock so a concurrent flush cannot race it.
+- **Counters** are summed, divided by the sample rate, and then **zero-filled**
+  until `lastData + expiry`: a counter that stops incrementing keeps reporting
+  0, because a gap in a rate chart should mean "no data", while "nothing
+  happened" should be a visible zero. The fill jumps over long idle gaps
+  rather than emitting thousands of zeros for a context that was quiet all
+  night — a bug this code had, found by a test with a fake clock.
+- **Gauges** are last-write-wins within the bucket and are **never** filled. A
+  gauge's absence means "unknown", not "zero"; filling would invent a reading
+  nobody took.
+- **Histograms** (`h`, `ms`, `d`) keep a bounded reservoir sampled with
+  Algorithm R, and emit `.avg`, `.min`, `.max`, `.median`, `.95percentile` and
+  `.count` as separate series. Percentiles use nearest-rank on the reservoir,
+  so they are estimates from a sample, not from every value — production agents
+  sends sketches instead, which M2 adds.
+- **Expiry.** A context with no data and no pending zero-fill is dropped after
+  the expiry window, so a process that emitted one metric once does not cost
+  memory forever.
+- **Sets** count distinct members within the bucket and emit a gauge.
+
+The flush is driven by a `Clock` interface, so every one of these rules is
+tested by advancing a fake clock rather than by sleeping.
+
+---
+
+*Sections added by later milestones: TSDB internals (M2), query pipeline (M3),
+log path (M4), traces (M5), monitors (M6), the queued pipeline (M7),
+OTLP (M8).*

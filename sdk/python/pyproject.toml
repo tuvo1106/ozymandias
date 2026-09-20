@@ -1,0 +1,99 @@
+[project]
+name = "ozy"
+version = "0.1.0"
+description = "Python SDK for ozymandias: extended-StatsD-compatible metrics over UDP, zero dependencies."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Tu Vo" }]
+requires-python = ">=3.12"
+# Zero runtime dependencies is a hard rule (AGENTS.md §5): the SDK is loaded
+# into someone else's process, and every dependency is a version conflict
+# waiting to happen there.
+dependencies = []
+keywords = ["observability", "metrics", "statsd", "statsd", "monitoring"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Monitoring",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Documentation = "https://github.com/tuvo1106/ozymandias/blob/main/docs/sdk/python.md"
+Source = "https://github.com/tuvo1106/ozymandias/tree/main/sdk/python"
+Changelog = "https://github.com/tuvo1106/ozymandias/blob/main/sdk/python/CHANGELOG.md"
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ozy"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/ozy", "tests", "README.md", "LICENSE", "CHANGELOG.md"]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.11",
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+]
+
+# --- tests ---------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# The 90% gate (docs/plan/testing.md) lives here so a bare `uv run pytest`
+# enforces it; there is no separate "coverage mode" to forget.
+addopts = [
+    "--strict-markers",
+    "--cov=ozy",
+    "--cov-branch",
+    "--cov-report=term-missing:skip-covered",
+    "--cov-fail-under=90",
+]
+filterwarnings = ["error"]
+
+[tool.coverage.run]
+source = ["ozy"]
+branch = true
+
+[tool.coverage.report]
+exclude_also = ["if TYPE_CHECKING:", "@overload"]
+
+# --- lint ----------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "UP", "B", "SIM", "RUF", "PT", "C4", "PIE", "RET",
+    "D",  # docstrings on the public API (docs/plan/documentation.md §2)
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+# --- types ---------------------------------------------------------------------
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_decorators = false

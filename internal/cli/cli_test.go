@@ -45,8 +45,8 @@ var binaries = map[string]runner{
 	"agent": Agent,
 }
 
-// envFor gives each binary a config that listens on an ephemeral loopback
-// port, logs JSON (so the test can find the "listening" line) and keeps state
+// envFor gives each binary a config that listens on ephemeral loopback
+// ports, logs JSON (so the test can find the "listening" line) and keeps state
 // in a temp dir.
 func envFor(t *testing.T, name string) []string {
 	if name == "ozyd" {
@@ -61,6 +61,10 @@ func envFor(t *testing.T, name string) []string {
 		"OZY_AGENT_CONFD_PATH=" + t.TempDir(),
 		"OZY_AGENT_HOSTNAME=test-host",
 		"OZY_AGENT_LOG_FORMAT=json",
+		// Never the real statsd port or a real ozyd.
+		"OZY_AGENT_STATSD_ADDR=127.0.0.1:0",
+		"OZY_AGENT_INTAKE_URL=http://127.0.0.1:1",
+		"OZY_AGENT_FORWARDER_SHUTDOWN_TIMEOUT=1s",
 	}
 }
 

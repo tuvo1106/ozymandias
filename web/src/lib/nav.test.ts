@@ -21,4 +21,8 @@ describe("NAV_ITEMS", () => {
       expect(item.milestone).toMatch(/^M\d$/);
     }
   });
+
+  it("has Metrics live from M1 and everything else still coming", () => {
+    expect(NAV_ITEMS.filter((i) => i.live).map((i) => i.label)).toEqual(["Metrics"]);
+  });
 });

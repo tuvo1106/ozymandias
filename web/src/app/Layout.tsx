@@ -10,8 +10,8 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
   ].join(" ");
 
 /**
- * The app shell: a sidebar with every product section (showing which
- * milestone brings it), and the routed page to its right.
+ * The app shell: a sidebar with every product section (unbuilt ones show
+ * which milestone brings them), and the routed page to its right.
  */
 export function Layout() {
   return (
@@ -25,7 +25,7 @@ export function Layout() {
           {NAV_ITEMS.map((item) => (
             <NavLink key={item.path} to={item.path} className={linkClass}>
               <span>{item.label}</span>
-              <span className="text-xs text-zinc-400 dark:text-zinc-500">{item.milestone}</span>
+              {!item.live && <span className="text-xs text-zinc-400 dark:text-zinc-500">{item.milestone}</span>}
             </NavLink>
           ))}
         </nav>

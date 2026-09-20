@@ -42,6 +42,11 @@ describe("app shell", () => {
     expect(screen.getByText("Coming in M4")).toBeInTheDocument();
   });
 
+  it("renders not-found for unknown pages inside a live section", () => {
+    renderAt("/metrics/nope");
+    expect(screen.getByRole("heading", { name: "Page not found" })).toBeInTheDocument();
+  });
+
   it("renders not-found for unknown paths", () => {
     renderAt("/nope");
     expect(screen.getByRole("heading", { name: "Page not found" })).toBeInTheDocument();

@@ -37,3 +37,6 @@ __pycache__/
 # SDK build output. Scoped: a bare `dist/` would also swallow the tracked
 # internal/api/ui/dist/.gitkeep that keeps `go build` working.
 sdk/**/dist/
+# Packed SDK artifacts staged by scripts/release-sdk.sh before they are copied
+# into the apps' vendor dirs.
+/dist/

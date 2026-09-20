@@ -77,6 +77,16 @@ pre-commit:
       glob: "*.{ts,tsx}"
       run: npx --no-install vitest related --run --passWithNoTests {staged_files}
 
+    # --- SDKs ----------------------------------------------------------------
+    # Each SDK's whole suite: they're small (a few seconds) and a change to
+    # the shared goldens in pkg/wire/testdata must re-run both.
+    sdk-node:
+      glob: "{sdk/node/**,pkg/wire/testdata/statsd/**}"
+      run: cd sdk/node && npx --no-install tsc -p tsconfig.json --noEmit && npx --no-install eslint . && npx --no-install vitest run --coverage --silent
+    sdk-python:
+      glob: "{sdk/python/**,pkg/wire/testdata/statsd/**}"
+      run: cd sdk/python && uv run --locked ruff check -q && uv run --locked ruff format --check -q && uv run --locked mypy && uv run --locked pytest -q
+
     # Treat this repo as public: no secrets committed, ever — not "temporarily",
     # not in a branch you plan to squash.
     no-secrets:

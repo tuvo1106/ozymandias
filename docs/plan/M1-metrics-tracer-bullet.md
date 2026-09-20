@@ -165,10 +165,13 @@ auto-refresh (10s), one uPlot line chart with legend + hover values. URL holds
 the full query state.
 
 ## 4. Integrate app-node
-**Before starting:** under Colima, UDP from the Mac doesn't reach containers
-(docs/operations.md). app-node runs on the host, so its statsd needs the
-agent running natively (`make dev`) or Colima's `portForwarder: grpc`. The
-`statsd-flood` acceptance criterion should target a native agent too.
+**Colima and UDP (decided 2026-09-19):** under Colima, UDP from the Mac
+doesn't reach containers (docs/operations.md). app-node runs on the host,
+so **its statsd goes to a natively running agent (`make dev`)**. The owner
+chose this over switching Colima to `portForwarder: grpc`, which would restart
+every container on the machine. Containerized apps (app-python, app-ruby)
+keep using the agent in compose. The `statsd-flood` criterion targets the
+native agent too.
 
 Also ship `examples/cron-script.sh` (metric via `nc`, no SDK) into smoke — the
 first outside-in proof that the protocol is the interface.

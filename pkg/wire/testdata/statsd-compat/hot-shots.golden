@@ -1,0 +1,15 @@
+app.requests:1|c|#env:test,route:/api/items,method:get           → app.requests c value=1 tags=[env:test route:/api/items method:get]
+app.requests:7|c|#env:test                                       → app.requests c value=7 tags=[env:test]
+app.queue.depth:-1|c|#env:test                                   → app.queue.depth c value=-1 tags=[env:test]
+app.workers:4.5|g|#env:test                                      → app.workers g value=4.5 tags=[env:test]
+app.payload.bytes:2048|h|#env:test                               → app.payload.bytes h value=2048 tags=[env:test]
+app.request.duration:12.5|ms|#env:test                           → app.request.duration ms value=12.5 tags=[env:test]
+app.latency:0.25|d|#env:test                                     → app.latency d value=0.25 tags=[env:test]
+app.users:user-1|s|#env:test                                     → app.users s member=user-1 tags=[env:test]
+app.sampled:1|c|@0.5|#env:test                                   → app.sampled c value=1 rate=0.5 tags=[env:test]
+_e{6,10}:deploy|shipped v1|t:info|#env:test,service:web          → dropped (event)
+_sc|app.can_connect|0|#env:test,service:web                      → dropped (service check)
+app.batched:1|c|#i:0                                             → app.batched c value=1 tags=[i:0]
+app.batched:1|c|#i:1                                             → app.batched c value=1 tags=[i:1]
+app.batched:1|c|#i:2                                             → app.batched c value=1 tags=[i:2]
+app.batched:1|c|#i:3                                             → app.batched c value=1 tags=[i:3]
