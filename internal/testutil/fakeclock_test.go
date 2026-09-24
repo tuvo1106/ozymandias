@@ -67,6 +67,34 @@ func TestFakeClock_TickerDropsTicksWhenReceiverIsBehind(t *testing.T) {
 	assertEmpty(t, tk.C())
 }
 
+// A big Advance must cost the same as a small one. The catch-up loop used to
+// run once per period, so simulating a long retention window against a short
+// maintenance ticker took minutes of CPU to deliver a single tick.
+func TestFakeClock_AdvancingFarIsNotProportionalToTheSpan(t *testing.T) {
+	c := NewFakeClock(t0)
+	tk := c.NewTicker(time.Second)
+
+	start := time.Now()
+	c.Advance(10_000 * time.Hour) // 36 million periods
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Advance took %v; it is iterating per period, not skipping", elapsed)
+	}
+
+	// Semantics are unchanged: the first missed deadline is delivered, the
+	// rest are dropped, and the ticker is re-armed after the new Now.
+	if got := recv(t, tk.C()); !got.Equal(t0.Add(time.Second)) {
+		t.Errorf("tick = %v, want the first deadline %v", got, t0.Add(time.Second))
+	}
+	assertEmpty(t, tk.C())
+	if want := t0.Add(10_000 * time.Hour); !c.Now().Equal(want) {
+		t.Errorf("Now = %v, want %v", c.Now(), want)
+	}
+	c.Advance(time.Second)
+	if got := recv(t, tk.C()); !got.Equal(c.Now()) {
+		t.Errorf("tick after the skip = %v, want %v", got, c.Now())
+	}
+}
+
 func TestFakeClock_TickerStopAndReset(t *testing.T) {
 	c := NewFakeClock(t0)
 	tk := c.NewTicker(time.Second)

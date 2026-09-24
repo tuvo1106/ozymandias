@@ -32,6 +32,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`FakeClock.Advance` no longer costs one iteration per ticker period.** A
+  ticker left behind by a big `Advance` delivers its first missed deadline and
+  drops the rest — which the clock already did, one period at a time, re-sorting
+  its waiters on each. `TestDB_RetentionCanBeDisabled` advances 10,000 hours
+  against a 6s maintenance ticker and spent 249s of the `internal/tsdb/db`
+  package's 299s doing it. The package now runs in 42s, with no test removed and
+  no assertion changed.
 - `make test` now passes `-timeout 25m`. `internal/tsdb/db` costs ~5 minutes
   under `-race` locally and ran 600.06s on a CI runner, which Go's 10-minute
   default killed mid-test.

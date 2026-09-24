@@ -15,7 +15,10 @@ import (
 // deadline order, and moves Now to each deadline as it fires — so a component
 // that reads Now inside its tick handler sees the tick's time, as it would in
 // production. Delivery matches package time: channels hold one value and a
-// tick that finds the channel full is dropped, never queued.
+// tick that finds the channel full is dropped, never queued. A ticker left
+// several periods behind by one big Advance therefore delivers its first
+// missed deadline and nothing else, and the cost of the Advance does not grow
+// with the span skipped.
 //
 // A fired value only says the channel was written; the goroutine reading it
 // runs whenever the scheduler gets to it. Tests therefore assert on the
@@ -101,6 +104,19 @@ func (c *FakeClock) Set(t time.Time) {
 			c.now = next.when
 		}
 		next.fireLocked(next.when)
+		// fireLocked re-armed a ticker one period on. If that is still at or
+		// before t the ticker is behind, and every remaining fire would land
+		// in a channel already holding a value and be dropped — see
+		// TestFakeClock_TickerDropsTicksWhenReceiverIsBehind. Skip straight to
+		// the first deadline after t rather than looping once per period: the
+		// channel ends up holding the same value either way, and the loop was
+		// O(elapsed/period). Advancing 10,000 hours against a 6s ticker was
+		// six million iterations, each re-sorting the waiters — one test spent
+		// four minutes there, 83% of its package's runtime.
+		if next.period > 0 && !next.when.After(t) {
+			skip := t.Sub(next.when)/next.period + 1
+			next.when = next.when.Add(skip * next.period)
+		}
 	}
 	c.now = t
 }
