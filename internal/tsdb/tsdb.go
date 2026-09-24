@@ -179,12 +179,22 @@ func GlobMatch(pattern, s string) bool {
 }
 
 // Selector picks the series of one metric that satisfy every matcher.
+//
+// An empty Metric is deliberately unspecified, and the two stores read it
+// differently: [Selector.Matches] and the naive store take it literally, as a
+// metric whose name is "", so nothing matches; the TSDB's index reads it as
+// "no metric restriction", which is what a block cut needs in order to sweep
+// the whole head. Nothing can reach either behaviour from outside — the query
+// API rejects a request without a metric before a store sees it — so rather
+// than bend one of them to the other and lose the sweep, the case is named
+// here as the gap it is. The differential test excludes it for the same
+// reason, and the M2 notes record the decision.
 type Selector struct {
 	Metric   string
 	Matchers []Matcher
 }
 
-// Matches reports whether ref is selected.
+// Matches reports whether ref is selected. See [Selector] on the empty Metric.
 func (sel Selector) Matches(ref SeriesRef) bool {
 	if ref.Metric != sel.Metric {
 		return false
@@ -226,7 +236,10 @@ type StoreStats struct {
 //
 // Semantics every implementation must share (M2's differential tests hold
 // the TSDB to the naive store on exactly these):
-//   - A sample at an existing (series, T) replaces the old value.
+//   - Samples are append-only (ADR-0011). A sample newer than the series'
+//     newest is stored; one with the same T and the same V is a no-op, so an
+//     at-least-once retry is safe; anything else at or before the newest T is
+//     rejected and reported in AppendResult.Rejected.
 //   - Select returns series in Key order, samples in T order, both bounds
 //     inclusive, and only series with at least one sample in range.
 //   - MetricNames, TagKeys and TagValues are sorted ascending.
@@ -273,3 +286,22 @@ type sliceIter struct {
 func (it *sliceIter) Next() bool { it.i++; return it.i < len(it.samples) }
 func (it *sliceIter) At() Sample { return it.samples[it.i] }
 func (it *sliceIter) Err() error { return nil }
+
+// BlockOf returns the index of the block range t falls in, for a range of
+// rangeMs milliseconds.
+//
+// It exists so that the two places that decide a block boundary — where the
+// head cuts a chunk, and where the database cuts a block — cannot disagree.
+// They did: one used Go's division, which truncates toward zero, and the other
+// rounded toward negative infinity. For any timestamp before the unix epoch
+// the two land on different sides of zero, so a chunk could straddle the
+// boundary the cut used, and its older half would end up both in the new block
+// and still in the head. Pre-epoch timestamps are rare and entirely legal, and
+// a query that returns a sample twice is not a rounding detail.
+func BlockOf(t, rangeMs int64) int64 {
+	q := t / rangeMs
+	if (t%rangeMs != 0) && ((t < 0) != (rangeMs < 0)) {
+		q--
+	}
+	return q
+}

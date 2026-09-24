@@ -176,7 +176,7 @@ native agent too.
 Also ship `examples/cron-script.sh` (metric via `nc`, no SDK) into smoke — the
 first outside-in proof that the protocol is the interface.
 
-Per `docs/plan/integrations.md` §1 (M1 part): SDK vendored; `init` in
+Per `docs/private/integrations.md` §1 (M1 part): SDK vendored; `init` in
 `instrumentation.ts`; `http.request.count` + `http.request.duration` emitted
 from `logRequest()` in `src/lib/api.ts` with normalized `route`.
 

@@ -2,14 +2,16 @@
 
 An observability platform built from scratch as a learning project — agent, ingestion pipeline,
 time-series and log storage engines, distributed tracing, a query language, dashboards and
-alerting. Built to be app-agnostic; first used on [app-node](../app-node) (Node SDK),
-[app-python](../app-python) (Python SDK) and [app-ruby](../app-ruby) (Ruby — no SDK: Prometheus
-scrape, stdout logs, OpenTelemetry).
+alerting. Built to be app-agnostic: it is proved against three real applications covering the
+three adoption styles — a Next.js app on the Node SDK, a FastAPI service on the Python SDK, and
+a Rails API with no SDK at all (Prometheus scrape, stdout logs, stock OpenTelemetry).
 
-**Status: M1 (metrics tracer bullet).** Metrics flow end to end: an app sends extended StatsD over UDP,
-the agent aggregates into 10s buckets and forwards batched and gzipped, `ozyd` stores the
-points, and the Metrics Explorer graphs them. Logs, traces, monitors and the real TSDB are still
-ahead. The design as built is in [DESIGN.md](DESIGN.md), and the plan in [PLAN.md](PLAN.md).
+**Status: M2 part one (the TSDB).** Metrics flow end to end — an app sends extended StatsD over
+UDP, the agent aggregates into 10s buckets and forwards them batched and gzipped, and the
+Metrics Explorer graphs them — and `ozyd` now stores them in a storage engine written from
+scratch: a write-ahead log, Gorilla-compressed chunks, an inverted index, immutable blocks and
+leveled compaction. Sketches and percentiles are next, then logs, traces and monitors. The
+design as built is in [DESIGN.md](DESIGN.md), and the plan in [PLAN.md](PLAN.md).
 
 ```bash
 # no SDK required — the protocol is the interface
@@ -69,6 +71,15 @@ checks for what's staged, and every push runs `make ci`.
 - [docs/sdk/python.md](docs/sdk/python.md), [docs/sdk/node.md](docs/sdk/node.md) — the SDKs
 - [docs/benchmarks.md](docs/benchmarks.md) — measured numbers for the hot paths
 - [docs/notes/](docs/notes/) — what each milestone taught
+- [SECURITY.md](SECURITY.md) — what is in scope, and what is knowingly missing
+
+## Name
+
+Ramesses II, by way of Shelley. A monument in the desert with an inscription
+daring you to look on its works felt like the right name for a one-person
+clone of an observability platform. It was called something else while the repo
+was private; [ADR-0012](docs/adr/0012-public-repo-and-the-name.md) explains why
+it isn't any more.
 
 ## License
 

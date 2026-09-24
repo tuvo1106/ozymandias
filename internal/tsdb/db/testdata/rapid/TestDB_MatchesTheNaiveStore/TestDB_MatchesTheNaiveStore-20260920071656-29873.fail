@@ -1,0 +1,39 @@
+# 2026/09/20 07:16:56.587369 [TestDB_MatchesTheNaiveStore] [rapid] draw steps: 1
+# 2026/09/20 07:16:56.587398 [TestDB_MatchesTheNaiveStore] [rapid] draw op0: "append"
+# 2026/09/20 07:16:56.587400 [TestDB_MatchesTheNaiveStore] [rapid] draw entries0: 1
+# 2026/09/20 07:16:56.587401 [TestDB_MatchesTheNaiveStore] [rapid] draw metrice0_0: "a.count"
+# 2026/09/20 07:16:56.587404 [TestDB_MatchesTheNaiveStore] [rapid] draw tagse0_0: []string{"env:prod"}
+# 2026/09/20 07:16:56.587411 [TestDB_MatchesTheNaiveStore] [rapid] draw tse0_0: []int64{0}
+# 2026/09/20 07:16:56.587438 [TestDB_MatchesTheNaiveStore] [rapid] draw ve0_0: 0
+# 2026/09/20 07:16:56.587584 [TestDB_MatchesTheNaiveStore] [rapid] draw steps: 2
+# 2026/09/20 07:16:56.587586 [TestDB_MatchesTheNaiveStore] [rapid] draw op1: "metadata"
+# 2026/09/20 07:16:56.587651 [TestDB_MatchesTheNaiveStore] TagKeys(): tsdb [env], naive []
+# 
+v0.4.8#11012204273932771372
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x10000000000000
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x38e38e38e38e4
+0x2

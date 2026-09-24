@@ -9,7 +9,7 @@ app-node, app-python and app-ruby are the first users, not the only ones. app-ru
 
 ## Decision
 
-No code under `cmd/`, `internal/`, `pkg/`, `sdk/` or `web/src/` names a specific app, enforced by `scripts/check-no-app-coupling.sh` in `make lint`. App-specific material lives only in `deploy/agent.d/`, `deploy/dashboards/`, `deploy/monitors/`, `docs/plan/integrations.md` and the apps' own repos. An app's needs are met by generic mechanisms: conf.d fragments, container-label autodiscovery, OpenMetrics scraping, extended StatsD compatibility and OTLP.
+No code under `cmd/`, `internal/`, `pkg/`, `sdk/` or `web/src/` names a specific app, enforced by `scripts/check-no-app-coupling.sh` in `make lint`. App-specific material lives only in `deploy/agent.d/`, `deploy/dashboards/`, `deploy/monitors/`, `docs/private/integrations.md` and the apps' own repos. An app's needs are met by generic mechanisms: conf.d fragments, container-label autodiscovery, OpenMetrics scraping, extended StatsD compatibility and OTLP.
 
 ## Alternatives considered
 

@@ -22,9 +22,9 @@ commit-msg:
           exit 1
         fi
 
-# The hooks ARE the CI (ADR-0010): GitHub Actions is off while the repo is
-# private on the Free plan. pre-commit runs every fast gate on each commit;
-# pre-push runs the complete `make ci`. `--no-verify` skips them — don't,
+# The hooks are the fast gate (ADR-0013): pre-commit runs every quick check on
+# each commit, pre-push runs the complete `make ci`, and GitHub Actions re-runs
+# `make ci` on the PR as a backstop. `--no-verify` skips the local ones — don't,
 # except for a WIP commit you will fix before pushing.
 #
 # The gates check the working tree, not only what's staged: stash or commit

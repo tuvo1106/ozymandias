@@ -170,3 +170,77 @@ func TestNew_DefaultsDependencies(t *testing.T) {
 		t.Fatalf("defaults not applied: %+v, %v", s, err)
 	}
 }
+
+func TestNew_BothStoreEnginesServeTheSameRoundTrip(t *testing.T) {
+	// The config switch is only worth having if the two engines are
+	// interchangeable from outside. This is that claim at the HTTP layer,
+	// where the rest of ozymandias meets them.
+	body := `{"series":[{"metric":"http.request.count","type":"count","points":[[1758372000,3]],` +
+		`"tags":["env:prod"],"host":"h1","interval":10}]}`
+
+	for _, engine := range []string{"tsdb", "naive"} {
+		t.Run(engine, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.Storage.MetricStore = engine
+			s, err := New(cfg, Options{Logger: quiet})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = s.Close() }()
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest("POST", "/v1/series", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			s.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("intake returned %d: %s", rec.Code, rec.Body)
+			}
+
+			got := get(t, s.Handler(), "/api/v1/query?metric=http.request.count"+
+				"&from=1758371000&to=1758373000&aggregator=sum")
+			if got.Code != http.StatusOK {
+				t.Fatalf("query returned %d: %s", got.Code, got.Body)
+			}
+			if !strings.Contains(got.Body.String(), "3") {
+				t.Errorf("the point did not come back: %s", got.Body)
+			}
+			names := get(t, s.Handler(), "/api/v1/metrics")
+			if !strings.Contains(names.Body.String(), "http.request.count") {
+				t.Errorf("metric names: %s", names.Body)
+			}
+			tags := get(t, s.Handler(), "/api/v1/tags?metric=http.request.count")
+			if !strings.Contains(tags.Body.String(), "env") {
+				t.Errorf("tag keys: %s", tags.Body)
+			}
+		})
+	}
+}
+
+func TestNew_RejectsAnUnknownStoreEngine(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Storage.MetricStore = "postgres"
+	if err := cfg.Validate(); err == nil {
+		t.Error("an unknown metric_store passed validation")
+	}
+}
+
+func TestNew_TSDBPublishesItsOwnCounters(t *testing.T) {
+	cfg := testConfig(t)
+	s, err := New(cfg, Options{Logger: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	vars := get(t, s.Handler(), "/debug/vars").Body.String()
+	// The rejection counters especially: a drop nobody can see is the failure
+	// mode this whole store is written to avoid.
+	for _, want := range []string{
+		"ozy.tsdb.ooo_rejected", "ozy.tsdb.series_limit_rejected",
+		"ozy.tsdb.blocks", "ozy.tsdb.disk_bytes", "store:tsdb",
+	} {
+		if !strings.Contains(vars, want) {
+			t.Errorf("%s is not published", want)
+		}
+	}
+}

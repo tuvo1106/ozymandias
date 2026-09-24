@@ -12,7 +12,7 @@
   },
   "keywords": [
     "statsd",
-    "statsd",
+    "tagged-statsd",
     "metrics",
     "observability",
     "ozy"

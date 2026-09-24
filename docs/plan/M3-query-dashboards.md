@@ -180,12 +180,12 @@ straight to the forwarder as gauges/rates (bypassing statsd aggregation).
   forwarder queue bytes/retries/drops, collector durations.
 
 ## 4. Integrate app-python (metrics)
-Per `docs/plan/integrations.md` §2 (M3 part): vendored wheel, `ozy.init`
+Per `docs/private/integrations.md` §2 (M3 part): vendored wheel, `ozy.init`
 in api + worker, ASGI metrics middleware, queue/judge/business metrics,
 compose override. Ship `deploy/dashboards/app-python.json` and
 `deploy/dashboards/app-node.json` and `deploy/dashboards/ozymandias-self.json`.
 
-**app-ruby (integrations.md §3):** onboarded with a compose override + labels
+**app-ruby (docs/private/integrations.md §3):** onboarded with a compose override + labels
 only — the openmetrics check scrapes its existing yabeda `/metrics` on api and
 worker. Ship `deploy/agent.d/app-ruby.yaml` and `deploy/dashboards/app-ruby.json`.
 Add metricql functions `diff()` (for running-total gauges) and

@@ -150,9 +150,7 @@ def resolve_config(
         debug = environ.get("OZY_DEBUG", "").strip().lower() in _TRUTHY
 
     return Config(
-        agent_host=(
-            agent_host if agent_host is not None else _env_str(environ, "OZY_AGENT_HOST")
-        )
+        agent_host=(agent_host if agent_host is not None else _env_str(environ, "OZY_AGENT_HOST"))
         or None,
         statsd_port=(
             statsd_port

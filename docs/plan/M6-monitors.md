@@ -123,7 +123,7 @@ transitions); a triggered-monitors badge in the nav.
   API 5xx rate > 2%; `logs("service:app-python-worker status:error").rollup("count").last("5m") > 5`;
   judge sandbox OOM exits > 0; worker no-data (heartbeat metric absent 3m).
 - app-node: 5xx count > 0 over 10m; `data/` disk usage gauge > 80%
-  (emitted by a tiny SDK gauge on a timer — see integrations.md);
+  (emitted by a tiny SDK gauge on a timer — see docs/private/integrations.md);
   Metron `burstRemaining` < 3 (from its existing log field via a log monitor
   or a gauge).
 - app-ruby (all on scraped metrics): queue depth high for 5m; small-order p90 wait above its §10.4 target; `diff(app-ruby.quality_breaches)` > 0 over 15m; ETA bias drifting positive; Sidekiq queue latency; `openmetrics.up` = 0 (scrape failing).

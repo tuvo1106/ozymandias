@@ -14,7 +14,7 @@ adds buffering, sampling, global tags and a guarantee that it cannot hurt the ho
 
 | Method | Command | Status |
 |---|---|---|
-| npm registry | `npm install ozymandias` | Not published yet: the project is private ([ADR-0007](../adr/0007-sdk-distribution-vendored.md)). Before a first publish, check that the name is free and fall back to a scoped name if not. |
+| npm registry | `npm install @tuvo1106/ozy` | Not published yet: the SDK is pre-1.0 ([ADR-0014](../adr/0014-sdk-distribution-after-going-public.md)). The bare name `ozy` is taken on npm, so a first publish uses the scoped name. |
 | Git | — | npm can't install a package from a subdirectory of a git repo, so build a tarball instead. |
 | Built tarball | `cd sdk/node && npm ci && npm pack`, then `npm install ./path/to/ozy-0.1.0.tgz` in the app | **The supported method today.** `npm pack` runs the build through `prepack`. |
 

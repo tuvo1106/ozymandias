@@ -181,7 +181,7 @@ live-tail toggle with pause-on-scroll, column chooser, saved views
 (localStorage). A `trace_id` attr renders as a link (dead until M5).
 
 ## 7. Integrations
-Per `docs/plan/integrations.md` (M4 parts): compose bind-mount of app-node's
+Per `docs/private/integrations.md` (M4 parts): compose bind-mount of app-node's
 log dir; app-python opt-in JSON log formatter from the Python SDK
 (`ozy.integrations.logging.JSONFormatter`) wired in api + worker when
 ozymandias is enabled.

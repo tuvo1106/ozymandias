@@ -1,0 +1,15 @@
+{
+  "ulid": "01M2ZAZZG0STH7N5QD3X1R9JM9",
+  "version": 1,
+  "minTime": 1600000000000,
+  "maxTime": 1600000040000,
+  "stats": {
+    "series": 3,
+    "samples": 15,
+    "chunks": 3
+  },
+  "compaction": {
+    "level": 0
+  },
+  "resolution_s": 0
+}

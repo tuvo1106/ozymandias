@@ -7,7 +7,7 @@ Instrumented apps:
 
 - `../app-node` — Next.js 16 + SQLite (better-sqlite3/Drizzle), single
   process, winston JSON logs to `data/logs/%DATE%.log`, runs on the host on :3939.
-- `../app-python` — FastAPI api + arq worker (launches Docker judge sandboxes)
+- `../app-python` — FastAPI api + arq worker (launches Docker sandbox jobs)
   + Postgres + Redis behind Caddy, docker-compose (and a k8s/KEDA path).
 - `../app-ruby` — Rails 8.1 API + Sidekiq + Postgres + Redis + React, compose
   and a kind k8s cluster; already exports Prometheus metrics (yabeda) with a
@@ -26,7 +26,7 @@ Together they cover the three adoption styles: Node SDK, Python SDK, no SDK.
 5. [`docs/plan/extensibility.md`](docs/plan/extensibility.md) — how apps ozymandias has never heard of plug in; extension points; stability rules; M8. Binding on every milestone.
 6. [`docs/wire-protocol.md`](docs/wire-protocol.md) — every payload on every hop. Normative.
 7. `docs/plan/M<n>-*.md` — one spec per milestone: tasks, interfaces, formats, test plan, docs deliverables, acceptance criteria.
-8. [`docs/plan/integrations.md`](docs/plan/integrations.md) — exactly where the three apps get touched.
+8. `docs/private/integrations.md` (gitignored) — exactly where the three apps get touched.
 9. [`docs/plan/ui.md`](docs/plan/ui.md) — the end-state web UI: pages, the dashboard/widget system, shipped dashboards.
 
 ---
@@ -38,7 +38,7 @@ Together they cover the three adoption styles: Node SDK, Python SDK, no SDK.
 | Backend language | Go (latest stable) | What Prometheus, Loki and production observability agents use — their source is the reference material. Good at UDP servers, byte-level storage, single-binary agent. |
 | Wire protocol | Own protocol + own SDKs (Python, Node) | Writing the client side is where you learn what an SDK does (buffering, context propagation, patching). OTLP receiver is a stretch goal. |
 | Deployment | Local docker-compose | No auth / TLS / multi-tenancy until M7. |
-| Repo visibility | **Private for now** | No CODE_OF_CONDUCT / SECURITY yet; still built as if public (no secrets, ever). Note app-ruby *is* public — anything committed there is world-readable. |
+| Repo visibility | **Public** (ADR-0012) | Built as if public from the start (no secrets, ever); `SECURITY.md` and `CODE_OF_CONDUCT.md` ship with it. App-integration detail that names the owner's private apps stays in a gitignored `docs/private/`. |
 | Scope | Metrics, logs, traces, query+dashboards+monitors, storage engines from scratch | All four, ordered as vertical slices. |
 | Process shape | Two binaries: `agent`, `ozyd` (modular monolith) | Hard internal seams (`MetricStore`, `LogStore`, `TraceStore`); M7 cuts intake from storage with a queue. |
 | TSDB | From scratch (WAL, Gorilla chunks, inverted index, blocks, compaction) | The core storage-engine exercise. |
@@ -170,10 +170,11 @@ KEDA path.
 
 - Go module path: `github.com/tuvo1106/ozymandias`.
 - SDK distribution: **vendored artifacts** copied into the apps for now.
-- **Private project for now**: nothing is published to PyPI/npm, so package-name
-  availability is moot. SDKs are still *built* as publishable packages
-  (extensibility.md §5); M8's publishing pipeline stays a CI dry-run until the
-  owner decides to go public.
+- **Nothing is published to PyPI/npm yet** (ADR-0014): the SDKs are pre-1.0 and
+  the apps consume vendored artifacts. They are still *built* as publishable
+  packages (extensibility.md §5); M8's publishing pipeline stays a CI dry-run
+  until the SDK API is stable. `ozy` is free on PyPI; on npm it is taken, so a
+  first publish there uses the scoped name `@tuvo1106/ozy`.
 
 **Recommended defaults — proceed with these unless the owner says otherwise**
 

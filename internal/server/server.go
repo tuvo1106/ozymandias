@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/api"
@@ -20,6 +21,8 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/meta"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
+	"github.com/tuvo1106/ozymandias/internal/tsdb/db"
+	"github.com/tuvo1106/ozymandias/internal/tsdb/head"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/naive"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
@@ -34,8 +37,12 @@ const selfReportInterval = 10 * time.Second
 
 // Files under data_dir.
 const (
-	metaFile    = "meta.db"
-	metricsFile = "metrics-naive.db" // replaced by the M2 TSDB directory
+	metaFile = "meta.db"
+	// naiveFile is the M1 SQLite store, still selectable with
+	// storage.metric_store: naive.
+	naiveFile = "metrics-naive.db"
+	// tsdbDir holds the real store's wal/ and blocks/.
+	tsdbDir = "tsdb"
 )
 
 // Options carries the server's dependencies. Zero values get sensible
@@ -92,7 +99,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("data_dir: %w", err)
 	}
-	store, err := naive.Open(filepath.Join(cfg.DataDir, metricsFile))
+	store, engine, err := openStore(cfg, opts)
 	if err != nil {
 		_ = md.Close()
 		return nil, fmt.Errorf("data_dir: %w", err)
@@ -111,8 +118,9 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	s.reg.GaugeFunc("ozy.process.uptime_seconds", func() float64 {
 		return s.clock.Now().Sub(s.started).Seconds()
 	}, "component:"+Component)
-	s.reg.GaugeFunc("ozy.store.series", func() float64 { return float64(store.Stats().Series) }, "store:naive")
-	s.reg.GaugeFunc("ozy.store.samples", func() float64 { return float64(store.Stats().Samples) }, "store:naive")
+	s.reg.GaugeFunc("ozy.store.series", func() float64 { return float64(store.Stats().Series) }, "store:"+engine)
+	s.reg.GaugeFunc("ozy.store.samples", func() float64 { return float64(store.Stats().Samples) }, "store:"+engine)
+	s.registerStoreMetrics(engine)
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", httpserve.Health(Component, s.started, s.clock.Now, nil))
@@ -124,6 +132,73 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	}
 	s.handler = httpserve.Instrument(s.reg, Component, mux)
 	return s, nil
+}
+
+// openStore builds the metric store the config asks for.
+//
+// Both engines are kept because they check each other: the naive store is the
+// oracle M2's differential tests hold the TSDB to, and leaving it reachable
+// from config means an operator hitting a storage bug has somewhere to stand
+// while it is fixed.
+func openStore(cfg config.Ozyd, opts Options) (tsdb.MetricStore, string, error) {
+	switch cfg.Storage.MetricStore {
+	case "naive":
+		store, err := naive.Open(filepath.Join(cfg.DataDir, naiveFile))
+		return store, "naive", err
+	default:
+		store, err := db.Open(db.Options{
+			Dir:                filepath.Join(cfg.DataDir, tsdbDir),
+			BlockRange:         cfg.Storage.BlockRange,
+			Retention:          cfg.Storage.Retention,
+			MaxBytes:           cfg.Storage.MaxBytes,
+			MaxBlockRange:      cfg.Storage.MaxBlockRange,
+			MaxSeriesPerMetric: cfg.Storage.MaxSeriesPerMetric,
+			SyncOnAppend:       cfg.Storage.WALSyncOnAppend,
+			SyncInterval:       cfg.Storage.WALSyncInterval,
+			Clock:              opts.Clock,
+			Logger:             opts.Logger.With("component", "tsdb"),
+		})
+		return store, "tsdb", err
+	}
+}
+
+// registerStoreMetrics publishes the counters only the real TSDB has: what it
+// refused, and what it is costing on disk. A rejection that is not visible is
+// indistinguishable from data that never arrived.
+func (s *Server) registerStoreMetrics(engine string) {
+	real, ok := s.store.(*db.DB)
+	if !ok {
+		return
+	}
+	tag := "store:" + engine
+	// HeadStats walks every series and every chunk and allocates a slice the
+	// size of the id map, so one call per gauge is one walk per gauge: six per
+	// scrape once store.Stats() is counted, on a structure with a hundred
+	// thousand series in it. They are all read at the same instant anyway, so
+	// they share one.
+	head := cachedHeadStats(real, s.clock)
+	s.reg.GaugeFunc("ozy.tsdb.head.series", func() float64 {
+		return float64(head().Series)
+	}, tag)
+	s.reg.GaugeFunc("ozy.tsdb.head.chunks", func() float64 {
+		return float64(head().Chunks)
+	}, tag)
+	s.reg.GaugeFunc("ozy.tsdb.ooo_rejected", func() float64 {
+		return float64(head().OOORejected)
+	}, tag)
+	s.reg.GaugeFunc("ozy.tsdb.series_limit_rejected", func() float64 {
+		return float64(head().LimitRejects)
+	}, tag)
+	s.reg.GaugeFunc("ozy.tsdb.blocks", func() float64 {
+		return float64(len(real.Blocks()))
+	}, tag)
+	s.reg.GaugeFunc("ozy.tsdb.disk_bytes", func() float64 {
+		n, err := real.DiskUsage()
+		if err != nil {
+			return 0
+		}
+		return float64(n)
+	}, tag)
 }
 
 // Handler returns the server's full HTTP handler, for in-process tests.
@@ -185,3 +260,28 @@ func (s *Server) reportSelf(ctx context.Context) {
 		}
 	}
 }
+
+// cachedHeadStats returns a function that walks the head at most once per
+// headStatsTTL, so the gauges built on it cost one walk between them rather
+// than one each. The staleness is bounded by a fraction of the scrape
+// interval, and these are gauges describing a structure that changes
+// continuously — reading them a moment apart was never going to be atomic.
+func cachedHeadStats(real *db.DB, c clock.Clock) func() head.Stats {
+	var (
+		mu   sync.Mutex
+		at   time.Time
+		last head.Stats
+	)
+	return func() head.Stats {
+		mu.Lock()
+		defer mu.Unlock()
+		if now := c.Now(); now.Sub(at) > headStatsTTL {
+			last, at = real.HeadStats(), now
+		}
+		return last
+	}
+}
+
+// headStatsTTL is short enough that a scrape never sees a previous scrape's
+// numbers, and long enough that one scrape's gauges share a walk.
+const headStatsTTL = 250 * time.Millisecond

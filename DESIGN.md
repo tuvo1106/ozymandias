@@ -5,10 +5,10 @@ say what is planned; this file describes what exists. It grows with every
 milestone, and a section still waiting for its milestone says so. Decisions
 and the alternatives they beat are in [docs/adr/](docs/adr/).
 
-**Status: M1 (metrics tracer bullet).** One metric type flows end to end: a
+**Status: M2 (the real TSDB).** One metric type flows end to end: a
 statsd counter from an app reaches the agent, is aggregated, forwarded, stored
-and queried back through the UI. Logs, traces, monitors and the real TSDB are
-still ahead.
+and queried back through the UI — now through a real storage engine (§11)
+rather than a row per sample. Logs, traces and monitors are still ahead.
 
 ---
 
@@ -206,7 +206,7 @@ flowchart TB
     subgraph dd["ozyd"]
         IN["intake POST /v1/series<br/>decode · validate · per-series reject"]
         META[("meta.db<br/>metric → type")]
-        ST[("MetricStore<br/>naive SQLite (M1)")]
+        ST[("MetricStore<br/>TSDB (M2) · see §11")]
         QRY["query /api/v1/query<br/>bucket · group · aggregate"]
     end
 
@@ -305,8 +305,82 @@ real agent exists at all.
 The flush is driven by a `Clock` interface, so every one of these rules is
 tested by advancing a fake clock rather than by sleeping.
 
+## 11. Metric storage engine
+
+`storage.metric_store` chooses between two implementations of one interface.
+`naive` is M1's SQLite store — one row per sample — kept as the oracle the real
+engine's differential tests are held to. `tsdb` is the default and the subject
+of this section.
+
+```mermaid
+flowchart TB
+    AP["Append(batch)"]
+
+    subgraph mem["in memory"]
+        HEAD["head — one commit lock, 256 read stripes<br/>memSeries → gorilla chunks<br/>cut at 120 samples or a range boundary"]
+        IDX["MemPostings<br/>(key,value) → sorted series ids"]
+    end
+
+    subgraph disk["on disk — data_dir/tsdb/"]
+        WAL[("wal/%08d.wal<br/>len | type | crc32c | payload")]
+        B1[("blocks/&lt;ULID&gt;/<br/>meta.json · chunks.dat · index.dat")]
+        B2[("blocks/&lt;ULID&gt;/ …")]
+    end
+
+    AP -- "1. log, then fsync" --> WAL
+    AP -- "2. only then, make visible" --> HEAD
+    HEAD --- IDX
+    HEAD -- "cut at 1.5× range:<br/>write · publish · GC head · truncate log" --> B1
+    B1 & B2 -- "3 of a level → 1 of the next" --> CMP["compaction<br/>re-encode to full chunks"]
+    CMP --> B3[("blocks/&lt;ULID&gt;/ level 1")]
+
+    QQ["Select(sel, from, to)"] --> MERGE["merge the overlapping sources"]
+    MERGE --> HEAD & B1 & B2
+```
+
+Three ideas carry it, and each is a trade someone else made first.
+
+1. **The log is for durability, the head is for reading, blocks are for both.**
+   A write is appended to the log and fsynced *before* it becomes visible, so
+   nothing can be read that would not survive a crash. The head is what makes
+   it queryable, and is lost on a crash — replay is how it comes back. Blocks
+   are written only in large batches, because that is the only way to produce a
+   file that is compact, indexed and immutable.
+
+   Resolving a series, logging it and applying the sample are one critical
+   section, so appends to the head are serial. That is what makes the log's
+   order the head's order — replay must reconstruct what was visible, not
+   something else — and what keeps a block cut from forgetting a series an
+   appender is still holding. An fsync inside that section costs four orders of
+   magnitude more than the lock, so the throughput lever is batch size, not
+   concurrency; `docs/notes/M2.md` has the measurements and the three bugs that
+   established the rule.
+
+2. **Compression is delta-of-delta on time, XOR on value** (Facebook's Gorilla,
+   `internal/tsdb/chunkenc`). Samples arrive at a fixed interval and change
+   slowly, so the second difference of the timestamp is almost always zero —
+   one bit — and consecutive float64s usually share their leading bits. A chunk
+   is a bitstream, not an array, which is why it is append-only and why
+   ADR-0011 exists.
+
+3. **Immutability buys away the hard problems.** A block is never edited: any
+   number of concurrent readers with no locking on the data, checksums computed
+   once and trusted forever. Compaction does not modify blocks either — it
+   writes a new one and deletes the sources. The head is the only mutable data
+   in the store. The one piece of bookkeeping a block does keep is a count of
+   its readers, so that compaction closing a block it has just replaced cannot
+   pull the file out from under a query that is still reading it.
+
+The consequences worth knowing before operating it are in
+[docs/operations.md](docs/operations.md): backfill is refused, retention
+deletes whole blocks, and `ozy.tsdb.ooo_rejected` is the number that says
+data is being dropped.
+
+Formats are specified byte by byte in [docs/formats/](docs/formats/), and the
+reasoning behind each package is in its `doc.go`.
+
 ---
 
-*Sections added by later milestones: TSDB internals (M2), query pipeline (M3),
+*Sections added by later milestones: query pipeline (M3),
 log path (M4), traces (M5), monitors (M6), the queued pipeline (M7),
 OTLP (M8).*

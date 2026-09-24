@@ -138,8 +138,8 @@ milestone) so regressions are visible.
 
 ## 4. The gate: git hooks (no remote CI)
 
-GitHub Actions is off (ADR-0010). The repo is private and the Free plan's
-minutes are used up by other repos. **The git hooks are the CI:**
+**The git hooks are the fast gate** (ADR-0013), and GitHub Actions re-runs
+`make ci` on every PR as the backstop:
 
 | Hook | Runs | Typical cost |
 |---|---|---|
@@ -147,11 +147,11 @@ minutes are used up by other repos. **The git hooks are the CI:**
 | pre-push | `make ci`: everything, over the whole tree, plus web coverage thresholds and a 10 s-per-target fuzz pass | tens of seconds |
 | by hand | `make smoke` (L9), `make fuzz-long` (L4), the crash loop (L5, from M2) | per milestone |
 
-The PR description carries the evidence: `make ci` output, plus `make smoke`
-when runtime behaviour changed. The one-job workflow in
-`.github/workflows/ci.yml` stays for manual runs. Restore its `pull_request`
-trigger if minutes ever become available, and move smoke, the crash loop and
-fuzz back into it.
+The PR description still carries the evidence: `make ci` output, plus
+`make smoke` when runtime behaviour changed. The one-job workflow in
+`.github/workflows/ci.yml` runs on every pull request. Smoke, the crash loop
+and `fuzz-long` stay out of it — they need the compose stack or minutes of
+wall clock, and they are run by hand per milestone.
 
 Every milestone spec has a **Test plan** section naming the concrete tests
 required at each layer. A milestone is not done until those tests exist and pass.
