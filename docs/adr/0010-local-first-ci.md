@@ -1,6 +1,6 @@
 # ADR-0010: Git hooks are the CI; GitHub Actions is manual-only
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0013
 - **Date:** 2026-09-19
 
 ## Context

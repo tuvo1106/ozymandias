@@ -91,6 +91,75 @@ ozyd's state from M1 on. The container runs as the distroless `nonroot`
 user (uid 65532). The image creates `/data` with that owner, so a fresh named
 volume is writable. A bind mount must be writable by uid 65532.
 
+## Metric storage
+
+`storage.metric_store` picks the engine. The default is `tsdb`, the real one
+(M2): a write-ahead log, an in-memory head, and immutable blocks under
+`data_dir/tsdb/`. `naive` selects the M1 SQLite store in
+`data_dir/metrics-naive.db`, kept because it is the oracle the TSDB's
+differential tests are held to — and because an operator who hits a storage
+bug needs somewhere to stand while it is fixed. The two are interchangeable
+through the API; nothing above the store can tell them apart.
+
+| Setting | Default | What it controls |
+|---|---|---|
+| `storage.metric_store` | `tsdb` | `tsdb` or `naive` |
+| `storage.block_range` | `2h` | Time one block covers. See the warning below |
+| `storage.retention` | `360h` (15d) | Blocks whose newest sample is older are deleted. Negative keeps everything |
+| `storage.max_bytes` | `0` | Disk cap; oldest blocks deleted when exceeded. 0 disables |
+| `storage.max_block_range` | `54h` | Widest a compacted block may become |
+| `storage.max_series_per_metric` | `10000` | Cardinality limit per metric name |
+| `storage.wal_sync_on_append` | `true` | fsync the log before acknowledging an intake request |
+| `storage.wal_sync_interval` | `100ms` | Group-commit period when the above is off |
+
+Each has a `OZY_STORAGE_*` environment override, e.g.
+`OZY_STORAGE_BLOCK_RANGE=10s`.
+
+### Backfill is rejected, and `block_range` decides how much
+
+Samples are append-only (ADR-0011). Once a time range has been written to a
+block, a sample inside it is refused with *"older than the oldest writable
+block range"* and counted in `ozy.tsdb.ooo_rejected`.
+
+How far back you can write is therefore roughly `1.5 x block_range` behind the
+newest sample **of that series**. With the 2h default that is three hours of
+slack, which no normal agent comes close to needing. With a short range it
+bites immediately — a `block_range` of `10s` rejects anything more than about
+fifteen seconds old, including a backfill script's first request.
+
+**Found the hard way:** testing with `block_range: 10s`, ozyd's own
+self-metrics (reported every 10s) kept the head moving, so blocks were cut
+continuously and a one-off POST of two-minute-old points was half rejected.
+Nothing was wrong; the store was doing what it says. Use the default range
+unless you are deliberately exercising the cut path.
+
+### What to watch
+
+`/debug/vars` publishes, tagged `store:tsdb`:
+
+| Metric | Why you care |
+|---|---|
+| `ozy.tsdb.ooo_rejected` | Samples refused as out of order or out of bounds. **Non-zero means data is being dropped** — a clock skew, a backfill, or a `block_range` too short |
+| `ozy.tsdb.series_limit_rejected` | A metric hit `max_series_per_metric`. Almost always a tag carrying an unbounded value |
+| `ozy.tsdb.head.series` / `.head.chunks` | The in-memory window. Grows until a block is cut, then drops |
+| `ozy.tsdb.blocks` | Open blocks. Should fall when compaction runs |
+| `ozy.tsdb.disk_bytes` | Total on disk, including the log |
+
+### Recovering from a corrupt block
+
+A block that fails its checksum stops startup, loudly, naming the directory:
+serving a database with a silent hole in it is worse than not starting. The
+data in that block is gone; the rest is fine. Move the directory aside and
+restart:
+
+```
+mv data/ozyd/tsdb/blocks/<ULID> /tmp/
+```
+
+A directory with no `meta.json`, or one ending in `.tmp`, is the wreckage of an
+interrupted write and is deleted automatically at startup — those are expected
+after a hard kill and need no action.
+
 ## Colima: UDP from the Mac doesn't reach containers
 
 **Symptom (from M1):** a process on the Mac, such as `npm run dev` for

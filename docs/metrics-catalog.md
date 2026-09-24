@@ -4,7 +4,7 @@ Every metric ozymandias emits about itself, and, from M1, every metric the
 instrumented apps' integrations emit. `scripts/check-docs.sh` fails CI if a
 metric registered in ozymandias's code is missing here.
 
-Conventions ([integrations.md §4](plan/integrations.md#4-metric-naming-conventions-sdk-emitted-metrics)):
+Conventions (`docs/private/integrations.md` §4):
 names are `lower.dotted`, units go in this table rather than in the name, and
 tags come from bounded sets only.
 
@@ -45,3 +45,9 @@ interval's increase.
 | `ozy.intake.points_accepted` | counter | points | — | ozyd | Points stored |
 | `ozy.store.series` | gauge | series | `store` | ozyd | Series in the metric store |
 | `ozy.store.samples` | gauge | samples | `store` | ozyd | Samples in the metric store |
+| `ozy.tsdb.head.series` | gauge | series | `store` | ozyd | Series in the in-memory head (not yet in a block) |
+| `ozy.tsdb.head.chunks` | gauge | chunks | `store` | ozyd | Live chunks in the head; grows until a block is cut |
+| `ozy.tsdb.ooo_rejected` | gauge | samples | `store` | ozyd | **Samples dropped** as out of order or older than the oldest writable block range. Non-zero means data is being lost — see `docs/operations.md` |
+| `ozy.tsdb.series_limit_rejected` | gauge | series | `store` | ozyd | Series refused because a metric hit `max_series_per_metric` |
+| `ozy.tsdb.blocks` | gauge | blocks | `store` | ozyd | Immutable blocks on disk; falls when compaction runs |
+| `ozy.tsdb.disk_bytes` | gauge | bytes | `store` | ozyd | Total size of the store on disk, log included |

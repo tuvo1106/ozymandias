@@ -14,7 +14,8 @@ fork safety and failure isolation.
 
 ## Install
 
-The package is not on PyPI yet. The repository is private and the name has not been claimed
+The package is not on PyPI yet — the SDK is pre-1.0 (ADR-0014). The name `ozy`
+is free there and will be claimed at the first publish
 ([extensibility.md](../plan/extensibility.md) §5). There are three ways to install it:
 
 | From | Command |

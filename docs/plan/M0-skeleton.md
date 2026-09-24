@@ -15,7 +15,7 @@ never retrofitted).
    `.gitignore`; fill the placeholder in `lefthook.yml`'s `pre-commit` with
    `gofmt`/`golangci-lint`, `ruff`, `eslint` on staged files (keep the
    `conventional-commit` and `no-secrets` hooks untouched); add `.env.example`.
-   The repo is **private for now** (owner decision) → skip
+   The repo is **public** (ADR-0012) → skip
    `CODE_OF_CONDUCT.md` / `SECURITY.md` (template usage step 3); add them if
    it goes public. The no-secrets posture applies regardless.
 2. `go mod init github.com/tuvo1106/ozymandias`. Create the package tree from PLAN.md §5 with a `doc.go` in each

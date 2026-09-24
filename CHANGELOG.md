@@ -7,7 +7,56 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The project is now `ozymandias`, and the repo is public** (ADR-0012). The
+  working name it carried while the repo was private was a pun on a commercial
+  product — not a name to publish under. Everything typed uses the short token
+  `ozy`: binaries
+  `ozyd` and `agent`, env prefixes `OZY_` and `OZY_AGENT_`, self-metrics `ozy.*`,
+  wire headers `X-Ozy-*`, SDK packages `ozy`, config at `/etc/ozy`, data at
+  `./data/ozyd`. **Breaking for every existing deployment:** re-create the config
+  from `deploy/ozyd.yaml` and `deploy/agent.yaml`.
+- **Block magic changed** from `DDCH`/`DDIX` to `OZCH`/`OZIX`. Blocks written by
+  the old name cannot be read; there is no migration, by choice.
+- **The wire dialect is described as "extended StatsD"** rather than by the
+  vendor name for the same grammar. The protocol is unchanged and the
+  compatibility captures from `datadogpy` and `hot-shots` still pass.
+- **GitHub Actions runs `make ci` on every pull request** (ADR-0013, supersedes
+  ADR-0010) now that public-repo minutes are free. The git hooks remain the fast
+  gate.
+- **The SDKs stay vendored** (ADR-0014, supersedes ADR-0007) — now because they
+  are pre-1.0, not because the repo is private. Git install is documented for
+  Python; a first publish would use PyPI `ozy` and npm `@tuvo1106/ozy`.
+
 ### Added
+
+- `SECURITY.md` and `CODE_OF_CONDUCT.md`.
+
+- **Samples are append-only** (ADR-0011). A sample at or before a series' newest timestamp is
+  rejected and reported in `AppendResult.Rejected` instead of overwriting it; an exact repeat
+  of the newest sample stays a no-op, so at-least-once agent retries are still safe. The naive
+  SQLite store previously did last-write-wins and now matches, because the M2 TSDB stores
+  samples in append-only Gorilla chunks and physically cannot overwrite one.
+
+### Added
+
+- **The real TSDB (M2).** Gorilla-compressed chunks, a segmented write-ahead log, an
+  inverted index, an in-memory head, immutable on-disk blocks and leveled compaction, tied
+  together by `internal/tsdb/db` behind the existing `MetricStore` interface. It is now the
+  default metric store; `storage.metric_store: naive` selects the M1 SQLite store, which is
+  kept as the differential-test oracle and as an escape hatch.
+- `storage.*` configuration: block range, retention, disk cap, cardinality limit and WAL
+  sync policy, each with a `OZY_STORAGE_*` override (see `docs/operations.md`).
+- `ozy.tsdb.*` self-metrics: rejected samples, head size, block count and disk usage.
+- A 50-iteration crash loop (real `SIGKILL`s of a child process), a 72-hour fake-clock
+  lifecycle test, a concurrency stress test, format goldens and fuzz targets for the chunk
+  and WAL decoders. Between those and three rounds of code review they found nine ways an
+  acknowledged sample could be lost, two ways disk could leak, one way a metadata query
+  could kill the process and one way shutdown could panic; all are fixed, and none ever
+  shipped. See `docs/notes/M2.md`.
+- `wal.Repair`, run before the log is opened for writing: a torn tail is now removed rather
+  than left for the next append to queue up behind.
 
 - **Metrics, end to end (M1).** An extended StatsD counter sent from an app is aggregated by the
   agent, forwarded to `ozyd`, stored, and queried back through the UI.

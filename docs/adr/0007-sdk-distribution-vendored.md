@@ -1,6 +1,6 @@
 # ADR-0007: Distribute SDKs as vendored build artifacts for now
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0014
 - **Date:** 2026-09-19
 
 ## Context

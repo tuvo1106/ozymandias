@@ -40,3 +40,8 @@ sdk/**/dist/
 # Packed SDK artifacts staged by scripts/release-sdk.sh before they are copied
 # into the apps' vendor dirs.
 /dist/
+
+# App-integration detail that names the owner's private apps. Kept out of this
+# public repo on purpose (ADR-0012); the archive of record is the original
+# private repo.
+docs/private/

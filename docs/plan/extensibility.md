@@ -3,7 +3,7 @@
 app-node, app-python and app-ruby are the *first* users, not the only ones.
 app-ruby (Ruby — no ozymandias SDK) is the standing real-world test of this doc:
 it is onboarded with configuration, container labels and a stock OpenTelemetry
-SDK only (`integrations.md` §3). ozymandias
+SDK only (`docs/private/integrations.md` §3). ozymandias
 must be adoptable by an app it has never heard of — in a language it has no SDK
 for — without changing ozymandias's code. This doc is binding in the same way as
 `testing.md` and `documentation.md`.
@@ -16,7 +16,7 @@ for — without changing ozymandias's code. This doc is binding in the same way 
    for it (`scripts/check-no-app-coupling.sh`).
    App-specific material lives only in: `deploy/dashboards/<app>.json`,
    `deploy/monitors/<app>.json`, `deploy/agent.d/<app>.yaml`,
-   `docs/plan/integrations.md`, and the apps' own repos.
+   `docs/private/integrations.md`, and the apps' own repos.
 2. **Behaviour an app needs is configuration, not a code branch.** E.g. the
    `judge-*` container-name rewrite (M3) and the `token=` redaction (M4) are
    generic, configurable rules that ship in `deploy/agent.d/app-python.yaml` —
@@ -100,8 +100,9 @@ metadata, README, LICENSE, type hints/`.d.ts`, no path assumptions. Vendoring
 into the owner's two apps is just one install method; `docs/sdk/*.md` documents
 install from a registry, from git (`pip install "git+https://…#subdirectory=sdk/python"`),
 and from a built artifact. `scripts/release-sdk.sh` takes target directories as
-arguments; nothing in it names an app. (Private for now, so nothing is published; before any first publish, check PyPI/npm name availability for
-`ozymandias` before first publish; fall back to a scoped npm name.)
+arguments; nothing in it names an app. (Nothing is published yet — ADR-0014.
+`ozy` is free on PyPI; on npm it is taken, so a first publish there uses the
+scoped name `@tuvo1106/ozy`.)
 
 ## 6. Onboarding a new app — the acceptance test for this whole doc
 
@@ -146,7 +147,7 @@ Most of this doc lands inside M1–M7. What remains is its own milestone:
    mixed fleets produce one trace.
 2. `examples/otel-app` + the rest of `examples/` wired into CI smoke.
 3. SDK publishing pipeline (tag → build → publish) — **dry-run only** while the
-   project is private; flipping it on is an owner decision.
+   SDK API is pre-1.0; flipping it on is an owner decision (ADR-0014).
 4. `docs/onboarding.md`, `docs/extending.md` (one section per extension point
    in §3, each with a worked example), compatibility matrix.
 5. Per-app API keys (from M7) surfaced in onboarding; per-key usage page.

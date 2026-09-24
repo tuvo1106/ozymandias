@@ -3,6 +3,7 @@ module github.com/tuvo1106/ozymandias
 go 1.27.1
 
 require (
+	github.com/oklog/ulid/v2 v2.1.2
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.59.0
 	pgregory.net/rapid v1.3.0
@@ -21,6 +22,6 @@ require (
 )
 
 ignore (
-	./web/node_modules
 	./sdk/node/node_modules
+	./web/node_modules
 )

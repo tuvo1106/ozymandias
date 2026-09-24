@@ -96,16 +96,94 @@ func TestStore_SelectBoundsAreInclusiveAndEmptySeriesOmitted(t *testing.T) {
 	}
 }
 
-func TestStore_DuplicateTimestampIsLastWriteWins(t *testing.T) {
+func TestStore_SamplesAreAppendOnly(t *testing.T) {
+	// ADR-0011. The store could overwrite — it is SQL — but the TSDB behind
+	// the same interface cannot, and a reference implementation that behaves
+	// differently from the thing it is a reference for is worse than none.
 	s, _ := open(t)
-	mustAppend(t, s, ss("m", nil, sm(1000, 1)))
-	mustAppend(t, s, ss("m", nil, sm(1000, 7)))
+	mustAppend(t, s, ss("m", nil, sm(1000, 1), sm(2000, 2)))
+
+	t.Run("an exact repeat is a no-op", func(t *testing.T) {
+		res, err := s.Append(ctx, []tsdb.SeriesSamples{ss("m", nil, sm(2000, 2))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Rejected) != 0 {
+			t.Errorf("an at-least-once retry was rejected: %+v", res.Rejected)
+		}
+		if res.Samples != 0 {
+			t.Errorf("the retry stored %d samples", res.Samples)
+		}
+	})
+
+	t.Run("the same timestamp with another value is rejected", func(t *testing.T) {
+		res, err := s.Append(ctx, []tsdb.SeriesSamples{ss("m", nil, sm(2000, 7))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Rejected) != 1 {
+			t.Fatalf("rejected %+v, want one entry", res.Rejected)
+		}
+		if res.Samples != 0 || res.Series != 0 {
+			t.Errorf("a fully rejected series counted as stored: %+v", res)
+		}
+	})
+
+	t.Run("an older timestamp is rejected", func(t *testing.T) {
+		res, err := s.Append(ctx, []tsdb.SeriesSamples{ss("m", nil, sm(1500, 3))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Rejected) != 1 {
+			t.Fatalf("rejected %+v, want one entry", res.Rejected)
+		}
+	})
+
+	t.Run("newer samples in the same batch still land", func(t *testing.T) {
+		res, err := s.Append(ctx, []tsdb.SeriesSamples{ss("m", nil, sm(500, 9), sm(3000, 3))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Samples != 1 || len(res.Rejected) != 1 {
+			t.Errorf("stored %d with %d rejections; one of each was expected",
+				res.Samples, len(res.Rejected))
+		}
+	})
+
 	set, _ := s.Select(ctx, tsdb.Selector{Metric: "m"}, 0, 5000)
-	if got := dump(t, set); got != "m|=1000:7" {
+	if got := dump(t, set); got != "m|=1000:1,2000:2,3000:3" {
 		t.Fatalf("got %s", got)
 	}
-	if st := s.Stats(); st.Series != 1 || st.Samples != 1 {
+	if st := s.Stats(); st.Series != 1 || st.Samples != 3 {
 		t.Fatalf("stats %+v", st)
+	}
+}
+
+func TestStore_TheAppendOnlyRuleSurvivesAReopen(t *testing.T) {
+	// The newest timestamp per series is in memory, so it has to be recovered
+	// at open — otherwise a restart would silently re-admit old samples.
+	s, path := open(t)
+	mustAppend(t, s, ss("m", nil, sm(1000, 1), sm(2000, 2)))
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+
+	res, err := reopened.Append(ctx, []tsdb.SeriesSamples{ss("m", nil, sm(1500, 9))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Rejected) != 1 {
+		t.Errorf("after a reopen an old sample was accepted: %+v", res)
+	}
+	if res2, err := reopened.Append(ctx, []tsdb.SeriesSamples{ss("m", nil, sm(3000, 3))}); err != nil {
+		t.Fatal(err)
+	} else if res2.Samples != 1 {
+		t.Errorf("after a reopen a new sample was refused: %+v", res2)
 	}
 }
 

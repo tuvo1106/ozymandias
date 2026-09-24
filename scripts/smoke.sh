@@ -123,4 +123,38 @@ check "its tag value is listed"            body_has "$OZY_URL/api/v1/tags/values
 check "the histogram became percentiles"   body_has "$OZY_URL/api/v1/metrics?prefix=cron.job.duration" '"cron.job.duration.95percentile"'
 check "the agent counts what it parsed"    body_has "$AGENT_URL/debug/vars" 'ozy.agent.statsd.messages_received'
 
+# --- M2: the real TSDB ---------------------------------------------------------
+# The engine is meant to be invisible from out here — M1's checks above ran
+# against it already. What is left to prove is that it is the engine actually
+# running, that it reports what it refused, and that a block cut and a restart
+# do not change an answer.
+gauge_value() { # <metric> <tag> — an ozyd self-metric from /debug/vars
+  curl -fsS --max-time 5 "$OZY_URL/debug/vars" |
+    tr '{' '\n' | grep -F "\"$1\"" | grep -F "$2" | sed 's/.*"value"://; s/[^0-9.-].*//'
+}
+
+check "the tsdb is the store in use"       body_has "$OZY_URL/debug/vars" '"store:tsdb"'
+check "it reports its head size"           body_has "$OZY_URL/debug/vars" 'ozy.tsdb.head.series'
+check "it reports what it refused"         body_has "$OZY_URL/debug/vars" 'ozy.tsdb.ooo_rejected'
+# Nothing above sends out-of-order data, so a non-zero count here means the
+# store is dropping samples nobody asked it to drop.
+check "no samples were dropped"            test "$(gauge_value ozy.tsdb.ooo_rejected store:tsdb)" = "0"
+check "no series hit the cardinality cap"  test "$(gauge_value ozy.tsdb.series_limit_rejected store:tsdb)" = "0"
+check "the store reports its disk use"     test "$(gauge_value ozy.tsdb.disk_bytes store:tsdb)" -gt 0
+
+# The durability claim, end to end. The SIGTERM cycle near the top of this
+# script happened before any of this data existed, so repeating a query after
+# it proved nothing — which is what this check used to do. Kill ozyd
+# *now*, with these samples in the head and durable only in the write-ahead
+# log, and ask again on the other side. This is the only end-to-end exercise
+# of replay there is, and replay is where every serious bug in M2 was.
+cid=$("${COMPOSE[@]}" ps -q ozyd)
+docker kill -s TERM "$cid" >/dev/null
+docker wait "$cid" >/dev/null
+"${COMPOSE[@]}" start ozyd >/dev/null 2>&1
+for _ in $(seq 1 30); do healthy ozyd && break; sleep 1; done
+check "ozyd healthy after the durability restart" healthy ozyd
+check "the counter survived a real restart"  wait_sum smoke.test "$N"
+check "the gauge survived a real restart"    wait_sum smoke.gauge 7
+
 echo "smoke: $pass checks passed"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -47,6 +48,10 @@ type Store struct {
 
 	mu  sync.Mutex // serializes writers; SQLite allows one at a time anyway
 	ids map[string]int64
+	// last is each series' newest stored sample, which is what makes the
+	// append-only rule of ADR-0011 enforceable here. SQLite would happily
+	// overwrite; the TSDB cannot, so neither may this.
+	last map[int64]tsdb.Sample
 }
 
 var _ tsdb.MetricStore = (*Store)(nil)
@@ -76,9 +81,29 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("naive store: loading series: %w", err)
 	}
-	s := &Store{db: db, ids: make(map[string]int64, len(all))}
+	s := &Store{
+		db:   db,
+		ids:  make(map[string]int64, len(all)),
+		last: make(map[int64]tsdb.Sample, len(all)),
+	}
 	for _, ik := range all {
 		s.ids[ik.key] = ik.id
+	}
+	// One pass to recover each series' newest sample. The bare columns beside
+	// MAX() are SQLite's documented "row that produced the max".
+	type lastRow struct {
+		id     int64
+		sample tsdb.Sample
+	}
+	rows, err := query(context.Background(), db, func(r *sql.Rows) (l lastRow, err error) {
+		return l, r.Scan(&l.id, &l.sample.T, &l.sample.V)
+	}, `SELECT series_id, MAX(t), v FROM samples GROUP BY series_id`)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("naive store: loading newest samples: %w", err)
+	}
+	for _, l := range rows {
+		s.last[l.id] = l.sample
 	}
 	return s, nil
 }
@@ -102,8 +127,13 @@ func query[T any](ctx context.Context, db *sql.DB, scan func(*sql.Rows) (T, erro
 	return out, rows.Err()
 }
 
-// Append stores a batch in one transaction. A sample at an existing
-// (series, t) replaces the old value — last write wins.
+// Append stores a batch in one transaction.
+//
+// Samples are append-only (ADR-0011): a sample newer than the series' newest
+// is stored, an exact repeat of it is a no-op so agent retries are idempotent,
+// and anything else at or before it is rejected. The store could overwrite —
+// it is SQL — but then it would stop being a faithful oracle for the TSDB,
+// which physically cannot.
 func (s *Store) Append(ctx context.Context, batch []tsdb.SeriesSamples) (tsdb.AppendResult, error) {
 	var res tsdb.AppendResult
 	s.mu.Lock()
@@ -115,12 +145,15 @@ func (s *Store) Append(ctx context.Context, batch []tsdb.SeriesSamples) (tsdb.Ap
 	defer func() { _ = tx.Rollback() }()
 	newIDs := map[string]int64{}
 
+	// DO NOTHING is belt and braces: the lastT check below already excludes
+	// every conflicting timestamp.
 	insSample, err := tx.PrepareContext(ctx, `INSERT INTO samples(series_id, t, v) VALUES(?, ?, ?)
-		ON CONFLICT(series_id, t) DO UPDATE SET v = excluded.v`)
+		ON CONFLICT(series_id, t) DO NOTHING`)
 	if err != nil {
 		return res, err
 	}
 	defer insSample.Close()
+	newLast := map[int64]tsdb.Sample{}
 
 	for _, ss := range batch {
 		if reason := check(ss); reason != "" {
@@ -137,19 +170,58 @@ func (s *Store) Append(ctx context.Context, batch []tsdb.SeriesSamples) (tsdb.Ap
 				newIDs[key] = id
 			}
 		}
+		last, seen := newLast[id]
+		if !seen {
+			last, seen = s.last[id]
+		}
+		var stored, refused int
 		for _, smp := range ss.Samples {
+			if seen && smp.T <= last.T {
+				// A sample the series already holds, with the same value, is a
+				// retried batch rather than a conflict. It has to be looked up
+				// rather than compared against the newest sample: an agent
+				// resends a whole batch, not just its last point.
+				var existing float64
+				err := tx.QueryRowContext(ctx,
+					`SELECT v FROM samples WHERE series_id = ? AND t = ?`, id, smp.T).Scan(&existing)
+				switch {
+				case err == nil && existing == smp.V:
+					continue // already stored; nothing to do
+				case err != nil && !errors.Is(err, sql.ErrNoRows):
+					return tsdb.AppendResult{}, err
+				}
+				refused++
+				continue
+			}
 			if _, err := insSample.ExecContext(ctx, id, smp.T, smp.V); err != nil {
 				return tsdb.AppendResult{}, err
 			}
+			last, seen = smp, true
+			stored++
 		}
-		res.Series++
-		res.Samples += len(ss.Samples)
+		if seen {
+			newLast[id] = last
+		}
+		if refused > 0 {
+			res.Rejected = append(res.Rejected, tsdb.Rejected{
+				Series: ss.Series,
+				Reason: fmt.Sprintf("%d sample(s) at or before the series' newest timestamp", refused),
+			})
+		}
+		if stored > 0 {
+			res.Series++
+			res.Samples += stored
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return tsdb.AppendResult{}, err
 	}
-	for k, id := range newIDs { // only after commit: a rollback must not leave stale ids
+	// Only after commit: a rollback must not leave stale ids or timestamps.
+	for k, id := range newIDs {
 		s.ids[k] = id
+	}
+	for id, smp := range newLast {
+		s.last[id] = smp
 	}
 	return res, nil
 }

@@ -73,11 +73,68 @@ type Provisioning struct {
 	Paths []string `yaml:"paths"`
 }
 
+// Storage configures the metric store.
+type Storage struct {
+	// MetricStore selects the engine: "tsdb" (the real one) or "naive" (the
+	// M1 SQLite reference implementation, kept as a differential-test oracle
+	// and an escape hatch).
+	MetricStore string `yaml:"metric_store"`
+	// BlockRange is how much time one on-disk block covers. Larger blocks mean
+	// fewer files and better compression; smaller ones mean retention can free
+	// disk sooner, since a block is deleted whole or not at all.
+	BlockRange time.Duration `yaml:"block_range"`
+	// Retention deletes blocks whose newest sample is older than this.
+	// Negative keeps everything.
+	Retention time.Duration `yaml:"retention"`
+	// MaxBytes caps total size on disk, deleting the oldest blocks when
+	// exceeded. Zero means no cap. It is a backstop against a full disk, not a
+	// retention policy — it evicts by age with no regard for what the data is.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// MaxSeriesPerMetric bounds cardinality per metric name. Negative means
+	// unlimited, which is a decision to make deliberately: the index grows
+	// with distinct tag values whether or not anyone queries them.
+	MaxSeriesPerMetric int `yaml:"max_series_per_metric"`
+	// MaxBlockRange caps how wide a compacted block may become.
+	MaxBlockRange time.Duration `yaml:"max_block_range"`
+	// WALSyncOnAppend fsyncs the log before an intake request is acknowledged.
+	// On means a crash loses nothing that was acknowledged; off trades a
+	// WALSyncInterval-wide window of exposure for throughput.
+	WALSyncOnAppend bool `yaml:"wal_sync_on_append"`
+	// WALSyncInterval is the group-commit period when WALSyncOnAppend is off.
+	WALSyncInterval time.Duration `yaml:"wal_sync_interval"`
+}
+
+// Validate checks the storage settings.
+func (s Storage) Validate() error {
+	var errs []error
+	switch s.MetricStore {
+	case "tsdb", "naive":
+	default:
+		errs = append(errs, fmt.Errorf("storage.metric_store %q: want tsdb or naive", s.MetricStore))
+	}
+	if s.BlockRange <= 0 {
+		errs = append(errs, fmt.Errorf("storage.block_range must be positive, got %v", s.BlockRange))
+	}
+	if s.MaxBlockRange > 0 && s.MaxBlockRange < s.BlockRange {
+		errs = append(errs, fmt.Errorf(
+			"storage.max_block_range (%v) is smaller than storage.block_range (%v), so no compaction could ever run",
+			s.MaxBlockRange, s.BlockRange))
+	}
+	if s.MaxBytes < 0 {
+		errs = append(errs, fmt.Errorf("storage.max_bytes must not be negative, got %d", s.MaxBytes))
+	}
+	if s.WALSyncInterval <= 0 {
+		errs = append(errs, fmt.Errorf("storage.wal_sync_interval must be positive, got %v", s.WALSyncInterval))
+	}
+	return errors.Join(errs...)
+}
+
 // Ozyd is the ozyd server's configuration.
 type Ozyd struct {
 	HTTP         HTTP         `yaml:"http"`
 	DataDir      string       `yaml:"data_dir"`
 	Log          Log          `yaml:"log"`
+	Storage      Storage      `yaml:"storage"`
 	Provisioning Provisioning `yaml:"provisioning"`
 }
 
@@ -87,13 +144,25 @@ func DefaultOzyd() Ozyd {
 		HTTP:    HTTP{Addr: ":9400", ShutdownTimeout: 10 * time.Second},
 		DataDir: "./data/ozyd",
 		Log:     Log{Level: "info", Format: "text"},
+		Storage: Storage{
+			MetricStore:        "tsdb",
+			BlockRange:         2 * time.Hour,
+			Retention:          15 * 24 * time.Hour,
+			MaxSeriesPerMetric: 10_000,
+			MaxBlockRange:      54 * time.Hour,
+			// On by default: agent batches are large and infrequent, so the
+			// fsync is amortized over thousands of samples, and the
+			// alternative is telling a client its data is safe before it is.
+			WALSyncOnAppend: true,
+			WALSyncInterval: 100 * time.Millisecond,
+		},
 	}
 }
 
 // Validate checks every section.
 func (c *Ozyd) Validate() error {
 	var errs []error
-	errs = append(errs, c.HTTP.Validate(), c.Log.Validate())
+	errs = append(errs, c.HTTP.Validate(), c.Log.Validate(), c.Storage.Validate())
 	if c.DataDir == "" {
 		errs = append(errs, errors.New("data_dir must be set"))
 	}

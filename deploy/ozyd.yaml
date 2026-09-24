@@ -22,10 +22,58 @@ http:
   shutdown_timeout: 10s
 
 # Root of all on-disk state: meta.db (metric types; later dashboards and
-# monitors), metrics-naive.db (M1's metric store, replaced by the TSDB in M2),
-# and later the log store (M4), trace store (M5) and queue (M7). Created at startup if missing; must be writable.
-# The container overrides this to /data (a named volume).
+# monitors), tsdb/ (the metric store: wal/ and blocks/), and later the log
+# store (M4), trace store (M5) and queue (M7). Created at startup if missing;
+# must be writable. The container overrides this to /data (a named volume).
 data_dir: ./data/ozyd
+
+storage:
+  # Which metric store to run. "tsdb" is the real engine (M2): a write-ahead
+  # log, an in-memory head and immutable blocks under data_dir/tsdb/.
+  # "naive" is M1's SQLite store in data_dir/metrics-naive.db, kept as the
+  # oracle the TSDB's differential tests are held to, and as somewhere to
+  # stand if you hit a storage bug.
+  metric_store: tsdb
+
+  # How much time one on-disk block covers. Larger means fewer files and
+  # better compression; smaller means retention frees disk sooner, because a
+  # block is deleted whole or not at all.
+  #
+  # It also decides how far back a sample may be written: roughly
+  # 1.5 x block_range behind a series' newest sample, after which it is
+  # refused and counted in ozy.tsdb.ooo_rejected. Shortening this for a
+  # test will start rejecting anything backdated. See docs/operations.md.
+  # block_range: 2h
+
+  # Blocks whose newest sample is older than this are deleted. A negative
+  # value keeps everything.
+  # retention: 360h
+
+  # Hard cap on total size under data_dir; the oldest blocks are deleted when
+  # it is exceeded. 0 disables it. This is a backstop against a full disk, not
+  # a retention policy — it evicts by age with no regard for what the data is,
+  # so a cardinality spike can silently cost you history.
+  # max_bytes: 0
+
+  # Widest a compacted block may become. Must be at least block_range, or no
+  # compaction could ever run.
+  # max_block_range: 54h
+
+  # Cardinality limit per metric name. New series beyond it are refused and
+  # counted in ozy.tsdb.series_limit_rejected — almost always a tag
+  # carrying an unbounded value. Negative means unlimited, which is a decision
+  # to make deliberately.
+  # max_series_per_metric: 10000
+
+  # fsync the write-ahead log before acknowledging an intake request. On by
+  # default: agent batches are large and infrequent, so the fsync is amortized
+  # over thousands of samples, and the alternative is telling a client its
+  # data is safe before it is.
+  # wal_sync_on_append: true
+
+  # Group-commit period when wal_sync_on_append is off: how long an
+  # acknowledged sample may sit in the page cache.
+  # wal_sync_interval: 100ms
 
 log:
   # ozyd's own log level: debug | info | warn | error

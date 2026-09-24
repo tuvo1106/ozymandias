@@ -20,7 +20,7 @@ flowchart TB
     subgraph dd["ozyd"]
         IN["intake POST /v1/series<br/>decode · validate · per-series reject"]
         META[("meta.db<br/>metric → type")]
-        ST[("MetricStore<br/>naive SQLite (M1)")]
+        ST[("MetricStore<br/>TSDB (M2) · see §11")]
         QRY["query /api/v1/query<br/>bucket · group · aggregate"]
     end
 

@@ -134,3 +134,40 @@ func TestSliceSet(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestBlockOf(t *testing.T) {
+	// Go truncates towards zero, which puts a pre-epoch timestamp in the block
+	// after the one it belongs to.
+	cases := []struct{ ts, rangeMs, want int64 }{
+		{0, 60, 0}, {59, 60, 0}, {60, 60, 1}, {120, 60, 2},
+		{-1, 60, -1}, {-60, 60, -1}, {-61, 60, -2},
+	}
+	for _, c := range cases {
+		if got := BlockOf(c.ts, c.rangeMs); got != c.want {
+			t.Errorf("BlockOf(%d, %d) = %d, want %d", c.ts, c.rangeMs, got, c.want)
+		}
+	}
+}
+
+func TestBlockOf_ChunksDoNotStraddleACutBoundary(t *testing.T) {
+	// The property the head and the block cut both depend on, stated once:
+	// every timestamp in a block range maps to that range, so the boundary the
+	// cut computes is the same one the head cut its chunks at. Before this was
+	// shared, the two used different rounding and disagreed either side of
+	// zero — a chunk straddled the cut, and its older samples ended up in the
+	// new block *and* still in the head.
+	const rangeMs = 60
+	for start := int64(-5); start <= 5; start++ {
+		base := start * rangeMs
+		boundary := BlockOf(base, rangeMs)*rangeMs + rangeMs
+		for ts := base; ts < base+rangeMs; ts++ {
+			if BlockOf(ts, rangeMs) != BlockOf(base, rangeMs) {
+				t.Fatalf("%d and %d are in one range but map to %d and %d",
+					base, ts, BlockOf(base, rangeMs), BlockOf(ts, rangeMs))
+			}
+			if ts >= boundary {
+				t.Fatalf("%d is at or past its own range's boundary %d", ts, boundary)
+			}
+		}
+	}
+}

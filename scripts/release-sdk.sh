@@ -4,12 +4,12 @@
 #
 #   ./scripts/release-sdk.sh [app...]     # default: every app that exists
 #
-# Why vendored tarballs rather than a registry: ozymandias is private and these
+# Why vendored tarballs rather than a registry: the SDKs are pre-1.0 and these
 # SDKs are not published anywhere. A packed artifact is also the honest test —
 # it exercises the real `files` list and the built `dist/`, so a file missing
 # from the package fails here rather than inside the app. `npm link` was the
 # obvious alternative and is rejected: symlinked packages and Turbopack do not
-# get along (docs/plan/integrations.md §1).
+# get along (docs/private/integrations.md §1).
 #
 # The apps are siblings of this repo and are not required to exist; an absent
 # one is skipped, not an error.

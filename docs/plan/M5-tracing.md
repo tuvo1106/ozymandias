@@ -193,7 +193,7 @@ trace's `s/`, index and `t/` keys in batches.
   "view related traces" (same service + time window).
 
 ## 7. Integrations
-Per `docs/plan/integrations.md` (M5 parts) for both apps.
+Per `docs/private/integrations.md` (M5 parts) for both apps.
 
 ## 8. Test plan
 

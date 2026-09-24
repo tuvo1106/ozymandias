@@ -52,19 +52,19 @@ what "done" means:
 
 1. Work milestones in order. Do not start M(n+1) until every acceptance
    criterion of M(n) passes and is demonstrated (command + output in the notes).
-2. **GitHub Actions minutes are scarce** (private repo on the Free plan,
-   shared with the owner's other private repos). So:
+2. **Two gates, local first** (ADR-0013). So:
    - **Batch.** One PR per milestone, or per large coherent chunk of one, not
      one per feature slice. Slices are still separate, well-described
      *commits* on the branch, so history stays reviewable.
-   - **The git hooks are the CI** (ADR-0010). GitHub Actions doesn't run on
-     PRs. pre-commit runs the fast gates for what you staged, and pre-push
-     runs the full `make ci`. Never `--no-verify` a push. Put the local
-     evidence (`make ci`, and `make smoke` when runtime behaviour changed)
-     in the PR description, because nothing else will verify it.
+   - **The git hooks are the fast gate.** pre-commit runs the checks for what
+     you staged, and pre-push runs the full `make ci`. Never `--no-verify` a
+     push. GitHub Actions re-runs `make ci` on every PR — the repo is public,
+     so the minutes are free — but it is the backstop, not the thing you wait
+     on. Put the local evidence (`make ci`, and `make smoke` when runtime
+     behaviour changed) in the PR description either way.
    - Scopes are package-ish: `feat(agent): …`, `test(tsdb): …`,
      `feat(sdk-python): …`, `feat(web): …`.
-   - The repo is `github.com/tuvo1106/ozymandias` (private). Open PRs with `gh`.
+   - The repo is `github.com/tuvo1106/ozymandias` (public). Open PRs with `gh`.
      **Merging:** you may merge a PR yourself (`gh pr merge --merge`) once a
      `/code-review` of its changes has run and every finding is fixed or
      explicitly answered. Otherwise the owner merges.
@@ -148,6 +148,10 @@ generators, statsd libraries.
 ## 6. Touching the instrumented apps
 
 `../app-node`, `../app-python` and `../app-ruby` are real projects with their own rules.
+They are referred to by role here because this repo is public (ADR-0012); their
+real names, paths and per-milestone integration points live in
+`docs/private/integrations.md`, which is gitignored. If that file is not on
+your machine, you are not the person who should be touching them.
 
 - **Read that repo's `AGENTS.md` / `CLAUDE.md` first** and follow it over this
   file when they conflict.
@@ -157,19 +161,19 @@ generators, statsd libraries.
 - app-python: commit messages carry **no `Co-Authored-By` trailer**; docs
   (DESIGN.md §2.1 for a new tool, AGENTS.md, CHANGELOG.md, README.md, diagrams)
   update in the same commit; backend has an 80% coverage gate and `ruff`.
-- app-ruby: **public repo** (ozymandias is private — commit nothing there that
-  references private artifacts or keys); `DESIGN.md` is the spec and changes
+- app-ruby: **public repo**, like this one — commit nothing there that
+  references private artifacts or keys; `DESIGN.md` is the spec and changes
   to it go in their own PR *before* the implementation PR; fixed commit-scope
   list; mandatory PR template with a Design reference; 90% coverage gate;
   `customer_phone` must never reach ozymandias. It gets **no ozymandias SDK** —
-  config, labels and stock OpenTelemetry only (`integrations.md` §3).
+  config, labels and stock OpenTelemetry only (`docs/private/integrations.md` §3).
 - app-node: layering rule — integration code lives in `src/lib/`, nothing
   above `db/` imports better-sqlite3; "a feature gated on configuration is
   absent, not broken"; docs update with the change.
 - The integration must be inert with `OZY_AGENT_HOST` unset. Prove it by
   running each app's full test suite with ozymandias stopped.
 - Keep each integration change minimal and confined to the seams listed in
-  `docs/plan/integrations.md`.
+  `docs/private/integrations.md`.
 
 ## 7. Commands
 

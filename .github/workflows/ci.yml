@@ -1,21 +1,18 @@
-# CI — manual only. The gate is the git hooks (lefthook.yml, ADR-0010):
-# pre-commit runs every fast check on each commit, pre-push runs `make ci`.
+# CI — the backstop (ADR-0013). The primary gate is still the git hooks
+# (lefthook.yml): pre-commit runs the fast checks on each commit, pre-push runs
+# the full `make ci`. This re-runs `make ci` on every pull request, on a clean
+# machine, so a pushed branch is verified by something other than the laptop
+# that produced it. The repo is public, so the minutes are free.
 #
-# GitHub Actions minutes don't fit this project: the repo is private on the
-# Free plan, whose minutes are shared with (and used up by) the owner's other
-# private repos. So this workflow does not run on pushes or pull requests. It
-# stays as the remote runbook, for a manual run
-# (`gh workflow run ci --ref <branch>`) or for turning back on:
-#
-#   * If minutes become available (public repo, paid plan, self-hosted
-#     runner), restore the `pull_request:` trigger below.
-#   * Keep it one job: each job is billed rounded up to a whole minute.
+# Deliberately not here: `make smoke` (needs the compose stack), the crash loop
+# and `fuzz-long` (minutes of wall clock). Those are run by hand per milestone.
+# Keep it one job — jobs are billed rounded up to a whole minute.
 name: ci
 
 on:
   workflow_dispatch:
-  # pull_request:
-  #   paths-ignore: ["**.md", "docs/**", "LICENSE", ".github/ISSUE_TEMPLATE/**", ".github/PULL_REQUEST_TEMPLATE.md"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE", ".github/ISSUE_TEMPLATE/**", ".github/PULL_REQUEST_TEMPLATE.md"]
 
 permissions:
   contents: read

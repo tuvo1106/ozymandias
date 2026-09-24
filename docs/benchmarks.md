@@ -6,7 +6,8 @@ with the command above it. Numbers are only meaningful next to the machine
 that produced them, so the machine is recorded too.
 
 **Machine:** Apple M5 (10 cores, 32 GB), macOS 26.6.2 (darwin/arm64), Go 1.27.1.
-All figures below were taken on 2026-09-19 at commit `b7ff955`.
+M1 figures were taken on 2026-09-19 at commit `b7ff955`; the M2 storage
+figures on 2026-09-23 at commit `838c398`.
 
 Re-record this file whenever a hot path changes. The per-milestone notes
 (`docs/notes/M<n>.md`) quote the numbers that mattered for that milestone's
@@ -48,6 +49,161 @@ What the numbers say:
   per batch. This is why the forwarder sends whole flushes rather than single
   series. Absolute numbers are poor on purpose — the naive store is a
   correctness reference with a SQLite row per sample, and M2 replaces it.
+
+## The storage engine (M2)
+
+```
+go test -run '^$' -bench . -benchmem ./internal/tsdb/...
+```
+
+### Chunk encoding — `internal/tsdb/chunkenc`
+
+| Benchmark | ns/op | B/op | allocs/op | Reading |
+|---|---:|---:|---:|---|
+| `Appender_Append/constant` | 6.1 | 1 | 0 | a counter that does not move: one bit for the time, one for the value |
+| `Appender_Append/wobbling` | 43.4 | 16 | 0 | a gauge changing in its low bits — the window-reuse path |
+| `Appender_Append/random` | 71.8 | 16 | 0 | values sharing nothing: the full leading/trailing header every sample |
+| `Iterator_Next` | 5 029 | 32 | 1 | decoding a full 120-sample chunk — 110 MB/s, 42 ns/sample |
+
+Compression, against the 16 bytes an `(int64, float64)` pair would cost:
+
+| Shape | Bytes/sample | Ratio |
+|---|---:|---:|
+| constant | 0.37 | **43.6×** |
+| gauge wobbling in its low bits | 4.59 | 3.5× |
+| unrelated values | 7.31 | 2.2× |
+
+The constant case is the one that matters: most series in a real system are a
+counter at a steady interval, and it costs two bits.
+
+These are 10–18% faster than first measured, for an unglamorous reason: the
+bitstream's byte-aligned fast path tested the wrong value and had never once
+executed, so every bit of every sample — including the 64-bit raw float that
+path exists for — went through the per-bit loop. The encoded bytes are
+identical either way, which is why the golden chunk did not move and why
+nothing noticed. The random case, which writes the most full bytes, gained the
+most.
+
+### Write-ahead log — `internal/tsdb/wal`
+
+| Benchmark | ns/op | Reading |
+|---|---:|---|
+| `WAL_Log/sync=false/record=64B` | 2 020 | buffered write, 32 MB/s |
+| `WAL_Log/sync=false/record=4096B` | 5 414 | buffered write, 757 MB/s |
+| `WAL_Log/sync=true/record=64B` | 3 938 929 | **one fsync** |
+| `WAL_Log/sync=true/record=4096B` | 3 917 436 | one fsync — the size barely matters |
+| `WAL_LogBatchThenSync/records=1` | 3 841 156 | 3.8 ms per record |
+| `WAL_LogBatchThenSync/records=100` | 4 781 832 | 48 µs per record |
+| `WAL_LogBatchThenSync/records=1000` | 6 735 261 | **6.7 µs per record** |
+| `Reader_Next` | 57 662 | replaying 1000 records — 1.1 GB/s |
+
+This is the group-commit argument as a measurement. An fsync costs ~3.9 ms
+whatever it is flushing, so the only lever is how many records share one:
+batching a thousand makes a record **570× cheaper** than syncing each. It is
+also why `wal_sync_on_append` can default to on — an agent batch is thousands
+of samples, so the durability is nearly free. It would not be if ozyd
+acknowledged one sample at a time.
+
+### Head — `internal/tsdb/head`
+
+| Benchmark | ns/op | B/op | allocs/op | Reading |
+|---|---:|---:|---:|---|
+| `Head_Append/series=1` | 102 | 77 | 3 | one sample, no WAL |
+| `Head_Append/series=100` | 118 | 78 | 3 | more series costs almost nothing |
+| `Head_Append/series=10000` | 142 | 82 | 3 | 100× the series costs 34% more |
+| `Head_AppendBatch` | 103 615 | 161 697 | 2 048 | 1000 series in one call — 104 ns/sample |
+| `Head_Select/one series` | 4 701 | 8 400 | 16 | 240 samples out of 240 000 |
+| `Head_Select/wildcard` | 1 443 344 | 7 859 750 | 11 730 | `host:h1*` — 111 series, 26 640 samples |
+| `Head_Select/all` | 5 817 682 | 10 005 824 | 57 115 | 1000 series, 240 000 samples — 24 ns/sample |
+
+Series count barely moves the append cost. Selecting one series out of a
+thousand costs 4.7 µs — the index doing its job; the same query without one
+would scan all 240 000 samples.
+
+Appends to the head take a single commit lock, so these are also the numbers
+for any number of appenders: resolving the series, writing the log record and
+applying the sample have to be one critical section, or a block cut can drop
+samples it has already acknowledged (M2 notes, "Three ways the store lost
+data"). Making it serial cost 102 ns against 106 before — an uncontended mutex
+— and the fsync it contains, when there is one, is four orders of magnitude
+larger anyway.
+
+### Blocks — `internal/tsdb/block`
+
+| Benchmark | ns/op | Reading |
+|---|---:|---|
+| `Write/series=100` | 22 675 999 | 24 000 samples to disk, fsynced: 0.94 µs/sample |
+| `Write/series=1000` | 31 274 992 | 240 000 samples: 0.13 µs/sample |
+| `Open/series=100` | 37 419 | parse the whole index |
+| `Open/series=1000` | 128 783 | 129 ns per series |
+| `Select/one series, whole block` | 14 588 | 240 samples |
+| `Select/one series, short window` | 7 575 | 11 samples — **half the cost** |
+| `Select/all series, whole block` | 11 634 260 | 240 000 samples, 48 ns/sample |
+
+On disk, with the realistic shape (a shared long metric name and environment,
+one varying tag):
+
+| | Bytes | Share |
+|---|---:|---:|
+| `chunks.dat` | 1 118 200 | 96% |
+| `index.dat` | 49 680 | **4%** |
+| Total per sample | **4.87 B** | vs 16 B raw |
+
+The index being 4% of the block is the symbol table earning its place. The
+short-window query costing half of the whole-block one is the per-chunk time
+ranges earning theirs.
+
+### The real store against the naive one
+
+The same operations, both engines, same machine:
+
+| Operation | naive (SQLite) | tsdb | Ratio |
+|---|---:|---:|---:|
+| Append, 1 series | 20 854 ns | 102 ns | **205× faster** |
+| Append, 1000 series | 6 236 494 ns | 103 615 ns | **60× faster** |
+| Select, one series of 240 samples | 89 693 ns | 4 701 ns | **19× faster** |
+
+The naive store is not a straw man — it is indexed SQLite with prepared
+statements — which is the point. A row per sample costs what a row per sample
+costs, and the gap is what the chunk encoding and the inverted index buy.
+
+### The whole store — `internal/tsdb/db`
+
+Samples per second through `Append`, which is intake's actual cost. The
+dimension that matters is how many samples share one fsync:
+
+| sync | batch | goroutines | ns/sample | samples/sec |
+|---|---:|---:|---:|---:|
+| on | 100 | 1 | 38 969 | 25 661 |
+| on | 1 000 | 1 | 4 317 | **231 638** |
+| on | 10 000 | 1 | 609 | 1 641 320 |
+| on | 1 000 | 8 | 4 470 | 223 723 |
+| on | 1 000 | 64 | 4 902 | 204 018 |
+| off | 1 000 | 1 | 312 | 3 207 454 |
+| off | 1 000 | 8 | 374 | 2 673 249 |
+| off | 1 000 | 64 | 409 | 2 446 912 |
+
+Two things to read here. Batch size is everything: the same store does 25k or
+1.6M samples/sec depending only on how many samples one fsync covers, because
+an fsync costs ~4 ms whatever it flushes. And concurrency is nothing — 64
+appenders are slightly *slower* than one, because the fsync happens inside the
+commit lock, so a second appender queues behind the first rather than sharing
+its flush. That is the honest limit of the current design: a real group commit
+would let the queued appenders ride along on one fsync. With one agent posting
+a large batch every 10 seconds it does not matter; with sixty agents it would,
+and the workaround today is `wal_sync_on_append: false`, which is group commit
+with a bounded window of loss.
+
+Restart cost, measured rather than extrapolated (`OZY_BIG_REPLAY=1`):
+
+| | |
+|---|---|
+| Log written | 1.00 GiB — 76 790 000 samples across 10 000 series |
+| Replay | **3.79 s** (0.26 GiB/sec), all 76 790 000 samples restored |
+
+The criterion was under 30 seconds for a gigabyte. Replay is dominated by
+re-encoding chunks, not by reading the file: the log reader alone does 1.1
+GB/s.
 
 ## End-to-end acceptance (M1)
 
