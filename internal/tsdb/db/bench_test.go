@@ -1,7 +1,9 @@
 package db
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -131,6 +133,14 @@ func walBytes(tb testing.TB, dir string) int64 {
 	}
 	for _, e := range entries {
 		info, err := e.Info()
+		// ReadDir names the directory's contents, then Info lstats each one.
+		// Between the two, the maintenance loop can remove a checkpoint it has
+		// just superseded, and the entry is gone before we ask its size. That
+		// is the log working, not the log broken: skip it. On a fast disk the
+		// window never opens, which is why this only ever failed on CI.
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			tb.Fatal(err)
 		}
