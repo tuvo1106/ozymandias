@@ -1,4 +1,4 @@
-# Node.js SDK (`ozymandias`)
+# Node.js SDK (`ozy`)
 
 The Node SDK is a small convenience layer over ozymandias's public wire protocol. In M1 it is
 a extended-StatsD-compatible metrics client. Tracing and framework integrations come in M5.

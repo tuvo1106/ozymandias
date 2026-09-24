@@ -1,5 +1,5 @@
 // Package selfmetrics is ozymandias's view of its own health: a tiny in-process
-// registry of counters and gauges, named `ozymandias.*`, that every component
+// registry of counters and gauges, named `ozy.*`, that every component
 // updates as it works (packets received, points dropped, fsync latency, …).
 //
 // Principle 6 of the plan is "dogfood": the system should be observable with

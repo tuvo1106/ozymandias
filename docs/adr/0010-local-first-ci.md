@@ -1,6 +1,6 @@
 # ADR-0010: Git hooks are the CI; GitHub Actions is manual-only
 
-- **Status:** Superseded by ADR-0013
+- **Status:** Superseded by [ADR-0013](0013-actions-on-pull-requests.md)
 - **Date:** 2026-09-19
 
 ## Context

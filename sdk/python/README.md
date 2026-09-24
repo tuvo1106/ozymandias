@@ -1,11 +1,11 @@
-# ozymandias (Python SDK)
+# ozy (Python SDK)
 
 Send metrics from any Python 3.12+ app to a [ozymandias](https://github.com/tuvo1106/ozymandias)
 agent. The package has no runtime dependencies. It speaks extended StatsD over UDP, and it cannot
 raise into your app.
 
 ```sh
-pip install ozymandias   # not published yet: see "Install" in the guide below
+pip install ozy   # not published yet: see "Install" in the guide below
 ```
 
 ```python

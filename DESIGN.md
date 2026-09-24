@@ -74,7 +74,7 @@ internal/agent/<stage>  statsd, aggregator, collector, … (M1+)
 internal/api            HTTP API and the embedded SPA handler
 internal/config         layered config loader + ozyd's settings
 internal/httpserve      graceful serve, request metrics, health, probe
-internal/selfmetrics    the ozymandias.* registry
+internal/selfmetrics    the ozy.* registry
 internal/clock          time as a dependency
 internal/testutil       fake clock, Eventually, goroutine-leak check
 pkg/wire                payload types shared by agent and server (M1)
@@ -134,7 +134,7 @@ The reference files [deploy/ozyd.yaml](deploy/ozyd.yaml) and
 ## 5. Self-observability
 
 `internal/selfmetrics` is a small registry of counters and gauges named
-`ozymandias.*`: get-or-create by name and tag set, lock-free updates, and a
+`ozy.*`: get-or-create by name and tag set, lock-free updates, and a
 sorted JSON snapshot at `GET /debug/vars`. Every HTTP request is counted by
 matched route pattern, never the raw path, which would create a series per
 URL. The full list is in [docs/metrics-catalog.md](docs/metrics-catalog.md).
@@ -175,11 +175,12 @@ network `ozymandias`, which the apps' containers join to reach the agent as
 
 ## 8. Testing and CI
 
-The standard is [docs/plan/testing.md](docs/plan/testing.md). There is no
-remote CI (ADR-0010). The git hooks are the gate: pre-commit runs the fast
-gates for whatever is staged, and pre-push runs the full `make ci`.
-`make smoke` exercises the real compose stack end to end, and its output goes
-in the PR.
+The standard is [docs/plan/testing.md](docs/plan/testing.md). Two gates
+(ADR-0013). The git hooks are the fast one: pre-commit runs the checks for
+whatever is staged, and pre-push runs the full `make ci`. GitHub Actions is the
+backstop, re-running `make ci` on every pull request from a clean checkout.
+`make smoke` exercises the real compose stack end to end; it needs docker, so
+it stays manual and its output goes in the PR.
 
 ---
 

@@ -100,7 +100,7 @@ Together they cover the three adoption styles: Node SDK, Python SDK, no SDK.
    `version`, `host`. Cross-pillar correlation depends on it.
 5. **Cardinality discipline.** Tag by route *pattern*, never by id, user, or
    raw path. SDK path normalizers enforce this.
-6. **Dogfood.** Agent and ozyd emit their own metrics under `ozymandias.*`.
+6. **Dogfood.** Agent and ozyd emit their own metrics under `ozy.*`.
 7. **Generic core.** Apps are configuration, never code branches (extensibility.md §1).
 8. **Teach the why.** This is a learning project: package docs and comments
    explain mechanism and trade-off; each milestone produces `docs/notes/M<n>.md`.
@@ -120,7 +120,7 @@ internal/query/{metricql,logql}
 internal/monitor/{eval,state,notify}
 internal/meta/                   SQLite metadata
 internal/api/                    HTTP handlers for /api/v1
-internal/selfmetrics/            ozymandias.* internal metrics
+internal/selfmetrics/            ozy.* internal metrics
 pkg/wire/                        payload structs + validation, shared by agent and ozyd
 sdk/python/                      ozymandias-py   (package name: ozymandias)
 sdk/node/                        ozymandias-node (package name: ozymandias)

@@ -76,7 +76,7 @@ Two ordering rules matter operationally:
 ```console
 $ curl -s localhost:9400/healthz
 {"component":"ozyd","status":"ok","uptime_seconds":42,"version":"v0.1.0"}
-$ curl -s localhost:8126/debug/vars       # the agent's ozymandias.* metrics
+$ curl -s localhost:8126/debug/vars       # the agent's ozy.* metrics
 $ docker compose -f deploy/docker-compose.yml ps   # includes each container's health
 ```
 

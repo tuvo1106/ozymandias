@@ -4,11 +4,26 @@ Every metric ozymandias emits about itself, and, from M1, every metric the
 instrumented apps' integrations emit. `scripts/check-docs.sh` fails CI if a
 metric registered in ozymandias's code is missing here.
 
-Conventions (`docs/private/integrations.md` §4):
-names are `lower.dotted`, units go in this table rather than in the name, and
-tags come from bounded sets only.
+## Naming conventions
 
-## ozymandias self-metrics (`ozymandias.*`)
+Binding on this project's own metrics and on anything an integration emits:
+
+- **`lower.dotted.names`.** The unit goes in this table, not in the name — the
+  exception is a byte count, where `_bytes` / `.bytes` earns its place.
+- **Durations are distributions** (`d`), in milliseconds when they come from an
+  SDK. Anything in seconds says so in its row here.
+- **Counts are counters** (`c`), named noun plus past participle:
+  `submission.created`, not `create_submission`.
+- **Tags come from bounded sets only.** Never a user id, an email address, a
+  record id, a raw path, SQL, or an error message. High-cardinality identifiers
+  belong on spans and log lines, which are built for them; a tag with unbounded
+  values multiplies the series count without bound.
+- **Scraped metrics keep their source names** under a namespace prefix, and
+  Prometheus labels become tags under the same cardinality rules.
+- **Every metric added is listed here.** `scripts/check-docs.sh` enforces it for
+  this project's own instruments.
+
+## ozymandias self-metrics (`ozy.*`)
 
 Readable at `GET /debug/vars` on both binaries, and queryable like any other
 metric: the agent forwards its own every flush, and ozyd stores its own

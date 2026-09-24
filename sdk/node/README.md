@@ -1,4 +1,4 @@
-# ozymandias (Node.js SDK)
+# ozy (Node.js SDK)
 
 A zero-dependency extended-StatsD-compatible metrics client for [ozymandias](https://github.com/tuvo1106/ozymandias),
 a self-hosted observability stack. Node ≥ 22, ESM and CommonJS, TypeScript types included.

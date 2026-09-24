@@ -1,6 +1,6 @@
 # ADR-0007: Distribute SDKs as vendored build artifacts for now
 
-- **Status:** Superseded by ADR-0014
+- **Status:** Superseded by [ADR-0014](0014-sdk-distribution-after-going-public.md)
 - **Date:** 2026-09-19
 
 ## Context

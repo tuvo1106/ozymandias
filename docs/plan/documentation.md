@@ -8,7 +8,7 @@ reader can't learn the mechanism from the repo, the milestone is not done.
 
 | Doc | Purpose | Updated when |
 |---|---|---|
-| `README.md` | **Getting started, nothing else** (project-template rule): one-liner, Stack, Setup, Testing, doc links, License, plus a single status line pointing at PLAN.md. Screenshots and tours live in `docs/ui.md` / `docs/onboarding.md` | run/build/test steps change |
+| `README.md` | **Getting started, nothing else**: one-liner, Stack, Setup, Testing, doc links, License, plus a single status line pointing at PLAN.md. Screenshots and tours live in `docs/ui.md` / `docs/onboarding.md` | run/build/test steps change |
 | `CONTRIBUTING.md` | Template file: commit/PR/ADR process and "where things live" (extended for this repo's doc set) | process changes |
 | `PLAN.md`, `docs/plan/*` | The plan. Specs are edited to match reality in the same PR as a deviation, which is justified by an ADR | a spec turns out wrong |
 | `DESIGN.md` | **Living architecture doc** — how the system works *as built*: data flow, each component's mechanism, on-disk formats, config reference, design decisions with trade-off and rejected alternative. Created in M0, grows every milestone | any architectural change, same commit |
@@ -17,7 +17,7 @@ reader can't learn the mechanism from the repo, the milestone is not done.
 | `docs/api.md` | HTTP API reference for `/api/v1/*`: params, response schema, errors, curl example per endpoint | endpoint change |
 | `docs/query-language.md` | metricql + logql + monitor-query grammar (EBNF), semantics, worked examples | grammar/semantics change |
 | `docs/sdk/python.md`, `docs/sdk/node.md` | SDK guides: install, config env vars, API reference, each integration, safety guarantees, troubleshooting | SDK change |
-| `docs/operations.md` | Running it: config reference for `agent.yaml` / `ozyd.yaml`, data dir layout, retention, backup, `ozymandias.*` self-metrics catalog, troubleshooting playbook | config/ops change |
+| `docs/operations.md` | Running it: config reference for `agent.yaml` / `ozyd.yaml`, data dir layout, retention, backup, `ozy.*` self-metrics catalog, troubleshooting playbook | config/ops change |
 | `docs/metrics-catalog.md` | Every metric the integrations and the system emit: name, type, tags, unit, where emitted | metric added/changed |
 | `docs/adr/NNNN-title.md` | Architecture Decision Records per ADR-0001 (the template's), written from `adr-template.md` (Status, Date, Context, Decision, Alternatives-considered table, Consequences). Immutable once accepted — supersede, never edit. Seed ADR-0002… from the PLAN.md §1 decisions. **A departure from the plan is an ADR** ("reached by rejecting a plausible alternative" — the plan's) | a significant decision is made |
 | `docs/notes/M<n>.md` | **Learning notes** per milestone (template §3) | end of each milestone |

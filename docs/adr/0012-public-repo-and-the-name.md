@@ -39,9 +39,9 @@ project.
 
 Two consequences follow from publishing rather than from the name:
 
-- **The on-disk block magic changed** from `DDCH`/`DDIX` to `OZCH`/`OZIX`
-  (`docs/formats/block.md`). The old bytes were an abbreviation of the old
-  name; leaving them would have been the one reference nothing explained.
+- **The on-disk block magic is now `OZCH`/`OZIX`** (`docs/formats/block.md`).
+  The previous bytes abbreviated the previous name; leaving them would have
+  been the one reference nothing explained.
   Blocks written by earlier builds are unreadable here, which matters to
   nobody: the only data that ever existed was local test data.
 - **No commercial product is used as a landmark.** The comparison passages in

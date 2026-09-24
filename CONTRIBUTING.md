@@ -1,5 +1,22 @@
 # Contributing
 
+ozymandias is a learning project: it exists so one person can understand how
+observability systems work by building one. That shapes what a good
+contribution is. Questions, bug reports and "this is wrong and here is why" are
+always welcome. A patch that makes something work without explaining the
+mechanism is less useful here than the same patch with a paragraph on why the
+old code was wrong — and a pull request that replaces a hand-written component
+with a library defeats the purpose, however good the library is
+([AGENTS.md §4](AGENTS.md#dependency-allowlist-ask-before-adding-anything-else)
+has the list of things that are deliberately not dependencies).
+
+If you are thinking of anything large, open an issue first.
+
+## Branches
+
+Never commit to `main`. Branch prefixes: `feat/<slug>`, `fix/<slug>`,
+`chore/<slug>`, `docs/<slug>`.
+
 ## Commit messages
 
 [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): subject`, imperative, ≤72 chars.

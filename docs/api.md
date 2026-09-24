@@ -34,7 +34,7 @@ contain no curl (see `internal/cli`).
 
 ### `GET /debug/vars`
 
-The process's self-metrics (the `ozymandias.*` instruments). They're catalogued
+The process's self-metrics (the `ozy.*` instruments). They're catalogued
 in [metrics-catalog.md](metrics-catalog.md).
 
 ```console

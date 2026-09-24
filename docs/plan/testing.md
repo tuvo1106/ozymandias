@@ -94,7 +94,7 @@ fake notifier captures.
 
 ### L9 — End-to-end smoke (`scripts/smoke.sh`, real binaries, docker compose)
 Grows each milestone; must stay under 2 minutes. Run by hand (`make up && make smoke`) and
-quoted in the PR; there is no remote CI (§4). Sends real UDP/HTTP traffic,
+quoted in the PR; it does not run remotely (§4). Sends real UDP/HTTP traffic,
 polls the public API until data appears, exits non-zero with diagnostics on
 timeout. Runs in CI on every push.
 
@@ -136,7 +136,7 @@ milestone) so regressions are visible.
 - Tests are documented too: a non-obvious test gets a comment stating what
   failure mode it guards against.
 
-## 4. The gate: git hooks (no remote CI)
+## 4. The gates: git hooks, then Actions
 
 **The git hooks are the fast gate** (ADR-0013), and GitHub Actions re-runs
 `make ci` on every PR as the backstop:

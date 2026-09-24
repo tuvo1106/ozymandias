@@ -17,8 +17,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   wire headers `X-Ozy-*`, SDK packages `ozy`, config at `/etc/ozy`, data at
   `./data/ozyd`. **Breaking for every existing deployment:** re-create the config
   from `deploy/ozyd.yaml` and `deploy/agent.yaml`.
-- **Block magic changed** from `DDCH`/`DDIX` to `OZCH`/`OZIX`. Blocks written by
-  the old name cannot be read; there is no migration, by choice.
+- **Block magic is now `OZCH`/`OZIX`.** Blocks written by earlier builds cannot
+  be read; there is no migration, by choice.
 - **The wire dialect is described as "extended StatsD"** rather than by the
   vendor name for the same grammar. The protocol is unchanged and the
   compatibility captures from `datadogpy` and `hot-shots` still pass.
@@ -79,7 +79,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   time range, auto-refresh and a uPlot chart, with the query state in the URL.
 - Zero-dependency SDKs: `sdk/python` (Python ≥ 3.12) and `sdk/node` (Node ≥ 22, ESM + CJS),
   identical in shape, each wrapped so they cannot throw into the host app.
-- Both binaries report their own `ozymandias.*` metrics through the pipeline, tagged `host:`.
+- Both binaries report their own `ozy.*` metrics through the pipeline, tagged `host:`.
 - `cmd/loadgen` (`statsd-flood`) and `examples/cron-script.sh` — a metric from a shell script
   with `nc`, no SDK.
 - extended StatsD compatibility goldens captured from datadogpy and hot-shots, with

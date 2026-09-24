@@ -2,9 +2,10 @@
 
 An observability platform built from scratch as a learning project — agent, ingestion pipeline,
 time-series and log storage engines, distributed tracing, a query language, dashboards and
-alerting. Built to be app-agnostic: it is proved against three real applications covering the
-three adoption styles — a Next.js app on the Node SDK, a FastAPI service on the Python SDK, and
-a Rails API with no SDK at all (Prometheus scrape, stdout logs, stock OpenTelemetry).
+alerting. Built to be app-agnostic, and proved against three real applications as the
+milestones land — a Next.js app on the Node SDK, a FastAPI service on the Python SDK, and a
+Rails API with no SDK at all (Prometheus scrape, stdout logs, stock OpenTelemetry), covering
+the three adoption styles.
 
 **Status: M2 part one (the TSDB).** Metrics flow end to end — an app sends extended StatsD over
 UDP, the agent aggregates into 10s buckets and forwards them batched and gzipped, and the
@@ -53,9 +54,11 @@ make smoke              # end to end against the compose stack (after `make up`)
 make fuzz-long          # every fuzz target for 10 minutes
 ```
 
-There's no remote CI: the git hooks are the gate
-([ADR-0010](docs/adr/0010-local-first-ci.md)). Every commit runs the fast
-checks for what's staged, and every push runs `make ci`.
+Two gates ([ADR-0013](docs/adr/0013-actions-on-pull-requests.md)). The git
+hooks are the fast one — every commit runs the checks for what's staged, every
+push runs `make ci` — and GitHub Actions re-runs `make ci` on every pull
+request from a clean checkout. `make smoke`, the crash loop and `fuzz-long`
+stay manual, once per milestone.
 
 ## Docs
 
@@ -76,10 +79,10 @@ checks for what's staged, and every push runs `make ci`.
 ## Name
 
 Ramesses II, by way of Shelley. A monument in the desert with an inscription
-daring you to look on its works felt like the right name for a one-person
-clone of an observability platform. It was called something else while the repo
-was private; [ADR-0012](docs/adr/0012-public-repo-and-the-name.md) explains why
-it isn't any more.
+daring you to look on its works felt like the right name for one person's
+attempt at an observability platform. It went by something else while the repo
+was private; [ADR-0012](docs/adr/0012-public-repo-and-the-name.md) explains the
+change.
 
 ## License
 

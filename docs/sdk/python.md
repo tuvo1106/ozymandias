@@ -1,6 +1,6 @@
 # Python SDK
 
-`ozymandias` sends metrics from any Python 3.12+ application to an ozymandias agent. It has no
+`ozy` sends metrics from any Python 3.12+ application to an ozymandias agent. It has no
 runtime dependencies, it never raises into your code, and it does nothing at all until you
 point it at an agent.
 
@@ -20,7 +20,7 @@ is free there and will be claimed at the first publish
 
 | From | Command |
 |---|---|
-| PyPI (future) | `pip install ozymandias` / `uv add ozymandias` |
+| PyPI (future) | `pip install ozy` / `uv add ozy` |
 | git | `pip install "git+https://github.com/tuvo1106/ozymandias#subdirectory=sdk/python"` |
 | a built wheel | `cd sdk/python && uv build`, then `pip install dist/ozy-0.1.0-py3-none-any.whl` |
 
@@ -58,7 +58,7 @@ still pins the values it owns, such as its service name.
 | `env` | `OZY_ENV` | unset | Adds `env:<value>` |
 | `version` | `OZY_VERSION` | unset | Adds `version:<value>` |
 | `tags` | `OZY_TAGS` | none | Extra tags on every metric. The env var is a comma list: `team:core,region:eu` |
-| `debug` | `OZY_DEBUG` | off | `1`/`true`/`yes`/`on`: send failures go to the `ozymandias` logger at WARNING and payloads at DEBUG |
+| `debug` | `OZY_DEBUG` | off | `1`/`true`/`yes`/`on`: send failures go to the `ozy` logger at WARNING and payloads at DEBUG |
 | `max_payload` | none | `1432` | Maximum datagram size in bytes (one Ethernet MTU minus headers). The agent reads at most 8192 |
 | `flush_interval` | none | `0.1` | Seconds between background flushes |
 
@@ -132,7 +132,7 @@ a context manager across threads. Create a new one per block.
 
 `StatsdClient` is exported too, for tests and for sending to a second agent. Its constructor
 accepts injected `random`, `clock`, `resolver` and `socket_factory` callables, and
-`configure(ozymandias.Config(...))` enables it.
+`configure(ozy.Config(...))` enables it.
 
 ## Formatting and sampling
 
@@ -237,7 +237,7 @@ Two more details:
 |---|---|
 | Nothing arrives, and `statsd.enabled` is `False` | `OZY_AGENT_HOST` isn't visible to the process. Check `init()` arguments too: `agent_host=""` disables |
 | `stats().sent` climbs but the agent sees nothing | UDP was accepted locally and lost afterwards. The agent isn't listening on that host and port, or (on a Mac with Colima) UDP isn't forwarded into containers. See [operations.md → Colima](../operations.md#colima-udp-from-the-mac-doesnt-reach-containers). Run the agent natively (`make dev`) or switch Colima to `portForwarder: grpc` |
-| `stats().errors` climbs | Set `OZY_DEBUG=1` and configure logging (`logging.basicConfig()`). Failures are logged on the `ozymandias` logger |
+| `stats().errors` climbs | Set `OZY_DEBUG=1` and configure logging (`logging.basicConfig()`). Failures are logged on the `ozy` logger |
 | Metrics stop after a fork | This shouldn't happen (see [Fork behaviour](#fork-behaviour)). Check that the child doesn't exit with `os._exit()` before a flush. Call `statsd.flush()` first |
 | Lines are rejected as parse errors by the agent | Check the agent's `ozy.agent.statsd.parse_errors`. Common causes are an empty metric name, or a value from another client that isn't a finite number. Empty tag entries (`tags=["a", ""]`) are harmless, because the agent skips them |
 | Metrics missing at shutdown | `atexit` doesn't run on `os._exit()` or on a SIGKILL. Call `statsd.flush()` or `statsd.close()` yourself |
