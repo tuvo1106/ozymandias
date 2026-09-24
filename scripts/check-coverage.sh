@@ -21,7 +21,13 @@ testlog=$(mktemp)
 filtered=$(mktemp)
 trap 'rm -f "$testlog" "$filtered"' EXIT
 
-go test -race -covermode=atomic -coverprofile="$profile" ./... | tee "$testlog"
+# -timeout: the default is 10 minutes per package, and internal/tsdb/db is a
+# whole-database package whose crash loop, stress test and 40 MiB log-roll
+# recovery tests cost ~5 minutes under -race on a fast SSD. A 2-core CI runner
+# with a slower disk took 600.06s and was killed mid-run by a budget nobody had
+# thought about. Raise it rather than shrink the tests: the size is what lets
+# them reach the bugs (docs/notes/M2.md).
+go test -race -timeout 25m -covermode=atomic -coverprofile="$profile" ./... | tee "$testlog"
 
 fail=0
 

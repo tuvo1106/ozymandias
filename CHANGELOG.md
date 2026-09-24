@@ -30,6 +30,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   are pre-1.0, not because the repo is private. Git install is documented for
   Python; a first publish would use PyPI `ozy` and npm `@tuvo1106/ozy`.
 
+### Fixed
+
+- `make test` now passes `-timeout 25m`. `internal/tsdb/db` costs ~5 minutes
+  under `-race` locally and ran 600.06s on a CI runner, which Go's 10-minute
+  default killed mid-test.
+
 ### Added
 
 - `SECURITY.md` and `CODE_OF_CONDUCT.md`.

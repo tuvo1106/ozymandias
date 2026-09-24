@@ -26,7 +26,9 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Above check-coverage.sh's own 25m `go test -timeout`, so a slow package
+    # is reported by the test binary rather than killed by the job.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
