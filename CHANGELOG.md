@@ -23,8 +23,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   vendor name for the same grammar. The protocol is unchanged and the
   compatibility captures from `datadogpy` and `hot-shots` still pass.
 - **GitHub Actions runs `make ci` on every pull request** (ADR-0013, supersedes
-  ADR-0010) now that public-repo minutes are free. The git hooks remain the fast
-  gate.
+  ADR-0010) now that public-repo minutes are free — including `make sdk-check`,
+  which the metered workflow used to skip, so both SDKs' 90% gates are enforced
+  remotely too. The git hooks remain the fast gate.
 - **The SDKs stay vendored** (ADR-0014, supersedes ADR-0007) — now because they
   are pre-1.0, not because the repo is private. Git install is documented for
   Python; a first publish would use PyPI `ozy` and npm `@tuvo1106/ozy`.

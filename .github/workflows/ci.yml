@@ -4,9 +4,11 @@
 # machine, so a pushed branch is verified by something other than the laptop
 # that produced it. The repo is public, so the minutes are free.
 #
-# Deliberately not here: `make smoke` (needs the compose stack), the crash loop
-# and `fuzz-long` (minutes of wall clock). Those are run by hand per milestone.
-# Keep it one job — jobs are billed rounded up to a whole minute.
+# It runs everything `make ci` runs except the parts that need more than a
+# checkout: `make smoke` (wants the compose stack), the crash loop and
+# `fuzz-long` (minutes of wall clock). Those stay manual, once per milestone.
+# Keep it one job — jobs are billed rounded up to a whole minute, and the habit
+# is worth keeping even when the bill is zero.
 name: ci
 
 on:
@@ -24,7 +26,7 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -35,12 +37,17 @@ jobs:
           node-version-file: web/.nvmrc
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: sdk/python/uv.lock
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.13.2
       - run: scripts/check-no-app-coupling.sh
       - run: make docs-check
       - run: make test
+      - run: make sdk-check
       - name: web
         working-directory: web
         run: npm ci && npm run typecheck && npm run lint && npm run test:coverage && npm run build
