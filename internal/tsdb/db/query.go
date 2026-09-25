@@ -39,6 +39,29 @@ func (db *DB) Select(ctx context.Context, sel tsdb.Selector, fromMs, toMs int64)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	// The head is read first, and this is a correctness requirement, not a
+	// preference.
+	//
+	// A block cut publishes the block to db.blocks and only then truncates the
+	// head, so that the samples it moves are in both places for a moment
+	// rather than in neither. That ordering protects a reader that looks at
+	// the head before it looks at the blocks: whichever side of the cut it
+	// lands on, it sees the samples at least once, and the merge below drops
+	// the duplicate. Reading the blocks first inverts it — the snapshot is
+	// taken before the new block is published, the head is read after it has
+	// been truncated, and the range the cut just moved is in neither half of
+	// the answer. The query then succeeds and returns a hole, which is the
+	// worst way for a database to be wrong.
+	//
+	// Reading it early cannot lose anything in the other direction, because
+	// samples only ever travel from the head to a block: an earlier head read
+	// and a later block snapshot can each only hold *more* than they would
+	// have, never less.
+	fromHead, err := db.head.Select(sel, fromMs, toMs)
+	if err != nil {
+		return nil, err
+	}
+
 	// Acquired under the same lock that guards the list, and held for the
 	// whole query. Compaction and retention take a block out of this list and
 	// only then close it, so a block still in the list here cannot be closed
@@ -84,8 +107,11 @@ func (db *DB) Select(ctx context.Context, sel tsdb.Selector, fromMs, toMs int64)
 			}
 		}
 	}
-	// Oldest first, head last: that is time order, so each source only ever
-	// appends to the end of what is already there.
+	// Merged oldest first, head last — that is time order, so each source only
+	// ever appends to the end of what is already there, and the stable sort
+	// below keeps the older source's value for an instant two of them claim.
+	// This is the order they are *combined* in, which is independent of the
+	// order they were read in above.
 	for _, b := range blocks {
 		if !b.Overlaps(fromMs, toMs) {
 			continue
@@ -95,10 +121,6 @@ func (db *DB) Select(ctx context.Context, sel tsdb.Selector, fromMs, toMs int64)
 			return nil, err
 		}
 		add(got)
-	}
-	fromHead, err := db.head.Select(sel, fromMs, toMs)
-	if err != nil {
-		return nil, err
 	}
 	add(fromHead)
 
@@ -152,7 +174,17 @@ func (db *DB) metadata(ctx context.Context, limit int, ask func(index.Lookup) []
 		return nil, err
 	}
 	seen := map[string]struct{}{}
-	for _, l := range db.lookups() {
+	// The head first, and its answer taken before the block list is even
+	// looked at — the same ordering requirement as [DB.Select], for the same
+	// reason. A block cut publishes the block and then drops the series it
+	// moved out of the head's index, so a reader that snapshots the block list
+	// first and asks the head last can miss a series that spent the whole
+	// query in exactly one of them. A series seen twice is free here: these
+	// answers go into a set.
+	for _, v := range ask(db.head.Lookup()) {
+		seen[v] = struct{}{}
+	}
+	for _, l := range db.blockLookups() {
 		for _, v := range ask(l) {
 			seen[v] = struct{}{}
 		}

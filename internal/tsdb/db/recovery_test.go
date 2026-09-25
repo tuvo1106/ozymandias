@@ -1,11 +1,14 @@
 package db
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -18,36 +21,85 @@ import (
 // Cutting a block truncates the log, on the reasoning that everything older
 // than the cut is now in a block. That reasoning has a hidden premise: that
 // the samples still in the head were written to the *current* segment. A
-// segment rolls at 32 MiB, and the head holds hours of data, so on any real
-// traffic the head's oldest samples are several segments back — and dropping
-// those segments drops the only copy of them, because the head is memory.
+// segment rolls at WALSegmentSize, and the head holds hours of data, so on any
+// real traffic the head's oldest samples are several segments back — and
+// dropping those segments drops the only copy of them, because the head is
+// memory.
 //
 // Nothing else catches this. Every other restart test writes a few kilobytes,
 // so the log never rolls and the premise is accidentally true.
+//
+// # Why this does a fixed amount of work
+//
+// It used to fill until `walBytes(dir) >= 40 MiB`, against the default 32 MiB
+// segment size, with the maintenance loop truncating the log underneath it the
+// whole time. The log therefore shrank while the loop tried to grow it, and
+// how much got written was decided by how fast the machine was: ~3 million
+// samples in 6s here, ~10.6 million in 151s on a CI runner. Worse, on a slow
+// enough runner the truncator can keep up with the appender indefinitely, and
+// the loop stops terminating at all — the test hangs rather than fails.
+//
+// Lowering WALSegmentSize reaches the same premise — several rolled segments
+// behind a head that still holds their samples — for a bounded, known number
+// of appends. The assertions below check the premise was actually reached
+// rather than assuming it.
+//
+// # What the full scale caught
+//
+// The same assertion used to fail intermittently on CI and never locally,
+// losing samples in round numbers (issue #3). The difference turned out not to
+// be the hardware but the pace: CI ran this about twelve times slower than a
+// laptop, and `-race` slows a laptop into the same regime. `make soak` runs it
+// with the race detector for exactly that reason, and it reproduced on the
+// first attempt and every attempt after.
+//
+// What it was is nothing to do with restarts. [DB.Select] read the blocks
+// before the head, so a block cut landing inside a query published its block
+// after the block snapshot and truncated the head before the head read — and
+// the range it moved appeared in neither. The count was short while the
+// process was still up; the restart was a bystander.
+// TestDB_AQueryNeverFallsIntoTheGapBetweenTheHeadAndANewBlock covers that
+// directly and in two seconds. This stays as the end-to-end check, because it
+// is what found it: nothing smaller had a block cut and a long query
+// overlapping by accident.
+//
+// The `liveCount` assertion below is the part that pointed at it. Counting
+// before the close as well as after splits "lost while running" from "lost
+// across the restart", and those have no causes in common.
 func TestDB_LogTruncationKeepsWhatIsStillOnlyInTheHead(t *testing.T) {
-	if testing.Short() {
-		t.Skip("writes ~40 MiB to roll a log segment")
+	nSeries, segmentSize, totalTs := 10, int64(256<<10), int64(90_000)
+	const blockRange = 30 * time.Second
+	if os.Getenv("OZY_SOAK") == "1" {
+		// The shape that has actually failed on CI: the stock 32 MiB segment
+		// size and ~35 block ranges of data behind it.
+		segmentSize, totalTs = 0, 1_065_000
+		t.Logf("soak: %d timestamps x %d series at the default segment size", totalTs, nSeries)
 	}
 	dir := t.TempDir()
+	// The store's own account of what it did. When this fails it fails once,
+	// after a minute of work, somewhere nobody can attach a debugger — and the
+	// interesting events (which ranges were cut, what replay applied and what
+	// it refused) have all already happened by then.
+	journal := &lockedBuffer{}
+	logger := slog.New(slog.NewTextHandler(journal, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	db, err := Open(Options{
-		Dir: dir,
-		// Long enough that one cut leaves most of the data in the head.
-		BlockRange: 30 * time.Second,
-		Retention:  -1,
+		Dir:            dir,
+		BlockRange:     blockRange,
+		Retention:      -1,
+		WALSegmentSize: segmentSize,
+		Logger:         logger,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	const series = 10
-	refs := make([]tsdb.SeriesRef, series)
+	refs := make([]tsdb.SeriesRef, nSeries)
 	for i := range refs {
 		refs[i] = ref("m", fmt.Sprintf("host:h%d", i))
 	}
-	batch := make([]tsdb.SeriesSamples, series)
+	batch := make([]tsdb.SeriesSamples, nSeries)
 	var acked int64
-	var ts int64
-	for walBytes(t, dir) < 40<<20 {
+	for ts := int64(0); ts < totalTs; ts++ {
 		for i, r := range refs {
 			batch[i] = tsdb.SeriesSamples{Series: r, Samples: []tsdb.Sample{{T: ts, V: float64(ts)}}}
 		}
@@ -55,38 +107,200 @@ func TestDB_LogTruncationKeepsWhatIsStillOnlyInTheHead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if res.Samples != series {
-			t.Fatalf("at t=%d stored %d of %d: %+v", ts, res.Samples, series, res.Rejected)
+		if res.Samples != nSeries {
+			t.Fatalf("at t=%d stored %d of %d: %+v", ts, res.Samples, nSeries, res.Rejected)
 		}
 		acked += int64(res.Samples)
-		ts++
 	}
-	segments, err := os.ReadDir(filepath.Join(dir, walDirName))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(segments) < 2 {
-		t.Fatalf("the log never rolled (%d segment), so this test proves nothing", len(segments))
+
+	logger.Info("test: the fill is finished", "acked", acked)
+	if hs := db.HeadStats(); hs.Samples == 0 {
+		t.Fatal("the head is empty before the cut")
 	}
 
 	// One cut: the oldest 30s goes to a block, the rest stays in the head —
 	// and the log is truncated behind it.
-	if err := db.CutBlock(); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
+	//
+	// errNothingToCut is not a failure here. This test runs on the real clock,
+	// so maintain() has been cutting one range every BlockRange/10 underneath
+	// the fill the whole time; on a machine slow enough that producing a range
+	// takes longer than a tick, the loop keeps the head span under its 1.5
+	// range threshold and there is genuinely nothing left for this call to
+	// take. That is the regime the soak run exists to create — CI is about
+	// twelve times slower than this laptop — so treating it as fatal would
+	// make the nightly fail for the one reason it is designed to produce. What
+	// the test needs is that a cut has happened and truncated the log behind
+	// it, which the check below asserts directly and which is true either way.
+	if err := db.CutBlock(); err != nil && !errors.Is(err, errNothingToCut) {
 		t.Fatal(err)
 	}
 
-	reopened, err := Open(Options{Dir: dir, BlockRange: 30 * time.Second, Retention: -1})
+	// The premise, checked rather than assumed. A checkpoint exists only
+	// because some truncation found records it had to carry forward — samples
+	// still in the head whose segment was being dropped. Without one, the
+	// head's data was all in the current segment, the case this test is about
+	// was never reached, and a pass means nothing.
+	//
+	// Deliberately "some truncation" and not "the cut above". Tightening this
+	// to "the explicit cut wrote a new checkpoint" would assert something
+	// stronger than the property and would fail spuriously: Truncate returns
+	// early when no segment is older than the current one, and by the end of a
+	// soak fill the background loop has usually taken the log down to a single
+	// live segment plus its checkpoint — the runs that found issue #3 all
+	// ended at `wal=[00000004.wal checkpoint.00000004]`, where the explicit
+	// cut has no segment left to drop. What matters for the restart is the
+	// state at close, not which cut produced it: head-only samples whose
+	// durable copy is a checkpoint rather than a live segment. Asserting on
+	// the segment count instead fails for the same reason.
+	if !hasCheckpoint(t, dir) {
+		t.Fatalf("no checkpoint after the cut: nothing in the head was behind a truncated "+
+			"segment, so this test proves nothing. wal=%v", walFiles(t, dir))
+	}
+	// Counted *before* the restart, because "lost" has two very different
+	// causes and the restart is the obvious suspect for both. If the store is
+	// already short here, the cut dropped acknowledged samples while the
+	// process was still up and replay never had them to lose; if it is whole
+	// here and short after the reopen, the log or the checkpoint is where they
+	// went. Only one of those is a recovery bug.
+	logger.Info("test: the explicit cut is done")
+	liveCount := countSamples(t, db)
+	logger.Info("test: counted the live store", "samples", liveCount)
+	before := describe(t, db, dir)
+	logger.Info("test: described the live store", "state", before)
+	if liveCount != acked {
+		t.Errorf("%d samples readable before any restart, %d were acknowledged — %d lost while "+
+			"the process was still up\nstate: %s\nmissing ranges: %s",
+			liveCount, acked, acked-liveCount, before, missingRanges(t, db, totalTs, nSeries))
+	}
+	logger.Info("test: closing")
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	logger.Info("test: closed")
+
+	reopened, err := Open(Options{
+		Dir: dir, BlockRange: blockRange, Retention: -1,
+		WALSegmentSize: segmentSize, Logger: logger,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = reopened.Close() }()
 	if got := countSamples(t, reopened); got != acked {
-		t.Errorf("%d samples survived a clean restart, %d were acknowledged — %d lost",
-			got, acked, acked-got)
+		// Everything a diagnosis needs, because this has only ever failed
+		// somewhere nobody can attach a debugger.
+		t.Errorf("%d samples survived a clean restart, %d were acknowledged (%d readable "+
+			"before the close) — %d lost\nbefore close: %s\nafter reopen: %s\nmissing ranges: %s",
+			got, acked, liveCount, acked-got, before, describe(t, reopened, dir),
+			missingRanges(t, reopened, totalTs, nSeries))
+		// The whole journal, in order. Roughly one line per block range plus
+		// the test's own markers: enough to place every measurement against
+		// the maintenance loop that was running underneath it, which is the
+		// one thing a snapshot taken afterwards cannot tell you.
+		t.Logf("what the store did, in order:\n%s", journal.all())
 	}
+}
+
+// walFiles names the log directory's contents, tolerating one vanishing under
+// the maintenance loop.
+func walFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(dir, walDirName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.Name())
+	}
+	return out
+}
+
+// hasCheckpoint reports whether the log holds a checkpoint — the artefact that
+// carries head-only records across a truncation.
+func hasCheckpoint(t *testing.T, dir string) bool {
+	t.Helper()
+	for _, name := range walFiles(t, dir) {
+		if strings.HasPrefix(name, "checkpoint.") {
+			return true
+		}
+	}
+	return false
+}
+
+// describe renders what a store is holding, for a failure message.
+func describe(t *testing.T, db *DB, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	hs := db.HeadStats()
+	fmt.Fprintf(&b, "head[%d,%d] series=%d chunks=%d; blocks=[", hs.MinT, hs.MaxT, hs.Series, hs.Chunks)
+	for i, blk := range db.Blocks() {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		m := blk.Meta()
+		fmt.Fprintf(&b, "L%d(%d,%d)x%d", m.Compaction.Level, m.MinTime, m.MaxTime, m.Stats.Samples)
+	}
+	fmt.Fprintf(&b, "]; wal=%v", walFiles(t, dir))
+	return b.String()
+}
+
+// missingRanges reports which timestamps are not present exactly once per
+// series, collapsed into runs, so a failure says *where* the hole is rather
+// than only how big it was — and, per run, how many copies of each timestamp
+// were actually found. The count matters: a run of `seen=0` is data that was
+// lost, a run of `seen=1..9` against ten series is a partial loss inside the
+// window, and a run above nSeries is duplication that a dedup should have
+// removed. They are different bugs and the sample shortfall alone cannot tell
+// them apart.
+func missingRanges(t *testing.T, db *DB, totalTs int64, nSeries int) string {
+	t.Helper()
+	set, err := db.Select(ctx, tsdb.Selector{Metric: "m"}, math.MinInt64, math.MaxInt64)
+	if err != nil {
+		return "select failed: " + err.Error()
+	}
+	defer func() { _ = set.Close() }()
+	seen := make([]int, totalTs)
+	for set.Next() {
+		it := set.Iterator()
+		for it.Next() {
+			if s := it.At(); s.T >= 0 && s.T < totalTs {
+				seen[s.T]++
+			}
+		}
+		// An iteration that stopped early leaves every timestamp it never
+		// reached at zero, which this function would then report as a hole —
+		// inventing exactly the symptom it exists to characterise, on the one
+		// path where it runs. Say so instead.
+		if err := it.Err(); err != nil {
+			return "iteration failed, so the ranges below would be its shortfall and not the store's: " + err.Error()
+		}
+	}
+	if err := set.Err(); err != nil {
+		return "the series set failed, so the ranges below would be its shortfall and not the store's: " + err.Error()
+	}
+	var b strings.Builder
+	runs := 0
+	for ts := int64(0); ts < totalTs; {
+		if seen[ts] == nSeries {
+			ts++
+			continue
+		}
+		start, lo, hi := ts, seen[ts], seen[ts]
+		for ts < totalTs && seen[ts] != nSeries {
+			lo, hi = min(lo, seen[ts]), max(hi, seen[ts])
+			ts++
+		}
+		if runs++; runs > 8 {
+			b.WriteString(" ...")
+			break
+		}
+		fmt.Fprintf(&b, " [%d,%d)seen=%d..%d", start, ts, lo, hi)
+	}
+	if runs == 0 {
+		return "(none - every timestamp is present exactly nSeries times, so the shortfall is elsewhere)"
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // TestDB_ATornTailIsRepairedOnOpen: a crash can leave a partial record at the
@@ -206,9 +420,22 @@ func TestDB_MetadataQueriesAreSafeDuringIntake(t *testing.T) {
 
 func countSamples(t *testing.T, db *DB) int64 {
 	t.Helper()
-	set, err := db.Select(ctx, tsdb.Selector{Metric: "m"}, math.MinInt64, math.MaxInt64)
+	n, err := countSamplesErr(db)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return n
+}
+
+// countSamplesErr is countSamples for a caller that is not the test goroutine.
+// t.Fatal is only valid from the goroutine running the test — anywhere else it
+// is a bare runtime.Goexit, which kills that goroutine and lets the test carry
+// on to its final assertion as though nothing had gone wrong. Concurrency
+// tests read this in a fan-out, so they need the error back instead.
+func countSamplesErr(db *DB) (int64, error) {
+	set, err := db.Select(ctx, tsdb.Selector{Metric: "m"}, math.MinInt64, math.MaxInt64)
+	if err != nil {
+		return 0, err
 	}
 	var n int64
 	for set.Next() {
@@ -218,16 +445,18 @@ func countSamples(t *testing.T, db *DB) int64 {
 			n++
 		}
 		if err := it.Err(); err != nil {
-			t.Fatal(err)
+			_ = set.Close()
+			return 0, err
 		}
 	}
 	if err := set.Err(); err != nil {
-		t.Fatal(err)
+		_ = set.Close()
+		return 0, err
 	}
 	if err := set.Close(); err != nil {
-		t.Fatal(err)
+		return 0, err
 	}
-	return n
+	return n, nil
 }
 
 func TestDB_RetentionIsMutuallyExclusiveWithCompaction(t *testing.T) {
@@ -489,4 +718,25 @@ func TestDB_ACrashBetweenAMergeAndItsCleanupIsResolvedAtStartup(t *testing.T) {
 	if after := countSamples(t, reopened); after != before {
 		t.Errorf("%d samples after the cleanup, %d before", after, before)
 	}
+}
+
+// lockedBuffer is an io.Writer for a slog handler shared by the maintenance
+// goroutine and the test's own opens. slog serializes each record's Write, but
+// not across handlers, and the two Opens here share one.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// all returns everything logged, in order.
+func (b *lockedBuffer) all() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return strings.TrimSpace(b.buf.String())
 }

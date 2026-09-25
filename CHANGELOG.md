@@ -32,6 +32,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A query landing on a block cut could return a hole** (issue #3). `DB.Select`
+  snapshotted the block list, read every block, and only then read the head. A
+  cut inside that window publishes its block *after* the snapshot and truncates
+  the head *before* the head read, so the block range it moved was in neither
+  half of the answer — a successful query, missing a contiguous range, with
+  nothing logged. The head is now read first, which is the order the cut's own
+  publish-then-truncate sequence was written to be safe against; the samples are
+  briefly in both places instead of neither, and the merge deduplicates them.
+  Not a durability bug: nothing was ever missing from disk.
 - **`FakeClock.Advance` no longer costs one iteration per ticker period.** A
   ticker left behind by a big `Advance` delivers its first missed deadline and
   drops the rest — which the clock already did, one period at a time, re-sorting
