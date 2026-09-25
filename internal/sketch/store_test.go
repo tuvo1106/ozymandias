@@ -285,3 +285,34 @@ func TestStore_GrowingFarBelowANarrowStore(t *testing.T) {
 		t.Errorf("total: got %v, want 10", s.total)
 	}
 }
+
+// merge pre-sizes the destination from the source's first and last non-empty
+// buckets, not from its offset. Those differ when the source carries leading
+// empty buckets — which a store built only by add never does, so the case
+// needs constructing rather than growing.
+func TestStore_MergeFromASourceWithLeadingEmptyBuckets(t *testing.T) {
+	src := store{counts: []float64{0, 0, 0, 5, 0, 2}, offset: 1_000, total: 7}
+
+	var merged, oneByOne store
+	merged.add(1_010, 1)
+	oneByOne.add(1_010, 1)
+
+	merged.merge(&src)
+	src.forEach(func(k int, c float64) { oneByOne.add(k, c) })
+
+	if merged.offset != oneByOne.offset || len(merged.counts) != len(oneByOne.counts) {
+		t.Fatalf("shape: merge offset=%d len=%d, adds offset=%d len=%d",
+			merged.offset, len(merged.counts), oneByOne.offset, len(oneByOne.counts))
+	}
+	if got, want := merged.offset, 1_003; got != want {
+		t.Fatalf("offset: got %d, want %d — the first non-empty bucket, not the source offset", got, want)
+	}
+	for i := range merged.counts {
+		if merged.counts[i] != oneByOne.counts[i] {
+			t.Fatalf("bucket %d: merge %v, adds %v", merged.offset+i, merged.counts[i], oneByOne.counts[i])
+		}
+	}
+	if merged.total != 8 {
+		t.Errorf("total: got %v, want 8", merged.total)
+	}
+}

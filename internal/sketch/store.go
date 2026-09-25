@@ -62,9 +62,10 @@ func (s *store) grow(k int) {
 // growLow extends the store downwards to cover k, collapsing if that would
 // exceed MaxBins.
 //
-// Collapsing downwards means the new floor absorbs everything below it,
-// including k itself. That is the asymmetry the package is built around: the
-// low end of a latency distribution is the part nobody asks about.
+// Collapsing downwards means the new floor absorbs k itself rather than giving
+// it a bucket. That is the asymmetry the package is built around: the low end
+// of a latency distribution is the part nobody asks about. Only growHigh has
+// to fold existing counts, because only it moves the floor upwards.
 func (s *store) growLow(k int) {
 	want := s.offset + len(s.counts) - k // buckets needed to cover [k, top]
 	if want <= MaxBins {
@@ -73,23 +74,13 @@ func (s *store) growLow(k int) {
 		s.counts, s.offset = grown, k
 		return
 	}
-	// Keep the top MaxBins buckets; everything below folds into the lowest
-	// kept one. Its own count is preserved — this adds to it, never replaces.
+	// Keep the top MaxBins buckets. Nothing already held falls off the bottom,
+	// and it cannot: the store is never wider than MaxBins, so the new floor
+	// always sits at or below the current offset. The only thing landing below
+	// the floor is k itself, which add folds in when it clamps the index.
 	newOffset := s.offset + len(s.counts) - MaxBins
 	grown := make([]float64, MaxBins)
-	if cut := newOffset - s.offset; cut > 0 {
-		var folded float64
-		for i := 0; i < cut && i < len(s.counts); i++ {
-			folded += s.counts[i]
-		}
-		copy(grown, s.counts[cut:])
-		grown[0] += folded
-	} else {
-		// The store is narrower than MaxBins and k is far below it: nothing
-		// held here falls off the bottom, only k itself does. Without this
-		// case the cut is negative and the copy below indexes out of range.
-		copy(grown[-cut:], s.counts)
-	}
+	copy(grown[s.offset-newOffset:], s.counts)
 	s.counts, s.offset = grown, newOffset
 }
 

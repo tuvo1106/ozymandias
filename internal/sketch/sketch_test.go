@@ -360,3 +360,79 @@ func TestSketch_ValuesBeyondTheIndexableSpan(t *testing.T) {
 		t.Errorf("p95: got %v, want 1e9 within %v relative error", p95, DefaultAlpha)
 	}
 }
+
+// A decoder handed an empty bucket must not create one. A zero count is not an
+// observation, and admitting it would give the sketch a bucket that every
+// walk then skips and every encoding then re-emits.
+func TestSketch_AddBinIgnoresEmptyBuckets(t *testing.T) {
+	s := NewDefault()
+	s.AddBin(Bin{Index: 10, Count: 0}, false)
+	s.AddBin(Bin{Index: 10, Count: 0}, true)
+
+	if got := len(s.PositiveBins()); got != 0 {
+		t.Errorf("positive bins: got %d, want 0", got)
+	}
+	if got := len(s.NegativeBins()); got != 0 {
+		t.Errorf("negative bins: got %d, want 0", got)
+	}
+	// The stores, not just the bins: a zero count admitted here would give the
+	// sketch a bucket that every walk skips and every encoding re-emits, which
+	// the accessors above cannot see because they filter empty buckets out.
+	if !s.pos.isEmpty() || !s.neg.isEmpty() {
+		t.Errorf("an empty bin created a bucket: pos=%+v neg=%+v", s.pos, s.neg)
+	}
+}
+
+// The rank a quantile resolves to can land exactly on a bucket edge, and which
+// side of that edge the walk takes is the difference between two neighbouring
+// answers. The negative walk runs descending through the store to go ascending
+// through the values, so it gets its own case rather than trusting symmetry.
+func TestSketch_QuantileAtAnExactRankBoundary(t *testing.T) {
+	// Four observations put rank q*(count-1) at exactly 1.0 for q = 1/3, so the
+	// cumulative count equals the rank after the first bucket. The answer is
+	// the second-smallest value: the first bucket holds rank 0, not rank 1.
+	for _, tc := range []struct {
+		name   string
+		values []float64
+		want   float64
+	}{
+		{"negative", []float64{-800, -400, -200, -100}, -400},
+		{"positive", []float64{100, 200, 400, 800}, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewDefault()
+			for _, v := range tc.values {
+				mustAdd(t, s, v)
+			}
+			got, err := s.Quantile(1.0 / 3.0)
+			if err != nil {
+				t.Fatalf("Quantile: %v", err)
+			}
+			if !withinAlpha(got, tc.want, DefaultAlpha) {
+				t.Errorf("q=1/3: got %v, want %v within %v relative error", got, tc.want, DefaultAlpha)
+			}
+		})
+	}
+}
+
+// A sketch rebuilt from a wire gamma starts as empty as one built from an
+// alpha — including its min and max sentinels, which are the one piece of
+// state that is not zero-valued.
+func TestSketch_NewWithGammaStartsEmpty(t *testing.T) {
+	s, err := NewWithGamma(1.02)
+	if err != nil {
+		t.Fatalf("NewWithGamma: %v", err)
+	}
+	if s.Count() != 0 {
+		t.Fatalf("count: got %v, want 0", s.Count())
+	}
+
+	mustAdd(t, s, 7)
+	mustAdd(t, s, 3)
+	if got := s.Min(); got != 3 {
+		t.Errorf("min: got %v, want 3", got)
+	}
+	if got := s.Max(); got != 7 {
+		t.Errorf("max: got %v, want 7", got)
+	}
+}
