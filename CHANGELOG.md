@@ -30,6 +30,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   are pre-1.0, not because the repo is private. Git install is documented for
   Python; a first publish would use PyPI `ozy` and npm `@tuvo1106/ozy`.
 
+### Added
+
+- **Boundary tests for the chunk encoder's delta-of-delta buckets**, found by a
+  one-off mutation-testing run over `internal/tsdb/chunkenc`. A delta-of-delta
+  filed one bucket too wide still decodes to the right number — it only spends
+  more bits — so no round-trip test could see it. The new tests assert the
+  *cost in bits* of every bucket edge, which is what the bucket is, plus the
+  duplicate-timestamp case on the delta-of-delta path, which the existing table
+  covered for the first two samples but not the third.
+
 ### Fixed
 
 - **Eight storage defects from a whole-tree review** (issues #4–#11), all in the

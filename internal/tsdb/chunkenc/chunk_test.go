@@ -143,11 +143,30 @@ func TestChunk_RejectsOutOfOrderAndDuplicateTimestamps(t *testing.T) {
 			}
 		})
 	}
-	// Same rule from the third sample on, where the dod path runs.
-	c := appendAll(t, []sample{{0, 1}, {10, 2}})
-	a, _ := c.Appender()
-	if err := a.Append(5, 3); err == nil {
-		t.Fatal("expected an error on the delta-of-delta path too")
+	// Same rule from the third sample on, where the delta-of-delta path runs
+	// — and both halves of it. Only the "earlier" case used to be here, which
+	// left `t <= a.t` on that path tested in one direction: mutation testing
+	// turned it into `t < a.t`, so the encoder accepted a *duplicate*
+	// timestamp from the third sample on, and the whole suite stayed green.
+	// The table above covers both cases for the first two samples; this is
+	// the same table, for the path that encodes differently.
+	for _, tc := range []struct {
+		name  string
+		third int64
+	}{
+		{"equal", 10},
+		{"earlier", 5},
+	} {
+		t.Run("dod path, "+tc.name, func(t *testing.T) {
+			c := appendAll(t, []sample{{0, 1}, {10, 2}})
+			a, _ := c.Appender()
+			if err := a.Append(tc.third, 3); err == nil {
+				t.Fatal("expected an error on the delta-of-delta path too")
+			}
+			if c.NumSamples() != 2 {
+				t.Errorf("a rejected append changed the chunk: %d samples", c.NumSamples())
+			}
+		})
 	}
 }
 
