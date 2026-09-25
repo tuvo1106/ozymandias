@@ -1,0 +1,19 @@
+# 2026/09/25 10:32:57.564658 [TestProperty_MergeAgreesWithBucketByBucketAdds] [rapid] draw dst: []int{0}
+# 2026/09/25 10:32:57.564717 [TestProperty_MergeAgreesWithBucketByBucketAdds] [rapid] draw src: []int{1, -1}
+# 2026/09/25 10:32:57.564719 [TestProperty_MergeAgreesWithBucketByBucketAdds] shape: merge offset=-2 len=4, adds offset=-1 len=3
+# 
+v0.4.8#14769690238632999468
+0x5555555555555
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x5555555555555
+0x10000000000000
+0x0
+0x0
+0x0

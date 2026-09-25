@@ -150,12 +150,18 @@ func TestProperty_BinsRoundTripThroughTheAccessors(t *testing.T) {
 			t.Fatalf("NewWithGamma: %v", err)
 		}
 		for _, b := range orig.PositiveBins() {
-			rebuilt.AddBin(b, false)
+			if err := rebuilt.AddBin(b, false); err != nil {
+				t.Fatalf("AddBin(%+v): %v", b, err)
+			}
 		}
 		for _, b := range orig.NegativeBins() {
-			rebuilt.AddBin(b, true)
+			if err := rebuilt.AddBin(b, true); err != nil {
+				t.Fatalf("AddBin(%+v, negative): %v", b, err)
+			}
 		}
-		rebuilt.SetAggregates(orig.Count(), orig.Sum(), orig.Min(), orig.Max(), orig.ZeroCount())
+		if err := rebuilt.SetAggregates(orig.Count(), orig.Sum(), orig.Min(), orig.Max(), orig.ZeroCount()); err != nil {
+			t.Fatalf("SetAggregates: %v", err)
+		}
 
 		for _, q := range []float64{0, 0.1, 0.5, 0.9, 0.99, 1} {
 			a, _ := orig.Quantile(q)
@@ -221,14 +227,17 @@ func TestProperty_MergeAgreesWithBucketByBucketAdds(t *testing.T) {
 		merged.merge(&src)
 		src.forEach(func(k int, c float64) { oneByOne.add(k, c) })
 
-		if merged.offset != oneByOne.offset || len(merged.counts) != len(oneByOne.counts) {
-			t.Fatalf("shape: merge offset=%d len=%d, adds offset=%d len=%d",
-				merged.offset, len(merged.counts), oneByOne.offset, len(oneByOne.counts))
+		gotBins, wantBins := merged.bins(), oneByOne.bins()
+		if len(gotBins) != len(wantBins) {
+			t.Fatalf("non-empty buckets: merge %v, adds %v", gotBins, wantBins)
 		}
-		for i := range merged.counts {
-			if merged.counts[i] != oneByOne.counts[i] {
-				t.Fatalf("bucket %d: merge %v, adds %v", merged.offset+i, merged.counts[i], oneByOne.counts[i])
+		for i := range gotBins {
+			if gotBins[i] != wantBins[i] {
+				t.Fatalf("bucket %d: merge %+v, adds %+v", i, gotBins[i], wantBins[i])
 			}
+		}
+		if merged.total != oneByOne.total {
+			t.Fatalf("total: merge %v, adds %v", merged.total, oneByOne.total)
 		}
 	})
 }

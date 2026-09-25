@@ -34,6 +34,13 @@ func withinAlpha(got, want, alpha float64) bool {
 	return math.Abs(got-want) <= alpha*math.Abs(want)*(1+1e-9)+1e-12
 }
 
+func mustAddWithCount(t *testing.T, s *Sketch, v, count float64) {
+	t.Helper()
+	if err := s.AddWithCount(v, count); err != nil {
+		t.Fatalf("AddWithCount(%v, %v): %v", v, count, err)
+	}
+}
+
 func mustAdd(t *testing.T, s *Sketch, values ...float64) {
 	t.Helper()
 	for _, v := range values {
@@ -366,8 +373,11 @@ func TestSketch_ValuesBeyondTheIndexableSpan(t *testing.T) {
 // walk then skips and every encoding then re-emits.
 func TestSketch_AddBinIgnoresEmptyBuckets(t *testing.T) {
 	s := NewDefault()
-	s.AddBin(Bin{Index: 10, Count: 0}, false)
-	s.AddBin(Bin{Index: 10, Count: 0}, true)
+	for _, negative := range []bool{false, true} {
+		if err := s.AddBin(Bin{Index: 10, Count: 0}, negative); err != nil {
+			t.Fatalf("AddBin with a zero count: %v", err)
+		}
+	}
 
 	if got := len(s.PositiveBins()); got != 0 {
 		t.Errorf("positive bins: got %d, want 0", got)
@@ -434,5 +444,158 @@ func TestSketch_NewWithGammaStartsEmpty(t *testing.T) {
 	}
 	if got := s.Max(); got != 7 {
 		t.Errorf("max: got %v, want 7", got)
+	}
+}
+
+// A sampled metric reports 1/rate per observation, so a sketch can hold less
+// than one observation in total. That makes q*(count-1) negative, and a
+// negative rank satisfies the first comparison the walk makes — whichever
+// branch that happens to be.
+func TestSketch_QuantileWithATotalCountBelowOne(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		add   func(*Sketch)
+		q     float64
+		want  float64
+		exact bool
+	}{
+		{
+			name:  "one sampled observation",
+			add:   func(s *Sketch) { mustAddWithCount(t, s, 5, 0.5) },
+			q:     0.5,
+			want:  5,
+			exact: true, // a single observation is both min and max
+		},
+		{
+			name: "two, still summing under one",
+			add: func(s *Sketch) {
+				mustAddWithCount(t, s, 100, 0.3)
+				mustAddWithCount(t, s, 200, 0.3)
+			},
+			q:    0.5,
+			want: 100, // rank clamps to 0, so the smaller value
+		},
+		{
+			name:  "negative, no zeros anywhere",
+			add:   func(s *Sketch) { mustAddWithCount(t, s, -42, 0.25) },
+			q:     0.9,
+			want:  -42,
+			exact: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewDefault()
+			tc.add(s)
+			got, err := s.Quantile(tc.q)
+			if err != nil {
+				t.Fatalf("Quantile: %v", err)
+			}
+			if tc.exact && got != tc.want {
+				t.Fatalf("q=%v: got %v, want exactly %v", tc.q, got, tc.want)
+			}
+			if !withinAlpha(got, tc.want, DefaultAlpha) {
+				t.Errorf("q=%v: got %v, want %v within %v relative error", tc.q, got, tc.want, DefaultAlpha)
+			}
+		})
+	}
+}
+
+// AddBin and SetAggregates are the decoder's way in, so their input is bytes
+// from another process. Neither may panic and neither may absorb a number that
+// makes the sketch answer confidently and wrongly.
+func TestSketch_DecoderEntryPointsRejectCorruptInput(t *testing.T) {
+	t.Run("bins", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			bin  Bin
+		}{
+			{"NaN count", Bin{Index: 3, Count: math.NaN()}},
+			{"infinite count", Bin{Index: 3, Count: math.Inf(1)}},
+			{"index above what Add can produce", Bin{Index: math.MaxInt32 + 1, Count: 1}},
+			{"index below what Add can produce", Bin{Index: math.MinInt32 - 1, Count: 1}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				s := NewDefault()
+				if err := s.AddBin(tc.bin, false); !errors.Is(err, ErrBadBin) {
+					t.Fatalf("AddBin(%+v): got %v, want ErrBadBin", tc.bin, err)
+				}
+				// Rejected means untouched: a later append must not inherit a
+				// store the bad bin half-built. An unbounded index makes the
+				// width arithmetic overflow and panics here.
+				mustAdd(t, s, 1)
+				if got := s.Count(); got != 1 {
+					t.Errorf("count after a rejected bin: got %v, want 1", got)
+				}
+			})
+		}
+	})
+
+	t.Run("aggregates", func(t *testing.T) {
+		for _, tc := range []struct {
+			name                        string
+			count, sum, min, max, zeros float64
+		}{
+			{"NaN count", math.NaN(), 1, 1, 1, 0},
+			{"negative count", -1, 1, 1, 1, 0},
+			{"NaN sum", 1, math.NaN(), 1, 1, 0},
+			{"negative zero count", 1, 1, 1, 1, -1},
+			{"NaN bounds on a non-empty sketch", 1, 1, math.NaN(), math.NaN(), 0},
+			{"min above max", 2, 3, 9, 1, 0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				s := NewDefault()
+				err := s.SetAggregates(tc.count, tc.sum, tc.min, tc.max, tc.zeros)
+				if !errors.Is(err, ErrBadBin) {
+					t.Fatalf("SetAggregates: got %v, want ErrBadBin", err)
+				}
+				if got := s.Count(); got != 0 {
+					t.Errorf("count after a rejected payload: got %v, want 0", got)
+				}
+			})
+		}
+	})
+
+	// The sentinels an empty sketch legitimately carries are not corruption.
+	t.Run("an empty sketch keeps its sentinels", func(t *testing.T) {
+		s := NewDefault()
+		if err := s.SetAggregates(0, 0, math.Inf(1), math.Inf(-1), 0); err != nil {
+			t.Fatalf("SetAggregates for an empty sketch: %v", err)
+		}
+	})
+}
+
+// alpha is validated as being in (0, 1), but (1+a)/(1-a) rounds to exactly 1
+// for an alpha small enough, and a gamma of 1 has no logarithm to divide by:
+// every value lands in the same bucket and the sketch answers 1 for
+// everything. NewWithGamma rejects such a gamma off the wire; New must not
+// derive one.
+func TestSketch_NewRejectsAnAlphaTooSmallToRepresent(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("New(1e-17) returned a sketch; want a panic")
+		}
+	}()
+	_ = New(1e-17)
+}
+
+// Once the store is as wide as it is allowed to be, a value below its floor
+// folds into the floor and nothing needs to move. Falling through to the
+// collapse would copy MaxBins buckets to the offset they already have, once
+// per observation — 4217 B/op on a falling stream before this was fixed.
+func TestStore_AtTheCapAFallingStreamAllocatesNothing(t *testing.T) {
+	var s store
+	s.add(0, 1)
+	s.add(MaxBins-1, 1) // exactly at the cap, without collapsing
+
+	k := -1
+	allocs := testing.AllocsPerRun(1000, func() {
+		s.add(k, 1)
+		k--
+	})
+	if allocs != 0 {
+		t.Errorf("adding below the floor of a full store allocated %v times per add, want 0", allocs)
+	}
+	if len(s.counts) != MaxBins {
+		t.Errorf("width: got %d, want %d", len(s.counts), MaxBins)
 	}
 }

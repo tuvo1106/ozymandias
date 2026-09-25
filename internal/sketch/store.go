@@ -67,11 +67,32 @@ func (s *store) grow(k int) {
 // of a latency distribution is the part nobody asks about. Only growHigh has
 // to fold existing counts, because only it moves the floor upwards.
 func (s *store) growLow(k int) {
-	want := s.offset + len(s.counts) - k // buckets needed to cover [k, top]
-	if want <= MaxBins {
+	if len(s.counts) == MaxBins {
+		// Already as wide as it is allowed to be, so the floor cannot move
+		// down: k folds into it, which add does when it clamps the index.
+		// Falling through would compute a new floor equal to the current one
+		// and copy every bucket to the offset it already has — MaxBins of
+		// them, once per observation, on a falling stream.
+		return
+	}
+	need := s.offset + len(s.counts) - k // buckets needed to cover [k, top]
+	if need <= MaxBins {
+		// Grow past k, geometrically, for the reason growHigh keeps spare
+		// capacity: a falling stream lands below the floor over and over, and
+		// extending to exactly k each time copies the whole store on every
+		// observation. A slice cannot hold spare capacity at its *front*, so
+		// the headroom here is length rather than capacity — leading empty
+		// buckets, which every walk skips and every encoding omits.
+		//
+		// Capped at MaxBins so the padding can never bring a collapse
+		// forward. It could not lose data if it did — both collapses anchor
+		// the new floor to the top of the store, which padding does not move
+		// — but it would cost memory for buckets nothing asked for.
+		want := min(max(need, 2*len(s.counts)), MaxBins)
+		newOffset := s.offset + len(s.counts) - want
 		grown := make([]float64, want)
-		copy(grown[s.offset-k:], s.counts)
-		s.counts, s.offset = grown, k
+		copy(grown[s.offset-newOffset:], s.counts)
+		s.counts, s.offset = grown, newOffset
 		return
 	}
 	// Keep the top MaxBins buckets. Nothing already held falls off the bottom,
@@ -117,27 +138,23 @@ func (s *store) growHigh(k int) {
 
 // merge adds every bucket of other into s.
 //
-// The destination is sized once, up front, rather than letting each bucket
-// grow it. Merging ascending indices one at a time reallocates on every one of
-// them, which is quadratic in the width of the source — and the query path
-// merges hundreds of sketches per request.
+// The destination's top is sized once, up front. Letting the adds discover it
+// reallocates on the way up, which is quadratic in the width of the source —
+// and the query path merges hundreds of sketches per request. The bottom needs
+// no such help: the adds run ascending, so the lowest bucket is the first one
+// they place, and growLow pads geometrically from there.
 func (s *store) merge(other *store) {
-	lo, hi := -1, -1
+	hi := -1
 	for i, c := range other.counts {
-		if c == 0 {
-			continue
+		if c != 0 {
+			hi = i
 		}
-		if lo < 0 {
-			lo = i
-		}
-		hi = i
 	}
-	if lo < 0 {
+	if hi < 0 {
 		return
 	}
 	s.grow(other.offset + hi)
-	s.grow(other.offset + lo)
-	for i := lo; i <= hi; i++ {
+	for i := 0; i <= hi; i++ {
 		if c := other.counts[i]; c != 0 {
 			s.add(other.offset+i, c)
 		}

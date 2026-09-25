@@ -66,3 +66,20 @@ func BenchmarkQuantile(b *testing.B) {
 		_, _ = s.Quantile(0.95)
 	}
 }
+
+// A falling stream extends the store downwards over and over. growLow cannot
+// keep spare capacity at the front the way growHigh does at the back, so it
+// grows the length geometrically instead; without that this is quadratic.
+func BenchmarkAddDescending(b *testing.B) {
+	s := NewDefault()
+	v := 1e12
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.Add(v) //nolint:errcheck // benchmark
+		v *= 0.999
+		if v < 1e-12 {
+			v = 1e12
+			s = NewDefault()
+		}
+	}
+}

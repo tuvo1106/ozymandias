@@ -27,6 +27,10 @@ var (
 	// for it and silently dropping it would make count disagree with what the
 	// caller believes it sent.
 	ErrNotFinite = errors.New("sketch: value is not finite")
+	// ErrBadBin means a decoder handed over a bucket or an aggregate no
+	// encoder in this project could have produced. Both entry points take
+	// bytes from another process, so neither trusts them.
+	ErrBadBin = errors.New("sketch: bin is not representable")
 	// ErrBadQuantile means q was outside [0, 1].
 	ErrBadQuantile = errors.New("sketch: quantile must be in [0, 1]")
 )
@@ -63,6 +67,15 @@ func New(alpha float64) *Sketch {
 		panic(fmt.Sprintf("sketch: alpha %v is not in (0, 1)", alpha))
 	}
 	gamma := (1 + alpha) / (1 - alpha)
+	if gamma <= 1 {
+		// Below roughly 1e-16, (1+a)/(1-a) rounds to exactly 1: log γ is zero,
+		// every value maps to the same bucket, and the index arithmetic
+		// divides by zero. NewWithGamma rejects such a γ off the wire; an α
+		// that derives one is the same programming error as an α outside
+		// (0, 1), and is worth saying so rather than returning a sketch that
+		// answers 1 for everything.
+		panic(fmt.Sprintf("sketch: alpha %v is too small to represent — gamma rounds to 1", alpha))
+	}
 	return &Sketch{
 		gamma:       gamma,
 		invLogGamma: 1 / math.Log(gamma),
@@ -243,6 +256,14 @@ func (s *Sketch) Quantile(q float64) (float64, error) {
 	}
 
 	rank := q * (s.count - 1)
+	// A sampled metric reports 1/rate per observation, so a sketch can hold a
+	// total count below 1 — and then q*(count-1) is negative. Rank zero is the
+	// right answer there: the first value in ascending order. Left negative it
+	// makes the *first* `seen > rank` comparison true whatever it is testing,
+	// including the zeros branch below on a sketch holding no zero at all.
+	if rank < 0 {
+		rank = 0
+	}
 
 	// Negatives first, from most negative to least: the negative store indexes
 	// |v|, so a *larger* index is a *smaller* value and the walk is

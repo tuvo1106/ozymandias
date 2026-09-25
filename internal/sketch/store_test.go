@@ -225,18 +225,7 @@ func TestStore_MergeWiderThanMaxBinsCollapsesLikeAdds(t *testing.T) {
 	merged.merge(&src)
 	src.forEach(func(k int, c float64) { oneByOne.add(k, c) })
 
-	if merged.total != oneByOne.total {
-		t.Fatalf("total: merge %v, adds %v", merged.total, oneByOne.total)
-	}
-	if merged.offset != oneByOne.offset || len(merged.counts) != len(oneByOne.counts) {
-		t.Fatalf("shape: merge offset=%d len=%d, adds offset=%d len=%d",
-			merged.offset, len(merged.counts), oneByOne.offset, len(oneByOne.counts))
-	}
-	for i := range merged.counts {
-		if merged.counts[i] != oneByOne.counts[i] {
-			t.Fatalf("bucket %d: merge %v, adds %v", merged.offset+i, merged.counts[i], oneByOne.counts[i])
-		}
-	}
+	sameContents(t, &merged, &oneByOne)
 }
 
 // An all-zero source has no buckets to merge, and must not leave the
@@ -300,19 +289,77 @@ func TestStore_MergeFromASourceWithLeadingEmptyBuckets(t *testing.T) {
 	merged.merge(&src)
 	src.forEach(func(k int, c float64) { oneByOne.add(k, c) })
 
-	if merged.offset != oneByOne.offset || len(merged.counts) != len(oneByOne.counts) {
-		t.Fatalf("shape: merge offset=%d len=%d, adds offset=%d len=%d",
-			merged.offset, len(merged.counts), oneByOne.offset, len(oneByOne.counts))
-	}
-	if got, want := merged.offset, 1_003; got != want {
-		t.Fatalf("offset: got %d, want %d — the first non-empty bucket, not the source offset", got, want)
-	}
-	for i := range merged.counts {
-		if merged.counts[i] != oneByOne.counts[i] {
-			t.Fatalf("bucket %d: merge %v, adds %v", merged.offset+i, merged.counts[i], oneByOne.counts[i])
-		}
-	}
+	sameContents(t, &merged, &oneByOne)
 	if merged.total != 8 {
 		t.Errorf("total: got %v, want 8", merged.total)
+	}
+}
+
+// sameContents fails unless two stores hold the same non-empty buckets and the
+// same total.
+//
+// Shape — the offset, and the empty buckets a particular growth path happens to
+// leave at either end — is representation, not content. growLow pads
+// geometrically, so a store grown in one step and the same store grown one add
+// at a time hold identical data in different widths. Every walk skips the empty
+// buckets and every encoding omits them, so nothing above this file can tell
+// the two apart.
+func sameContents(t *testing.T, got, want *store) {
+	t.Helper()
+	gotBins, wantBins := got.bins(), want.bins()
+	if len(gotBins) != len(wantBins) {
+		t.Fatalf("non-empty buckets: got %v, want %v", gotBins, wantBins)
+	}
+	for i := range gotBins {
+		if gotBins[i] != wantBins[i] {
+			t.Fatalf("bucket %d of %d: got %+v, want %+v", i, len(gotBins), gotBins[i], wantBins[i])
+		}
+	}
+	if got.total != want.total {
+		t.Fatalf("total: got %v, want %v", got.total, want.total)
+	}
+}
+
+// Below the cap, growLow extends the store geometrically. Without that a
+// falling stream reallocates and copies on every observation, which is
+// quadratic; the cost is visible only as an allocation count, so that is what
+// this asserts.
+func TestStore_AFallingStreamBelowTheCapAmortisesItsGrowth(t *testing.T) {
+	var s store
+	s.add(0, 1)
+
+	k := -1
+	// ~1000 adds keeps the whole run under MaxBins, so this measures the
+	// growth strategy rather than the short-circuit at the cap.
+	allocs := testing.AllocsPerRun(1000, func() {
+		s.add(k, 1)
+		k--
+	})
+	if allocs > 0.2 {
+		t.Errorf("growing downwards allocated %v times per add; geometric growth is ~0.01, "+
+			"one-bucket-at-a-time is 1", allocs)
+	}
+	if got := len(s.counts); got > 2*(-k) {
+		t.Errorf("width %d for %d buckets of data: padding should stay within a factor of two", got, -k)
+	}
+}
+
+// merge sizes the destination to the source, once. A destination that ends up
+// wider than the data it was given is the signature of the pre-size having
+// gone to the wrong place and the adds having cleaned up after it.
+func TestStore_MergeSizesTheDestinationToTheSource(t *testing.T) {
+	var src store
+	for k := 0; k < 500; k++ {
+		src.add(k, 1)
+	}
+
+	var dst store
+	dst.merge(&src)
+
+	if got, want := len(dst.counts), 500; got != want {
+		t.Errorf("width: got %d, want %d — exactly the source's span", got, want)
+	}
+	if got, want := dst.offset, 0; got != want {
+		t.Errorf("offset: got %d, want %d", got, want)
 	}
 }

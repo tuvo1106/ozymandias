@@ -59,6 +59,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   are carried alongside and are not approximations. Values beyond what the
   store can index collapse into the lowest bucket — the end nobody queries —
   and the package is not concurrency-safe, by design: one owner per sketch.
+  The decoder entry points (`AddBin`, `SetAggregates`) validate and return an
+  error rather than absorbing what they are handed: they will be fed bytes
+  from another process, where a NaN count or an out-of-range bucket index is
+  the difference between a rejected payload and a sketch that answers every
+  percentile confidently and wrongly.
 
 - **Boundary tests for the chunk encoder's delta-of-delta buckets**, found by a
   one-off mutation-testing run over `internal/tsdb/chunkenc`. A delta-of-delta
