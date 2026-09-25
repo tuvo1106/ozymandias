@@ -90,7 +90,12 @@ func TestDB_AQueryNeverFallsIntoTheGapBetweenTheHeadAndANewBlock(t *testing.T) {
 					return
 				default:
 				}
-				if got := countSamples(t, db); got != acked {
+				got, err := countSamplesErr(db)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if got != acked {
 					t.Errorf("a query returned %d samples, want %d — it fell into the gap "+
 						"between a block being published and the head being truncated", got, acked)
 					return

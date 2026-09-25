@@ -120,17 +120,38 @@ func TestDB_LogTruncationKeepsWhatIsStillOnlyInTheHead(t *testing.T) {
 
 	// One cut: the oldest 30s goes to a block, the rest stays in the head —
 	// and the log is truncated behind it.
-	if err := db.CutBlock(); err != nil {
+	//
+	// errNothingToCut is not a failure here. This test runs on the real clock,
+	// so maintain() has been cutting one range every BlockRange/10 underneath
+	// the fill the whole time; on a machine slow enough that producing a range
+	// takes longer than a tick, the loop keeps the head span under its 1.5
+	// range threshold and there is genuinely nothing left for this call to
+	// take. That is the regime the soak run exists to create — CI is about
+	// twelve times slower than this laptop — so treating it as fatal would
+	// make the nightly fail for the one reason it is designed to produce. What
+	// the test needs is that a cut has happened and truncated the log behind
+	// it, which the check below asserts directly and which is true either way.
+	if err := db.CutBlock(); err != nil && !errors.Is(err, errNothingToCut) {
 		t.Fatal(err)
 	}
 
 	// The premise, checked rather than assumed. A checkpoint exists only
-	// because the truncation found records it had to carry forward — samples
+	// because some truncation found records it had to carry forward — samples
 	// still in the head whose segment was being dropped. Without one, the
 	// head's data was all in the current segment, the case this test is about
-	// was never reached, and a pass means nothing. Asserting on the segment
-	// count instead does not survive the soak run, where the background
-	// maintenance loop truncates while the fill is still going.
+	// was never reached, and a pass means nothing.
+	//
+	// Deliberately "some truncation" and not "the cut above". Tightening this
+	// to "the explicit cut wrote a new checkpoint" would assert something
+	// stronger than the property and would fail spuriously: Truncate returns
+	// early when no segment is older than the current one, and by the end of a
+	// soak fill the background loop has usually taken the log down to a single
+	// live segment plus its checkpoint — the runs that found issue #3 all
+	// ended at `wal=[00000004.wal checkpoint.00000004]`, where the explicit
+	// cut has no segment left to drop. What matters for the restart is the
+	// state at close, not which cut produced it: head-only samples whose
+	// durable copy is a checkpoint rather than a live segment. Asserting on
+	// the segment count instead fails for the same reason.
 	if !hasCheckpoint(t, dir) {
 		t.Fatalf("no checkpoint after the cut: nothing in the head was behind a truncated "+
 			"segment, so this test proves nothing. wal=%v", walFiles(t, dir))
@@ -247,6 +268,16 @@ func missingRanges(t *testing.T, db *DB, totalTs int64, nSeries int) string {
 				seen[s.T]++
 			}
 		}
+		// An iteration that stopped early leaves every timestamp it never
+		// reached at zero, which this function would then report as a hole —
+		// inventing exactly the symptom it exists to characterise, on the one
+		// path where it runs. Say so instead.
+		if err := it.Err(); err != nil {
+			return "iteration failed, so the ranges below would be its shortfall and not the store's: " + err.Error()
+		}
+	}
+	if err := set.Err(); err != nil {
+		return "the series set failed, so the ranges below would be its shortfall and not the store's: " + err.Error()
 	}
 	var b strings.Builder
 	runs := 0
@@ -389,9 +420,22 @@ func TestDB_MetadataQueriesAreSafeDuringIntake(t *testing.T) {
 
 func countSamples(t *testing.T, db *DB) int64 {
 	t.Helper()
-	set, err := db.Select(ctx, tsdb.Selector{Metric: "m"}, math.MinInt64, math.MaxInt64)
+	n, err := countSamplesErr(db)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return n
+}
+
+// countSamplesErr is countSamples for a caller that is not the test goroutine.
+// t.Fatal is only valid from the goroutine running the test — anywhere else it
+// is a bare runtime.Goexit, which kills that goroutine and lets the test carry
+// on to its final assertion as though nothing had gone wrong. Concurrency
+// tests read this in a fan-out, so they need the error back instead.
+func countSamplesErr(db *DB) (int64, error) {
+	set, err := db.Select(ctx, tsdb.Selector{Metric: "m"}, math.MinInt64, math.MaxInt64)
+	if err != nil {
+		return 0, err
 	}
 	var n int64
 	for set.Next() {
@@ -401,16 +445,18 @@ func countSamples(t *testing.T, db *DB) int64 {
 			n++
 		}
 		if err := it.Err(); err != nil {
-			t.Fatal(err)
+			_ = set.Close()
+			return 0, err
 		}
 	}
 	if err := set.Err(); err != nil {
-		t.Fatal(err)
+		_ = set.Close()
+		return 0, err
 	}
 	if err := set.Close(); err != nil {
-		t.Fatal(err)
+		return 0, err
 	}
-	return n
+	return n, nil
 }
 
 func TestDB_RetentionIsMutuallyExclusiveWithCompaction(t *testing.T) {
