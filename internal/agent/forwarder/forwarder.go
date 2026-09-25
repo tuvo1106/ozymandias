@@ -21,7 +21,8 @@ import (
 
 // Options configures a Forwarder. Zero values get the documented defaults.
 type Options struct {
-	// URL is ozyd's base URL; series go to URL + "/v1/series".
+	// URL is ozyd's base URL; series go to URL + "/v1/series" and
+	// sketches to URL + "/v1/sketches".
 	URL string
 	// Client does the HTTP. Default: a client with Timeout.
 	Client *http.Client
@@ -51,7 +52,8 @@ type Options struct {
 // caller waiting for the network.
 type Forwarder struct {
 	opts Options
-	url  string
+	// The two intake hops. See [endpoint] on why they share a queue.
+	series, sketches endpoint
 
 	mu     sync.Mutex
 	queue  []*payload // FIFO by enqueue order
@@ -69,13 +71,24 @@ type Forwarder struct {
 	queueBytes                       *selfmetrics.Gauge
 }
 
-// payload is one gzip'd request body and its retry state.
+// payload is one gzip'd request body, the endpoint it belongs to, and its
+// retry state.
 type payload struct {
+	url      string
 	body     []byte
 	series   int
 	attempts int
 	notUntil time.Time // earliest next attempt
 }
+
+// endpoint is one intake hop: where it posts, and what the JSON envelope
+// around its items is called.
+//
+// Both hops share one queue, one memory budget and one backoff. Two
+// forwarders would give sketches their own retry schedule, which sounds
+// tidier until ozyd is down: the two would drop different windows of data
+// and a dashboard would show a p95 for a minute its own count is missing.
+type endpoint struct{ url, key string }
 
 // New returns a Forwarder. Call Start to begin sending.
 func New(opts Options) *Forwarder {
@@ -115,12 +128,13 @@ func New(opts Options) *Forwarder {
 	reg := opts.Registry
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Forwarder{
-		opts:   opts,
-		url:    opts.URL + "/v1/series",
-		wake:   make(chan struct{}, 1),
-		done:   make(chan struct{}),
-		ctx:    ctx,
-		cancel: cancel,
+		opts:     opts,
+		series:   endpoint{url: opts.URL + "/v1/series", key: "series"},
+		sketches: endpoint{url: opts.URL + "/v1/sketches", key: "sketches"},
+		wake:     make(chan struct{}, 1),
+		done:     make(chan struct{}),
+		ctx:      ctx,
+		cancel:   cancel,
 
 		sent:           reg.Counter("ozy.agent.forwarder.payloads_sent"),
 		dropped:        reg.Counter("ozy.agent.forwarder.dropped"),
@@ -135,7 +149,7 @@ func New(opts Options) *Forwarder {
 // Submit encodes series into payloads and queues them. It never blocks on
 // the network, so it is safe to call from the aggregator's flush loop.
 func (f *Forwarder) Submit(series []wire.Series) {
-	payloads, err := f.encode(series)
+	payloads, err := encode(f, f.series, series, func(s *wire.Series) string { return s.Metric })
 	if err != nil {
 		// encode skips a series it cannot marshal, so what is left here is a
 		// gzip failure — which means the process is out of memory, not that
@@ -144,6 +158,21 @@ func (f *Forwarder) Submit(series []wire.Series) {
 		f.dropped.Add(int64(len(series)))
 		return
 	}
+	f.enqueue(payloads)
+}
+
+// SubmitSketches queues a flush of distributions for POST /v1/sketches.
+func (f *Forwarder) SubmitSketches(sketches []wire.SketchSeries) {
+	payloads, err := encode(f, f.sketches, sketches, func(s *wire.SketchSeries) string { return s.Metric })
+	if err != nil {
+		f.opts.Logger.Error("forwarder: encoding sketches", "err", err)
+		f.dropped.Add(int64(len(sketches)))
+		return
+	}
+	f.enqueue(payloads)
+}
+
+func (f *Forwarder) enqueue(payloads []*payload) {
 	f.mu.Lock()
 	for _, p := range payloads {
 		f.enqueueLocked(p)
@@ -171,13 +200,19 @@ func (f *Forwarder) enqueueLocked(p *payload) {
 	f.bytes += len(p.body)
 }
 
-// encode splits series into payloads of at most MaxSeriesPerPayload series
-// and MaxPayloadBytes of JSON, and gzips each. Every series is marshalled on
-// its own so the size check is exact; the body is then just the pieces
-// joined inside {"series":[...]}.
-func (f *Forwarder) encode(series []wire.Series) ([]*payload, error) {
+// encode splits items into payloads of at most MaxSeriesPerPayload items and
+// MaxPayloadBytes of JSON, and gzips each. Every item is marshalled on its
+// own so the size check is exact; the body is then just the pieces joined
+// inside the endpoint's envelope.
+//
+// A free function rather than a method because Go methods cannot take type
+// parameters, and the alternative — two near-identical copies of the
+// splitting logic — is how the series path and the sketch path would come to
+// disagree about a limit.
+func encode[T any](f *Forwarder, ep endpoint, items []T, name func(*T) string) ([]*payload, error) {
 	var out []*payload
-	const envelope = len(`{"series":[]}`)
+	open, close := `{"`+ep.key+`":[`, `]}`
+	envelope := len(open) + len(close)
 	var parts [][]byte
 	size := envelope
 	flush := func() error {
@@ -185,26 +220,26 @@ func (f *Forwarder) encode(series []wire.Series) ([]*payload, error) {
 			return nil
 		}
 		var raw bytes.Buffer
-		raw.WriteString(`{"series":[`)
+		raw.WriteString(open)
 		raw.Write(bytes.Join(parts, []byte(",")))
-		raw.WriteString(`]}`)
+		raw.WriteString(close)
 		body, err := gzipBytes(raw.Bytes())
 		if err != nil {
 			return err
 		}
-		out = append(out, &payload{body: body, series: len(parts)})
+		out = append(out, &payload{url: ep.url, body: body, series: len(parts)})
 		parts, size = nil, envelope
 		return nil
 	}
-	for i := range series {
-		b, err := json.Marshal(&series[i])
+	for i := range items {
+		b, err := json.Marshal(&items[i])
 		if err != nil {
-			// The only per-series failure here is a value wire.Point refuses
-			// to write, i.e. a non-finite one. Skip that series and keep the
+			// The only per-item failure here is a value the encoder refuses
+			// to write, i.e. a non-finite one. Skip that item and keep the
 			// rest: failing the batch would discard every other series in
 			// the flush — including the agent's own self-metrics — for as
 			// long as whatever produced the bad value keeps producing it.
-			f.opts.Logger.Error("forwarder: skipping unencodable series", "metric", series[i].Metric, "err", err)
+			f.opts.Logger.Error("forwarder: skipping unencodable series", "metric", name(&items[i]), "err", err)
 			f.dropped.Add(1)
 			continue
 		}
@@ -366,7 +401,7 @@ func (f *Forwarder) backoff(attempt int) time.Duration {
 // (§0): retry on a network error, 408, 429 and 5xx; give up on any other
 // 4xx, since sending the same bytes again will get the same answer.
 func (f *Forwarder) post(ctx context.Context, p *payload) (outcome, time.Duration, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, f.url, bytes.NewReader(p.body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.url, bytes.NewReader(p.body))
 	if err != nil {
 		return giveUp, 0, err
 	}

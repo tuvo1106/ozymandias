@@ -130,12 +130,22 @@ func (r *Request) Validate() error {
 	if r.From < 0 || r.To > maxTime {
 		errs = append(errs, fmt.Errorf("from (%d) and to (%d) must be unix seconds within [0, %d]", r.From, r.To, maxTime))
 	}
-	switch r.Agg {
-	case "":
+	switch {
+	case r.Agg == "":
 		r.Agg = Avg
-	case Avg, Sum, Min, Max:
+	case r.Agg == Avg, r.Agg == Sum, r.Agg == Min, r.Agg == Max:
+		if r.Kind == wire.KindDistribution {
+			errs = append(errs, fmt.Errorf(
+				"%s is a distribution: use p50, p75, p90, p95 or p99, or query %s%s, %s%s, %s%s or %s%s",
+				r.Metric, r.Metric, wire.SuffixCount, r.Metric, wire.SuffixSum,
+				r.Metric, wire.SuffixMin, r.Metric, wire.SuffixMax))
+		}
+	case isPercentile(r.Agg):
+		if r.Kind != "" && r.Kind != wire.KindDistribution {
+			errs = append(errs, fmt.Errorf("%s is a %s, not a distribution, so it has no percentiles", r.Metric, r.Kind))
+		}
 	default:
-		errs = append(errs, fmt.Errorf("agg %q: want avg, sum, min or max", r.Agg))
+		errs = append(errs, fmt.Errorf("agg %q: want avg, sum, min, max, or p50, p75, p90, p95 or p99", r.Agg))
 	}
 	if r.Interval < 0 {
 		errs = append(errs, fmt.Errorf("interval %d must be positive", r.Interval))
@@ -164,10 +174,15 @@ func (r *Request) Validate() error {
 	return nil
 }
 
-// Run evaluates req against store.
-func Run(ctx context.Context, store tsdb.MetricStore, req Request) (Result, error) {
+// Run evaluates req against store, reading sketches for the percentile
+// aggregators. sketches may be nil on a deployment that has no sketch store;
+// a percentile query then says so rather than answering from nothing.
+func Run(ctx context.Context, store tsdb.MetricStore, sketches SketchReader, req Request) (Result, error) {
 	if err := req.Validate(); err != nil {
 		return Result{}, err
+	}
+	if q, ok := quantileOf(req.Agg); ok {
+		return runPercentile(ctx, store, sketches, req, q)
 	}
 	first := floorTo(req.From, req.Interval)
 	n := int((req.To-first)/req.Interval) + 1
@@ -206,8 +221,14 @@ func Run(ctx context.Context, store tsdb.MetricStore, req Request) (Result, erro
 		}
 		res.Series = append(res.Series, Series{Metric: req.Metric, Tags: g.tags, Points: pts})
 	}
-	slices.SortFunc(res.Series, func(a, b Series) int { return strings.Compare(Label(a), Label(b)) })
+	sortSeries(res.Series)
 	return res, nil
+}
+
+// sortSeries orders a result deterministically, so a chart's lines and a
+// differential test's output do not depend on map iteration.
+func sortSeries(series []Series) {
+	slices.SortFunc(series, func(a, b Series) int { return strings.Compare(Label(a), Label(b)) })
 }
 
 // bucketize reduces one series' samples to n buckets: sum or mean per

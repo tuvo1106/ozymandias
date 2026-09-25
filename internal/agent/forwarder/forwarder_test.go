@@ -145,12 +145,12 @@ func TestForwarder_SkipsUnencodableSeries(t *testing.T) {
 
 func TestForwarder_SplitsBySeriesCountAndBytes(t *testing.T) {
 	f := New(Options{MaxSeriesPerPayload: 4, Registry: selfmetrics.NewRegistry()})
-	ps, err := f.encode(series(10))
+	ps, err := encodeSeries(f, series(10))
 	if err != nil || len(ps) != 3 || ps[0].series != 4 || ps[2].series != 2 {
 		t.Fatalf("by count: %d payloads, err %v", len(ps), err)
 	}
 	f = New(Options{MaxPayloadBytes: 300, Registry: selfmetrics.NewRegistry()})
-	ps, err = f.encode(series(10))
+	ps, err = encodeSeries(f, series(10))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestForwarder_SplitsBySeriesCountAndBytes(t *testing.T) {
 	}
 	// A single series larger than the limit still goes, alone.
 	f = New(Options{MaxPayloadBytes: 10, Registry: selfmetrics.NewRegistry()})
-	if ps, _ := f.encode(series(2)); len(ps) != 2 {
+	if ps, _ := encodeSeries(f, series(2)); len(ps) != 2 {
 		t.Fatalf("oversized series: %d payloads", len(ps))
 	}
 }
@@ -237,7 +237,7 @@ func TestForwarder_HonorsRetryAfter(t *testing.T) {
 
 func TestForwarder_DropsOldestAtTheMemoryCap(t *testing.T) {
 	f := New(Options{Registry: selfmetrics.NewRegistry(), MaxSeriesPerPayload: 1})
-	one, _ := f.encode(series(1))
+	one, _ := encodeSeries(f, series(1))
 	size := len(one[0].body)
 	reg := selfmetrics.NewRegistry()
 	f = New(Options{Registry: reg, MaxSeriesPerPayload: 1, MaxQueueBytes: 3*size + size/2})
@@ -361,4 +361,10 @@ func TestParseRetryAfter(t *testing.T) {
 			t.Errorf("parseRetryAfter(%q) = %v, want %v", in, got, want)
 		}
 	}
+}
+
+// encodeSeries is the series half of the generic encoder, for the tests that
+// were written before there was a second endpoint.
+func encodeSeries(f *Forwarder, series []wire.Series) ([]*payload, error) {
+	return encode(f, f.series, series, func(s *wire.Series) string { return s.Metric })
 }

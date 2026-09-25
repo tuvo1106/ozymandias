@@ -20,6 +20,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/intake"
 	"github.com/tuvo1106/ozymandias/internal/meta"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
+	"github.com/tuvo1106/ozymandias/internal/sketchstore"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/db"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/head"
@@ -43,7 +44,16 @@ const (
 	naiveFile = "metrics-naive.db"
 	// tsdbDir holds the real store's wal/ and blocks/.
 	tsdbDir = "tsdb"
+	// sketchDir holds the Pebble database of DDSketches.
+	sketchDir = "sketches"
 )
+
+// sketchSweepInterval is how often retention runs over the sketch store.
+//
+// Hourly rather than on the TSDB's maintenance cadence: a sketch store sweep
+// issues one DeleteRange per series and frees at most an hour of data, so
+// running it more often costs tombstones without freeing anything sooner.
+const sketchSweepInterval = time.Hour
 
 // Options carries the server's dependencies. Zero values get sensible
 // production defaults, so tests set only what they care about.
@@ -67,10 +77,11 @@ type Server struct {
 	started time.Time
 	handler http.Handler
 
-	store  tsdb.MetricStore
-	meta   *meta.DB
-	intake *intake.Intake
-	self   *selfmetrics.Reporter
+	store    tsdb.MetricStore
+	sketches *sketchstore.Store
+	meta     *meta.DB
+	intake   *intake.Intake
+	self     *selfmetrics.Reporter
 }
 
 // New opens the stores under data_dir and builds the HTTP routes. It does
@@ -104,8 +115,24 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		_ = md.Close()
 		return nil, fmt.Errorf("data_dir: %w", err)
 	}
-	s.meta, s.store = md, store
-	s.intake = intake.New(intake.Options{Store: store, Registry: md, Clock: s.clock, Metrics: s.reg, Logger: s.log})
+	// Sketches are stored whichever metric engine is configured: the naive
+	// store is a reference implementation for series, not a reason to lose
+	// percentiles.
+	sk, err := sketchstore.Open(sketchstore.Options{
+		Dir:       filepath.Join(cfg.DataDir, sketchDir),
+		Retention: cfg.Storage.Retention,
+		Clock:     s.clock,
+		Logger:    s.log.With("component", "sketchstore"),
+		Registry:  s.reg,
+	})
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close())
+	}
+	s.meta, s.store, s.sketches = md, store, sk
+	s.intake = intake.New(intake.Options{
+		Store: store, Sketches: sk, Registry: md,
+		Clock: s.clock, Metrics: s.reg, Logger: s.log,
+	})
 
 	host, err := opts.Hostname()
 	if err != nil || host == "" {
@@ -126,7 +153,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	mux.Handle("GET /healthz", httpserve.Health(Component, s.started, s.clock.Now, nil))
 	mux.Handle("GET /debug/vars", s.reg.Handler())
 	s.intake.Register(mux)
-	(&api.Metrics{Store: store, Types: md, Clock: s.clock}).Register(mux)
+	(&api.Metrics{Store: store, Types: md, Sketches: sk, Clock: s.clock}).Register(mux)
 	if opts.UI != nil {
 		mux.Handle("GET /", opts.UI)
 	}
@@ -213,7 +240,7 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 // Close releases the stores. Run calls it on the way out.
 func (s *Server) Close() error {
-	return errors.Join(s.store.Close(), s.meta.Close())
+	return errors.Join(s.store.Close(), s.sketches.Close(), s.meta.Close())
 }
 
 // Run serves on ln (or on the configured address if ln is nil) until ctx is
@@ -234,13 +261,18 @@ func (s *Server) Run(ctx context.Context, ln net.Listener) error {
 	s.log.Info("listening", "component", Component, "addr", ln.Addr().String(),
 		"version", buildinfo.Version, "data_dir", s.cfg.DataDir)
 
-	selfCtx, stopSelf := context.WithCancel(context.Background())
-	selfDone := make(chan struct{})
-	go func() { s.reportSelf(selfCtx); close(selfDone) }()
+	// Both background loops take a context of their own rather than ctx:
+	// they must outlive the cancellation that begins the shutdown, so an
+	// in-flight request is not racing a store that is already closing.
+	bgCtx, stopBG := context.WithCancel(context.Background())
+	bgDone := make(chan struct{}, 2)
+	go func() { s.reportSelf(bgCtx); bgDone <- struct{}{} }()
+	go func() { s.sweepSketches(bgCtx); bgDone <- struct{}{} }()
 
 	err := httpserve.Serve(ctx, srv, ln, s.cfg.HTTP.ShutdownTimeout)
-	stopSelf()
-	<-selfDone
+	stopBG()
+	<-bgDone
+	<-bgDone
 	err = errors.Join(err, s.Close())
 	s.log.Info("stopped", "component", Component, "err", err)
 	return err
@@ -264,6 +296,35 @@ func (s *Server) reportSelf(ctx context.Context) {
 			} else if resp.Rejected > 0 {
 				s.log.Warn("self-metrics: rejected series", "rejected", resp.Rejected, "errors", resp.Errors)
 			}
+		}
+	}
+}
+
+// sweepSketches applies retention to the sketch store.
+//
+// It runs once at startup as well as on the tick: a process that restarts
+// more often than the interval would otherwise never sweep at all, and a
+// crash loop is exactly when the disk is filling.
+func (s *Server) sweepSketches(ctx context.Context) {
+	sweep := func() {
+		dropped, err := s.sketches.Sweep(ctx)
+		switch {
+		case ctx.Err() != nil:
+		case err != nil:
+			s.log.Warn("sketchstore: retention sweep", "err", err)
+		case dropped > 0:
+			s.log.Info("sketchstore: retention sweep", "series_dropped", dropped)
+		}
+	}
+	sweep()
+	t := s.clock.NewTicker(sketchSweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C():
+			sweep()
 		}
 	}
 }

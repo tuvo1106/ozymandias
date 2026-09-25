@@ -79,6 +79,25 @@ $ printf '{"series":[{"metric":"demo.count","type":"count","interval":10,"tags":
 {"status":"ok","accepted":1,"rejected":0,"errors":[]}
 ```
 
+### `POST /v1/sketches`
+
+Distribution intake from agents. Body, limits, validation and the response are
+normative in [wire-protocol.md §D](wire-protocol.md#d-sketches-agent--ozyd-post-v1sketches-from-m2).
+Same shape as `/v1/series`: gzip'd JSON `{"sketches":[…]}`, `202` with
+per-series counts, `400` for a body that is not a sketch payload, `413` over
+the size limits, `503` when a store is unavailable — or when this deployment
+has no sketch store at all.
+
+Each sketch is stored whole, and its four **exact** aggregates are also
+written as ordinary series: `<metric>.count`, `.sum`, `.min` and `.max`. So a
+distribution answers percentiles through the sketch and averages through
+plain series, with no percentile machinery running to draw an average.
+
+The metric is recorded with type `distribution`, which is what makes it answer
+`p50`…`p99` and refuse `avg`/`sum`/`min`/`max` — those have real answers on
+the four derived series, and returning one for the distribution itself would
+be a different number under the same name.
+
 ### `GET /api/v1/query`
 
 The M1 structured metric query (M3 re-implements it on the query language).
@@ -88,7 +107,7 @@ The M1 structured metric query (M3 re-implements it on the query language).
 | `metric` | *(required)* | Metric name |
 | `filter` | none | Comma-separated tag terms, all of which must match: `k:v`; `k:v*` (wildcard, `*` only); `!k:v` (not equal); `!k:v*`; bare `k` for a bare tag. Values can't contain `,` |
 | `by` | none | Comma-separated tag keys to group by |
-| `agg` | `avg` | Across-series aggregator per group: `avg`, `sum`, `min`, `max` |
+| `agg` | `avg` | Across-series aggregator per group: `avg`, `sum`, `min`, `max`, or `p50`, `p75`, `p90`, `p95`, `p99` on a `distribution` metric |
 | `from`, `to` | last hour | Unix seconds, inclusive. Both must be in `[0, 253402300799]`, and `to - from` at most 366 days |
 | `interval` | ~300 points | Bucket width in seconds. The default is the range / 300, rounded up to a multiple of 10. At most 10,000 buckets |
 
@@ -96,6 +115,16 @@ Evaluation: select the series that pass the filters; aggregate each over
 time into `interval` buckets (sum for a `count`/`rate` metric, average for a
 `gauge` — the type recorded at intake); group by the `by` keys; aggregate
 across each group's series per bucket with `agg`.
+
+A percentile aggregator takes a different path. It selects on
+`<metric>.count`, reads the sketches of the series it finds, **merges** every
+sketch of every series in the group for each output bucket, and takes the
+quantile of the merged result. Merging first is the whole point: the mean of
+two hosts' p95s is not the fleet's p95, and is not an approximation of it
+either. Every answer is within the sketch's relative error (1% by default) of
+the true value, at any magnitude. Sketches built at different relative
+accuracies are refused rather than merged — a `500` naming the metric — since
+answering from whichever subset agreed would be a confident wrong number.
 
 ```console
 $ curl -s 'localhost:9400/api/v1/query?metric=http.request.count&filter=service:app-node&by=route&agg=sum&from=1790000000&to=1790000059&interval=20'

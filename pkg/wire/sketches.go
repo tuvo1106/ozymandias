@@ -17,6 +17,21 @@ import (
 // that this metric answers percentiles rather than avg and sum.
 const KindDistribution Kind = "distribution"
 
+// Suffixes of the ordinary series ozyd writes beside every sketch (§D).
+//
+// The four aggregates a sketch carries are exact, so they are worth storing
+// as plain series: `avg:latency.sum / avg:latency.count` is a cheap, honest
+// average, and no percentile machinery has to run to draw it. `<metric>.count`
+// has a second job — it is how a percentile query finds which series exist,
+// since it carries the same tags and is written in the same request as the
+// sketch. See docs/adr/0015-sketch-storage-and-identity.md.
+const (
+	SuffixCount = ".count"
+	SuffixSum   = ".sum"
+	SuffixMin   = ".min"
+	SuffixMax   = ".max"
+)
+
 // Limits on a /v1/sketches body (§D).
 const (
 	// MaxSketchesPerRequest bounds one body; the forwarder splits.

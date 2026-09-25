@@ -29,6 +29,10 @@ type Registry interface {
 type Options struct {
 	Store    tsdb.MetricStore
 	Registry Registry
+	// Sketches stores the DDSketches POST /v1/sketches carries. Nil means
+	// the endpoint answers 503 rather than 404: the route exists, this
+	// deployment just cannot serve it.
+	Sketches SketchStore
 	// MaxAge rejects points older than this; 0 accepts any age.
 	MaxAge  time.Duration
 	Clock   clock.Clock           // default clock.Real()
@@ -41,6 +45,7 @@ type Intake struct {
 	opts Options
 
 	accepted, rejected, points *selfmetrics.Counter
+	sketchPoints               *selfmetrics.Counter
 }
 
 // New returns the intake handlers.
@@ -59,12 +64,15 @@ func New(opts Options) *Intake {
 		accepted: opts.Metrics.Counter("ozy.intake.series_accepted"),
 		rejected: opts.Metrics.Counter("ozy.intake.series_rejected"),
 		points:   opts.Metrics.Counter("ozy.intake.points_accepted"),
+
+		sketchPoints: opts.Metrics.Counter("ozy.intake.sketch_points_accepted"),
 	}
 }
 
 // Register mounts the intake endpoints on mux.
 func (in *Intake) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/series", in.series)
+	mux.HandleFunc("POST /v1/sketches", in.sketches)
 }
 
 // errTooLarge marks a body over one of the size limits.

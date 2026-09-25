@@ -1,6 +1,7 @@
 package aggregator
 
 import (
+	"cmp"
 	"context"
 	"hash/maphash"
 	"math"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
+	"github.com/tuvo1106/ozymandias/internal/sketch"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
@@ -25,7 +27,7 @@ const (
 	Gauge                        // last value → gauge
 	Set                          // distinct members → gauge
 	Histogram                    // local stats → gauges + count
-	Distribution                 // M1: exactly Histogram. M2: a DDSketch, sent on hop D
+	Distribution                 // a DDSketch, sent whole on hop D
 )
 
 // Sample is one measurement handed to the aggregator by a source (the statsd
@@ -69,6 +71,12 @@ type Options struct {
 	// bucket; beyond it the kept values are a uniform reservoir sample.
 	// Default 10000.
 	HistogramMaxSamples int
+	// Alpha is the relative accuracy of the sketches a distribution builds.
+	// Default sketch.DefaultAlpha (1%). It travels to ozyd with every
+	// sketch, so changing it does not silently reinterpret what is already
+	// stored — but two agents reporting one metric at different alphas
+	// cannot be merged, so it is a fleet-wide setting in practice.
+	Alpha float64
 	// Shards spreads contexts over independently locked maps. Default 16.
 	Shards int
 	// Rand drives reservoir sampling. Default: a randomly seeded source.
@@ -83,6 +91,7 @@ type Aggregator struct {
 	interval  int64 // bucket width, seconds
 	expiry    int64 // seconds
 	histCap   int
+	alpha     float64
 	hostTag   string
 	agentTags []string
 	seed      maphash.Seed
@@ -136,6 +145,9 @@ type bucket struct {
 	weighted float64 // Σ 1/rate: the estimated true count
 	min, max float64
 	values   []float64
+	// distribution: every observation, at a bounded cost and a bounded
+	// error, instead of a sample of them.
+	sketch *sketch.Sketch
 }
 
 // New returns an Aggregator.
@@ -155,6 +167,9 @@ func New(opts Options) *Aggregator {
 	if opts.HistogramMaxSamples <= 0 {
 		opts.HistogramMaxSamples = 10000
 	}
+	if !(opts.Alpha > 0 && opts.Alpha < 1) {
+		opts.Alpha = sketch.DefaultAlpha
+	}
 	if opts.Shards <= 0 {
 		opts.Shards = 16
 	}
@@ -166,6 +181,7 @@ func New(opts Options) *Aggregator {
 		interval: int64(opts.FlushInterval / time.Second),
 		expiry:   int64(opts.ContextExpiry / time.Second),
 		histCap:  opts.HistogramMaxSamples,
+		alpha:    opts.Alpha,
 		seed:     maphash.MakeSeed(),
 		rand:     opts.Rand,
 
@@ -276,7 +292,23 @@ func (a *Aggregator) update(kind Kind, b *bucket, s Sample, rate float64) {
 			b.members = map[string]struct{}{}
 		}
 		b.members[s.SetMember] = struct{}{}
-	case Histogram, Distribution:
+	case Distribution:
+		// No reservoir and no cap on observations: a sketch is 2048 buckets
+		// whether it has seen ten values or ten billion, and every one of
+		// them is inside the relative error. That is the whole difference
+		// between a distribution and a histogram here — a histogram's p95 is
+		// this host's p95 of a sample, and cannot be combined with another
+		// host's; a distribution's merges exactly.
+		if b.sketch == nil {
+			b.sketch = sketch.New(a.alpha)
+		}
+		// The weight is 1/rate, so a sampled client still describes the true
+		// shape. AddWithCount refuses only what Add already refused, and Add
+		// has been checked above.
+		if err := b.sketch.AddWithCount(s.Value, 1/rate); err != nil {
+			a.samplesDropped.Inc()
+		}
+	case Histogram:
 		b.n++
 		b.weighted += 1 / rate
 		b.sum += s.Value
@@ -345,7 +377,7 @@ func contextKey(kind Kind, name string, tags []string) string {
 // for. (If the agent restarts within the same interval, the restarted agent's
 // point for that bucket replaces this one in the store; losing a partial
 // bucket on restart is the accepted cost.)
-func (a *Aggregator) Flush(now time.Time, final bool) []wire.Series {
+func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.SketchSeries) {
 	began := time.Now()
 	nowS := now.Unix()
 	cutoff := floorTo(nowS, a.interval) // buckets starting before this are closed
@@ -354,10 +386,11 @@ func (a *Aggregator) Flush(now time.Time, final bool) []wire.Series {
 	}
 
 	var out []wire.Series
+	var sketches []wire.SketchSeries
 	for _, sh := range a.shards {
 		sh.mu.Lock()
 		for key, c := range sh.contexts {
-			out = a.flushContext(out, c, cutoff, final)
+			out, sketches = a.flushContext(out, sketches, c, cutoff, final)
 			if len(c.buckets) == 0 && nowS-c.lastSeen > a.expiry && (c.kind != Counter || c.next > c.lastData+a.expiry) {
 				delete(sh.contexts, key)
 				a.nContexts.Add(-1)
@@ -371,16 +404,25 @@ func (a *Aggregator) Flush(now time.Time, final bool) []wire.Series {
 		}
 		return slices.Compare(x.Tags, y.Tags)
 	})
+	slices.SortFunc(sketches, func(x, y wire.SketchSeries) int {
+		if c := strings.Compare(x.Metric, y.Metric); c != 0 {
+			return c
+		}
+		return slices.Compare(x.Tags, y.Tags)
+	})
 	var n int64
 	for _, s := range out {
 		n += int64(len(s.Points))
 	}
+	for _, s := range sketches {
+		n += int64(len(s.Points))
+	}
 	a.pointsFlushed.Add(n)
 	a.flushDuration.Set(float64(time.Since(began).Microseconds()) / 1000)
-	return out
+	return out, sketches
 }
 
-func (a *Aggregator) flushContext(out []wire.Series, c *aggContext, cutoff int64, final bool) []wire.Series {
+func (a *Aggregator) flushContext(out []wire.Series, sketches []wire.SketchSeries, c *aggContext, cutoff int64, final bool) ([]wire.Series, []wire.SketchSeries) {
 	starts := make([]int64, 0, len(c.buckets))
 	for s := range c.buckets {
 		if s < cutoff || final {
@@ -390,10 +432,10 @@ func (a *Aggregator) flushContext(out []wire.Series, c *aggContext, cutoff int64
 	slices.Sort(starts)
 
 	if c.kind == Counter {
-		return a.flushCounter(out, c, cutoff, starts)
+		return a.flushCounter(out, c, cutoff, starts), sketches
 	}
 	if len(starts) == 0 {
-		return out
+		return out, sketches
 	}
 	e := emitter{c: c, interval: a.interval}
 	for _, s := range starts {
@@ -404,7 +446,14 @@ func (a *Aggregator) flushContext(out []wire.Series, c *aggContext, cutoff int64
 			e.add("", wire.KindGauge, s, b.last)
 		case Set:
 			e.add("", wire.KindGauge, s, float64(len(b.members)))
-		case Histogram, Distribution:
+		case Distribution:
+			// Nothing derived here: the four exact aggregates ride inside
+			// the sketch, and ozyd writes them as .count/.sum/.min/.max so
+			// there is one place that decides what they are called.
+			if b.sketch != nil {
+				e.addSketch(s, b.sketch)
+			}
+		case Histogram:
 			slices.Sort(b.values)
 			e.add(".avg", wire.KindGauge, s, b.sum/float64(b.n))
 			e.add(".min", wire.KindGauge, s, b.min)
@@ -414,7 +463,7 @@ func (a *Aggregator) flushContext(out []wire.Series, c *aggContext, cutoff int64
 			e.add(".count", wire.KindCount, s, b.weighted)
 		}
 	}
-	return append(out, e.series()...)
+	return append(out, e.series()...), append(sketches, e.sketchSeries()...)
 }
 
 // flushCounter walks the zero-fill cursor up to cutoff: a closed bucket with
@@ -468,6 +517,28 @@ type emitter struct {
 	interval int64
 	order    []string
 	bySuffix map[string]*wire.Series
+	sketch   *wire.SketchSeries
+}
+
+// addSketch files one bucket's sketch. A distribution emits no derived
+// series of its own: count, sum, min and max ride inside the sketch, and
+// ozyd writes them as .count/.sum/.min/.max so that one place decides what
+// they are called.
+func (e *emitter) addSketch(ts int64, s *sketch.Sketch) {
+	if e.sketch == nil {
+		e.sketch = &wire.SketchSeries{Metric: e.c.name, Tags: e.c.tags, Interval: e.interval}
+	}
+	e.sketch.Points = append(e.sketch.Points, wire.SketchPoint{Timestamp: ts, Sketch: s.ToWire()})
+}
+
+func (e *emitter) sketchSeries() []wire.SketchSeries {
+	if e.sketch == nil {
+		return nil
+	}
+	slices.SortFunc(e.sketch.Points, func(x, y wire.SketchPoint) int {
+		return cmp.Compare(x.Timestamp, y.Timestamp)
+	})
+	return []wire.SketchSeries{*e.sketch}
 }
 
 func (e *emitter) add(suffix string, kind wire.Kind, ts int64, v float64) {
@@ -502,7 +573,7 @@ func (e *emitter) series() []wire.Series {
 // the open buckets. It checks the clock once a second rather than ticking
 // once per interval: a ticker started at an arbitrary phase would delay
 // every bucket by up to a whole interval.
-func (a *Aggregator) Run(ctx context.Context, sink func([]wire.Series)) {
+func (a *Aggregator) Run(ctx context.Context, sink func([]wire.Series, []wire.SketchSeries)) {
 	t := a.clock.NewTicker(time.Second)
 	defer t.Stop()
 	last := floorTo(a.clock.Now().Unix(), a.interval)

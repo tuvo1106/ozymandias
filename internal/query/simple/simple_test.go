@@ -85,7 +85,7 @@ var store = &memStore{series: []tsdb.SeriesSamples{
 
 func run(t *testing.T, req Request) Result {
 	t.Helper()
-	r, err := Run(context.Background(), store, req)
+	r, err := Run(context.Background(), store, nil, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestRun_NoDataIsAnEmptyList(t *testing.T) {
 }
 
 func TestRun_StoreErrorIsReturned(t *testing.T) {
-	_, err := Run(context.Background(), &memStore{err: errors.New("boom")}, Request{Metric: "m", From: 0, To: 10})
+	_, err := Run(context.Background(), &memStore{err: errors.New("boom")}, nil, Request{Metric: "m", From: 0, To: 10})
 	if err == nil || err.Error() != "boom" {
 		t.Fatalf("err = %v", err)
 	}
@@ -183,9 +183,17 @@ func TestValidate(t *testing.T) {
 		req  Request
 		want string
 	}{
-		"bad metric":     {Request{Metric: "1x", From: 0, To: 10}, "valid metric name"},
-		"empty range":    {Request{Metric: "m", From: 10, To: 10}, "must be after"},
-		"bad agg":        {Request{Metric: "m", From: 0, To: 10, Agg: "p99"}, "agg"},
+		"bad metric":  {Request{Metric: "1x", From: 0, To: 10}, "valid metric name"},
+		"empty range": {Request{Metric: "m", From: 10, To: 10}, "must be after"},
+		"bad agg":     {Request{Metric: "m", From: 0, To: 10, Agg: "nope"}, "agg"},
+		"percentile of a gauge": {
+			Request{Metric: "m", From: 0, To: 10, Agg: P99, Kind: wire.KindGauge},
+			"not a distribution",
+		},
+		"average of a distribution": {
+			Request{Metric: "m", From: 0, To: 10, Agg: Avg, Kind: wire.KindDistribution},
+			"use p50",
+		},
 		"neg interval":   {Request{Metric: "m", From: 0, To: 10, Interval: -1}, "positive"},
 		"bad by":         {Request{Metric: "m", From: 0, To: 10, By: []string{"a:b"}}, "not a tag key"},
 		"too many":       {Request{Metric: "m", From: 0, To: 86400, Interval: 1}, "buckets"},
@@ -217,7 +225,7 @@ func TestRunRejectsUnboundedRange(t *testing.T) {
 		{Metric: "req", From: 0, To: math.MaxInt64, Interval: 10},
 		{Metric: "req", From: 0, To: 1790000000, Interval: 200000},
 	} {
-		if _, err := Run(context.Background(), store, req); err == nil {
+		if _, err := Run(context.Background(), store, nil, req); err == nil {
 			t.Errorf("Run(%+v) = nil error, want a rejection", req)
 		}
 	}
@@ -296,7 +304,7 @@ func TestRun_SumIsConservedAcrossIntervalsAndGroupings(t *testing.T) {
 		}
 		iv := rapid.Int64Range(1, 400).Draw(t, "interval")
 		for _, by := range [][]string{nil, {"g"}, {"s"}} {
-			r, err := Run(context.Background(), st, Request{Metric: "m", Agg: Sum, By: by, From: 0, To: 999, Interval: iv, Kind: wire.KindCount})
+			r, err := Run(context.Background(), st, nil, Request{Metric: "m", Agg: Sum, By: by, From: 0, To: 999, Interval: iv, Kind: wire.KindCount})
 			if err != nil {
 				t.Fatal(err)
 			}

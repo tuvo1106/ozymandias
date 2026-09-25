@@ -14,6 +14,7 @@ import (
 	"pgregory.net/rapid"
 
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
+	"github.com/tuvo1106/ozymandias/internal/sketch"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
@@ -60,7 +61,7 @@ func TestAggregator_CounterScalesBySampleRate(t *testing.T) {
 	a.Add(Sample{Name: "hits", Kind: Counter, Value: 1, SampleRate: 0.5}, at(1))
 	a.Add(Sample{Name: "hits", Kind: Counter, Value: 2}, at(2))
 	a.Add(Sample{Name: "hits", Kind: Counter, Value: 1, SampleRate: 0.1}, at(3))
-	s := find(a.Flush(at(10), false), "hits")
+	s := find(flushSeries(a, at(10), false), "hits")
 	if s == nil || s.Type != wire.KindCount || s.Interval != 10 || points(s) != "0:14" {
 		t.Fatalf("got %+v (%s), want count 0:14 (2+2+10)", s, points(s))
 	}
@@ -69,7 +70,7 @@ func TestAggregator_CounterScalesBySampleRate(t *testing.T) {
 func TestAggregator_InvalidSampleRateCountsAsOne(t *testing.T) {
 	a := newAgg(t, Options{})
 	a.Add(Sample{Name: "hits", Kind: Counter, Value: 1, SampleRate: 7}, at(1))
-	if s := find(a.Flush(at(10), false), "hits"); points(s) != "0:1" {
+	if s := find(flushSeries(a, at(10), false), "hits"); points(s) != "0:1" {
 		t.Fatalf("got %s", points(s))
 	}
 }
@@ -78,11 +79,11 @@ func TestAggregator_GaugeKeepsTheLastValueAndIsNotZeroFilled(t *testing.T) {
 	a := newAgg(t, Options{})
 	a.Add(Sample{Name: "depth", Kind: Gauge, Value: 3, SampleRate: 0.5}, at(1))
 	a.Add(Sample{Name: "depth", Kind: Gauge, Value: 7}, at(5))
-	s := find(a.Flush(at(10), false), "depth")
+	s := find(flushSeries(a, at(10), false), "depth")
 	if s == nil || s.Type != wire.KindGauge || s.Interval != 0 || points(s) != "0:7" {
 		t.Fatalf("got %+v (%s)", s, points(s))
 	}
-	if out := a.Flush(at(20), false); len(out) != 0 {
+	if out := flushSeries(a, at(20), false); len(out) != 0 {
 		t.Fatalf("idle gauge emitted %v", out)
 	}
 }
@@ -92,32 +93,110 @@ func TestAggregator_SetCountsDistinctMembers(t *testing.T) {
 	for _, m := range []string{"u1", "u2", "u1", "u3", "u2"} {
 		a.Add(Sample{Name: "users", Kind: Set, SetMember: m}, at(1))
 	}
-	if s := find(a.Flush(at(10), false), "users"); s == nil || s.Type != wire.KindGauge || points(s) != "0:3" {
+	if s := find(flushSeries(a, at(10), false), "users"); s == nil || s.Type != wire.KindGauge || points(s) != "0:3" {
 		t.Fatalf("got %s", points(s))
 	}
 }
 
 func TestAggregator_HistogramStats(t *testing.T) {
-	for _, kind := range []Kind{Histogram, Distribution} {
-		a := newAgg(t, Options{})
-		for v := 1; v <= 100; v++ {
-			a.Add(Sample{Name: "lat", Kind: kind, Value: float64(v), SampleRate: 0.5}, at(1))
+	a := newAgg(t, Options{})
+	for v := 1; v <= 100; v++ {
+		a.Add(Sample{Name: "lat", Kind: Histogram, Value: float64(v), SampleRate: 0.5}, at(1))
+	}
+	out := flushSeries(a, at(10), false)
+	for metric, want := range map[string]string{
+		"lat.avg": "0:50.5", "lat.min": "0:1", "lat.max": "0:100",
+		"lat.median": "0:50", "lat.95percentile": "0:95", "lat.count": "0:200",
+	} {
+		if got := points(find(out, metric)); got != want {
+			t.Errorf("%s = %s, want %s", metric, got, want)
 		}
-		out := a.Flush(at(10), false)
-		for metric, want := range map[string]string{
-			"lat.avg": "0:50.5", "lat.min": "0:1", "lat.max": "0:100",
-			"lat.median": "0:50", "lat.95percentile": "0:95", "lat.count": "0:200",
-		} {
-			if got := points(find(out, metric)); got != want {
-				t.Errorf("kind %d %s = %s, want %s", kind, metric, got, want)
-			}
+	}
+	if c := find(out, "lat.count"); c.Type != wire.KindCount || c.Interval != 10 {
+		t.Errorf("lat.count = %+v, want a count with interval 10", c)
+	}
+	if find(out, "lat.avg").Type != wire.KindGauge {
+		t.Error("lat.avg is not a gauge")
+	}
+}
+
+// A distribution emits a sketch and nothing else. The four exact aggregates
+// ride inside it, and ozyd writes them as .count/.sum/.min/.max — so an agent
+// that also emitted .avg and .95percentile would be publishing a second,
+// per-host answer to the question the sketch exists to answer across hosts.
+func TestAggregator_DistributionEmitsASketchAndNoDerivedSeries(t *testing.T) {
+	a := newAgg(t, Options{})
+	for v := 1; v <= 100; v++ {
+		a.Add(Sample{Name: "lat", Kind: Distribution, Value: float64(v), SampleRate: 0.5}, at(1))
+	}
+	series, sketches := a.Flush(at(10), false)
+
+	for _, s := range series {
+		if strings.HasPrefix(s.Metric, "lat") {
+			t.Errorf("a distribution emitted the ordinary series %s", s.Metric)
 		}
-		if c := find(out, "lat.count"); c.Type != wire.KindCount || c.Interval != 10 {
-			t.Errorf("lat.count = %+v, want a count with interval 10", c)
-		}
-		if find(out, "lat.avg").Type != wire.KindGauge {
-			t.Error("lat.avg is not a gauge")
-		}
+	}
+	if len(sketches) != 1 {
+		t.Fatalf("got %d sketch series, want 1", len(sketches))
+	}
+	ss := sketches[0]
+	if ss.Metric != "lat" || ss.Interval != 10 {
+		t.Errorf("sketch series = %+v, want metric lat at interval 10", ss)
+	}
+	if want := floorTo(at(1).Unix(), 10); len(ss.Points) != 1 || ss.Points[0].Timestamp != want {
+		t.Fatalf("got %d points at %v, want one at the bucket start %d",
+			len(ss.Points), ss.Points, want)
+	}
+
+	// The sample rate is 0.5, so 100 observations describe 200, and the
+	// aggregates are exact rather than estimated.
+	sk := ss.Points[0].Sketch
+	if sk.Count != 200 {
+		t.Errorf("count = %v, want 200 — the weight is 1/rate", sk.Count)
+	}
+	if sk.Min != 1 || sk.Max != 100 {
+		t.Errorf("min/max = %v/%v, want 1/100 exactly", sk.Min, sk.Max)
+	}
+	if want := 5050 * 2.0; sk.Sum != want {
+		t.Errorf("sum = %v, want %v", sk.Sum, want)
+	}
+
+	// And it is a payload the intake would accept.
+	if err := wire.ValidateSketchSeries(&ss, wire.DecodeOptions{Now: at(10)}); err != nil {
+		t.Errorf("the flushed sketch series is not a valid payload: %v", err)
+	}
+}
+
+// A distribution's cost does not grow with its traffic: the sketch is the
+// same width after ten observations and after a hundred thousand, which is
+// the difference between it and the histogram's reservoir.
+func TestAggregator_ADistributionIsBoundedByBucketsNotSamples(t *testing.T) {
+	a := newAgg(t, Options{HistogramMaxSamples: 10})
+	for v := 1; v <= 100_000; v++ {
+		a.Add(Sample{Name: "lat", Kind: Distribution, Value: float64(v % 1000)}, at(1))
+	}
+	_, sketches := a.Flush(at(10), false)
+	if len(sketches) != 1 {
+		t.Fatalf("got %d sketch series, want 1", len(sketches))
+	}
+	sk := sketches[0].Points[0].Sketch
+	if sk.Count != 100_000 {
+		t.Errorf("count = %v, want 100000 — every observation counts, sampled or not", sk.Count)
+	}
+	if len(sk.Bins) > wire.MaxBinsPerSketch {
+		t.Errorf("%d buckets, past the cap of %d", len(sk.Bins), wire.MaxBinsPerSketch)
+	}
+	// p95 of 0..999 repeated is about 950, within the sketch's 1%.
+	restored, err := sketch.FromWire(sk)
+	if err != nil {
+		t.Fatalf("the flushed sketch does not decode: %v", err)
+	}
+	got, err := restored.Quantile(0.95)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(got-950) > 0.01*950+1 {
+		t.Errorf("p95 = %v, want ~950 within 1%%", got)
 	}
 }
 
@@ -128,7 +207,7 @@ func TestAggregator_HistogramReservoirKeepsExactAggregates(t *testing.T) {
 	for v := 1; v <= 10000; v++ {
 		a.Add(Sample{Name: "lat", Kind: Histogram, Value: float64(v)}, at(1))
 	}
-	out := a.Flush(at(10), false)
+	out := flushSeries(a, at(10), false)
 	for metric, want := range map[string]string{"lat.min": "0:1", "lat.max": "0:10000", "lat.count": "0:10000", "lat.avg": "0:5000.5"} {
 		if got := points(find(out, metric)); got != want {
 			t.Errorf("%s = %s, want %s", metric, got, want)
@@ -145,10 +224,10 @@ func TestAggregator_BucketBoundaries(t *testing.T) {
 	a.Add(Sample{Name: "hits", Kind: Counter, Value: 1}, at(9.999))
 	a.Add(Sample{Name: "hits", Kind: Counter, Value: 10}, at(10))
 	// At 19.9 only the first bucket has closed.
-	if got := points(find(a.Flush(at(19.9), false), "hits")); got != "0:1" {
+	if got := points(find(flushSeries(a, at(19.9), false), "hits")); got != "0:1" {
 		t.Fatalf("first flush %s, want 0:1", got)
 	}
-	if got := points(find(a.Flush(at(20), false), "hits")); got != "10:10" {
+	if got := points(find(flushSeries(a, at(20), false), "hits")); got != "10:10" {
 		t.Fatalf("second flush %s, want 10:10", got)
 	}
 }
@@ -156,17 +235,17 @@ func TestAggregator_BucketBoundaries(t *testing.T) {
 func TestAggregator_CounterZeroFillThenExpiry(t *testing.T) {
 	a := newAgg(t, Options{ContextExpiry: 30 * time.Second})
 	a.Add(Sample{Name: "errors", Kind: Counter, Value: 2}, at(1))
-	if got := points(find(a.Flush(at(20), false), "errors")); got != "0:2 10:0" {
+	if got := points(find(flushSeries(a, at(20), false), "errors")); got != "0:2 10:0" {
 		t.Fatalf("got %s", got)
 	}
 	if a.Contexts() != 1 {
 		t.Fatalf("contexts = %d, want 1 (idle 19s, expiry 30s)", a.Contexts())
 	}
 	// Zeros continue through the bucket 30s after the last data (0), then stop.
-	if got := points(find(a.Flush(at(40), false), "errors")); got != "20:0 30:0" {
+	if got := points(find(flushSeries(a, at(40), false), "errors")); got != "20:0 30:0" {
 		t.Fatalf("got %s", got)
 	}
-	if out := a.Flush(at(60), false); len(out) != 0 {
+	if out := flushSeries(a, at(60), false); len(out) != 0 {
 		t.Fatalf("zero-filled past the expiry: %s", points(find(out, "errors")))
 	}
 	if a.Contexts() != 0 {
@@ -182,7 +261,7 @@ func TestAggregator_CounterLongGapJumpsToNextData(t *testing.T) {
 	a.Add(Sample{Name: "c", Kind: Counter, Value: 1}, at(1))
 	// Never flushed in between; data again much later.
 	a.Add(Sample{Name: "c", Kind: Counter, Value: 5}, at(10_001))
-	got := points(find(a.Flush(at(10_010), false), "c"))
+	got := points(find(flushSeries(a, at(10_010), false), "c"))
 	if got != "0:1 10:0 20:0 10000:5" {
 		t.Fatalf("got %s", got)
 	}
@@ -191,12 +270,12 @@ func TestAggregator_CounterLongGapJumpsToNextData(t *testing.T) {
 func TestAggregator_NonCounterContextExpires(t *testing.T) {
 	a := newAgg(t, Options{ContextExpiry: 30 * time.Second})
 	a.Add(Sample{Name: "g", Kind: Gauge, Value: 1}, at(1))
-	a.Flush(at(10), false)
-	a.Flush(at(20), false)
+	flushSeries(a, at(10), false)
+	flushSeries(a, at(20), false)
 	if a.Contexts() != 1 {
 		t.Fatal("gauge context forgotten before expiry")
 	}
-	a.Flush(at(40), false)
+	flushSeries(a, at(40), false)
 	if a.Contexts() != 0 {
 		t.Fatal("gauge context kept past expiry")
 	}
@@ -206,10 +285,10 @@ func TestAggregator_LateSampleCountsInTheOldestOpenBucket(t *testing.T) {
 	reg := selfmetrics.NewRegistry()
 	a := newAgg(t, Options{Registry: reg})
 	a.Add(Sample{Name: "c", Kind: Counter, Value: 1}, at(1))
-	a.Flush(at(10), false) // bucket 0 emitted
+	flushSeries(a, at(10), false) // bucket 0 emitted
 	// Claims t=5 (within tolerance of now=12), but bucket 0 is gone.
 	a.Add(Sample{Name: "c", Kind: Counter, Value: 4, Timestamp: at(5).Unix()}, at(12))
-	if got := points(find(a.Flush(at(20), false), "c")); got != "10:4" {
+	if got := points(find(flushSeries(a, at(20), false), "c")); got != "10:4" {
 		t.Fatalf("got %s, want the late 4 in bucket 10", got)
 	}
 	if reg.Counter("ozy.agent.aggregator.late_samples").Value() != 1 {
@@ -222,7 +301,7 @@ func TestAggregator_ClientTimestampUsedOnlyWithinTolerance(t *testing.T) {
 	a.Add(Sample{Name: "g", Kind: Gauge, Value: 1, Timestamp: at(55).Unix()}, at(1))    // 54s ahead: trusted
 	a.Add(Sample{Name: "h", Kind: Gauge, Value: 1, Timestamp: at(200).Unix()}, at(1))   // 199s ahead: ignored
 	a.Add(Sample{Name: "i", Kind: Gauge, Value: 1, Timestamp: at(-300).Unix()}, at(20)) // too old: ignored
-	out := a.Flush(at(100), false)
+	out := flushSeries(a, at(100), false)
 	if got := points(find(out, "g")); got != "50:1" {
 		t.Errorf("g = %s, want 50:1", got)
 	}
@@ -239,7 +318,7 @@ func TestAggregator_TagsNormalizedWithHostAndAgentTags(t *testing.T) {
 	a := newAgg(t, Options{Registry: reg, Hostname: "Mac.Local", Tags: []string{"env:dev", "1bad"}})
 	a.Add(Sample{Name: "c", Kind: Counter, Value: 1, Tags: []string{"Route:/X", "b", "b", "9nope"}}, at(1))
 	a.Add(Sample{Name: "d", Kind: Counter, Value: 1, Tags: []string{"host:other"}}, at(1))
-	out := a.Flush(at(10), false)
+	out := flushSeries(a, at(10), false)
 	if got := strings.Join(find(out, "c").Tags, ","); got != "b,env:dev,host:mac.local,route:/x" {
 		t.Errorf("c tags = %s", got)
 	}
@@ -267,7 +346,7 @@ func TestAggregator_TooManyTagsAreCutDeterministically(t *testing.T) {
 		tags = append(tags, fmt.Sprintf("k%02d", i))
 	}
 	a.Add(Sample{Name: "c", Kind: Gauge, Value: 1, Tags: tags}, at(1))
-	s := find(a.Flush(at(10), false), "c")
+	s := find(flushSeries(a, at(10), false), "c")
 	if len(s.Tags) != wire.MaxTagsPerPoint || s.Tags[0] != "k00" || s.Tags[49] != "k49" {
 		t.Fatalf("tags = %v", s.Tags)
 	}
@@ -279,7 +358,7 @@ func TestAggregator_InvalidNamesAndKindsAreDropped(t *testing.T) {
 	a.Add(Sample{Name: "1bad", Kind: Counter, Value: 1}, at(1))
 	a.Add(Sample{Name: "ok", Kind: 0, Value: 1}, at(1))
 	a.Add(Sample{Name: "bad-name", Kind: Counter, Value: 1}, at(1)) // repaired, kept
-	out := a.Flush(at(10), false)
+	out := flushSeries(a, at(10), false)
 	if len(out) != 1 || out[0].Metric != "bad_name" {
 		t.Fatalf("out = %v", out)
 	}
@@ -298,7 +377,7 @@ func TestAggregator_NonFiniteScaledSamplesAreDropped(t *testing.T) {
 	a.Add(Sample{Name: "hits", Kind: Counter, Value: 1, SampleRate: 1e-320}, at(1))
 	a.Add(Sample{Name: "lat", Kind: Histogram, Value: 1, SampleRate: 1e-320}, at(1))
 	a.Add(Sample{Name: "hits", Kind: Counter, Value: 2, SampleRate: 0.5}, at(1))
-	if got := points(find(a.Flush(at(10), false), "hits")); got != "0:4" {
+	if got := points(find(flushSeries(a, at(10), false), "hits")); got != "0:4" {
 		t.Fatalf("hits = %s, want only the usable sample (0:4)", got)
 	}
 	if n := reg.Counter("ozy.agent.aggregator.samples_dropped").Value(); n != 2 {
@@ -320,7 +399,7 @@ func TestAggregator_FinalFlushEmitsOpenBuckets(t *testing.T) {
 	a.Add(Sample{Name: "c", Kind: Counter, Value: 3}, at(12))
 	a.Add(Sample{Name: "g", Kind: Gauge, Value: 4}, at(13))
 	a.Add(Sample{Name: "h", Kind: Histogram, Value: 5}, at(14))
-	out := a.Flush(at(15), true)
+	out := flushSeries(a, at(15), true)
 	if points(find(out, "c")) != "10:3" || points(find(out, "g")) != "10:4" || points(find(out, "h.max")) != "10:5" {
 		t.Fatalf("final flush: c=%s g=%s h.max=%s", points(find(out, "c")), points(find(out, "g")), points(find(out, "h.max")))
 	}
@@ -341,7 +420,7 @@ func TestAggregator_RunFlushesAtBoundariesAndOnShutdown(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { a.Run(ctx, sink); close(done) }()
+	go func() { a.Run(ctx, func(out []wire.Series, _ []wire.SketchSeries) { sink(out) }); close(done) }()
 	testutil.Eventually(t, time.Second, func() bool { return clk.Waiters() == 1 }, "ticker not started")
 
 	a.Add(Sample{Name: "c", Kind: Counter, Value: 1}, clk.Now())
@@ -380,14 +459,14 @@ func TestAggregator_CounterSumIsConserved(t *testing.T) {
 			a.Add(Sample{Name: "c", Kind: Counter, Value: v, SampleRate: rate, Timestamp: ts, Tags: tags}, now)
 			want += v / rate
 			if rapid.Bool().Draw(t, "flush") {
-				for _, s := range a.Flush(now, false) {
+				for _, s := range flushSeries(a, now, false) {
 					for _, p := range s.Points {
 						got += p.Value
 					}
 				}
 			}
 		}
-		for _, s := range a.Flush(now.Add(time.Hour), true) {
+		for _, s := range flushSeries(a, now.Add(time.Hour), true) {
 			for _, p := range s.Points {
 				got += p.Value
 			}
@@ -432,10 +511,10 @@ func TestAggregator_NeverEmitsATimestampTwice(t *testing.T) {
 			// second type), which is not what this property is about.
 			a.Add(Sample{Name: fmt.Sprintf("m%d", kind), Kind: kind, Value: 1, SetMember: "x", Timestamp: ts}, now)
 			if rapid.Bool().Draw(t, "flush") {
-				check(a.Flush(now, false))
+				check(flushSeries(a, now, false))
 			}
 		}
-		check(a.Flush(now.Add(time.Hour), false))
+		check(flushSeries(a, now.Add(time.Hour), false))
 	})
 }
 
@@ -455,7 +534,7 @@ func TestAggregator_ConcurrentAddsLoseNothing(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				for _, s := range a.Flush(now, false) {
+				for _, s := range flushSeries(a, now, false) {
 					fmu.Lock()
 					for _, p := range s.Points {
 						flushed += p.Value
@@ -477,7 +556,7 @@ func TestAggregator_ConcurrentAddsLoseNothing(t *testing.T) {
 	close(stop)
 	fmu.Lock()
 	defer fmu.Unlock()
-	for _, s := range a.Flush(at(100), true) {
+	for _, s := range flushSeries(a, at(100), true) {
 		for _, p := range s.Points {
 			flushed += p.Value
 		}
@@ -531,3 +610,10 @@ func BenchmarkAggregator_AddParallel(b *testing.B) {
 }
 
 var _ = slices.Sort[[]int]
+
+// flushSeries is Flush for the tests that predate distributions carrying a
+// sketch: they assert on the ordinary series and never on the second return.
+func flushSeries(a *Aggregator, now time.Time, final bool) []wire.Series {
+	series, _ := a.Flush(now, final)
+	return series
+}
