@@ -260,16 +260,50 @@ type seriesRecord struct {
 	ref tsdb.SeriesRef
 }
 
+// maxSampleBytes is the most one encoded sample can occupy: a uvarint id and
+// a varint timestamp are at most ten bytes each, and the value is a fixed
+// eight.
+const maxSampleBytes = 10 + 10 + 8
+
+// maxSamplesPerRecord is how many samples certainly fit in one WAL record,
+// leaving room for the count prefix.
+//
+// A batch larger than this is not exotic. Intake accepts a 16 MiB
+// decompressed body (wire.MaxDecompressedBytes) and caps series per request
+// but not *points* per request, so one dense body is around 1.1 million
+// points — comfortably over. Encoding that as a single record put it past
+// wal.MaxRecordSize, and wal.Log rejects an oversized record before writing
+// anything, so Append failed the whole batch with an Index -1 error. Nothing
+// was corrupted and nothing was lost; the request simply could never succeed,
+// and every retry of the same body failed identically.
+const maxSamplesPerRecord = (wal.MaxRecordSize - 10) / maxSampleBytes
+
 // logLocked writes one batch's records. The caller holds logMu and keeps
 // holding it until the samples are applied; see Append.
+//
+// A batch too large for one record is split across several. They go to
+// wal.Log in a single call, which is what keeps the split invisible: the log
+// writes them consecutively under its own lock and undoes a partial write, so
+// replay sees the same samples in the same order it would have seen from one
+// record. Splitting into separate Log calls would not be equivalent — another
+// appender could interleave its records between the halves.
 func (h *Head) logLocked(series []seriesRecord, samples []Sample) error {
-	recs := make([]wal.Record, 0, len(series)+1)
+	recs := make([]wal.Record, 0, len(series)+1+len(samples)/maxSamplesPerRecord)
 	for _, s := range series {
 		h.logBuf = encodeSeries(h.logBuf[:0], s.id, s.ref)
 		recs = append(recs, wal.Record{Type: RecordSeries, Data: append([]byte(nil), h.logBuf...)})
 	}
-	h.logBuf = encodeSamples(h.logBuf[:0], samples)
-	recs = append(recs, wal.Record{Type: RecordSamples, Data: append([]byte(nil), h.logBuf...)})
+	for rest := samples; ; {
+		chunk := rest
+		if len(chunk) > maxSamplesPerRecord {
+			chunk = chunk[:maxSamplesPerRecord]
+		}
+		h.logBuf = encodeSamples(h.logBuf[:0], chunk)
+		recs = append(recs, wal.Record{Type: RecordSamples, Data: append([]byte(nil), h.logBuf...)})
+		if rest = rest[len(chunk):]; len(rest) == 0 {
+			break
+		}
+	}
 	if err := h.opts.WAL.Log(recs...); err != nil {
 		return fmt.Errorf("head: logging: %w", err)
 	}

@@ -84,7 +84,11 @@ type Storage struct {
 	// disk sooner, since a block is deleted whole or not at all.
 	BlockRange time.Duration `yaml:"block_range"`
 	// Retention deletes blocks whose newest sample is older than this.
-	// Negative keeps everything.
+	// Negative keeps everything. Zero is rejected rather than given a
+	// meaning: max_bytes two fields down uses zero for "no cap", so zero here
+	// reads as "off" — and it used to reach db.Options as an unset field and
+	// come back as the 15-day default, quietly deleting data from a config
+	// that looked like it had turned deletion off.
 	Retention time.Duration `yaml:"retention"`
 	// MaxBytes caps total size on disk, deleting the oldest blocks when
 	// exceeded. Zero means no cap. It is a backstop against a full disk, not a
@@ -119,6 +123,11 @@ func (s Storage) Validate() error {
 		errs = append(errs, fmt.Errorf(
 			"storage.max_block_range (%v) is smaller than storage.block_range (%v), so no compaction could ever run",
 			s.MaxBlockRange, s.BlockRange))
+	}
+	if s.Retention == 0 {
+		errs = append(errs, errors.New(
+			"storage.retention is 0, which is ambiguous: use a negative value to keep everything, "+
+				"or a positive duration to delete blocks older than it"))
 	}
 	if s.MaxBytes < 0 {
 		errs = append(errs, fmt.Errorf("storage.max_bytes must not be negative, got %d", s.MaxBytes))

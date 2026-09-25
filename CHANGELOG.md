@@ -32,6 +32,42 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Eight storage defects from a whole-tree review** (issues #4–#11), all in the
+  M2 engine:
+  - `block`: a chunk record's length prefix was validated with `used+length+4
+    == recLen`, which overflows — a ten-byte uvarint can wrap the sum back onto
+    `recLen`, and the slice taken next wrapped too, panicking on data that came
+    from `index.dat`. An offset near the top of the range wrapped the same way.
+    `chunks.dat` was also the only on-disk decoder in the TSDB with no fuzz
+    target, which is why this survived three review rounds; it has one now.
+  - `head`: a series record's tag count was bounded by the record length but a
+    tag costs two bytes and `tsdb.Tag` is 32, so a record could make the
+    decoder reserve 32× its own size — half a gigabyte at the 16 MiB WAL
+    ceiling — before parsing a byte. The head's record decoders gained a fuzz
+    target too.
+  - `head`: an `Append` batch above ~600k samples was encoded as a single WAL
+    record and rejected for exceeding `MaxRecordSize`, so a dense intake
+    request could never succeed and every retry failed identically. Batches are
+    now split across records in one `wal.Log` call, which keeps log order.
+  - `db`: `CutBlock` could freeze the head *above* wall-clock time. The cut
+    threshold bounds `cutAt` by the head's MaxT, and `wire.MaxFutureSkew`
+    accepts samples ten minutes ahead, so with a short `block_range` one
+    fast-clocked client made the store reject every real-time sample with
+    `ErrOutOfBounds` until the clock caught up.
+  - `db`: a failed `block.Open` after a successful `block.Write` left the block
+    on disk untracked, and the next tick wrote a second copy of the same
+    samples. The cut is now all-or-nothing.
+  - `block`: `Delete` fsynced the tombstone but not its directory, so a crash
+    mid-unlink could leave a block with missing files and no tombstone — which
+    is the one state that stops ozyd starting.
+  - `compact`: the run scan stopped at the first block of another level or
+    resolution. Once rollups land they interleave with their sources, every run
+    would end at length one, and compaction would stop permanently for both
+    resolutions. It now skips rather than stops.
+  - `config`: `storage.retention: 0` read as "off" (as `max_bytes: 0` does) but
+    reached the store as unset and came back as the 15-day default, quietly
+    deleting data. It is now rejected, with the negative form named in the
+    error.
 - **A query landing on a block cut could return a hole** (issue #3). `DB.Select`
   snapshotted the block list, read every block, and only then read the head. A
   cut inside that window publishes its block *after* the snapshot and truncates

@@ -260,6 +260,18 @@ func Delete(dir string) error {
 	if err := writeFileSync(tomb, []byte("deleted\n")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	// The tombstone's *directory entry* has to be durable too, not just its
+	// contents. writeFileSync fsyncs the file; without this the entry is still
+	// only in the page cache when the unlinking below starts, so a crash can
+	// persist a removed chunks.dat and lose the tombstone that was supposed to
+	// explain it. Startup then finds a block with missing files and no mark:
+	// CleanCondemned skips it, CleanTmp keeps it because meta.json is there,
+	// and Open fails — ozyd will not start, which is the exact outcome the
+	// tombstone exists to prevent. Writer.Close already syncs its directory
+	// for the same reason; this was the asymmetry.
+	if err := syncDir(dir); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if err := os.RemoveAll(dir); err != nil {
 		return fmt.Errorf("block: deleting %s: %w", dir, err)
 	}

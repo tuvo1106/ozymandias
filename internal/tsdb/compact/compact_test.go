@@ -22,6 +22,13 @@ func ref(metric string, tags ...string) tsdb.SeriesRef {
 // sample per second for each named series.
 func writeBlock(t *testing.T, parent string, t0, span int64, level int, series ...tsdb.SeriesRef) *block.Block {
 	t.Helper()
+	return writeBlockRes(t, parent, t0, span, level, 0, series...)
+}
+
+// writeBlockRes is writeBlock with a rollup resolution, for the interleaving
+// that only exists once rollups land.
+func writeBlockRes(t *testing.T, parent string, t0, span int64, level, resolutionS int, series ...tsdb.SeriesRef) *block.Block {
+	t.Helper()
 	batch := make([]tsdb.SeriesSamples, 0, len(series))
 	for _, r := range series {
 		e := tsdb.SeriesSamples{Series: r}
@@ -30,7 +37,7 @@ func writeBlock(t *testing.T, parent string, t0, span int64, level int, series .
 		}
 		batch = append(batch, e)
 	}
-	m, err := block.Write(parent, batch, block.WriterOptions{Now: epoch, Level: level})
+	m, err := block.Write(parent, batch, block.WriterOptions{Now: epoch, Level: level, ResolutionS: resolutionS})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,6 +377,46 @@ func TestNext_PicksTheOldestEligibleRun(t *testing.T) {
 	for i := 1; i < len(p.Sources); i++ {
 		if p.Sources[i-1].Meta().MinTime > p.Sources[i].Meta().MinTime {
 			t.Errorf("plan sources are not in time order: %v", p.Sources)
+		}
+	}
+}
+
+// TestNext_FindsARunThatRollupBlocksAreInterleavedWith.
+//
+// Next scans a list ordered by MinTime alone, and a rollup block sits beside
+// its source at the same time range. So once rollups exist the order is
+// raw(t0), roll(t0), raw(t1), roll(t1), ... and a scan that *stopped* at the
+// first block of another resolution ended every run after one block. No run
+// ever reached MinBlocks, and compaction stopped permanently — for both
+// resolutions at once — while the file count kept growing.
+//
+// It is latent today only because levels happen to be segregated in time.
+// This is the arrangement M2 part two produces, asserted now so that landing
+// rollups does not quietly turn compaction off.
+func TestNext_FindsARunThatRollupBlocksAreInterleavedWith(t *testing.T) {
+	parent := t.TempDir()
+	r := ref("m", "env:prod")
+	var blocks []*block.Block
+	for i := int64(0); i < 3; i++ {
+		t0 := i * 60_000
+		blocks = append(blocks,
+			writeBlockRes(t, parent, t0, 60_000, 0, 0, r),  // raw
+			writeBlockRes(t, parent, t0, 60_000, 0, 60, r)) // its rollup
+	}
+
+	p := Next(blocks, Options{})
+	if p == nil {
+		t.Fatal("no plan: three same-level blocks of one resolution are a run, " +
+			"whatever is interleaved with them")
+	}
+	if len(p.Sources) != 3 {
+		t.Fatalf("planned %d sources, want 3", len(p.Sources))
+	}
+	// And it must still be one resolution — the samples mean different things.
+	want := p.Sources[0].Meta().ResolutionS
+	for _, b := range p.Sources {
+		if got := b.Meta().ResolutionS; got != want {
+			t.Errorf("the plan mixes resolutions: %d and %d", want, got)
 		}
 	}
 }
