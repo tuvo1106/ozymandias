@@ -802,6 +802,38 @@ func TestDB_CompactionIsInvisibleThroughTheStore(t *testing.T) {
 	}
 }
 
+// TestDB_OverlappingBlocksMergeInsteadOfHidingEachOther covers the merge in
+// Select for sources that are not prefix-ordered in time. Concatenating in
+// source order and skipping anything at or before the running tail is right
+// only while the sources are disjoint; two blocks over the same range are not,
+// and every sample the second one holds for an instant the first has nothing
+// for would be dropped. A crash between writing a merged block and deleting
+// its sources leaves exactly this until the next startup, and rollup blocks
+// will have it by design.
+func TestDB_OverlappingBlocksMergeInsteadOfHidingEachOther(t *testing.T) {
+	dir := t.TempDir()
+	blocksDir := filepath.Join(dir, blocksDirName)
+	r := ref("m", "env:prod")
+	// Same range, interleaved: neither block is a prefix of the other, and
+	// they agree at t=2000 so the dedup has something to do too.
+	even := []tsdb.SeriesSamples{{Series: r, Samples: []tsdb.Sample{sm(0, 0), sm(2000, 2), sm(4000, 4)}}}
+	odd := []tsdb.SeriesSamples{{Series: r, Samples: []tsdb.Sample{sm(1000, 1), sm(2000, 2), sm(3000, 3), sm(5000, 5)}}}
+	for _, series := range [][]tsdb.SeriesSamples{even, odd} {
+		if _, err := block.Write(blocksDir, series, block.WriterOptions{Now: epoch}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	db, _, _ := open(t, Options{Dir: dir, BlockRange: time.Minute, Retention: -1})
+	if n := len(db.Blocks()); n != 2 {
+		t.Fatalf("%d blocks opened, want the two overlapping ones", n)
+	}
+	want := "m|env:prod=0:0,1000:1,2000:2,3000:3,4000:4,5000:5"
+	if got := dumpOf(t, db, tsdb.Selector{Metric: "m"}); got != want {
+		t.Errorf("merged to\n  %s\nwant\n  %s", got, want)
+	}
+}
+
 func dumpOf(t *testing.T, db *DB, sel tsdb.Selector) string {
 	t.Helper()
 	set, err := db.Select(ctx, sel, math.MinInt64, math.MaxInt64)
@@ -874,6 +906,53 @@ func TestDB_CompactionSurvivesASourceThatWillNotDelete(t *testing.T) {
 	if _, err := os.Stat(stuck); !os.IsNotExist(err) {
 		t.Errorf("the superseded source survived a reopen: %v", err)
 	}
+}
+
+// TestDB_SyncsContinueWhileMaintenanceIsBusy pins why group-commit has a
+// goroutine of its own. The two used to share one select, so no fsync happened
+// for the whole of a cut, a compaction that rewrites three blocks and a
+// retention sweep — and with SyncOnAppend off, the window an acknowledged
+// sample spends in the page cache is documented as wal_sync_interval, not
+// "however long the longest maintenance pass took".
+//
+// Holding cutMu is what a long pass looks like from outside: the maintenance
+// goroutine wakes on its own ticker, reaches CutBlock and stops there.
+func TestDB_SyncsContinueWhileMaintenanceIsBusy(t *testing.T) {
+	db, fake, _ := open(t, Options{BlockRange: time.Minute, Retention: -1, SyncInterval: 10 * time.Millisecond})
+	fill(t, db, ref("m", "env:prod"), 0, 1000, 91) // enough that a cut is due
+
+	// Both loops are armed before the clock moves (see FakeClock's doc).
+	testutil.Eventually(t, 2*time.Second, func() bool { return fake.Waiters() >= 2 }, "tickers not armed")
+
+	db.cutMu.Lock()
+	defer db.cutMu.Unlock()
+	fake.Advance(10 * time.Second) // the check ticker fires; CutBlock blocks on cutMu
+
+	// Let every tick that advance delivered be consumed before the baseline is
+	// taken. Without this the baseline can be read before a tick that was
+	// already in flight lands, and that one arrival alone satisfies the
+	// assertion — which is how this test first passed against the very shape
+	// it is meant to reject. The clock only moves when a test moves it, so
+	// "unchanged while it is still" is a real quiescence check.
+	settle := func() uint64 {
+		last, stable := db.Syncs(), 0
+		for stable < 5 {
+			time.Sleep(10 * time.Millisecond)
+			if n := db.Syncs(); n == last {
+				stable++
+			} else {
+				last, stable = n, 0
+			}
+		}
+		return last
+	}
+	before := settle()
+
+	for i := 0; i < 20; i++ {
+		fake.Advance(10 * time.Millisecond)
+	}
+	testutil.Eventually(t, 2*time.Second, func() bool { return db.Syncs() > before },
+		"the log was not synced while the maintenance goroutine was stuck")
 }
 
 func TestDB_CompactIsANoOpWithNothingToDo(t *testing.T) {

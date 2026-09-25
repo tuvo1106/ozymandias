@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/clock"
@@ -117,6 +118,9 @@ type DB struct {
 	blocks []*block.Block
 
 	cutMu sync.Mutex // one block cut or compaction at a time
+
+	// syncs counts successful WAL flushes; see [DB.Syncs].
+	syncs atomic.Uint64
 }
 
 var _ tsdb.MetricStore = (*DB)(nil)
@@ -206,8 +210,9 @@ func Open(opts Options) (*DB, error) {
 			"samples", st.Samples, "series", st.Series, "skipped", st.OOORejected)
 	}
 
-	db.wg.Add(1)
+	db.wg.Add(2)
 	go db.maintain()
+	go db.syncLoop()
 	return db, nil
 }
 

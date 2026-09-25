@@ -16,17 +16,17 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/tsdb/wal"
 )
 
-// maintain runs the background work: group-commit syncs, block cuts and
-// retention. One goroutine, owned by the DB, stopped by Close.
+// maintain runs the periodic storage work: block cuts, compaction and
+// retention, in that order. One goroutine, owned by the DB, stopped by Close.
+// Group-commit syncs are [DB.syncLoop]'s, on a goroutine of its own, because a
+// pass through here can take minutes.
 //
-// Everything here is also callable directly ([DB.Sync], [DB.CutBlock],
+// Everything here is also callable directly ([DB.CutBlock], [DB.Compact],
 // [DB.ApplyRetention]) so tests drive it without a clock racing them, and so
 // an operator command can force it.
 func (db *DB) maintain() {
 	defer db.wg.Done()
 
-	sync := db.opts.Clock.NewTicker(db.opts.SyncInterval)
-	defer sync.Stop()
 	// Checking for a cut every block range would mean a full range of latency
 	// on the first cut after startup; a tenth of it is frequent enough to be
 	// prompt and rare enough to cost nothing.
@@ -36,16 +36,7 @@ func (db *DB) maintain() {
 	for {
 		select {
 		case <-db.closed:
-			// A final sync on the way out: the log is what a restart reads,
-			// and the samples of the last interval are only in the page cache.
-			if err := db.Sync(); err != nil {
-				db.opts.Logger.Error("final log sync failed", "error", err)
-			}
 			return
-		case <-sync.C():
-			if err := db.Sync(); err != nil {
-				db.opts.Logger.Error("log sync failed", "error", err)
-			}
 		case <-check.C():
 			if err := db.CutBlock(); err != nil && !errors.Is(err, errNothingToCut) {
 				db.opts.Logger.Error("cutting a block failed", "error", err)
@@ -64,6 +55,39 @@ func (db *DB) maintain() {
 	}
 }
 
+// syncLoop group-commits the write-ahead log. It is a goroutine of its own,
+// not another case in [DB.maintain]'s select, because the two have nothing to
+// do with each other and very different durations. Sharing one goroutine meant
+// no fsync happened for the whole of a maintenance pass — a cut, a compaction
+// that rewrites three blocks and a retention sweep — so with SyncOnAppend off,
+// the window an acknowledged sample spends in the page cache was not
+// SyncInterval, as [Options.SyncInterval] and the config reference both say,
+// but however long the longest pass took.
+func (db *DB) syncLoop() {
+	defer db.wg.Done()
+
+	sync := db.opts.Clock.NewTicker(db.opts.SyncInterval)
+	defer sync.Stop()
+
+	for {
+		select {
+		case <-db.closed:
+			// A final sync on the way out: the log is what a restart reads,
+			// and the samples of the last interval are only in the page
+			// cache. [wal.WAL.Close] syncs too, so this is belt and braces —
+			// it exists to say so in the log if it is the part that fails.
+			if err := db.Sync(); err != nil {
+				db.opts.Logger.Error("final log sync failed", "error", err)
+			}
+			return
+		case <-sync.C():
+			if err := db.Sync(); err != nil {
+				db.opts.Logger.Error("log sync failed", "error", err)
+			}
+		}
+	}
+}
+
 func maxDuration(a, b time.Duration) time.Duration {
 	if a > b {
 		return a
@@ -73,7 +97,23 @@ func maxDuration(a, b time.Duration) time.Duration {
 
 // Sync flushes the write-ahead log. With SyncOnAppend off this is what makes
 // an acknowledged sample durable, within one SyncInterval.
-func (db *DB) Sync() error { return db.wal.Sync() }
+func (db *DB) Sync() error {
+	if err := db.wal.Sync(); err != nil {
+		return err
+	}
+	db.syncs.Add(1)
+	return nil
+}
+
+// Syncs reports how many times the write-ahead log has been flushed since
+// startup, for the ozy.tsdb.wal_syncs gauge.
+//
+// It is worth a metric because the thing it detects has already happened once:
+// group-commit shared a goroutine with the maintenance pass, so syncs stopped
+// for the length of a compaction and the window an acknowledged sample spent
+// in the page cache quietly stopped being SyncInterval. A counter that should
+// climb at a known rate is the cheapest way to see that from the outside.
+func (db *DB) Syncs() uint64 { return db.syncs.Load() }
 
 // errNothingToCut means the head has not grown past the threshold yet. It is
 // the normal case, not a failure.

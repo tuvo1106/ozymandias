@@ -912,6 +912,64 @@ func TestRepair_LeavesAHealthyLogAlone(t *testing.T) {
 	}
 }
 
+// TestReader_DamageAwayFromTheEndOfTheLastSegmentIsCorruption covers the one
+// thing being in the last segment does not prove. A crash tears the record
+// being appended, so the damage it leaves reaches the end of the file;
+// damage with whole records written after it cannot have come from an
+// interrupted append. Treating it as a torn tail threw all of them away
+// silently — and Repair's TruncateTail then made that permanent.
+func TestReader_DamageAwayFromTheEndOfTheLastSegmentIsCorruption(t *testing.T) {
+	dir := t.TempDir()
+	want := writeLog(t, dir, 40, 1<<20) // one segment, so it is also the last
+	if len(want) != 40 {
+		t.Fatalf("wrote %d records", len(want))
+	}
+	seg := lastSegment(t, dir)
+	data, err := os.ReadFile(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Flip a payload byte in the very first record. Every later record is
+	// intact and sits after it, which is what makes this not a tail.
+	data[headerSize] ^= 0xff
+	if err := os.WriteFile(seg, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := NewReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for r.Next() {
+	}
+	err, cerr := r.Err(), r.Close()
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
+	if !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("reading a segment damaged at its start gave %v, want ErrCorrupt", err)
+	}
+	// And Repair refuses it rather than truncating 39 good records away.
+	if _, err := Repair(dir); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("Repair gave %v, want ErrCorrupt", err)
+	}
+	after, err := os.ReadFile(seg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(data) {
+		t.Errorf("Repair cut the segment from %d bytes to %d", len(data), len(after))
+	}
+}
+
+// TestReader_EndsAtRefusesWhatItCannotMeasure: the tail check decides whether
+// to discard records, so a file it cannot stat has to answer "not a tail".
+func TestReader_EndsAtRefusesWhatItCannotMeasure(t *testing.T) {
+	if (&Reader{}).endsAt(1 << 40) {
+		t.Error("endsAt said yes with no file to measure")
+	}
+}
+
 func TestRepair_OnAnAbsentOrEmptyLog(t *testing.T) {
 	// The first start of a new ozyd: there is no log directory yet.
 	if repaired, err := Repair(filepath.Join(t.TempDir(), "nope")); err != nil || repaired {

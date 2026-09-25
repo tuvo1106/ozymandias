@@ -136,7 +136,8 @@ func (r *Reader) readRecord() (bool, bool) {
 		return false, false // clean end of file
 	case err != nil:
 		// A short header at the very end of the last file is a torn write.
-		return false, r.torn(fmt.Errorf("short header (%d bytes)", n))
+		// ReadFull came up short, so this *is* the end of the file.
+		return false, r.torn(fmt.Errorf("short header (%d bytes)", n), r.off+int64(n))
 	}
 	length := binary.BigEndian.Uint32(hdr[0:4])
 	typ := hdr[4]
@@ -145,17 +146,24 @@ func (r *Reader) readRecord() (bool, bool) {
 	if typ == 0 || length > MaxRecordSize {
 		// Zero type is reserved, so a run of zeros (a pre-allocated or
 		// partially written tail) lands here rather than being replayed.
-		return false, r.torn(fmt.Errorf("implausible header: type %d, length %d", typ, length))
+		// The header is nonsense, so how far the damage runs is unknowable;
+		// one record is the most an interrupted append can have left.
+		return false, r.torn(fmt.Errorf("implausible header: type %d, length %d", typ, length),
+			r.off+headerSize+MaxRecordSize)
 	}
 	if cap(r.buf) < int(length) {
 		r.buf = make([]byte, length)
 	}
 	payload := r.buf[:length]
 	if n, err := io.ReadFull(r.br, payload); err != nil {
-		return false, r.torn(fmt.Errorf("short payload (%d of %d bytes)", n, length))
+		return false, r.torn(fmt.Errorf("short payload (%d of %d bytes)", n, length), r.off+headerSize+int64(n))
 	}
 	if got := crc32.Checksum(payload, castagnoli); got != want {
-		return false, r.torn(fmt.Errorf("crc mismatch: got %08x, want %08x", got, want))
+		// Every byte the header promised was there, so the damaged region
+		// ends exactly where the record does — and anything past that is a
+		// record written after it, which a torn tail cannot have.
+		return false, r.torn(fmt.Errorf("crc mismatch: got %08x, want %08x", got, want),
+			r.off+headerSize+int64(length))
 	}
 	r.off += int64(headerSize) + int64(length)
 	r.end.Offset = r.off
@@ -163,15 +171,39 @@ func (r *Reader) readRecord() (bool, bool) {
 	return true, false
 }
 
-// torn decides what damage means. In the last file it is the expected result
-// of a crash mid-write: stop quietly. Anywhere earlier, the log is missing
-// data it already acknowledged, and that must be reported rather than skipped.
-func (r *Reader) torn(cause error) bool {
-	if r.last && !r.strict {
+// torn decides what damage means. In the last file, *near its end*, it is the
+// expected result of a crash mid-write: stop quietly. Anywhere else the log is
+// missing data it already acknowledged, and that must be reported rather than
+// skipped.
+//
+// Being in the last file is not on its own enough, which is what this used to
+// check. A crash can only tear the record being appended, so the damage it
+// leaves is within one record of the end of the file; damage further back has
+// whole records written *after* it, which a sequential append cannot produce.
+// Treating that as a torn tail discarded everything after it — a bad checksum
+// at offset 0 of a 32 MiB segment threw the segment away with no error and no
+// log line, and Repair's TruncateTail then made it permanent.
+func (r *Reader) torn(cause error, damageEnds int64) bool {
+	if r.last && !r.strict && r.endsAt(damageEnds) {
 		return true // stop replay, no error
 	}
 	r.err = fmt.Errorf("%w in %s at offset %d: %w", ErrCorrupt, r.end.File, r.off, cause)
 	return true
+}
+
+// endsAt reports whether the open file stops at or before the end of the
+// damaged region — the test for "nothing was written after this".
+//
+// A file it cannot stat is not given the benefit of the doubt: the point of
+// the check is to refuse to discard data on an assumption it could not
+// verify. That covers a nil file too — (*os.File).Stat reports ErrInvalid
+// rather than panicking — so there is no separate case for it.
+func (r *Reader) endsAt(damageEnds int64) bool {
+	info, err := r.f.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Size() <= damageEnds
 }
 
 // Close releases the open file, if any.

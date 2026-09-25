@@ -192,6 +192,13 @@ func (s *Server) registerStoreMetrics(engine string) {
 	s.reg.GaugeFunc("ozy.tsdb.blocks", func() float64 {
 		return float64(len(real.Blocks()))
 	}, tag)
+	// Monotonic, so what matters is its rate: it should climb at
+	// 1/wal_sync_interval whenever anything is being written. A flat stretch
+	// means acknowledged samples are sitting in the page cache for longer
+	// than the configured window.
+	s.reg.GaugeFunc("ozy.tsdb.wal_syncs", func() float64 {
+		return float64(real.Syncs())
+	}, tag)
 	s.reg.GaugeFunc("ozy.tsdb.disk_bytes", func() float64 {
 		n, err := real.DiskUsage()
 		if err != nil {

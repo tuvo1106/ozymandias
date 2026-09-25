@@ -111,6 +111,28 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   all of it charged against `MaxBytes`. Deleting is now `compact.DeleteSources`,
   called after the swap, and a source that will not delete is logged and left
   for `dropSuperseded` rather than failing a compaction that has happened.
+- **Damage in the last WAL segment is only a torn tail if it reaches the end of
+  the file.** Being in the last segment was the whole test, so a bad checksum
+  at offset 0 of a 32 MiB segment discarded every record after it with no
+  error, no log line and no counter — and `Repair`'s `TruncateTail` then made
+  it permanent. A crash can only tear the record being appended, so damage
+  with whole records written after it is corruption and is now reported as
+  `ErrCorrupt`. Where the damaged record's extent is known (a checksum
+  mismatch means every promised byte was there), the bound is exact.
+- **Two blocks covering the same time range no longer hide each other.** The
+  cross-source merge in `Select` deduplicated only against the last sample it
+  had appended, which is correct only if the sources are prefix-ordered in
+  time. They are not after a crash between writing a merged block and deleting
+  its sources, and will not be once rollup blocks land: every sample the second
+  source held for an instant the first had nothing for was dropped. Samples are
+  now merged, sorted and deduplicated by timestamp when any source arrives out
+  of order, with the oldest source still winning an instant they both claim.
+- **Group-commit has its own goroutine.** It shared one select with the
+  maintenance pass, so no WAL fsync happened for the whole of a block cut, a
+  compaction rewriting three blocks and a retention sweep. With
+  `wal_sync_on_append: false` the window an acknowledged sample spends in the
+  page cache was therefore not `wal_sync_interval` — as `Options.SyncInterval`
+  and `deploy/ozyd.yaml` both say — but the length of the longest pass.
 
 ### Added
 
@@ -132,6 +154,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `storage.*` configuration: block range, retention, disk cap, cardinality limit and WAL
   sync policy, each with a `OZY_STORAGE_*` override (see `docs/operations.md`).
 - `ozy.tsdb.*` self-metrics: rejected samples, head size, block count and disk usage.
+- `ozy.tsdb.wal_syncs`: write-ahead log flushes since startup. Monotonic, so its
+  *rate* is the signal — a flat stretch means acknowledged samples are staying in
+  the page cache longer than `wal_sync_interval`.
 - A 50-iteration crash loop (real `SIGKILL`s of a child process), a 72-hour fake-clock
   lifecycle test, a concurrency stress test, format goldens and fuzz targets for the chunk
   and WAL decoders. Between those and three rounds of code review they found nine ways an

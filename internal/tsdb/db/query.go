@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"slices"
 	"sort"
 
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
@@ -16,12 +17,24 @@ import (
 // question and the answers are merged by series identity — which is why series
 // identity is a string key rather than a per-source id.
 //
-// The sources are disjoint in time by construction (a block covers what the
-// head has already given up), so merging is concatenation in source order. The
-// duplicate check below is for the one moment that is not true: a block has
-// just been written but the head has not yet been truncated, so the same
-// samples are briefly in both. Preferring the first source seen — the block —
-// keeps a query stable across that handover instead of flickering.
+// The sources are *usually* disjoint in time (a block covers what the head has
+// already given up), so merging is usually concatenation in source order. Two
+// things break that, and the merge below handles both rather than assuming
+// neither:
+//
+//   - A block has just been written and the head has not yet been truncated,
+//     so the same samples are briefly in both.
+//   - Two blocks genuinely overlap. A crash between writing a merged block and
+//     deleting its sources leaves exactly that until the next startup, and
+//     rollup blocks will sit beside their sources at the same range by design.
+//
+// Overlap is not the same as duplication: an overlapping source can hold
+// samples at instants the first source has nothing for, and those have to
+// survive. So samples are collected from every source and, if any arrived out
+// of order, sorted and deduplicated by timestamp. The sort is stable and the
+// sources are added oldest first, so the first source to offer an instant is
+// the one whose value is kept — which keeps a query stable across the block
+// handover instead of flickering.
 func (db *DB) Select(ctx context.Context, sel tsdb.Selector, fromMs, toMs int64) (tsdb.SeriesSet, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -46,19 +59,26 @@ func (db *DB) Select(ctx context.Context, sel tsdb.Selector, fromMs, toMs int64)
 		}
 	}()
 
-	merged := map[string]*tsdb.SeriesSamples{}
+	type merging struct {
+		tsdb.SeriesSamples
+		// unordered records that some sample did not land after the one
+		// before it, which is the only case that needs the sort below. The
+		// common query touches one source, or several that really are
+		// disjoint, and pays nothing for this.
+		unordered bool
+	}
+	merged := map[string]*merging{}
 	add := func(src []tsdb.SeriesSamples) {
 		for _, s := range src {
 			key := s.Series.Key()
 			into, ok := merged[key]
 			if !ok {
-				cp := tsdb.SeriesSamples{Series: s.Series}
-				merged[key] = &cp
-				into = merged[key]
+				into = &merging{SeriesSamples: tsdb.SeriesSamples{Series: s.Series}}
+				merged[key] = into
 			}
 			for _, smp := range s.Samples {
 				if n := len(into.Samples); n > 0 && smp.T <= into.Samples[n-1].T {
-					continue // already have this instant from an earlier source
+					into.unordered = true
 				}
 				into.Samples = append(into.Samples, smp)
 			}
@@ -87,7 +107,14 @@ func (db *DB) Select(ctx context.Context, sel tsdb.Selector, fromMs, toMs int64)
 		if len(s.Samples) == 0 {
 			continue
 		}
-		out = append(out, *s)
+		if s.unordered {
+			// Stable, so equal timestamps stay in source order and Compact
+			// keeps the oldest source's value for an instant two sources
+			// both claim.
+			sort.SliceStable(s.Samples, func(i, j int) bool { return s.Samples[i].T < s.Samples[j].T })
+			s.Samples = slices.CompactFunc(s.Samples, func(a, b tsdb.Sample) bool { return a.T == b.T })
+		}
+		out = append(out, s.SeriesSamples)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Series.Key() < out[j].Series.Key() })
 	return tsdb.NewSliceSet(out), nil

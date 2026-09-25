@@ -66,3 +66,4 @@ interval's increase.
 | `ozy.tsdb.series_limit_rejected` | gauge | series | `store` | ozyd | Series refused because a metric hit `max_series_per_metric` |
 | `ozy.tsdb.blocks` | gauge | blocks | `store` | ozyd | Immutable blocks on disk; falls when compaction runs |
 | `ozy.tsdb.disk_bytes` | gauge | bytes | `store` | ozyd | Total size of the store on disk, log included |
+| `ozy.tsdb.wal_syncs` | gauge | syncs | `store` | ozyd | Write-ahead log flushes since startup (monotonic). Its *rate* is the check: ~1/`wal_sync_interval` while anything is being written, and a flat stretch means acknowledged samples are staying in the page cache longer than that |
