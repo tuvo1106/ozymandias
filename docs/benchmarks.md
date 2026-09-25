@@ -205,6 +205,60 @@ The criterion was under 30 seconds for a gigabyte. Replay is dominated by
 re-encoding chunks, not by reading the file: the log reader alone does 1.1
 GB/s.
 
+## Distributions (M2 part two)
+
+### The sketch — `internal/sketch`
+
+| Operation | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| `Add` | **11.2** | 0 | 0 |
+| `Add`, values spanning 10^8 | 11.3 | 0 | 0 |
+| `Add`, monotonically falling | 9.1 | 0 | 0 |
+| `Merge` (10 000 observations) | 1 958 | 6 352 | 3 |
+| `Quantile` (100 000 observations) | 475 | 0 | 0 |
+
+`Add` is one log, one ceil and a slice index, and it allocates nothing in the
+steady state. `Quantile` costs the *width* of the store, not the number of
+observations: a sketch of a billion points answers as fast as one of a
+thousand.
+
+Two of these numbers moved a long way during development, and both moves came
+from benchmarks rather than from tests:
+
+| | before | after |
+|---|---:|---:|
+| `Merge` | 158 420 ns, 1 776 939 B, 401 allocs | 1 958 ns, 6 352 B, 3 allocs |
+| `Add`, falling stream | 369.1 ns, 4 217 B | 9.1 ns, 0 B |
+
+`Merge` reallocated the destination on every ascending index — quadratic in
+the width of the source. `Add` on a falling stream recomputed a collapse whose
+answer was the floor it already had, copying 16 KiB per observation to achieve
+nothing. Neither was visible to any correctness test; both were obvious the
+moment there was a number.
+
+### The sketch store — `internal/sketchstore`
+
+| | value |
+|---|---|
+| Encode, 10 observations (10 buckets) | 316 ns → **74 bytes** stored |
+| Encode, 300 observations (156 buckets) | 5.2 µs → **209 bytes** stored |
+| Encode, 10 000 observations (255 buckets) | 6.9 µs → **403 bytes** stored |
+| Decode one sketch | 3.4 µs |
+| `Append` 100 series × 1 bucket (fsync'd) | 5.4 ms |
+| `Read` one series' hour (360 buckets) | 1.24 ms |
+
+The stored sizes are the affordability argument for distributions. Ten
+thousand raw float64s are 80 KiB; the sketch that answers *any* quantile over
+them is 403 bytes, and it is 403 bytes because it has 255 buckets — not
+because it saw ten thousand values. Cost tracks the spread of the
+distribution, not the traffic through it, which is what makes one sketch per
+series per 10-second bucket affordable at cardinality.
+
+Encoding a 300-observation sketch costs nearly as much as a 10 000-observation
+one because both are dominated by zstd, not by the varints. Payloads under 128
+bytes skip compression entirely, which is why the 10-observation case is 16×
+faster than the other two.
+
 ## End-to-end acceptance (M1)
 
 The agent and `ozyd` were run natively from `./bin` with the stock
