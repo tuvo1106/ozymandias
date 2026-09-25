@@ -183,10 +183,20 @@ func TestRun_MergeIsInvisibleToAReader(t *testing.T) {
 	if meta.MinTime != 0 || meta.MaxTime != 179_000 {
 		t.Errorf("merged block spans [%d, %d]", meta.MinTime, meta.MaxTime)
 	}
-	// And the sources are gone — only after the merged block was durable.
+	// The sources outlive Run: they are the only readable copy until the
+	// caller has the merged block open and serving, which is the whole reason
+	// deleting them is a separate call.
+	for _, dir := range sourceDirs {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("Run deleted source %s: %v", filepath.Base(dir), err)
+		}
+	}
+	if err := DeleteSources(p); err != nil {
+		t.Fatal(err)
+	}
 	for _, dir := range sourceDirs {
 		if _, err := os.Stat(dir); !os.IsNotExist(err) {
-			t.Errorf("source %s survived the compaction: %v", filepath.Base(dir), err)
+			t.Errorf("source %s survived DeleteSources: %v", filepath.Base(dir), err)
 		}
 	}
 }

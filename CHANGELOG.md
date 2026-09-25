@@ -70,6 +70,29 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   script announced a file `uv build` had never produced and would have failed
   at the copy the first time app-python was a target. The name now comes from
   `pyproject.toml`, and a mismatch fails at the build step.
+- **A re-run of an interrupted WAL truncation no longer loses records.** A
+  `Truncate(n)` that published `checkpoint.n` and then died partway through
+  deleting the segments it was built from left the next pass — which computes
+  the same `n` — rebuilding the checkpoint from the segments that survived and
+  renaming over the one that held the rest. Anything that lived only in the
+  already-deleted segments was in no block and no log. The rebuild now reads
+  the checkpoint at `n` as one of its sources.
+- **A chunk that fails to decode fails the read instead of shortening it.**
+  `head.Select` stopped at the bad chunk and returned the samples it had,
+  which a caller cannot tell from a series that is genuinely that short — and
+  its caller is the block cut, which writes a block from that snapshot and
+  then truncates the head and the log to match. One decode error dropped that
+  chunk and every later chunk of the series from all three. `Head.Select` now
+  returns an error, as `block.Block` already did, and a cut that cannot read
+  the head is abandoned with everything still in place.
+- **Compaction deletes its source blocks only once the merged block is
+  serving.** `compact.Run` unlinked them before the database had opened the
+  merged block or swapped it in, so a failure in either step left blocks gone
+  from disk and still in `db.Blocks()` — and the next tick planned the
+  identical run and wrote another full copy of the merged block, every tick,
+  all of it charged against `MaxBytes`. Deleting is now `compact.DeleteSources`,
+  called after the swap, and a source that will not delete is logged and left
+  for `dropSuperseded` rather than failing a compaction that has happened.
 
 ### Added
 

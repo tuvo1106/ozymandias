@@ -13,6 +13,21 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/tsdb/wal"
 )
 
+// mustSelect is [Head.Select] for a test that has no reason to expect a
+// decode error. Select reports one rather than returning a short read, so
+// every call site has to say which it is.
+func mustSelect(t interface {
+	Helper()
+	Fatalf(string, ...any)
+}, h *Head, sel tsdb.Selector, from, to int64) []tsdb.SeriesSamples {
+	t.Helper()
+	got, err := h.Select(sel, from, to)
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	return got
+}
+
 func ref(metric string, tags ...string) tsdb.SeriesRef {
 	return tsdb.NewSeriesRef(metric, tags)
 }
@@ -36,6 +51,41 @@ func appendOne(h *Head, r tsdb.SeriesRef, t int64, v float64) error {
 	return nil
 }
 
+// TestHead_SelectReportsACorruptChunkInsteadOfAShortRead is the regression
+// test for a silent data loss with two durable copies. samplesIn used to stop
+// at a chunk that failed to decode and return the samples it had, which the
+// caller cannot tell from a series that is genuinely that short — and the
+// caller is the block cut, which writes a block from exactly this snapshot
+// and then truncates the head and the write-ahead log to match. One decode
+// error dropped that chunk and every later chunk of the series from the
+// block and from both copies of the log.
+func TestHead_SelectReportsACorruptChunkInsteadOfAShortRead(t *testing.T) {
+	h := New(Options{BlockRange: 1000})
+	r := ref("m", "env:prod")
+	// Two chunks: BlockRange is 1000ms, and a chunk never spans a boundary.
+	for i := int64(0); i < 20; i++ {
+		if err := appendOne(h, r, i*100, float64(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id := h.Postings().Select(tsdb.Selector{Metric: "m"})[0]
+	if n := len(h.series(id).chunks); n < 2 {
+		t.Fatalf("want at least two chunks, so the read has more to lose than the bad one: got %d", n)
+	}
+	if !h.DamageOneChunk(id) {
+		t.Fatal("no chunk to damage")
+	}
+
+	got, err := h.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
+	if err == nil {
+		n := 0
+		for _, s := range got {
+			n += len(s.Samples)
+		}
+		t.Fatalf("Select returned %d samples and no error; a short read here is lost data", n)
+	}
+}
+
 func TestHead_AppendAndSelect(t *testing.T) {
 	h := New(Options{BlockRange: 1000})
 	a := ref("http.request.count", "env:prod", "route:/api")
@@ -49,7 +99,7 @@ func TestHead_AppendAndSelect(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := h.Select(tsdb.Selector{Metric: "http.request.count"}, 0, 1000)
+	got := mustSelect(t, h, tsdb.Selector{Metric: "http.request.count"}, 0, 1000)
 	if len(got) != 2 {
 		t.Fatalf("selected %d series, want 2", len(got))
 	}
@@ -61,7 +111,7 @@ func TestHead_AppendAndSelect(t *testing.T) {
 		t.Errorf("series 0 has %d samples, want 5", n)
 	}
 	// Tag selection goes through the index.
-	only := h.Select(tsdb.Selector{
+	only := mustSelect(t, h, tsdb.Selector{
 		Metric:   "http.request.count",
 		Matchers: []tsdb.Matcher{{Key: "env", Value: "prod", Type: tsdb.Equal}},
 	}, 0, 1000)
@@ -69,7 +119,7 @@ func TestHead_AppendAndSelect(t *testing.T) {
 		t.Errorf("tag selection returned %d series", len(only))
 	}
 	// Time bounds are inclusive and exclude what falls outside.
-	window := h.Select(tsdb.Selector{Metric: "http.request.count"}, 100, 200)
+	window := mustSelect(t, h, tsdb.Selector{Metric: "http.request.count"}, 100, 200)
 	if n := len(window[0].Samples); n != 2 {
 		t.Errorf("window returned %d samples, want 2", n)
 	}
@@ -93,7 +143,7 @@ func TestHead_OrderingRules(t *testing.T) {
 		if err := appendOne(h, r, 1000, 1); err != nil {
 			t.Errorf("duplicate (t,v) should be accepted as a no-op, got %v", err)
 		}
-		got := h.Select(tsdb.Selector{Metric: "m"}, 0, 2000)
+		got := mustSelect(t, h, tsdb.Selector{Metric: "m"}, 0, 2000)
 		if n := len(got[0].Samples); n != 1 {
 			t.Errorf("duplicate created %d samples, want 1", n)
 		}
@@ -136,7 +186,7 @@ func TestHead_CutsChunksAtTheCapAndAtBlockBoundaries(t *testing.T) {
 	if st := h.Stats(); st.Chunks != 3 {
 		t.Errorf("crossing a block boundary gave %d chunks, want 3", st.Chunks)
 	}
-	got := h.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
+	got := mustSelect(t, h, tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
 	if n := len(got[0].Samples); n != 201 {
 		t.Errorf("selected %d samples across chunks, want 201", n)
 	}
@@ -211,7 +261,7 @@ func TestHead_TruncateDropsOldChunksAndForgetsEmptySeries(t *testing.T) {
 	}
 	// The forgotten series must be gone from the index too, or it would still
 	// match queries and leak memory.
-	if got := h.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64); len(got) != 1 {
+	if got := mustSelect(t, h, tsdb.Selector{Metric: "m"}, 0, math.MaxInt64); len(got) != 1 {
 		t.Errorf("after truncation %d series are selectable, want 1", len(got))
 	}
 	if got := h.Postings().Values("m", "host"); len(got) != 1 || got[0] != "live" {
@@ -290,7 +340,7 @@ func TestHead_AWALFailureKeepsSamplesInvisible(t *testing.T) {
 	if rejected[len(rejected)-1].Index != -1 {
 		t.Errorf("a log failure was attributed to entry %d", rejected[len(rejected)-1].Index)
 	}
-	got := h.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
+	got := mustSelect(t, h, tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
 	if n := len(got[0].Samples); n != 1 {
 		t.Errorf("%d samples are visible, want 1 (the one that was logged)", n)
 	}
@@ -371,7 +421,7 @@ func TestHead_ReplayRebuildsTheHead(t *testing.T) {
 			}
 		}
 	}
-	want := h.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
+	want := mustSelect(t, h, tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
 	wantIDs := map[string]uint64{}
 	for _, id := range h.Postings().Select(tsdb.Selector{Metric: "m"}) {
 		r, _ := h.Series(id)
@@ -390,7 +440,7 @@ func TestHead_ReplayRebuildsTheHead(t *testing.T) {
 	if st.Samples != 100 {
 		t.Errorf("replayed %d samples, want 100", st.Samples)
 	}
-	got := restored.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
+	got := mustSelect(t, restored, tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
 	if len(got) != len(want) {
 		t.Fatalf("replayed %d series, want %d", len(got), len(want))
 	}
@@ -448,7 +498,7 @@ func TestHead_ReplayMatchesTheHeadUnderConcurrentWriters(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
-	want := h.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
+	want := mustSelect(t, h, tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +507,7 @@ func TestHead_ReplayMatchesTheHeadUnderConcurrentWriters(t *testing.T) {
 	if _, err := Replay(restored, dir); err != nil {
 		t.Fatal(err)
 	}
-	got := restored.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
+	got := mustSelect(t, restored, tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
 	if len(got) != 1 || len(want) != 1 {
 		t.Fatalf("got %d series, head had %d", len(got), len(want))
 	}
@@ -499,7 +549,7 @@ func TestHead_ReplayAfterATornTailKeepsWhatWasAcknowledged(t *testing.T) {
 	if st.Samples == 0 || st.Samples > 20 {
 		t.Errorf("replayed %d samples, want between 1 and 20", st.Samples)
 	}
-	got := restored.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
+	got := mustSelect(t, restored, tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
 	if len(got) != 1 {
 		t.Fatalf("replayed %d series", len(got))
 	}
@@ -704,12 +754,12 @@ func TestHead_ASeriesRecordIsWrittenUntilItLands(t *testing.T) {
 	if st.Samples != 1 {
 		t.Fatalf("replayed %d samples, want 1 (the one the log accepted)", st.Samples)
 	}
-	got := restored.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
+	got := mustSelect(t, restored, tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
 	if len(got) != 1 || len(got[0].Samples) != 1 || got[0].Samples[0].V != 20 {
 		t.Fatalf("restored %+v, want the single sample at t=2", got)
 	}
 	// And the failed batch left nothing behind: t=1 was never visible.
-	if head := h.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64); len(head[0].Samples) != 1 {
+	if head := mustSelect(t, h, tsdb.Selector{Metric: "m"}, 0, math.MaxInt64); len(head[0].Samples) != 1 {
 		t.Fatalf("head holds %+v, want only the sample that was logged", head[0].Samples)
 	}
 }

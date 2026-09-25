@@ -237,6 +237,54 @@ func TestDB_CutBlockMovesTheOldestRangeToDisk(t *testing.T) {
 	}
 }
 
+// TestDB_ACorruptHeadChunkAbortsTheCutRatherThanShorteningIt is the database
+// half of head.Select returning an error. A cut writes a block from a snapshot
+// of the head and then truncates the head and the write-ahead log to match it,
+// on the strength of the block holding everything below the boundary. If a
+// read that could not decode a chunk came back short instead of failing, the
+// cut would honour that and delete the rest from both durable copies.
+func TestDB_ACorruptHeadChunkAbortsTheCutRatherThanShorteningIt(t *testing.T) {
+	db, _, dir := open(t, Options{BlockRange: time.Minute, Retention: -1, SyncOnAppend: true})
+	r := ref("m", "env:prod")
+	fill(t, db, r, 0, 1000, 91) // 0..90s: 1.5 ranges, so there is a cut to make
+
+	ids := db.head.Postings().Select(tsdb.Selector{Metric: "m"})
+	if len(ids) != 1 || !db.head.DamageOneChunk(ids[0]) {
+		t.Fatalf("could not damage a chunk: %d series", len(ids))
+	}
+
+	if err := db.CutBlock(); err == nil {
+		t.Fatal("CutBlock succeeded over a head it could not read")
+	}
+	if n := len(db.Blocks()); n != 0 {
+		t.Errorf("%d blocks were written from a failed read", n)
+	}
+	// A query says so too, rather than answering with a hole in it.
+	if _, err := db.Select(ctx, tsdb.Selector{Metric: "m"}, math.MinInt64, math.MaxInt64); err == nil {
+		t.Error("Select answered from a chunk that does not decode")
+	}
+	// And nothing was given up: the log still holds every sample, so a restart
+	// — which rebuilds the chunks by replaying it — has all 91 back.
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, _, _ := open(t, Options{Dir: dir, BlockRange: time.Minute, Retention: -1})
+	set, err := reopened.Select(ctx, tsdb.Selector{Metric: "m"}, math.MinInt64, math.MaxInt64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for set.Next() {
+		it := set.Iterator()
+		for it.Next() {
+			n++
+		}
+	}
+	if n != 91 {
+		t.Errorf("%d samples survived the aborted cut, want all 91", n)
+	}
+}
+
 func TestDB_AQueryDoesNotNoticeTheCut(t *testing.T) {
 	// The point of the whole exercise: where a sample lives is not the
 	// caller's problem. The same query must answer identically before and
@@ -413,7 +461,10 @@ func TestDB_ACrashBetweenTheBlockAndTheLogTruncationDoesNotDuplicate(t *testing.
 
 	// Write the block, but stop before the log is truncated.
 	blocksDir := filepath.Join(dir, blocksDirName)
-	series := db.head.Select(tsdb.Selector{}, 0, 59_999)
+	series, err := db.head.Select(tsdb.Selector{}, 0, 59_999)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := block.Write(blocksDir, series, block.WriterOptions{Now: epoch}); err != nil {
 		t.Fatal(err)
 	}
@@ -758,6 +809,71 @@ func dumpOf(t *testing.T, db *DB, sel tsdb.Selector) string {
 		t.Fatal(err)
 	}
 	return dump(t, set)
+}
+
+// TestDB_CompactionSurvivesASourceThatWillNotDelete pins the order the swap
+// and the unlink happen in. The sources are removed only after the merged
+// block is open and in db.blocks, so no failure can leave a block that is
+// gone from disk and still being served — and a source that refuses to be
+// deleted is disk to reclaim at the next startup (dropSuperseded finds it by
+// the merged block's provenance), not a reason to fail a compaction that has
+// already happened and re-plan the identical run every tick.
+func TestDB_CompactionSurvivesASourceThatWillNotDelete(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	db, _, _ := open(t, Options{BlockRange: time.Minute, Retention: -1})
+	r := ref("m", "env:prod")
+	for i := int64(0); i < 4; i++ {
+		fill(t, db, r, i*100_000, 1000, 95)
+		if err := db.CutBlock(); err != nil {
+			t.Fatalf("cut %d: %v", i, err)
+		}
+	}
+	sel := tsdb.Selector{Metric: "m"}
+	before := dumpOf(t, db, sel)
+
+	// Read-only, so the tombstone write inside block.Delete fails. The merge
+	// itself only reads, so it is unaffected.
+	stuck := db.Blocks()[0].Dir()
+	if err := os.Chmod(stuck, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stuck, 0o700) })
+
+	did, err := db.Compact()
+	if err != nil || !did {
+		t.Fatalf("Compact = %v, %v; an undeletable source must not fail the merge", did, err)
+	}
+	if after := dumpOf(t, db, sel); after != before {
+		t.Errorf("compaction changed the answer:\nbefore %s\nafter  %s", before, after)
+	}
+	if _, err := os.Stat(stuck); err != nil {
+		t.Fatalf("the source deleted after all, so this tested nothing: %v", err)
+	}
+	for _, b := range db.Blocks() {
+		if b.Dir() == stuck {
+			t.Error("a source that could not be deleted is still being served")
+		}
+	}
+	// The leftover is resolved at the next startup, not by another
+	// compaction. (Restoring the permissions first is the realistic case: a
+	// full disk clears, an operator fixes a mode. dropSuperseded still
+	// cannot delete what the filesystem refuses, and it treats that as
+	// fatal — a separate question from this one.)
+	if err := os.Chmod(stuck, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, _, _ := open(t, Options{Dir: db.dir, BlockRange: time.Minute, Retention: -1})
+	if after := dumpOf(t, reopened, sel); after != before {
+		t.Errorf("a reopen changed the answer:\n%s", after)
+	}
+	if _, err := os.Stat(stuck); !os.IsNotExist(err) {
+		t.Errorf("the superseded source survived a reopen: %v", err)
+	}
 }
 
 func TestDB_CompactIsANoOpWithNothingToDo(t *testing.T) {

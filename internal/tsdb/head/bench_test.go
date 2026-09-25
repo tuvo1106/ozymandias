@@ -86,7 +86,7 @@ func BenchmarkHead_Select(b *testing.B) {
 			var got int
 			for b.Loop() {
 				got = 0
-				for _, ss := range h.Select(c.sel, 0, 1<<40) {
+				for _, ss := range mustSelect(b, h, c.sel, 0, 1<<40) {
 					got += len(ss.Samples)
 				}
 			}

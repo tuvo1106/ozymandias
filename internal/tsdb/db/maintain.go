@@ -121,7 +121,16 @@ func (db *DB) CutBlock() error {
 	// acknowledged — would fall below the snapshot's floor and be truncated
 	// away unwritten. st.MinT decides *whether* to cut; it does not get to
 	// decide what the cut contains.
-	series := db.head.Select(tsdb.Selector{}, math.MinInt64, cutAt-1)
+	series, err := db.head.Select(tsdb.Selector{}, math.MinInt64, cutAt-1)
+	if err != nil {
+		// Freeze has already happened, so the range below cutAt is closed to
+		// new samples until a later cut succeeds — but nothing has been
+		// written or forgotten. Aborting leaves every sample where it is, in
+		// the head and in the log; writing a block from a partial read would
+		// put it in neither, because the Truncate below trusts the block to
+		// hold everything under cutAt.
+		return fmt.Errorf("tsdb: reading the head for a block cut: %w", err)
+	}
 	if len(series) == 0 {
 		return errNothingToCut
 	}
@@ -199,9 +208,14 @@ func (db *DB) Compact() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	merged, err := block.Open(filepath.Join(blocksDir, meta.ULID.String()))
+	mergedDir := filepath.Join(blocksDir, meta.ULID.String())
+	merged, err := block.Open(mergedDir)
 	if err != nil {
-		return false, fmt.Errorf("tsdb: opening the merged block: %w", err)
+		// The sources are untouched, so nothing is lost — but the merged block
+		// is on disk with nothing referencing it, and the next tick would plan
+		// the identical run and write another copy of it, every tick, all of
+		// it charged against MaxBytes. Take it back.
+		return false, errors.Join(fmt.Errorf("tsdb: opening the merged block: %w", err), block.Delete(mergedDir))
 	}
 	// Swap the sources out for their replacement in one step, so no query can
 	// see both or neither.
@@ -223,9 +237,18 @@ func (db *DB) Compact() (bool, error) {
 	sortBlocks(db.blocks)
 	db.mu.Unlock()
 
-	// The files are already gone; these are the open handles to them. Closing
-	// after the swap means no *new* query can find them; one already in flight
-	// is holding a reader reference, and the close waits for it.
+	// Only now are the sources expendable: until the swap above, they were
+	// the blocks queries read. A failure here is disk that was not reclaimed,
+	// not data that was lost — each source is tombstoned, so CleanCondemned
+	// finishes the job at startup — and the merged block is already serving,
+	// so failing the compaction over it would re-plan work that is done.
+	if err := compact.DeleteSources(plan); err != nil {
+		db.opts.Logger.Error("deleting compacted source blocks", "error", err)
+	}
+
+	// Unlinked but still open: closing after the swap means no *new* query can
+	// find them; one already in flight is holding a reader reference, and the
+	// close waits for it.
 	for _, b := range replaced {
 		_ = b.Close()
 	}

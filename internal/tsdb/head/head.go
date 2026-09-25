@@ -488,6 +488,36 @@ func (h *Head) Series(id uint64) (tsdb.SeriesRef, bool) {
 	return ms.ref, true
 }
 
+// DamageOneChunk truncates the encoding of the first chunk of series id, so
+// that decoding it fails, and reports whether it found one to damage.
+//
+// It exists for tests in other packages, which is the only reason it is
+// exported. A chunk in memory can only be corrupted from inside this package,
+// and what the layer above does with a failed read of the head is the whole
+// point of [Head.Select] returning an error: a block cut that trusted a short
+// read would write a block missing those samples and then truncate the head
+// and the log to match it. Nothing in production calls this.
+func (h *Head) DamageOneChunk(id uint64) bool {
+	ms := h.series(id)
+	if ms == nil {
+		return false
+	}
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	if len(ms.chunks) == 0 {
+		return false
+	}
+	// The header still promises the original sample count, so the iterator
+	// runs off the end of the stream instead of stopping early and clean.
+	full := ms.chunks[0].chunk.Bytes()
+	short, err := chunkenc.FromBytes(append([]byte{}, full[:len(full)-1]...))
+	if err != nil {
+		return false
+	}
+	ms.chunks[0].chunk = short
+	return true
+}
+
 // Lookup returns a read view of the head's index that takes the head's lock on
 // every call, for callers outside the head — the metadata queries.
 //
@@ -543,7 +573,15 @@ func (h *Head) Postings() *index.MemPostings {
 
 // Select returns the series matching sel that have samples in [from, to],
 // sorted by series key so results are deterministic.
-func (h *Head) Select(sel tsdb.Selector, from, to int64) []tsdb.SeriesSamples {
+//
+// It returns an error if a chunk fails to decode, rather than the samples that
+// did decode. A short read is indistinguishable from a series that genuinely
+// holds fewer samples, and [Head.Select] is what a block cut is built from:
+// the caller writes the block and then truncates the head and the log to
+// match, so a silently short answer here is silently lost data in both
+// durable copies. [github.com/tuvo1106/ozymandias/internal/tsdb/block.Block]
+// makes the same promise.
+func (h *Head) Select(sel tsdb.Selector, from, to int64) ([]tsdb.SeriesSamples, error) {
 	h.mu.RLock()
 	ids := h.postings.Select(sel)
 	h.mu.RUnlock()
@@ -554,17 +592,20 @@ func (h *Head) Select(sel tsdb.Selector, from, to int64) []tsdb.SeriesSamples {
 		if ms == nil {
 			continue
 		}
-		samples := ms.samplesIn(from, to)
+		samples, err := ms.samplesIn(from, to)
+		if err != nil {
+			return nil, fmt.Errorf("head: reading series %s: %w", ms.ref.Key(), err)
+		}
 		if len(samples) == 0 {
 			continue
 		}
 		out = append(out, tsdb.SeriesSamples{Series: ms.ref, Samples: samples})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Series.Key() < out[j].Series.Key() })
-	return out
+	return out, nil
 }
 
-func (ms *memSeries) samplesIn(from, to int64) []tsdb.Sample {
+func (ms *memSeries) samplesIn(from, to int64) ([]tsdb.Sample, error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 	var out []tsdb.Sample
@@ -580,14 +621,17 @@ func (ms *memSeries) samplesIn(from, to int64) []tsdb.Sample {
 			}
 			out = append(out, tsdb.Sample{T: t, V: v})
 		}
-		if it.Err() != nil {
-			// A corrupt in-memory chunk is a bug, not bad input; returning
-			// what decoded is the least-bad option and the error is visible
-			// in the head's own metrics via a short read.
-			break
+		if err := it.Err(); err != nil {
+			// A corrupt in-memory chunk is a bug, not bad input — but the
+			// caller cannot tell a short read from a short series, and the
+			// block cut that reads this then truncates the head and the log
+			// to match. Stopping at the bad chunk used to drop it and every
+			// later chunk of this series from the block and from both durable
+			// copies, quietly. Refuse the read instead.
+			return nil, fmt.Errorf("decoding chunk [%d, %d]: %w", c.minT, c.maxT, err)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // Freeze refuses everything before mint from now on, without dropping

@@ -110,22 +110,29 @@ func Next(blocks []*block.Block, opts Options) *Plan {
 	return nil
 }
 
-// Run executes a plan: writes the merged block, then deletes the sources.
+// Run executes a plan: it writes the merged block and returns its meta. The
+// sources are left alone; [DeleteSources] removes them, and *when* is the
+// caller's decision, not this package's.
 //
-// The order is the same argument every durable operation in this package
-// makes. The new block is complete and renamed into place before a single
-// source is touched, so a crash in between leaves the data twice over — the
-// merged block and its sources, briefly overlapping — and never leaves a gap.
+// That split is the same argument every durable operation in this package
+// makes, carried one step further. The new block is complete and renamed into
+// place before a single source is touched, so a crash in between leaves the
+// data twice over — the merged block and its sources, briefly overlapping —
+// and never leaves a gap. But "complete on disk" is not "in service": the
+// caller still has to open the merged block and swap it into the set queries
+// read from, and if it deleted the sources here, a failure in either of those
+// steps would leave blocks that are gone from disk and still being served,
+// and a plan that repeats identically on the next tick, writing another full
+// copy of the merged block every time.
 //
-// Resolving that duplication is the *database's* job at startup, not this
+// Resolving the brief duplication is the *database's* job at startup, not this
 // package's, and not [block.CleanCondemned]'s: a tombstone is written inside
-// the delete below, so a crash before the first one leaves no tombstone to
+// [DeleteSources], so a crash before the first one leaves no tombstone to
 // find. What it leaves is a merged block whose meta names its sources, and the
 // sources still on disk beside it. See dropSuperseded in the db package.
 //
-// It returns the new block's meta. The caller reopens the directory rather
-// than being handed an open block: compaction should not decide when a reader
-// starts using its output.
+// The caller reopens the directory rather than being handed an open block:
+// compaction should not decide when a reader starts using its output.
 func Run(parent string, p *Plan, now time.Time) (block.Meta, error) {
 	if p == nil || len(p.Sources) < 2 {
 		return block.Meta{}, errors.New("compact: a plan needs at least two blocks")
@@ -134,18 +141,24 @@ func Run(parent string, p *Plan, now time.Time) (block.Meta, error) {
 	for i, b := range p.Sources {
 		sources[i] = b.Meta().ULID.String()
 	}
-	meta, err := merge(parent, p, sources, now)
-	if err != nil {
-		return block.Meta{}, err
-	}
-	// Only now are the inputs expendable.
+	return merge(parent, p, sources, now)
+}
+
+// DeleteSources removes a plan's inputs. Call it once the merged block is
+// open and serving; until then the sources are the only copy anyone can read.
+//
+// It attempts every source and joins the failures, because a directory that
+// resists deletion is disk to reclaim later, not a reason to leave the rest
+// behind. Each is tombstoned first, so [block.CleanCondemned] finishes at
+// startup whatever this could not.
+func DeleteSources(p *Plan) error {
 	var errs []error
 	for _, b := range p.Sources {
 		if err := block.Delete(b.Dir()); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	return meta, errors.Join(errs...)
+	return errors.Join(errs...)
 }
 
 func merge(parent string, p *Plan, sources []string, now time.Time) (block.Meta, error) {

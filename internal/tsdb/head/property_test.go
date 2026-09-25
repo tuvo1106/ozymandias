@@ -36,7 +36,7 @@ func TestHead_WhatWentInComesOut(t *testing.T) {
 
 		got := map[string][]tsdb.Sample{}
 		for _, metric := range []string{"a", "b"} {
-			for _, s := range h.Select(tsdb.Selector{Metric: metric}, math.MinInt64, math.MaxInt64) {
+			for _, s := range mustSelect(t, h, tsdb.Selector{Metric: metric}, math.MinInt64, math.MaxInt64) {
 				got[s.Series.Key()] = s.Samples
 			}
 		}
@@ -88,7 +88,7 @@ func TestHead_ReplayReproducesTheHead(t *testing.T) {
 			refs, samples := drawBatch(t, step)
 			h.Append(refs, samples)
 		}
-		want := snapshot(h)
+		want := snapshot(t, h)
 		if err := w.Close(); err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +97,7 @@ func TestHead_ReplayReproducesTheHead(t *testing.T) {
 		if _, err := Replay(restored, dir); err != nil {
 			t.Fatalf("replay: %v", err)
 		}
-		if got := snapshot(restored); got != want {
+		if got := snapshot(t, restored); got != want {
 			t.Fatalf("replay differs:\nwrote   %s\nreplayed %s", want, got)
 		}
 	})
@@ -105,7 +105,7 @@ func TestHead_ReplayReproducesTheHead(t *testing.T) {
 
 // snapshot renders everything observable about a head, so two can be compared
 // in one assertion: series identities, ids, and every sample.
-func snapshot(h *Head) string {
+func snapshot(t *rapid.T, h *Head) string {
 	var out []string
 	for _, metric := range []string{"a", "b"} {
 		for _, id := range h.Postings().Select(tsdb.Selector{Metric: metric}) {
@@ -114,7 +114,7 @@ func snapshot(h *Head) string {
 				continue
 			}
 			line := fmt.Sprintf("%d=%s:", id, ref.Key())
-			for _, s := range h.Select(tsdb.Selector{Metric: metric}, math.MinInt64, math.MaxInt64) {
+			for _, s := range mustSelect(t, h, tsdb.Selector{Metric: metric}, math.MinInt64, math.MaxInt64) {
 				if s.Series.Key() != ref.Key() {
 					continue
 				}

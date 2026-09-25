@@ -76,7 +76,11 @@ func (db *DB) Select(ctx context.Context, sel tsdb.Selector, fromMs, toMs int64)
 		}
 		add(got)
 	}
-	add(db.head.Select(sel, fromMs, toMs))
+	fromHead, err := db.head.Select(sel, fromMs, toMs)
+	if err != nil {
+		return nil, err
+	}
+	add(fromHead)
 
 	out := make([]tsdb.SeriesSamples, 0, len(merged))
 	for _, s := range merged {

@@ -444,6 +444,72 @@ func TestTruncate_IsANoopWithNothingToDelete(t *testing.T) {
 	}
 }
 
+// TestTruncate_RerunAfterAnInterruptedOneKeepsItsOwnCheckpoint simulates a
+// Truncate that published its checkpoint and then died partway through
+// deleting the segments it was built from. The caller only logs that failure,
+// so the next maintenance pass recomputes the same `before` and runs again —
+// this time over the segments that survived. The rename at the end lands on
+// that existing checkpoint, so unless the second run reads it as a source,
+// every record that lived only in the already-deleted segments is gone from
+// the log and the checkpoint both: acknowledged samples in neither.
+func TestTruncate_RerunAfterAnInterruptedOneKeepsItsOwnCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(Options{Dir: dir, SegmentSize: 256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "series A" lives in segment 0 and nowhere else — the record the
+	// interrupted run had already copied forward and then unlinked.
+	if err := w.Log(rec(typeSeries, "series A")); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 60; i++ {
+		if err := w.Log(rec(typeSamples, fmt.Sprintf("s%03d", i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := w.Segment()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	keep := func(r Record) bool { return r.Type == typeSeries }
+	segs, err := listNumbered(dir, "", segmentExt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doomed []int
+	for _, n := range segs {
+		if n < before {
+			doomed = append(doomed, n)
+		}
+	}
+	if len(doomed) < 2 {
+		t.Skip("segments did not roll enough on this filesystem")
+	}
+
+	// The interrupted run, exactly: checkpoint published, then killed after
+	// unlinking the first of its sources.
+	if err := writeCheckpoint(dir, doomed, before, keep); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, fmt.Sprintf("%08d%s", doomed[0], segmentExt))); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Truncate(dir, before, keep); err != nil {
+		t.Fatal(err)
+	}
+	var series []string
+	for _, r := range replay(t, dir) {
+		if r.Type == typeSeries {
+			series = append(series, string(r.Data))
+		}
+	}
+	if len(series) != 1 || series[0] != "series A" {
+		t.Errorf("series records after the re-run: %v, want exactly [series A]", series)
+	}
+}
+
 func TestTruncate_SupersedesAnEarlierCheckpoint(t *testing.T) {
 	// Two rounds of truncation: a series record copied into the first
 	// checkpoint must be copied forward again, not dropped.

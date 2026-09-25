@@ -167,7 +167,16 @@ func writeCheckpoint(dir string, doomed []int, before int, keep func(Record) boo
 	}
 	var sources []string
 	for _, n := range cps {
-		if n < before {
+		// n <= before, not n < before. A checkpoint at exactly `before`
+		// exists when an earlier Truncate(before) published one and then died
+		// partway through deleting its segments — the caller only logs that
+		// failure, so the next maintenance pass recomputes the same `before`
+		// and runs again. That second run sees only the segments that
+		// survived, and the rename at the end lands on checkpoint.before. If
+		// it is not read as a source first, every record that lived only in
+		// the already-deleted segments goes with it: acknowledged samples in
+		// no block and no log.
+		if n <= before {
 			sources = append(sources, fmt.Sprintf("%s%08d", checkpointPre, n))
 		}
 	}
