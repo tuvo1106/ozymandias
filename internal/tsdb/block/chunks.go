@@ -133,15 +133,24 @@ func (r *chunkReader) at(off, recLen uint64) (uint8, []byte, error) {
 	if recLen < 6 || recLen > maxChunkLen { // uvarint + encoding + crc at minimum
 		return 0, nil, fmt.Errorf("block: chunk at %d claims a record of %d bytes", off, recLen)
 	}
-	if off+recLen > uint64(r.size) {
-		return 0, nil, fmt.Errorf("block: chunk at %d..%d is past the end (%d)", off, off+recLen, r.size)
+	// Subtraction, not addition: off comes from index.dat and an off near the
+	// top of the range makes off+recLen wrap back into the file, so the sum
+	// form passes and int64(off) then goes negative for ReadAt.
+	if off > uint64(r.size) || recLen > uint64(r.size)-off {
+		return 0, nil, fmt.Errorf("block: chunk at %d claims %d bytes, past the end (%d)", off, recLen, r.size)
 	}
 	rec := make([]byte, recLen)
 	if _, err := r.f.ReadAt(rec, int64(off)); err != nil {
 		return 0, nil, fmt.Errorf("block: reading chunk at %d: %w", off, err)
 	}
 	length, used := binary.Uvarint(rec)
-	if used <= 0 || length < 1 || uint64(used)+length+4 != recLen {
+	// Also a subtraction, for a sharper reason. used+length+4 overflows: a
+	// ten-byte uvarint can claim a length that wraps the sum back onto exactly
+	// recLen, so the equality held and the slice below was then taken with a
+	// wrapped upper bound — rec[10:6], a panic, from bytes that index.dat
+	// happily supplied. Checking that the uvarint and the crc leave at least
+	// one payload byte first is what makes the subtraction safe.
+	if used <= 0 || uint64(used)+4 >= recLen || length != recLen-4-uint64(used) {
 		return 0, nil, fmt.Errorf("block: chunk at %d has a corrupt length prefix", off)
 	}
 	body := rec[used : uint64(used)+length]
