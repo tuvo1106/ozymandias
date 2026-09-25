@@ -191,6 +191,16 @@ func fill(t *testing.T, db *DB, r tsdb.SeriesRef, t0, step int64, n int) {
 	}
 }
 
+// fillPast writes n samples of the given spacing that *end* just before t0,
+// rather than starting there. Data a store holds has already happened; a fill
+// that starts at the clock's now is entirely in the future, and CutBlock
+// refuses to freeze the head above wall-clock time, so there is nothing for it
+// to cut. See TestDB_CutBlockWillNotFreezeTheHeadAboveNow.
+func fillPast(t *testing.T, db *DB, r tsdb.SeriesRef, t0, step int64, n int) {
+	t.Helper()
+	fill(t, db, r, t0-int64(n)*step, step, n)
+}
+
 func TestDB_CutBlockMovesTheOldestRangeToDisk(t *testing.T) {
 	const rangeMs = 60_000
 	db, _, dir := open(t, Options{BlockRange: time.Minute})
@@ -321,7 +331,7 @@ func TestDB_MetadataSpansBlocksAndHead(t *testing.T) {
 
 func TestDB_RetentionDeletesWholeBlocks(t *testing.T) {
 	db, fake, dir := open(t, Options{BlockRange: time.Minute, Retention: time.Hour})
-	fill(t, db, ref("m", "env:prod"), epoch.UnixMilli(), 1000, 95)
+	fillPast(t, db, ref("m", "env:prod"), epoch.UnixMilli(), 1000, 95)
 	if err := db.CutBlock(); err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +366,7 @@ func TestDB_RetentionDeletesWholeBlocks(t *testing.T) {
 
 func TestDB_RetentionCanBeDisabled(t *testing.T) {
 	db, fake, _ := open(t, Options{BlockRange: time.Minute, Retention: -1})
-	fill(t, db, ref("m", "env:prod"), epoch.UnixMilli(), 1000, 95)
+	fillPast(t, db, ref("m", "env:prod"), epoch.UnixMilli(), 1000, 95)
 	if err := db.CutBlock(); err != nil {
 		t.Fatal(err)
 	}
@@ -916,7 +926,7 @@ func TestDB_CompactIsANoOpWithNothingToDo(t *testing.T) {
 
 func TestDB_SizeCapDeletesTheOldestBlocks(t *testing.T) {
 	db, _, _ := open(t, Options{BlockRange: time.Minute, Retention: -1, MaxBytes: 1})
-	fill(t, db, ref("m", "env:prod"), epoch.UnixMilli(), 1000, 95)
+	fillPast(t, db, ref("m", "env:prod"), epoch.UnixMilli(), 1000, 95)
 	if err := db.CutBlock(); err != nil {
 		t.Fatal(err)
 	}
@@ -939,7 +949,7 @@ func TestDB_SizeCapDeletesTheOldestBlocks(t *testing.T) {
 
 func TestDB_SizeCapLeavesRoomAlone(t *testing.T) {
 	db, _, _ := open(t, Options{BlockRange: time.Minute, Retention: -1, MaxBytes: 1 << 30})
-	fill(t, db, ref("m", "env:prod"), epoch.UnixMilli(), 1000, 95)
+	fillPast(t, db, ref("m", "env:prod"), epoch.UnixMilli(), 1000, 95)
 	if err := db.CutBlock(); err != nil {
 		t.Fatal(err)
 	}

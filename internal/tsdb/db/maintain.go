@@ -146,6 +146,22 @@ func (db *DB) CutBlock() error {
 	// overlaps, and so no chunk has to be split: the head already cut its
 	// chunks at these same boundaries.
 	cutAt := tsdb.BlockOf(st.MinT, rangeMs)*rangeMs + rangeMs
+	// Never freeze the head above wall-clock time. The 1.5x threshold bounds
+	// cutAt by MaxT, not by now, and wire.MaxFutureSkew lets an accepted
+	// sample sit ten minutes ahead of this process's clock. With the default
+	// two-hour block range that can never push cutAt past now, but block_range
+	// is operator-configurable and the shipped config invites shortening it:
+	// at block_range 1m, a single client whose clock is five minutes fast
+	// moves MaxT far enough that cutAt lands in the future, and Freeze then
+	// refuses every real-time sample with ErrOutOfBounds until the clock
+	// catches up — minutes of acknowledging nothing, from one skewed point.
+	//
+	// cutAt above the current boundary means MinT is in the current block or
+	// later, so there is no complete range to cut in the first place. Waiting
+	// is right, and a later tick will do it.
+	if nowBoundary := tsdb.BlockOf(db.opts.Clock.Now().UnixMilli(), rangeMs) * rangeMs; cutAt > nowBoundary {
+		return errNothingToCut
+	}
 	// Close the range before reading it. Everything below cutAt is refused
 	// from here on, so the snapshot below cannot miss a sample that an
 	// appender slips in while the block is being written — that sample would
@@ -183,9 +199,20 @@ func (db *DB) CutBlock() error {
 		}
 		return fmt.Errorf("tsdb: writing a block: %w", err)
 	}
-	b, err := block.Open(filepath.Join(blocksDir, meta.ULID.String()))
+	writtenDir := filepath.Join(blocksDir, meta.ULID.String())
+	b, err := block.Open(writtenDir)
 	if err != nil {
-		return fmt.Errorf("tsdb: opening the block just written: %w", err)
+		// Take it back, so the cut is all-or-nothing. Returning here leaves
+		// the head untruncated, so the next tick recomputes the same cutAt and
+		// writes a *second* block holding the same samples under a new ULID.
+		// Neither names the other as a compaction source, so dropSuperseded
+		// cannot reap it: both are opened at every restart, both charged
+		// against MaxBytes, and compaction is handed an overlapping run at the
+		// same level. Queries stay correct because Select deduplicates, which
+		// is precisely why this would never announce itself.
+		return errors.Join(
+			fmt.Errorf("tsdb: opening the block just written: %w", err),
+			block.Delete(writtenDir))
 	}
 	// Visible before the head forgets anything, so no query can fall into a
 	// gap between the two.
