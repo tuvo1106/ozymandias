@@ -1,0 +1,30 @@
+# Keeps the workflows' actions current, which is the thing that went stale:
+# five of them fell far enough behind that GitHub was force-running them on a
+# newer Node than they declared, and the warning only surfaced because a CI run
+# was being read closely for another reason.
+#
+# Monthly and grouped into one pull request, because this is a backstop and not
+# a product: a stream of individual bumps on a solo repo is noise that teaches
+# people to merge without looking.
+#
+# Only the actions are watched. Go modules and npm are chosen deliberately and
+# reviewed as part of the work that needs them (AGENTS.md's dependency
+# allowlist), so an automated bump would arrive with no reason attached.
+#
+# Two pins here are *not* watched by anything and are bumped by hand, which is
+# worth saying out loud rather than discovering later: the uv version in
+# sdk/python/.tool-versions and the linter in .golangci-lint-version. Neither
+# is a `uses:` reference, and the github-actions ecosystem rewrites nothing
+# else. Assuming an unwatched dependency is "pinned deliberately" is how the
+# five actions above went stale in the first place.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: chore(ci)

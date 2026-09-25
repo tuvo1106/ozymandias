@@ -34,27 +34,60 @@ concurrency:
 
 jobs:
   ci:
+    # ubuntu-latest, deliberately, even though it migrates to Ubuntu 26 on
+    # 2026-10-19. Every tool this job runs is pinned by a file in the repo, so
+    # the image chooses none of them: go.mod (Go), web/.nvmrc (Node),
+    # sdk/python/.tool-versions (uv) and
+    # sdk/python/.python-version (the interpreter), .golangci-lint-version
+    # (the linter). Pinning the image instead would trade that for one that
+    # quietly stops getting security updates and is eventually removed, which
+    # is the worse failure for a backstop.
+    #
+    # That list is load-bearing, not decoration. Before this it was untrue of
+    # the Python half — uv and the interpreter were both whatever the image
+    # and the day supplied — which meant the SDK's 90% coverage gate could
+    # move to a different interpreter with no commit to this repo, and show up
+    # as a red required check on somebody else's pull request.
     runs-on: ubuntu-latest
     # Above check-coverage.sh's own 25m `go test -timeout`, so a slow package
     # is reported by the test binary rather than killed by the job.
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: web/.nvmrc
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - uses: astral-sh/setup-uv@v5
+      # Pinned to an exact version, unlike the others: astral-sh/setup-uv
+      # stopped publishing a floating major tag after v7, so @v10 does not
+      # resolve and the job fails before any step runs. Dependabot keeps this
+      # one current.
+      #
+      # uv's own version comes from sdk/python/.tool-versions, not a `with:`
+      # input, for the same reason as the linter below — an inline pin is the
+      # one thing Dependabot cannot reach, and nothing local could read it.
+      #
+      # Deliberately .tool-versions and not [tool.uv] required-version in
+      # pyproject: uv enforces required-version on *itself*, so pinning there
+      # does not pin CI, it stops anyone whose uv differs from running the
+      # test suite at all. `make sdk-check` warns on a mismatch instead.
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
+          version-file: sdk/python/.tool-versions
           enable-cache: true
           cache-dependency-glob: sdk/python/uv.lock
-      - uses: golangci/golangci-lint-action@v8
+      # version-file, not version: Dependabot rewrites `uses:` references and
+      # never a step's `with:` inputs, so a version pinned inline here would
+      # be the one thing in the job it cannot keep current — and `make lint`
+      # could not read it either, so the pre-push gate and CI would lint with
+      # different binaries and neither would say so.
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
+          version-file: .golangci-lint-version
       - run: scripts/check-no-app-coupling.sh
       - run: make docs-check
       - run: make test
