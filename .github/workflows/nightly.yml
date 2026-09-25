@@ -1,0 +1,38 @@
+# Nightly — the storage tests at a scale the pull-request gate cannot afford.
+#
+# `make soak` runs the recovery tests over ~35 block ranges with the race
+# detector on. That combination is not incidental: issue #3 was a query that
+# read the blocks before the head and so missed the range a concurrent block
+# cut was moving between them, and it reproduced only when the store was slow
+# enough for a cut to land inside a single query. CI was about twelve times
+# slower than a laptop, which is why it failed there and nowhere else; `-race`
+# buys the same pace locally. It is fixed, and
+# TestDB_AQueryNeverFallsIntoTheGapBetweenTheHeadAndANewBlock covers it in two
+# seconds inside `make ci`.
+#
+# This stays because the fast test only checks the bug we know about. What
+# found #3 was a long query and a block cut overlapping by accident, at a scale
+# nothing smaller reaches — the class of bug worth paying a nightly for. A
+# failure here is a report, not a blocked branch, which is also why it is not a
+# required check: a gate that fails intermittently teaches people to press
+# re-run, and the next real failure gets pressed through with it.
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make soak

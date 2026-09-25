@@ -52,6 +52,10 @@ fuzz: ## Every fuzz target for FUZZTIME (default 30s)
 fuzz-long: ## Every fuzz target for 10 minutes
 	FUZZTIME=10m scripts/run-fuzz.sh
 
+.PHONY: soak
+soak: ## The storage tests at full scale (OZY_SOAK=1) — nightly, not the PR gate
+	OZY_SOAK=1 go test -race -timeout 40m -run 'TestDB_' ./internal/tsdb/db/
+
 .PHONY: web-check
 web-check: ## Web typecheck + lint + tests with coverage
 	cd web && npm run typecheck && npm run lint && npm run test:coverage

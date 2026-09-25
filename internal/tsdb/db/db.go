@@ -65,6 +65,20 @@ type Options struct {
 	MaxBlockRange time.Duration
 	// MaxSeriesPerMetric bounds cardinality; see [head.Options].
 	MaxSeriesPerMetric int
+	// WALSegmentSize is the size at which the write-ahead log starts a new
+	// segment; zero uses [wal.DefaultSegmentSize] (32 MiB).
+	//
+	// It is exposed mainly so a test can make segments roll without writing
+	// 32 MiB first. That is not a small detail: the premise a block cut rests
+	// on is that the head's oldest samples are in the *current* segment, and
+	// on any real write rate they are several segments back. A test that
+	// cannot roll a segment cheaply cannot reach that case at all, and the one
+	// that tried had to race the maintenance loop to a byte threshold, which
+	// made its cost depend on how fast the machine was.
+	//
+	// Lowering it in production trades replay time for finer-grained
+	// truncation; there is no reason to.
+	WALSegmentSize int64
 	// SyncOnAppend fsyncs the WAL before Append returns, trading throughput
 	// for a zero-length window of acknowledged-but-unsynced data.
 	SyncOnAppend bool
@@ -176,7 +190,7 @@ func Open(opts Options) (*DB, error) {
 			"dir", walDir)
 	}
 
-	w, err := wal.Open(wal.Options{Dir: walDir})
+	w, err := wal.Open(wal.Options{Dir: walDir, SegmentSize: opts.WALSegmentSize})
 	if err != nil {
 		closeBlocks(blocks)
 		return nil, err
