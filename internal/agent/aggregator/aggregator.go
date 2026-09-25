@@ -213,6 +213,18 @@ func (a *Aggregator) Add(s Sample, now time.Time) {
 	if !(rate > 0 && rate <= 1) {
 		rate = 1
 	}
+	// Everything below assumes finite arithmetic, and a bucket cannot recover
+	// from a NaN or an ±Inf: it survives every later add, and the flush
+	// carrying it then fails to encode (wire.Point rejects non-finite), so
+	// one poisoned context can discard a whole payload. The statsd parser
+	// rejects non-finite values but not a sample rate whose reciprocal is
+	// unusable — "x:1|c|@1e-320" scales one increment to +Inf. Drop such a
+	// sample as unusable rather than clamping the rate, which would invent a
+	// weight the client never asked for.
+	if !finite(s.Value/rate) || !finite(1/rate) {
+		a.samplesDropped.Inc()
+		return
+	}
 
 	sh := a.shards[maphash.String(a.seed, key)%uint64(len(a.shards))]
 	sh.mu.Lock()
@@ -525,6 +537,10 @@ func percentile(sorted []float64, p float64) float64 {
 	i := int(math.Ceil(p*float64(len(sorted)))) - 1
 	return sorted[max(i, 0)]
 }
+
+// finite reports whether v is a real number. See Add: the aggregator has no
+// way to recover from a NaN or an ±Inf once one is in a bucket.
+func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
 func floorTo(t, width int64) int64 {
 	q := t / width

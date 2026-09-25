@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -116,6 +117,29 @@ func TestForwarder_SendsGzipWithIdentityHeaders(t *testing.T) {
 	}
 	if h.counter("ozy.agent.forwarder.series_sent") != 1 {
 		t.Fatal("accepted count from the response not recorded")
+	}
+}
+
+// TestForwarder_SkipsUnencodableSeries pins the blast radius of one bad
+// value: a non-finite point makes wire.Point refuse to marshal, and failing
+// the whole batch on it would discard every healthy series in the flush —
+// including the agent's own self-metrics — on every interval for as long as
+// whatever produced it keeps producing it.
+func TestForwarder_SkipsUnencodableSeries(t *testing.T) {
+	h := start(t, Options{}, ok)
+	batch := series(3)
+	batch[1].Points[0].Value = math.Inf(1)
+	h.f.Submit(batch)
+	testutil.Eventually(t, 2*time.Second, func() bool { return h.counter("ozy.agent.forwarder.payloads_sent") == 1 }, "not sent")
+	got := make([]string, 0, 2)
+	for _, sr := range h.srv.bodies[0].Series {
+		got = append(got, sr.Metric)
+	}
+	if strings.Join(got, ",") != "m.0,m.2" {
+		t.Fatalf("delivered %v, want the two finite series", got)
+	}
+	if h.counter("ozy.agent.forwarder.dropped") != 1 {
+		t.Fatalf("dropped = %d, want just the one bad series", h.counter("ozy.agent.forwarder.dropped"))
 	}
 }
 

@@ -51,6 +51,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A query's range is capped at 366 days.** The bucket cap bounds the answer,
   not the work: `?from=0&to=now&interval=200000` is a legal 8,951 buckets and
   asked the store to read 55 years of samples.
+- **One StatsD line can no longer poison an agent's whole flush.** A sample
+  rate is used as its reciprocal, so `x:1|c|@1e-320` passed the `(0,1]` check
+  and scaled a single increment to `+Inf` — which never leaves the bucket, and
+  which `wire.Point` then refuses to marshal. The parser rejects a rate that
+  small, and the aggregator drops any sample whose scaled value is not finite.
+- **The forwarder skips a series it cannot encode instead of dropping the
+  batch.** One unencodable series used to fail the whole payload, discarding
+  every other series in that flush — including the agent's own self-metrics —
+  once per interval for as long as the bad input kept arriving.
 
 ### Added
 

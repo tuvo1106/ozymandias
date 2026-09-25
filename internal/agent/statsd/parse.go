@@ -165,6 +165,13 @@ func Parse(line []byte) (Message, error) {
 			if err != nil || !(r > 0 && r <= 1) {
 				return m, parseErr(fmt.Sprintf("sample rate %q is not in (0,1]", section[1:]))
 			}
+			// A rate is used as its reciprocal — the number of samples this
+			// one stands for — so a subnormal passes the range check above
+			// and still scales the value to +Inf. Symmetric with the value
+			// check: in range is not the same as usable.
+			if math.IsInf(1/r, 0) {
+				return m, parseErr(fmt.Sprintf("sample rate %q is too small to scale by", section[1:]))
+			}
 			m.SampleRate = r
 		case '#':
 			m.Tags = section[1:]

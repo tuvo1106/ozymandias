@@ -137,8 +137,9 @@ func New(opts Options) *Forwarder {
 func (f *Forwarder) Submit(series []wire.Series) {
 	payloads, err := f.encode(series)
 	if err != nil {
-		// Only a series with a non-finite value can fail to encode, and the
-		// aggregator never produces one; losing the batch is loud, not silent.
+		// encode skips a series it cannot marshal, so what is left here is a
+		// gzip failure — which means the process is out of memory, not that
+		// the data was bad. Losing the batch is loud, not silent.
 		f.opts.Logger.Error("forwarder: encoding series", "err", err)
 		f.dropped.Add(int64(len(series)))
 		return
@@ -198,7 +199,14 @@ func (f *Forwarder) encode(series []wire.Series) ([]*payload, error) {
 	for i := range series {
 		b, err := json.Marshal(&series[i])
 		if err != nil {
-			return nil, fmt.Errorf("series %q: %w", series[i].Metric, err)
+			// The only per-series failure here is a value wire.Point refuses
+			// to write, i.e. a non-finite one. Skip that series and keep the
+			// rest: failing the batch would discard every other series in
+			// the flush — including the agent's own self-metrics — for as
+			// long as whatever produced the bad value keeps producing it.
+			f.opts.Logger.Error("forwarder: skipping unencodable series", "metric", series[i].Metric, "err", err)
+			f.dropped.Add(1)
+			continue
 		}
 		if len(parts) > 0 && (len(parts) == f.opts.MaxSeriesPerPayload || size+1+len(b) > f.opts.MaxPayloadBytes) {
 			if err := flush(); err != nil {

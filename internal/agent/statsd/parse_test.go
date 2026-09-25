@@ -92,6 +92,9 @@ func TestParse_MalformedLines(t *testing.T) {
 		{"a:1|c|@-1", "sample rate"},
 		{"a:1|c|@x", "sample rate"},
 		{"a:1|c|@NaN", "sample rate"},
+		// In (0,1] but not usable: 1/1e-320 is +Inf, so the scaled value is
+		// too, and an +Inf in a bucket never comes back out.
+		{"a:1|c|@1e-320", "too small to scale by"},
 		{"a:1|c|Tx", "timestamp"},
 		{"a:1|c|T-5", "timestamp"},
 		{"a:1|c|T1.5", "timestamp"},

@@ -288,6 +288,24 @@ func TestAggregator_InvalidNamesAndKindsAreDropped(t *testing.T) {
 	}
 }
 
+// TestAggregator_NonFiniteScaledSamplesAreDropped covers the one input the
+// statsd parser cannot vet on its own: a sample rate in (0,1] whose
+// reciprocal is not. A bucket never recovers from an +Inf, so the sample has
+// to be refused at the door.
+func TestAggregator_NonFiniteScaledSamplesAreDropped(t *testing.T) {
+	reg := selfmetrics.NewRegistry()
+	a := newAgg(t, Options{Registry: reg})
+	a.Add(Sample{Name: "hits", Kind: Counter, Value: 1, SampleRate: 1e-320}, at(1))
+	a.Add(Sample{Name: "lat", Kind: Histogram, Value: 1, SampleRate: 1e-320}, at(1))
+	a.Add(Sample{Name: "hits", Kind: Counter, Value: 2, SampleRate: 0.5}, at(1))
+	if got := points(find(a.Flush(at(10), false), "hits")); got != "0:4" {
+		t.Fatalf("hits = %s, want only the usable sample (0:4)", got)
+	}
+	if n := reg.Counter("ozy.agent.aggregator.samples_dropped").Value(); n != 2 {
+		t.Fatalf("samples_dropped = %d, want 2", n)
+	}
+}
+
 func TestAggregator_SameNameDifferentKindsAreSeparate(t *testing.T) {
 	a := newAgg(t, Options{})
 	a.Add(Sample{Name: "x", Kind: Counter, Value: 1}, at(1))
