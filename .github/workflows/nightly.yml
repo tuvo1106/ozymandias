@@ -28,11 +28,17 @@ permissions:
 
 jobs:
   soak:
+    # ubuntu-latest, deliberately, even though it migrates to Ubuntu 26 on
+    # 2026-10-19. Every tool this job needs is pinned by a file in the repo —
+    # go.mod, web/.nvmrc, sdk/python/uv.lock, the golangci-lint version below —
+    # so the image supplies almost nothing that can drift. A pinned image would
+    # trade that for one that quietly stops getting security updates and is
+    # eventually removed, which is the worse failure for a backstop.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: make soak

@@ -34,25 +34,35 @@ concurrency:
 
 jobs:
   ci:
+    # ubuntu-latest, deliberately, even though it migrates to Ubuntu 26 on
+    # 2026-10-19. Every tool this job needs is pinned by a file in the repo —
+    # go.mod, web/.nvmrc, sdk/python/uv.lock, the golangci-lint version below —
+    # so the image supplies almost nothing that can drift. A pinned image would
+    # trade that for one that quietly stops getting security updates and is
+    # eventually removed, which is the worse failure for a backstop.
     runs-on: ubuntu-latest
     # Above check-coverage.sh's own 25m `go test -timeout`, so a slow package
     # is reported by the test binary rather than killed by the job.
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version-file: web/.nvmrc
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - uses: astral-sh/setup-uv@v5
+      # Pinned to an exact version, unlike the others: astral-sh/setup-uv
+      # stopped publishing a floating major tag after v7, so @v10 does not
+      # resolve and the job fails before any step runs. Dependabot keeps this
+      # one current.
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
           cache-dependency-glob: sdk/python/uv.lock
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
       - run: scripts/check-no-app-coupling.sh
