@@ -85,6 +85,24 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   chunk and every later chunk of the series from all three. `Head.Select` now
   returns an error, as `block.Block` already did, and a cut that cannot read
   the head is abandoned with everything still in place.
+- **The canonical number form on the wire is now one form, not three.**
+  wire-protocol.md §A said "the shortest string that round-trips a float64",
+  which every implementation satisfied while writing different bytes: Go's
+  `strconv` `'g'` turns a byte count of `1048576` into `1.048576e+06`,
+  JavaScript's `String` stays positional to `1e21`, and Python's `repr`
+  switches at `1e16`. §A now specifies the window (positional in `[1e-4,
+  1e16)`, exponent form outside it, exponent padded to two digits), the Go
+  writer and the Node SDK implement it, and seven golden cases pin it. Every
+  form parsed back to the same float64, so nothing was ever corrupted — but
+  the SDKs' promise of identical bytes was not true, and the goldens could
+  not catch it because no case fell in the divergent windows.
+- **The Node SDK drops a non-numeric value instead of coercing it.** From the
+  CJS build, `gauge("queue.depth", null)` recorded a real `0` — as did `[]`,
+  while `"5"` recorded `5` — where the Python SDK refuses all three.
+- **CI runs the fuzz targets.** The workflow claimed parity with `make ci`
+  minus smoke, the crash loop and `fuzz-long`, but `make ci` also runs
+  `make fuzz FUZZTIME=10s` and no step did — leaving the guard on the
+  corrupt-input decoders enforced only by the local pre-push hook.
 - **Compaction deletes its source blocks only once the merged block is
   serving.** `compact.Run` unlinked them before the database had opened the
   merged block or swapped it in, so a failure in either step left blocks gone

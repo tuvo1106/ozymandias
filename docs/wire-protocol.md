@@ -83,10 +83,25 @@ section, or a sample rate outside (0,1].
 - **Section order:** `name:value|type`, then `|@rate` (only when rate < 1), then
   `|#tags`. The agent accepts any order; the SDKs write this one so their
   output is byte-for-byte testable.
-- **Numbers:** integral values print without a decimal point (`1`, not
-  `1.0`), and everything else as the shortest string that round-trips a
-  float64 (`12.4`, `0.30000000000000004`). NaN and ±Inf are dropped
-  client-side, never sent.
+- **Numbers (canonical form):** the shortest decimal digits that round-trip a
+  float64, written **positionally when the decimal exponent is in `[-4, 16)`**
+  — so `1`, not `1.0`; `12.4`; `0.30000000000000004`; `1048576`;
+  `1000000000000000` — and in **exponent form outside that window**, with a
+  signed exponent of at least two digits: `1e+16`, `1e-05`, `5e-324`,
+  `1.7976931348623157e+308`. `-0` is written `0`. NaN and ±Inf are dropped
+  client-side, never sent, and so is a value that is not a number at all
+  (`null`, `[]`, `"5"`): a client coerces nothing.
+
+  The window is the only part a client has to think about, and it is there
+  because each language's default float-to-string disagrees about it.
+  JavaScript's `String` stays positional to `1e21` and down to `1e-7` and
+  writes an unpadded exponent; Go's `strconv` `'g'` with shortest precision
+  reaches for an exponent at `1e6`, turning a byte count of `1048576` into
+  `1.048576e+06`. Python's `repr` is the one that already matches, so the rule
+  is stated in its terms. All three forms parse back to the same float64 —
+  the agent uses `strconv.ParseFloat` and accepts any of them — so this is a
+  contract between clients, not a parsing requirement. It exists so that the
+  shared goldens can compare bytes at all.
 - **Tags:** the call's tags, then the `init()`/`OZY_TAGS` tags, then
   `service:`, `env:` and `version:` for whichever of those are set.
 - **Sampling:** with `sample_rate < 1`, send when `random() < rate` and

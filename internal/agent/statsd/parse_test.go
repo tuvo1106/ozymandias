@@ -158,6 +158,35 @@ type sdkInit struct {
 	Tags                  []string
 }
 
+// TestAppendCanonicalFloat pins §A's number form at the thresholds, which is
+// where the three implementations used to disagree: strconv's 'g' reaches for
+// an exponent at 1e6, JavaScript's String() not until 1e21, and Python's repr
+// at 1e16 — the one this form follows.
+func TestAppendCanonicalFloat(t *testing.T) {
+	for _, tc := range []struct {
+		v    float64
+		want string
+	}{
+		{0, "0"}, {math.Copysign(0, -1), "0"}, {1, "1"}, {-1, "-1"}, {1.5, "1.5"},
+		{0.30000000000000004, "0.30000000000000004"}, // Go folds 0.1+0.2 exactly, so write it out
+		{1048576, "1048576"},                         // 'g' wrote 1.048576e+06
+		{1e6, "1000000"},                             // 'g' wrote 1e+06
+		{1e15, "1000000000000000"},                   // positional right up to the threshold
+		{1e16, "1e+16"},                              // and exponent from it
+		{1e20, "1e+20"},                              // String() would write the digits out
+		{1e21, "1e+21"},
+		{0.0001, "0.0001"}, // positional down to 1e-4
+		{0.00001, "1e-05"}, // String() would write 0.00001
+		{1e-7, "1e-07"},    // String() would write 1e-7
+		{5e-324, "5e-324"},
+		{math.MaxFloat64, "1.7976931348623157e+308"},
+	} {
+		if got := string(appendCanonicalFloat(nil, tc.v)); got != tc.want {
+			t.Errorf("appendCanonicalFloat(%v) = %q, want %q", tc.v, got, tc.want)
+		}
+	}
+}
+
 // The SDK contract file is also a contract for this parser: every line an
 // SDK is required to send must parse back to exactly the call that made it.
 // This checks the golden file against the spec's rules as much as it checks
@@ -213,6 +242,18 @@ func TestParse_SDKGoldensRoundTripToTheirCalls(t *testing.T) {
 				}
 				if m.Value != want {
 					t.Errorf("value %v, want %v", m.Value, want)
+				}
+			}
+			// The canonical number form is a three-way contract: both SDKs
+			// write these bytes and so must this package's own writer, or
+			// "the canonical client format of §A" names three formats.
+			// Parsing the golden back only compares floats, which is why
+			// AppendMessage could disagree with the SDKs unnoticed.
+			if c.Call != "set" {
+				line := *c.Expect
+				text := line[strings.IndexByte(line, ':')+1 : strings.IndexByte(line, '|')]
+				if got := string(appendCanonicalFloat(nil, m.Value)); got != text {
+					t.Errorf("AppendMessage writes %q for this value; the golden says %q", got, text)
 				}
 			}
 			wantRate := 1.0

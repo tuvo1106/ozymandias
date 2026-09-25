@@ -7,6 +7,8 @@
 # It runs everything `make ci` runs except the parts that need more than a
 # checkout: `make smoke` (wants the compose stack), the crash loop and
 # `fuzz-long` (minutes of wall clock). Those stay manual, once per milestone.
+# The short fuzz pass is *not* one of the exceptions — it is the only automated
+# guard on the decoders that read corrupt input, so it runs here too.
 # Keep it one job — jobs are billed rounded up to a whole minute, and the habit
 # is worth keeping even when the bill is zero.
 name: ci
@@ -49,6 +51,8 @@ jobs:
       - run: scripts/check-no-app-coupling.sh
       - run: make docs-check
       - run: make test
+      # Five targets at 10s each, same as `make ci` does locally.
+      - run: make fuzz FUZZTIME=10s
       - run: make sdk-check
       - name: web
         working-directory: web

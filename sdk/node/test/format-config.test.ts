@@ -18,9 +18,19 @@ describe("formatNumber", () => {
     [0.25, "0.25"],
     [0.1 + 0.2, "0.30000000000000004"],
     [-0, "0"],
-    // Exponent forms: valid for the agent's strconv.ParseFloat.
+    // The canonical form (wire-protocol §A) switches to an exponent outside
+    // [1e-4, 1e16), which is *not* where String() switches — these are the
+    // cases where this SDK used to disagree with the Python one.
+    [1e15, "1000000000000000"],
+    [1e16, "1e+16"],
+    [1e20, "1e+20"],
     [1e21, "1e+21"],
-    [1e-7, "1e-7"],
+    [1048576, "1048576"],
+    [0.0001, "0.0001"],
+    [0.00001, "1e-05"],
+    [1e-7, "1e-07"],
+    [5e-324, "5e-324"],
+    [1.7976931348623157e308, "1.7976931348623157e+308"],
   ])("%s -> %s", (n, want) => {
     expect(formatNumber(n)).toBe(want);
   });

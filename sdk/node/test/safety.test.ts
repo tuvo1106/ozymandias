@@ -168,6 +168,21 @@ describe("safety", () => {
       expect(() => init(null as unknown as undefined)).not.toThrow();
     });
 
+    it("refuses a value that is not a number instead of coercing it", async () => {
+      // The CJS build ships to untyped callers. Number(null) and Number([])
+      // are both 0 and Number("5") is 5, so coercion turns a caller's mistake
+      // into a metric that reads plausibly and is wrong. The Python SDK
+      // refuses all three; these are the cases where the two used to differ.
+      init({ agentHost: "127.0.0.1", statsdPort: agent.port });
+      for (const bad of [null, undefined, [], "5", {}, NaN, Infinity]) {
+        expect(() => statsd.gauge("queue.depth", bad as unknown as number)).not.toThrow();
+      }
+      statsd.flush();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(agent.datagrams).toEqual([]);
+      expect(statsd.stats()).toMatchObject({ sent: 0, dropped: 7, errors: 0 });
+    });
+
     it("init() cannot throw even if resolving the config does", () => {
       const options = {
         get agentHost(): string {

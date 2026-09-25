@@ -150,11 +150,19 @@ export class StatsdClient {
    *
    * @param type - the statsd type.
    * @param name - metric name.
-   * @param value - the value; NaN/±Infinity are dropped and counted.
+   * @param value - the value; anything that is not a finite number is dropped
+   *   and counted.
    * @param opts - tags and sample rate.
    */
   metric(type: MetricType, name: string, value: number, opts: MetricOptions | undefined): void {
-    const formatted = formatNumber(Number(value));
+    // A type check, not `Number(value)`. The CJS build ships to untyped
+    // callers, and coercion turns their mistakes into plausible-looking data:
+    // `null` and `[]` both become 0, `"5"` becomes 5. A gauge that silently
+    // reads 0 is worse than one that is absent, and the Python SDK refuses
+    // exactly these (see _format.format_number), so refusing them here is
+    // what makes "the same call behaves the same way" true.
+    const numeric = typeof value === "number" || typeof value === "bigint";
+    const formatted = numeric ? formatNumber(Number(value)) : null;
     if (formatted === null) {
       this.counters.dropped++;
       this.log(`dropped ${name}: value ${String(value)} is not a finite number`);

@@ -227,13 +227,13 @@ func AppendMessage(dst []byte, m Message) []byte {
 	if m.Type == Set {
 		dst = append(dst, m.SetMember...)
 	} else {
-		dst = strconv.AppendFloat(dst, m.Value, 'g', -1, 64)
+		dst = appendCanonicalFloat(dst, m.Value)
 	}
 	dst = append(dst, '|')
 	dst = append(dst, m.Type.String()...)
 	if m.SampleRate != 0 && m.SampleRate != 1 {
 		dst = append(dst, "|@"...)
-		dst = strconv.AppendFloat(dst, m.SampleRate, 'g', -1, 64)
+		dst = appendCanonicalFloat(dst, m.SampleRate)
 	}
 	if len(m.Tags) > 0 {
 		dst = append(dst, "|#"...)
@@ -244,4 +244,30 @@ func AppendMessage(dst []byte, m Message) []byte {
 		dst = strconv.AppendInt(dst, m.Timestamp, 10)
 	}
 	return dst
+}
+
+// appendCanonicalFloat writes v in §A's canonical number form: the shortest
+// decimal that round-trips a float64, positional when the decimal exponent is
+// in [-4, 16) and in exponent form (with a signed, at least two-digit
+// exponent) outside it. -0 is written as 0.
+//
+// strconv's 'g' is *not* that form, which is the bug this replaced: with
+// shortest precision it switches to an exponent at 1e6, so a byte counter of
+// 1048576 went on the wire as "1.048576e+06" while both SDKs wrote
+// "1048576". Every form here parses back to the same float64, so nothing was
+// being corrupted — but "the canonical client format of §A" was not what this
+// function produced, and the round-trip test that compares Parse against it
+// could not notice, because it compares floats.
+func appendCanonicalFloat(dst []byte, v float64) []byte {
+	if v == 0 {
+		return append(dst, '0')
+	}
+	// 'e' with precision -1 gives the shortest round-tripping digits and an
+	// exponent of at least two digits — already the canonical exponent form.
+	e := strconv.AppendFloat(nil, v, 'e', -1, 64)
+	exp, err := strconv.Atoi(string(e[bytes.IndexByte(e, 'e')+1:]))
+	if err == nil && (exp < -4 || exp >= 16) {
+		return append(dst, e...)
+	}
+	return strconv.AppendFloat(dst, v, 'f', -1, 64)
 }

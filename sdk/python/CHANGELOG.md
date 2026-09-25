@@ -7,6 +7,13 @@ package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- No code change: `format_number` already emitted wire-protocol §A's canonical
+  number form, and §A now states that rule in its terms. The Node SDK and the
+  Go writer were the two that disagreed outside `[1e-4, 1e16)`, and both were
+  changed to match this one.
+
 ### Added
 
 - `ozy.init()`, which layers its arguments over the `OZY_*` environment variables.

@@ -21,15 +21,24 @@
 export type MetricType = "c" | "g" | "h" | "d" | "ms" | "s";
 
 /**
- * Formats a numeric value the way every ozymandias client must.
+ * Formats a numeric value in the canonical number form of wire-protocol §A:
+ * the shortest decimal that round-trips a float64, written positionally when
+ * the decimal exponent is in `[-4, 16)` and in exponent form outside it, with
+ * a signed exponent of at least two digits. Integral values carry no decimal
+ * point (`1`, not `1.0`) and `-0` prints as `0`.
  *
- * Integral values print without a decimal point (`1`, not `1.0`); anything
- * else prints as the shortest string that round-trips a float64 — which is
- * exactly what `String(n)` does in JavaScript (ECMA-262 Number::toString), so
- * no custom algorithm is needed. Very large or very small magnitudes come out
- * in exponent form (`1e+21`, `1e-7`); the agent parses values with Go's
- * `strconv.ParseFloat`, which accepts that syntax, so this is still valid.
- * `-0` prints as `0`.
+ * `String(value)` is *not* that form, which is what this used to be. Its
+ * thresholds are different — plain digits up to `1e21` and down to `1e-7`,
+ * and an unpadded exponent — so `1e16` came out as `10000000000000000` here
+ * and `1e+16` from the Python SDK, and `1e-7` here against `1e-07` there.
+ * Every one of those parses back to the same float64, so nothing was ever
+ * corrupted; what was untrue is the promise the two SDKs make each other,
+ * that the same call produces the same bytes. The shared goldens compare
+ * bytes, so the promise has to hold to be testable at all.
+ *
+ * `toExponential()` with no argument is the shortest round-tripping digits
+ * (ECMA-262: "as many digits as necessary to uniquely specify the Number"),
+ * which is where the digits come from; only the placement is decided here.
  *
  * @param value - the number to format.
  * @returns the decimal string, or `null` for NaN and ±Infinity, which the
@@ -37,7 +46,16 @@ export type MetricType = "c" | "g" | "h" | "d" | "ms" | "s";
  */
 export function formatNumber(value: number): string | null {
   if (!Number.isFinite(value)) return null;
-  return String(value);
+  if (value === 0) return "0"; // normalizes -0, which String would print as "0" anyway
+  const [mantissa, exponent] = value.toExponential().split("e");
+  const exp = Number(exponent);
+  if (exp >= -4 && exp < 16) {
+    // String is always positional over this range (it only reaches for an
+    // exponent below 1e-6 or at 1e21), so it is the digits and the point.
+    return String(value);
+  }
+  const abs = Math.abs(exp);
+  return `${mantissa}e${exp < 0 ? "-" : "+"}${abs < 10 ? `0${abs}` : abs}`;
 }
 
 const NAME_UNSAFE = /[|:,\n]/g;

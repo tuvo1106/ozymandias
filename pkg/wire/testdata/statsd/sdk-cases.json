@@ -1,11 +1,12 @@
 {
   "_comment": [
-    "Hop A contract (docs/wire-protocol.md \u00a7A): what each SDK call must put on the wire.",
+    "Hop A contract (docs/wire-protocol.md §A): what each SDK call must put on the wire.",
     "Loaded by pkg/wire's Go tests (every expect line must parse back to the call) and by both SDK test suites.",
     "init: the arguments to init() (service, env, version, tags). call + metric/value/tags/sample_rate: the statsd method and its arguments.",
     "value defaults to 1 for increment/decrement. value_special replaces value with nan, inf or -inf, which JSON can't express.",
     "random: the value the SDK's injected random source returns for the sampling decision (sent when random < sample_rate).",
-    "expect: the exact datagram line, or null when nothing may be sent."
+    "expect: the exact datagram line, or null when nothing may be sent.",
+    "The canonical form cases exist because String() in JS and repr() in Python disagree outside [1e-4, 1e16); they are the windows where this file is the only thing keeping the two SDKs writing the same bytes."
   ],
   "cases": [
     {
@@ -81,6 +82,62 @@
       "metric": "float.check",
       "value": 0.30000000000000004,
       "expect": "float.check:0.30000000000000004|g"
+    },
+    {
+      "name": "canonical form: positional right below the exponent threshold",
+      "init": {},
+      "call": "gauge",
+      "metric": "float.check",
+      "value": 1000000000000000.0,
+      "expect": "float.check:1000000000000000|g"
+    },
+    {
+      "name": "canonical form: exponent at 1e16, where the threshold is",
+      "init": {},
+      "call": "gauge",
+      "metric": "float.check",
+      "value": 1e+16,
+      "expect": "float.check:1e+16|g"
+    },
+    {
+      "name": "canonical form: a realistic large integer stays positional",
+      "init": {},
+      "call": "gauge",
+      "metric": "mem.rss",
+      "value": 1048576,
+      "expect": "mem.rss:1048576|g"
+    },
+    {
+      "name": "canonical form: positional down to 1e-4",
+      "init": {},
+      "call": "gauge",
+      "metric": "cache.hit_ratio",
+      "value": 0.0001,
+      "expect": "cache.hit_ratio:0.0001|g"
+    },
+    {
+      "name": "canonical form: exponent below 1e-4, padded to two digits",
+      "init": {},
+      "call": "gauge",
+      "metric": "cache.hit_ratio",
+      "value": 1e-05,
+      "expect": "cache.hit_ratio:1e-05|g"
+    },
+    {
+      "name": "canonical form: a two-digit exponent is not trimmed",
+      "init": {},
+      "call": "gauge",
+      "metric": "cache.hit_ratio",
+      "value": 1e-07,
+      "expect": "cache.hit_ratio:1e-07|g"
+    },
+    {
+      "name": "canonical form: the smallest subnormal",
+      "init": {},
+      "call": "gauge",
+      "metric": "float.check",
+      "value": 5e-324,
+      "expect": "float.check:5e-324|g"
     },
     {
       "name": "histogram",
