@@ -95,7 +95,15 @@ func Next(blocks []*block.Block, opts Options) *Plan {
 		for i := start + 1; i < len(sorted); i++ {
 			next := sorted[i].Meta()
 			if next.Compaction.Level != level || next.ResolutionS != resolution {
-				break // the run of one level ends here
+				// Skip it, do not stop. The list is ordered by MinTime alone,
+				// and a rollup block sits beside its source at the same time
+				// range, so once rollups exist the order interleaves:
+				// raw(t0), roll(t0), raw(t1), roll(t1), ... Breaking here ends
+				// every run at length one, no run ever reaches MinBlocks, and
+				// compaction stops permanently for *both* resolutions while
+				// the file count keeps growing. Today levels happen to be
+				// segregated in time, which is the only reason breaking works.
+				continue
 			}
 			if max(maxT, next.MaxTime)-minT > maxRange {
 				break // merging this one would make the result too wide
