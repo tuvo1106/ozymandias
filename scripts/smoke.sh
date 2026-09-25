@@ -91,6 +91,34 @@ d = json.load(sys.stdin)
 pts = [p[1] for s in d.get("series", []) for p in s["points"] if p[1] is not None]
 print(int(sum(pts)) if pts else "null")'
 }
+# query_agg <metric> <agg> — the last non-null point of an aggregation over
+# this run's window, or "null". Used for percentiles, where summing is
+# meaningless: what matters is the value itself.
+query_agg() {
+  curl -fsS --max-time 5 "$OZY_URL/api/v1/query?metric=$1&agg=$2&from=$((M1_T0 - 10))&to=$(date +%s)" |
+    python3 -c 'import json,sys
+d = json.load(sys.stdin)
+pts = [p[1] for s in d.get("series", []) for p in s["points"] if p[1] is not None]
+print(pts[-1] if pts else "null")'
+}
+# within <value> <want> <tolerance-fraction> — the sketch guarantee, checked
+# rather than assumed.
+within() {
+  python3 -c 'import sys
+got, want, tol = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
+if got == "null": sys.exit(1)
+sys.exit(0 if abs(float(got) - want) <= tol * want else 1)' "$1" "$2" "$3"
+}
+# wait_agg <metric> <agg> <want> <tolerance> — poll until the flush lands and
+# the answer is within tolerance.
+wait_agg() {
+  for _ in $(seq 1 30); do
+    within "$(query_agg "$1" "$2")" "$3" "$4" && return 0
+    sleep 1
+  done
+  echo "  $2:$1 = $(query_agg "$1" "$2"), expected $3 ±$4" >&2
+  return 1
+}
 # wait_sum <metric> <expected> — poll until the agent flushes (10s) and the
 # intake stores it. Generous: a cold SQLite write on a loaded laptop is slow.
 wait_sum() {
@@ -108,6 +136,9 @@ M1_T0=$(date +%s)
 N=25
 statsd_burst 5 5 'smoke.test:1|c|#source:smoke'          # 5 datagrams × 5 lines
 statsd 'smoke.gauge:1|g' 'smoke.gauge:2|g' 'smoke.gauge:7|g'
+# A distribution, sent as a hundred distinct values so the percentiles have
+# something to be wrong about: p50 is 50, p95 is 95, p99 is 99.
+statsd $(i=1; while [ $i -le 100 ]; do printf "smoke.latency:%d|d|#source:smoke " "$i"; i=$((i + 1)); done)
 # The protocol is the interface: no SDK, no library, just a shell script and nc.
 check "examples/cron-script.sh runs"       docker run --rm --network ozymandias \
   -e OZY_AGENT_HOST=agent -e JOB=smoke \
@@ -121,6 +152,19 @@ check "metric appears in the catalogue"    body_has "$OZY_URL/api/v1/metrics?pre
 check "its tag key is listed"              body_has "$OZY_URL/api/v1/tags?metric=smoke.test" '"source"'
 check "its tag value is listed"            body_has "$OZY_URL/api/v1/tags/values?metric=smoke.test&key=source" '"smoke"'
 check "the histogram became percentiles"   body_has "$OZY_URL/api/v1/metrics?prefix=cron.job.duration" '"cron.job.duration.95percentile"'
+
+# A distribution is the other half of M2: the sketch goes to Pebble whole and
+# its four exact aggregates go to the TSDB as ordinary series. Both are
+# checked, because a p95 that is right while the count is wrong means the two
+# stores have drifted apart.
+check "p50 of the distribution"            wait_agg smoke.latency p50 50 0.01
+check "p95 of the distribution"            wait_agg smoke.latency p95 95 0.01
+check "p99 of the distribution"            wait_agg smoke.latency p99 99 0.01
+check "its count is exact"                 wait_sum smoke.latency.count 100
+check "its sum is exact"                   wait_sum smoke.latency.sum 5050
+check "its max is exact"                   test "$(query_agg smoke.latency.max max)" = "100"
+check "a distribution refuses avg"         test "$(curl -s -o /dev/null -w '%{http_code}' \
+  "$OZY_URL/api/v1/query?metric=smoke.latency&agg=avg")" = "400"
 check "the agent counts what it parsed"    body_has "$AGENT_URL/debug/vars" 'ozy.agent.statsd.messages_received'
 
 # --- M2: the real TSDB ---------------------------------------------------------
@@ -141,6 +185,10 @@ check "it reports what it refused"         body_has "$OZY_URL/debug/vars" 'ozy.t
 check "no samples were dropped"            test "$(gauge_value ozy.tsdb.ooo_rejected store:tsdb)" = "0"
 check "no series hit the cardinality cap"  test "$(gauge_value ozy.tsdb.series_limit_rejected store:tsdb)" = "0"
 check "the store reports its disk use"     test "$(gauge_value ozy.tsdb.disk_bytes store:tsdb)" -gt 0
+check "the sketch store reports its size"  test "$(gauge_value ozy.sketchstore.series '')" -gt 0
+# A collision means two metrics would have shared a percentile, and one of
+# them is being refused. It should be zero forever.
+check "no series hashed to the same id"    test "$(gauge_value ozy.sketchstore.id_collisions '')" = "0"
 
 # The durability claim, end to end. The SIGTERM cycle near the top of this
 # script happened before any of this data existed, so repeating a query after
@@ -156,5 +204,6 @@ for _ in $(seq 1 30); do healthy ozyd && break; sleep 1; done
 check "ozyd healthy after the durability restart" healthy ozyd
 check "the counter survived a real restart"  wait_sum smoke.test "$N"
 check "the gauge survived a real restart"    wait_sum smoke.gauge 7
+check "the sketch survived a real restart"  wait_agg smoke.latency p95 95 0.01
 
 echo "smoke: $pass checks passed"

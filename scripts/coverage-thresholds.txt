@@ -12,6 +12,7 @@ pkg/wire                    90
 internal/agent/statsd       90
 internal/agent/aggregator   90
 internal/sketch             90
+internal/sketchstore        90
 internal/tsdb               90
 internal/tsdb/*             90
 internal/query/*            90

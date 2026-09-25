@@ -48,6 +48,33 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Percentiles are real: `p50`, `p75`, `p90`, `p95` and `p99`** on any
+  `distribution` metric, and statsd type `d` now means one. Until now `d` was
+  a synonym for `h`: the agent computed a p95 locally from a reservoir of at
+  most 10,000 samples per bucket and shipped it as a gauge. That number
+  describes one host and cannot be combined with another's, so a fleet-wide
+  p95 was never available — only the mean of several hosts' p95s, which is a
+  different number with no error bound at all. The agent now builds a DDSketch
+  per context per bucket and ships it whole on `POST /v1/sketches`
+  (wire-protocol §D); a query merges every sketch of every selected series in
+  each output bucket and takes the quantile of the result. Merge first,
+  quantile second. **Breaking for anyone reading `<metric>.avg`, `.median` or
+  `.95percentile` off a `d` metric:** those series are no longer produced —
+  `<metric>.count`, `.sum`, `.min` and `.max` are, and they are exact rather
+  than estimated. Type `h` is unchanged.
+- **`internal/sketchstore`**, a Pebble-backed store for those sketches under
+  `data_dir/sketches/`, independent of `storage.metric_store` so percentiles
+  work on either engine. Keyed by a hash of the series rather than by an
+  assigned id ([ADR-0015](docs/adr/0015-sketch-storage-and-identity.md)):
+  the TSDB's ids are not stable identity, since the head forgets a series when
+  it truncates and gives it a new one when it reappears. Retention uses the
+  existing `storage.retention` window, sweeps hourly, and runs one
+  `storage.block_range` behind the TSDB's — which expires whole blocks, so a
+  `.count` outlives the cutoff and a sketch must outlive it too, or `p95`
+  goes null under a line the count chart still draws. The value layout is
+  specified byte for byte in `docs/formats/sketch.md` and pinned by a golden
+  file.
+
 - **DDSketch (`internal/sketch`)** — the quantile sketch M2 part two is built
   on. Percentiles do not average, so a p95 cannot be computed from per-host
   p95s; a sketch can be merged, which is what makes `p95 by {route}` across a

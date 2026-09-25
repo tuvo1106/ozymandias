@@ -101,6 +101,25 @@ differential tests are held to — and because an operator who hits a storage
 bug needs somewhere to stand while it is fixed. The two are interchangeable
 through the API; nothing above the store can tell them apart.
 
+**Distributions are stored separately, and always.** A sketch is a kilobyte of
+bucket counts, not a float64, so it lives in a Pebble database under
+`data_dir/sketches/` rather than in either metric store — which means
+percentiles work whichever engine `metric_store` names. The four exact
+aggregates of every sketch are written as ordinary series
+(`<metric>.count/.sum/.min/.max`) into whichever store *is* configured, so a
+distribution costs disk in both places. Retention over the sketches uses the
+same `storage.retention` window, sweeps hourly, and deliberately runs one
+`storage.block_range` *behind* it: the TSDB drops a whole block once its
+newest sample has expired, so a `.count` outlives the cutoff by up to a block,
+and a sketch expiring on the cutoff exactly would leave a window where the
+count chart draws a line and `p95` returns null. Sketches with no `.count` are
+unreachable rather than wrong, so the lag is the safe side to err on. Two
+self-metrics are worth
+an alert: `ozy.sketchstore.id_collisions` should be zero forever (a non-zero
+value means one metric's percentiles are being refused — the log line names
+both series), and `ozy.sketchstore.disk_bytes` grows with distribution
+cardinality, not with traffic.
+
 | Setting | Default | What it controls |
 |---|---|---|
 | `storage.metric_store` | `tsdb` | `tsdb` or `naive` |

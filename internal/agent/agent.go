@@ -173,8 +173,15 @@ func (a *Agent) fromStatsd(m *statsd.Message, now time.Time) {
 
 // flush hands one aggregator flush, plus the agent's own metrics, to the
 // forwarder.
-func (a *Agent) flush(series []wire.Series) {
+//
+// The self-metrics ride with the series rather than being reported
+// separately, so an agent whose only traffic is distributions still says it
+// is alive on the same cadence as one whose traffic is counters.
+func (a *Agent) flush(series []wire.Series, sketches []wire.SketchSeries) {
 	a.fwd.Submit(append(series, a.self.Collect(a.clock.Now())...))
+	if len(sketches) > 0 {
+		a.fwd.SubmitSketches(sketches)
+	}
 }
 
 // Hostname returns the value of the host tag this agent applies.

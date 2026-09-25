@@ -240,6 +240,35 @@ same trace.
 `bins` are `[index k, count]` sorted by k, where bucket k covers
 `(γ^(k-1), γ^k]`. See `docs/plan/M2-tsdb.md` §DDSketch.
 
+- `interval` (seconds) is required and positive: a sketch describes a window,
+  never an instant. There is no `type` field — the endpoint says what the
+  payload is, and a second source of truth could only disagree with it. ozyd
+  records the metric as type `distribution` in metadata on first sight.
+- `ts` is the bucket start, unix seconds. The future-skew and accepted-window
+  rules of §C apply unchanged.
+- `gamma` travels with every sketch rather than being deployment
+  configuration, because γ is what the bucket indices *mean*. Two agents at
+  different relative accuracies produce indices that look alike and are not;
+  a receiver that assumed its own γ would merge them into a confident wrong
+  answer. ozyd refuses to merge sketches whose γ differ.
+- `count`, `sum`, `min` and `max` are **exact**, not estimated, and ozyd
+  writes them as the ordinary series `<metric>.count`, `.sum`, `.min` and
+  `.max`. `min`/`max` are `0` when `count` is `0`.
+- `bins` and `neg_bins` must **ascend by index with no duplicates**, and every
+  count must be finite and positive. A decoder that sorted for the sender
+  would be guessing; a duplicate index has two readings — replace or add —
+  that give different percentiles from the same bytes.
+- `neg_bins` index the *absolute* value, so they also ascend by index, which
+  is descending by value.
+- The bucket counts plus `zero_count` must equal `count` (to within
+  re-summation error). A quantile resolves a rank out of `count` and then
+  walks the buckets for it, so a payload where the two disagree answers with
+  no error bound at all and no sign that anything is wrong.
+- Limits: ≤ 5000 sketch series per request (the forwarder splits), ≤ 1000
+  points per series, ≤ 2048 buckets per sign per sketch — the store's own cap,
+  so a wider payload was not produced by any agent.
+- Rejection is per series, as in §C: one bad series does not fail the body.
+
 ## E. Logs, agent → ozyd (`POST /v1/logs`)
 
 ```json

@@ -24,7 +24,10 @@ type MetricTypes interface {
 type Metrics struct {
 	Store tsdb.MetricStore
 	Types MetricTypes
-	Clock clock.Clock // default clock.Real()
+	// Sketches answers the percentile aggregators. Nil means a percentile
+	// query is refused with a reason rather than answered from nothing.
+	Sketches simple.SketchReader
+	Clock    clock.Clock // default clock.Real()
 }
 
 // Limits for the metadata endpoints' ?limit=.
@@ -70,7 +73,10 @@ func (m *Metrics) query(w http.ResponseWriter, r *http.Request) {
 		From:     from,
 		To:       to,
 		Interval: interval,
-		Kind:     wire.KindGauge, // a metric with no recorded type is read as a level
+		// Empty, not a kind: an unrecorded metric is read as a level for time
+		// aggregation, but "unknown" and "known to be a gauge" are different
+		// answers to "does this have percentiles?".
+		Kind: "",
 	}
 	if md, ok := m.Types.Metric(req.Metric); ok {
 		req.Kind = md.Type
@@ -79,7 +85,11 @@ func (m *Metrics) query(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	res, err := simple.Run(r.Context(), m.Store, req)
+	res, err := simple.Run(r.Context(), m.Store, m.Sketches, req)
+	if errors.Is(err, simple.ErrNoSketchStore) {
+		writeError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
