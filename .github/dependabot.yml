@@ -5,9 +5,18 @@
 #
 # Monthly and grouped into one pull request, because this is a backstop and not
 # a product: a stream of individual bumps on a solo repo is noise that teaches
-# people to merge without looking. Only the actions are watched — Go modules,
-# npm and uv are all pinned deliberately and reviewed as part of the work that
-# needs them (AGENTS.md's dependency allowlist).
+# people to merge without looking.
+#
+# Only the actions are watched. Go modules and npm are chosen deliberately and
+# reviewed as part of the work that needs them (AGENTS.md's dependency
+# allowlist), so an automated bump would arrive with no reason attached.
+#
+# Two pins here are *not* watched by anything and are bumped by hand, which is
+# worth saying out loud rather than discovering later: the uv version in
+# sdk/python/.tool-versions and the linter in .golangci-lint-version. Neither
+# is a `uses:` reference, and the github-actions ecosystem rewrites nothing
+# else. Assuming an unwatched dependency is "pinned deliberately" is how the
+# five actions above went stale in the first place.
 version: 2
 updates:
   - package-ecosystem: github-actions

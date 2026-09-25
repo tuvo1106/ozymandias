@@ -28,12 +28,19 @@ permissions:
 
 jobs:
   soak:
-    # ubuntu-latest, deliberately, even though it migrates to Ubuntu 26 on
-    # 2026-10-19. Every tool this job needs is pinned by a file in the repo —
-    # go.mod, web/.nvmrc, sdk/python/uv.lock, the golangci-lint version below —
-    # so the image supplies almost nothing that can drift. A pinned image would
-    # trade that for one that quietly stops getting security updates and is
-    # eventually removed, which is the worse failure for a backstop.
+    # ubuntu-latest, and here the image is not incidental. This job runs one
+    # Go toolchain (pinned by go.mod) and nothing else, so nothing *installed*
+    # can drift — but the whole point of the job is that the runner is slower
+    # than a laptop, and how much slower is a property of the image. When
+    # ubuntu-latest becomes Ubuntu 26 on 2026-10-19, that is the variable
+    # changing.
+    #
+    # Which is a reason to watch it, not to pin it: a soak that only ever runs
+    # on one frozen image stops being a sample of what CI actually does. The
+    # run currently finishes in about 2.5 minutes against a 40m `go test`
+    # timeout, so there is room for the image to get considerably slower
+    # before anything is cut off — and if it ever is, that is a finding about
+    # the storage engine, which is what this job exists to report.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

@@ -29,6 +29,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   config now watches them, so the next drift arrives as one pull request
   rather than as a warning nobody is reading. `ubuntu-latest` is kept on
   purpose through the Ubuntu 26 migration; the reasoning is in the workflow.
+- **CI no longer lets the runner image choose a toolchain.** Go and Node were
+  already pinned by `go.mod` and `web/.nvmrc`; uv, the Python interpreter and
+  golangci-lint were not, so the SDK's 90% coverage gate could move to a
+  different interpreter with no commit to this repo and surface as a red
+  required check on an unrelated pull request. They are now
+  `sdk/python/.tool-versions`, `sdk/python/.python-version` and
+  `.golangci-lint-version`. `make lint` and `make sdk-check` warn — they do not
+  fail — when the local binary differs from the one CI uses, so the pre-push
+  gate and CI can no longer disagree silently.
 - **GitHub Actions runs `make ci` on every pull request** (ADR-0013, supersedes
   ADR-0010) now that public-repo minutes are free — including `make sdk-check`,
   which the metered workflow used to skip, so both SDKs' 90% gates are enforced

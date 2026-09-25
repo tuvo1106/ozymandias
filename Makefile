@@ -37,6 +37,10 @@ test-short: ## go test without race/coverage (fast inner loop)
 
 .PHONY: lint
 lint: ## golangci-lint + no-app-coupling check
+	@want=$$(cat .golangci-lint-version); got=v$$(golangci-lint version --short 2>/dev/null); \
+		if [ "$$got" != "$$want" ]; then \
+			echo "warning: linting with golangci-lint $$got; CI uses $$want (.golangci-lint-version)"; \
+		fi
 	golangci-lint run ./...
 	scripts/check-no-app-coupling.sh
 
@@ -62,6 +66,10 @@ web-check: ## Web typecheck + lint + tests with coverage
 
 .PHONY: sdk-check
 sdk-check: ## Both SDKs: install, typecheck, lint, tests with their 90% gates
+	@want=$$(awk '$$1=="uv"{print $$2}' sdk/python/.tool-versions); got=$$(uv --version 2>/dev/null | awk '{print $$2}'); \
+		if [ "$$got" != "$$want" ]; then \
+			echo "warning: using uv $$got; CI uses $$want (sdk/python/.tool-versions)"; \
+		fi
 	cd sdk/node && npm ci --silent && npm run typecheck && npm run lint && npm run test:coverage
 	cd sdk/python && uv sync --locked -q && uv run ruff check && uv run ruff format --check && uv run mypy && uv run pytest -q
 
