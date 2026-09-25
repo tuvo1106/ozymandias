@@ -111,9 +111,29 @@ func TestServer_FullQueueDropsAndCounts(t *testing.T) {
 	testutil.Eventually(t, 2*time.Second, func() bool { return received.Value() == 20 }, "received %d", received.Value())
 	close(block)
 	stop()
-	// One in the sink, one in the queue; everything else dropped.
-	if dropped.Value() != 18 || got.Load() != 2 {
-		t.Fatalf("dropped=%d delivered=%d, want 18 and 2", dropped.Value(), got.Load())
+
+	// At most two packets can be in flight — one in the worker, one in the
+	// one-slot queue — and shutdown drains the queue, so by now every packet
+	// has either reached the sink or been counted as dropped.
+	//
+	// Which of the two it is, is scheduling. Asserting exactly 2 delivered
+	// assumed the worker had already taken the first packet off the queue
+	// before the second arrived; when it has not, the first is still queued,
+	// the second is dropped instead, and the split is 1 and 19. That is the
+	// same behaviour — nothing blocked, nothing was lost, every drop was
+	// counted — and it failed on CI, where a loaded runner is exactly where
+	// the worker does not get scheduled promptly.
+	//
+	// So: the total must add up, and the in-flight count must respect the
+	// capacity. Both are properties of the server; neither is a property of
+	// the Go scheduler.
+	delivered := got.Load()
+	if sum := delivered + dropped.Value(); sum != 20 {
+		t.Errorf("delivered %d + dropped %d = %d, want 20 — a packet was lost or counted twice",
+			delivered, dropped.Value(), sum)
+	}
+	if delivered < 1 || delivered > 2 {
+		t.Errorf("delivered %d packets; a one-slot queue and one worker can hold at most 2", delivered)
 	}
 }
 
