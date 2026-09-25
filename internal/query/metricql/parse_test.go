@@ -105,6 +105,15 @@ func TestParse_Productions(t *testing.T) {
 				Right: &Binary{Op: OpMul, Left: &Number{2}, Right: &Number{3}}},
 		},
 		{
+			// A right-leaning tree of the same operator is the case the
+			// printer got wrong: without its parentheses this comes back as
+			// (a + b) + c, which over float64 is often a different number.
+			"parentheses on the right survive printing",
+			"avg:a{*} + (avg:b{*} + avg:c{*})",
+			&Binary{Op: OpAdd, Left: q(Avg, "a", nil, nil),
+				Right: &Binary{Op: OpAdd, Left: q(Avg, "b", nil, nil), Right: q(Avg, "c", nil, nil)}},
+		},
+		{
 			"parentheses override it",
 			"(1 + 2) * 3",
 			&Binary{Op: OpMul,
