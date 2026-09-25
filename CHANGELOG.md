@@ -48,6 +48,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **metricql, the query language** (`internal/query/metricql`, specified in
+  [docs/query-language.md](docs/query-language.md)): a lexer, a
+  recursive-descent parser, and a printer that turns an AST back into one
+  canonical spelling. This is the parsing half of M3 §1; the evaluator that
+  runs an AST lands next, and until then M1's structured query is still what
+  `/api/v1/query` serves.
+  The language is not lexically uniform — `route:/api/items` and `a / b` use
+  the same byte for different jobs, and a tag key may contain `-` and `/` —
+  so the lexer is pull-based and takes its mode from the parser rather than
+  running as a separate pass. AST nodes carry no source positions, which
+  makes `parse(print(ast)) == ast` an exact property rather than a comparison
+  modulo fields nobody reads; it is checked by `pgregory.net/rapid` and by
+  `FuzzParse`. A tag value deliberately cannot contain a brace, so that a
+  missing `}` is an error at the right column instead of a query that parses
+  wrongly and silently.
+
 - **Percentiles are real: `p50`, `p75`, `p90`, `p95` and `p99`** on any
   `distribution` metric, and statsd type `d` now means one. Until now `d` was
   a synonym for `h`: the agent computed a p95 locally from a reservoir of at
