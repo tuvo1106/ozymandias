@@ -41,8 +41,14 @@ func decodeSeries(b []byte) (uint64, tsdb.SeriesRef, error) {
 	if d.err != nil {
 		return 0, ref, d.err
 	}
-	if n > uint64(len(b)) { // a length can never exceed the record itself
-		return 0, ref, fmt.Errorf("head: series record claims %d tags", n)
+	// A tag is two length-prefixed strings, so it costs at least two bytes.
+	// Bounding by len(b) alone was enough to stop a wild count but not enough
+	// to stop the allocation below from being wild: tsdb.Tag is 32 bytes, so a
+	// 16 MiB record — the wal.MaxRecordSize ceiling — could ask for half a
+	// gigabyte before the first d.str() failed and threw it away. The bound is
+	// what makes the preallocation safe, so the two belong together.
+	if n > uint64(len(b)/2) {
+		return 0, ref, fmt.Errorf("head: series record claims %d tags in %d bytes", n, len(b))
 	}
 	ref.Tags = make([]tsdb.Tag, 0, n)
 	for i := uint64(0); i < n; i++ {
