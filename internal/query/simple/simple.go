@@ -30,6 +30,21 @@ const (
 // any chart can draw, and a cheap way to make the server do a lot of work.
 const MaxBuckets = 10_000
 
+// MaxRange bounds the span a query may cover, in seconds. MaxBuckets alone
+// does not: it limits the *output*, and a coarse enough interval satisfies it
+// over any range at all — while the store still has to read every sample in
+// the range to fill those buckets. Without this, a ten-bucket request could
+// ask for a scan of every block on disk. A year is far beyond any plausible
+// retention (the default is 15 days).
+const MaxRange = 366 * 24 * 60 * 60
+
+// maxTime is the newest accepted timestamp, 9999-12-31T23:59:59Z. Unix
+// seconds are unbounded but the bucket arithmetic is not: floorTo multiplies
+// back out, and Run scales to milliseconds, both of which wrap silently on
+// extreme input. Validate rejects anything outside [0, maxTime] so the rest
+// of this package can do that arithmetic without thinking about overflow.
+const maxTime = 253402300799
+
 // Request is a structured metric query.
 type Request struct {
 	Metric  string
@@ -111,6 +126,10 @@ func (r *Request) Validate() error {
 	if r.To <= r.From {
 		errs = append(errs, fmt.Errorf("to (%d) must be after from (%d)", r.To, r.From))
 	}
+	// Checked before anything computes with them; see maxTime.
+	if r.From < 0 || r.To > maxTime {
+		errs = append(errs, fmt.Errorf("from (%d) and to (%d) must be unix seconds within [0, %d]", r.From, r.To, maxTime))
+	}
 	switch r.Agg {
 	case "":
 		r.Agg = Avg
@@ -129,11 +148,18 @@ func (r *Request) Validate() error {
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
+	// From here on 0 <= From < To <= maxTime, so none of this overflows.
 	if r.Interval == 0 {
 		r.Interval = DefaultInterval(r.From, r.To)
 	}
+	// Buckets first: it is the limit a caller hits by asking for too fine a
+	// resolution, and its message names the fix. MaxRange catches what is
+	// left — a range so wide that even a coarse interval satisfies it.
 	if n := (r.To-floorTo(r.From, r.Interval))/r.Interval + 1; n > MaxBuckets {
 		return fmt.Errorf("%d buckets at interval %ds; the limit is %d — use a larger interval or a shorter range", n, r.Interval, MaxBuckets)
+	}
+	if r.To-r.From > MaxRange {
+		return fmt.Errorf("range of %ds; the limit is %ds — query a shorter window", r.To-r.From, MaxRange)
 	}
 	return nil
 }

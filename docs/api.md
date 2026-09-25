@@ -89,7 +89,7 @@ The M1 structured metric query (M3 re-implements it on the query language).
 | `filter` | none | Comma-separated tag terms, all of which must match: `k:v`; `k:v*` (wildcard, `*` only); `!k:v` (not equal); `!k:v*`; bare `k` for a bare tag. Values can't contain `,` |
 | `by` | none | Comma-separated tag keys to group by |
 | `agg` | `avg` | Across-series aggregator per group: `avg`, `sum`, `min`, `max` |
-| `from`, `to` | last hour | Unix seconds, inclusive |
+| `from`, `to` | last hour | Unix seconds, inclusive. Both must be in `[0, 253402300799]`, and `to - from` at most 366 days |
 | `interval` | ~300 points | Bucket width in seconds. The default is the range / 300, rounded up to a multiple of 10. At most 10,000 buckets |
 
 Evaluation: select the series that pass the filters; aggregate each over
@@ -111,6 +111,10 @@ $ curl -s 'localhost:9400/api/v1/query?metric=http.request.count&filter=service:
 - Series are sorted by their label, `metric{k:v,…}`.
 - Errors are `400 {"status":"error","error":"…"}` for a bad request and `500`
   for a store failure.
+- The two range limits do different jobs. The bucket cap bounds the *answer*;
+  the 366-day cap bounds the *work*, since every sample in the range is read
+  to fill the buckets however few of them there are. Both are far wider than
+  the default 15-day retention.
 
 ### `GET /api/v1/metrics`
 

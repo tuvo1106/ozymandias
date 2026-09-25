@@ -42,6 +42,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `make test` now passes `-timeout 25m`. `internal/tsdb/db` costs ~5 minutes
   under `-race` locally and ran 600.06s on a CI runner, which Go's 10-minute
   default killed mid-test.
+- **`GET /api/v1/query` no longer panics on an out-of-range `from`/`to`.** The
+  bucket count is computed from the raw parameters, and
+  `?from=-9223372036854775808&to=1790000000&interval=10` wrapped it negative,
+  slipping past the 10,000-bucket cap and reaching a `make([]float64, n)` that
+  panicked outright. `from` and `to` are now required to be unix seconds in
+  `[0, 253402300799]`, which is what the bucket arithmetic actually assumes.
+- **A query's range is capped at 366 days.** The bucket cap bounds the answer,
+  not the work: `?from=0&to=now&interval=200000` is a legal 8,951 buckets and
+  asked the store to read 55 years of samples.
 
 ### Added
 

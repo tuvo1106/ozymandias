@@ -190,6 +190,12 @@ func TestValidate(t *testing.T) {
 		"bad by":         {Request{Metric: "m", From: 0, To: 10, By: []string{"a:b"}}, "not a tag key"},
 		"too many":       {Request{Metric: "m", From: 0, To: 86400, Interval: 1}, "buckets"},
 		"several errors": {Request{Metric: "", From: 5, To: 1, Agg: "x"}, "agg"},
+		// The bucket count for these two wraps negative, so it slips past the
+		// MaxBuckets check and Run allocates a slice of nonsense length.
+		"from underflows": {Request{Metric: "m", From: math.MinInt64, To: 1790000000, Interval: 10}, "unix seconds"},
+		"to overflows":    {Request{Metric: "m", From: 0, To: math.MaxInt64, Interval: 10}, "unix seconds"},
+		// Few enough buckets, but 55 years of samples to fill them from.
+		"range too long": {Request{Metric: "m", From: 0, To: 1790000000, Interval: 200000}, "query a shorter window"},
 	} {
 		err := tc.req.Validate()
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -199,6 +205,21 @@ func TestValidate(t *testing.T) {
 	r := Request{Metric: "m", From: 0, To: 3600}
 	if err := r.Validate(); err != nil || r.Agg != Avg || r.Interval != 20 {
 		t.Fatalf("defaults: %v %+v", err, r)
+	}
+}
+
+// TestRunRejectsUnboundedRange is the regression test for the panic: Run must
+// reject an out-of-domain range rather than reach bucketize, whose
+// make([]float64, n) panics outright on a wrapped bucket count.
+func TestRunRejectsUnboundedRange(t *testing.T) {
+	for _, req := range []Request{
+		{Metric: "req", From: math.MinInt64, To: 1790000000, Interval: 10},
+		{Metric: "req", From: 0, To: math.MaxInt64, Interval: 10},
+		{Metric: "req", From: 0, To: 1790000000, Interval: 200000},
+	} {
+		if _, err := Run(context.Background(), store, req); err == nil {
+			t.Errorf("Run(%+v) = nil error, want a rejection", req)
+		}
 	}
 }
 
