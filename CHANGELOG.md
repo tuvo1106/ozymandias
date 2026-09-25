@@ -48,6 +48,18 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **DDSketch (`internal/sketch`)** — the quantile sketch M2 part two is built
+  on. Percentiles do not average, so a p95 cannot be computed from per-host
+  p95s; a sketch can be merged, which is what makes `p95 by {route}` across a
+  fleet answerable at all. Buckets are geometric (`k = ceil(log_gamma v)`), so
+  the error is *relative*: every estimate is within 1% of the true value
+  whether it lands at 3ms or 30s, on a store that is 2048 buckets wide
+  regardless of how many observations it has seen. Merging is bucket-wise
+  addition and therefore exact and order-independent; count, sum, min and max
+  are carried alongside and are not approximations. Values beyond what the
+  store can index collapse into the lowest bucket — the end nobody queries —
+  and the package is not concurrency-safe, by design: one owner per sketch.
+
 - **Boundary tests for the chunk encoder's delta-of-delta buckets**, found by a
   one-off mutation-testing run over `internal/tsdb/chunkenc`. A delta-of-delta
   filed one bucket too wide still decodes to the right number — it only spends
