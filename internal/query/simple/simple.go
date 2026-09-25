@@ -130,9 +130,14 @@ func (r *Request) Validate() error {
 	if r.From < 0 || r.To > maxTime {
 		errs = append(errs, fmt.Errorf("from (%d) and to (%d) must be unix seconds within [0, %d]", r.From, r.To, maxTime))
 	}
-	switch {
-	case r.Agg == "":
+	// The default is applied before the checks below, not as one of them: an
+	// omitted agg and an explicit `agg=avg` are the same request, and a guard
+	// that only one of them reaches answers the same question two ways. The
+	// omitted one is what the UI sends first.
+	if r.Agg == "" {
 		r.Agg = Avg
+	}
+	switch {
 	case r.Agg == Avg, r.Agg == Sum, r.Agg == Min, r.Agg == Max:
 		if r.Kind == wire.KindDistribution {
 			errs = append(errs, fmt.Errorf(

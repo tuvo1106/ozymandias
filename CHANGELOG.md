@@ -68,7 +68,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   assigned id ([ADR-0015](docs/adr/0015-sketch-storage-and-identity.md)):
   the TSDB's ids are not stable identity, since the head forgets a series when
   it truncates and gives it a new one when it reappears. Retention uses the
-  existing `storage.retention` window and sweeps hourly. The value layout is
+  existing `storage.retention` window, sweeps hourly, and runs one
+  `storage.block_range` behind the TSDB's — which expires whole blocks, so a
+  `.count` outlives the cutoff and a sketch must outlive it too, or `p95`
+  goes null under a line the count chart still draws. The value layout is
   specified byte for byte in `docs/formats/sketch.md` and pinned by a golden
   file.
 

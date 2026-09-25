@@ -108,7 +108,13 @@ percentiles work whichever engine `metric_store` names. The four exact
 aggregates of every sketch are written as ordinary series
 (`<metric>.count/.sum/.min/.max`) into whichever store *is* configured, so a
 distribution costs disk in both places. Retention over the sketches uses the
-same `storage.retention` window and sweeps hourly. Two self-metrics are worth
+same `storage.retention` window, sweeps hourly, and deliberately runs one
+`storage.block_range` *behind* it: the TSDB drops a whole block once its
+newest sample has expired, so a `.count` outlives the cutoff by up to a block,
+and a sketch expiring on the cutoff exactly would leave a window where the
+count chart draws a line and `p95` returns null. Sketches with no `.count` are
+unreachable rather than wrong, so the lag is the safe side to err on. Two
+self-metrics are worth
 an alert: `ozy.sketchstore.id_collisions` should be zero forever (a non-zero
 value means one metric's percentiles are being refused — the log line names
 both series), and `ozy.sketchstore.disk_bytes` grows with distribution

@@ -53,8 +53,13 @@ func isPercentile(a Agg) bool {
 }
 
 // SketchReader is the part of internal/sketchstore the query layer needs.
+//
+// Streaming, not a slice: the query's own limit is on output buckets, and a
+// year of one series at a ten-second flush is three million sketches. Each
+// one is folded into its bucket and dropped, so a percentile costs the
+// buckets it answers with rather than the window it reads.
 type SketchReader interface {
-	Read(ctx context.Context, ref tsdb.SeriesRef, fromMs, toMs int64) ([]sketchstore.Point, error)
+	ReadEach(ctx context.Context, ref tsdb.SeriesRef, fromMs, toMs int64, fn func(sketchstore.Point) error) error
 }
 
 // runPercentile answers p50…p99: for each output bucket, merge every sketch
@@ -93,22 +98,30 @@ func runPercentile(ctx context.Context, store tsdb.MetricStore, sketches SketchR
 		counted := set.Series()
 		ref := tsdb.SeriesRef{Metric: req.Metric, Tags: counted.Tags}
 
-		points, err := sketches.Read(ctx, ref, first*1000, req.To*1000)
-		if err != nil {
-			return Result{}, err
-		}
-		if len(points) == 0 {
-			continue
-		}
 		key, tags := groupKey(counted, req.By)
 		g := groups[key]
 		if g == nil {
 			g = &sketchGroup{tags: tags, buckets: make([]*sketch.Sketch, n)}
+		}
+		seen := false
+		err := sketches.ReadEach(ctx, ref, first*1000, req.To*1000, func(p sketchstore.Point) error {
+			if err := g.add(p, first, req.Interval, n); err != nil {
+				return err
+			}
+			seen = true
+			return nil
+		})
+		if errors.Is(err, sketch.ErrIncompatible) {
+			return Result{}, fmt.Errorf("%s:%s: %w", req.Agg, req.Metric, err)
+		}
+		if err != nil {
+			return Result{}, err
+		}
+		// A group is created only once something lands in it, so a series
+		// with no sketches in the window does not draw an empty line.
+		if seen && groups[key] == nil {
 			groups[key] = g
 			order = append(order, key)
-		}
-		if err := g.add(points, first, req.Interval, n); err != nil {
-			return Result{}, fmt.Errorf("%s:%s: %w", req.Agg, req.Metric, err)
 		}
 	}
 	if err := set.Err(); err != nil {
@@ -133,30 +146,25 @@ type sketchGroup struct {
 	buckets []*sketch.Sketch
 }
 
-// add folds one series' sketches into the group's buckets.
+// add folds one sketch into the group's buckets.
 //
 // The first sketch to reach a bucket is cloned rather than kept: it belongs
-// to the caller's slice, and merging into it would write through into data
-// the store handed us.
-func (g *sketchGroup) add(points []sketchstore.Point, first, interval int64, n int) error {
-	for _, p := range points {
-		i := (p.TimeMs/1000 - first) / interval
-		if i < 0 || i >= int64(n) {
-			continue
-		}
-		if g.buckets[i] == nil {
-			g.buckets[i] = p.Sketch.Clone()
-			continue
-		}
-		if err := g.buckets[i].Merge(p.Sketch); err != nil {
-			// Two sketches of the same metric built at different relative
-			// accuracies. Answering from whichever subset happened to agree
-			// would be the confident wrong answer the whole design exists to
-			// avoid, so this is loud.
-			return err
-		}
+// to the store, and merging into it would write through into data the store
+// handed us.
+func (g *sketchGroup) add(p sketchstore.Point, first, interval int64, n int) error {
+	i := (p.TimeMs/1000 - first) / interval
+	if i < 0 || i >= int64(n) {
+		return nil
 	}
-	return nil
+	if g.buckets[i] == nil {
+		g.buckets[i] = p.Sketch.Clone()
+		return nil
+	}
+	// Two sketches of the same metric built at different relative
+	// accuracies. Answering from whichever subset happened to agree would be
+	// the confident wrong answer the whole design exists to avoid, so this
+	// is loud.
+	return g.buckets[i].Merge(p.Sketch)
 }
 
 func (g *sketchGroup) quantile(i int, q float64) float64 {

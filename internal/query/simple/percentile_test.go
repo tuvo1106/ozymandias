@@ -20,17 +20,18 @@ type memSketches struct {
 	err   error
 }
 
-func (m *memSketches) Read(_ context.Context, ref tsdb.SeriesRef, from, to int64) ([]sketchstore.Point, error) {
+func (m *memSketches) ReadEach(_ context.Context, ref tsdb.SeriesRef, from, to int64, fn func(sketchstore.Point) error) error {
 	if m.err != nil {
-		return nil, m.err
+		return m.err
 	}
-	var out []sketchstore.Point
 	for _, p := range m.byKey[ref.Key()] {
 		if p.TimeMs >= from && p.TimeMs <= to {
-			out = append(out, p)
+			if err := fn(p); err != nil {
+				return err
+			}
 		}
 	}
-	return out, nil
+	return nil
 }
 
 // fixture builds the two stores the percentile path reads: the `.count`

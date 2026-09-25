@@ -108,9 +108,15 @@ func (in *Intake) ingestSketches(ctx context.Context, valid []wire.SketchSeries,
 		in.opts.Logger.Error("intake: storing sketch aggregates", "err", err, "series", len(batch))
 		return wire.IntakeResponse{}, errors.New("store unavailable")
 	}
-	// A series whose count was refused is not selectable, so its sketch has
-	// nowhere to be found from. Refusing it here keeps the two stores holding
-	// the same set of buckets.
+	// A bucket whose count the TSDB refused is not selectable, so a sketch
+	// stored for it could never be found — and a bucket whose count it stored
+	// must have one, or the count chart has data where the percentile is
+	// null. Both stores have to end up holding the same set of buckets.
+	//
+	// The TSDB reports rejection per *series*, once, however many of that
+	// series' samples it refused — and it stores the rest. So a series named
+	// here is "some of these buckets did not land", not "none of them did",
+	// and asking which is the only way to keep the two in step.
 	refused := map[string]string{}
 	for _, rj := range res.Rejected {
 		refused[rj.Series.Key()] = rj.Reason
@@ -118,14 +124,21 @@ func (in *Intake) ingestSketches(ctx context.Context, valid []wire.SketchSeries,
 
 	entries := make([]sketchstore.Entry, 0, len(accepted))
 	for i, s := range accepted {
-		ref := tsdb.NewSeriesRef(s.Metric+wire.SuffixCount, s.Tags)
-		if reason, ok := refused[ref.Key()]; ok {
+		points := decoded[i]
+		if reason, ok := refused[tsdb.NewSeriesRef(s.Metric+wire.SuffixCount, s.Tags).Key()]; ok {
 			errs = append(errs, fmt.Sprintf("%q: %s", s.Metric, reason))
-			continue
+			var err error
+			if points, err = in.storedPoints(ctx, s, points); err != nil {
+				in.opts.Logger.Error("intake: reconciling sketches", "err", err, "metric", s.Metric)
+				return wire.IntakeResponse{}, errors.New("store unavailable")
+			}
+			if len(points) == 0 {
+				continue
+			}
 		}
 		entries = append(entries, sketchstore.Entry{
 			Series: tsdb.NewSeriesRef(s.Metric, s.Tags),
-			Points: decoded[i],
+			Points: points,
 		})
 	}
 	sres, err := in.opts.Sketches.Append(ctx, entries)
@@ -150,6 +163,68 @@ func (in *Intake) ingestSketches(ctx context.Context, valid []wire.SketchSeries,
 		resp.Errors = []string{}
 	}
 	return resp, nil
+}
+
+// storedPoints narrows a series' sketches to the buckets whose `.count`
+// sample the store actually holds.
+//
+// It reads back rather than predicting. What the TSDB accepts depends on the
+// series' newest sample and on how far its oldest writable block reaches —
+// state this package does not have and should not model, because a second
+// copy of that rule is a second rule. Asking the store which buckets are
+// there is the same question a query will ask later, so the answer is
+// consistent by construction.
+//
+// Only a series the TSDB named as rejected gets here, so the extra Select is
+// on the uncommon path: an agent draining a backlog into buckets that have
+// already been written.
+func (in *Intake) storedPoints(ctx context.Context, s wire.SketchSeries, points []sketchstore.Point) ([]sketchstore.Point, error) {
+	if len(points) == 0 {
+		return nil, nil
+	}
+	from, to := points[0].TimeMs, points[0].TimeMs
+	for _, p := range points {
+		from, to = min(from, p.TimeMs), max(to, p.TimeMs)
+	}
+	matchers := make([]tsdb.Matcher, 0, len(s.Tags))
+	for _, t := range s.Tags {
+		tag := tsdb.ParseTag(t)
+		matchers = append(matchers, tsdb.Matcher{Key: tag.Key, Value: tag.Value, Type: tsdb.Equal})
+	}
+	set, err := in.opts.Store.Select(ctx,
+		tsdb.Selector{Metric: s.Metric + wire.SuffixCount, Matchers: matchers}, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer set.Close()
+
+	// The matchers select every series carrying these tags, which includes
+	// ones carrying more. Only this exact series counts.
+	want := tsdb.NewSeriesRef(s.Metric+wire.SuffixCount, s.Tags).Key()
+	stored := map[int64]struct{}{}
+	for set.Next() {
+		if set.Series().Key() != want {
+			continue
+		}
+		it := set.Iterator()
+		for it.Next() {
+			stored[it.At().T] = struct{}{}
+		}
+		if err := it.Err(); err != nil {
+			return nil, err
+		}
+	}
+	if err := set.Err(); err != nil {
+		return nil, err
+	}
+
+	kept := points[:0]
+	for _, p := range points {
+		if _, ok := stored[p.TimeMs]; ok {
+			kept = append(kept, p)
+		}
+	}
+	return kept, nil
 }
 
 // observeSketch records the metric and its four derived names in the

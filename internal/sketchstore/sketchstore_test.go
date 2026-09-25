@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -541,4 +542,161 @@ func TestStore_RejectsMalformedKeys(t *testing.T) {
 			t.Fatal("opened a store whose series index holds a malformed key")
 		}
 	})
+}
+
+// Grace is the whole reason the two stores do not disagree at the oldest edge
+// of the window: the TSDB keeps a sample until the block holding it is wholly
+// expired, so counts linger, and sketches have to linger at least as long or
+// the percentile goes null under a line the count chart still draws.
+func TestStore_SweepHonoursGrace(t *testing.T) {
+	// Cutoff at 10000s - 1h = 6400s; a two-hour grace moves it to 2800s.
+	clk := testutil.NewFakeClock(time.Unix(10_000, 0))
+	r := ref("d", "age:between")
+	// 4000s: past the bare cutoff, inside the grace.
+	point := []Point{{TimeMs: 4_000_000, Sketch: sketchOf(t, 1)}}
+
+	strict := open(t, Options{Clock: clk, Retention: time.Hour})
+	mustAppend(t, strict, Entry{Series: r, Points: point})
+	if n, err := strict.Sweep(context.Background()); err != nil || n != 1 {
+		t.Fatalf("without grace: dropped %d (%v), want 1", n, err)
+	}
+
+	lenient := open(t, Options{Clock: clk, Retention: time.Hour, Grace: 2 * time.Hour})
+	mustAppend(t, lenient, Entry{Series: r, Points: point})
+	if n, err := lenient.Sweep(context.Background()); err != nil || n != 0 {
+		t.Fatalf("with grace: dropped %d (%v), want 0", n, err)
+	}
+	got, err := lenient.Read(context.Background(), r, 0, 1<<42)
+	if err != nil || len(got) != 1 {
+		t.Errorf("read back %d points (%v), want the one inside the grace", len(got), err)
+	}
+}
+
+// ReadEach exists so a query over a long window does not hold every sketch it
+// touches in memory at once. Nothing about the returned values can show that,
+// so what is pinned here is the observable half: the callback sees each point
+// as it is read, and stopping stops the read.
+func TestStore_ReadEachStreamsAndStopsEarly(t *testing.T) {
+	s := open(t, Options{})
+	r := ref("d", "k:v")
+	var points []Point
+	for i := range 50 {
+		points = append(points, Point{TimeMs: int64(i) * 1000, Sketch: sketchOf(t, float64(i+1))})
+	}
+	mustAppend(t, s, Entry{Series: r, Points: points})
+
+	stop := errors.New("enough")
+	seen := 0
+	err := s.ReadEach(context.Background(), r, 0, 1<<42, func(p Point) error {
+		seen++
+		if p.TimeMs != int64(seen-1)*1000 {
+			t.Errorf("point %d arrived at %dms, want %dms — not in key order", seen, p.TimeMs, (seen-1)*1000)
+		}
+		if seen == 3 {
+			return stop
+		}
+		return nil
+	})
+	if !errors.Is(err, stop) {
+		t.Errorf("ReadEach returned %v, want the callback's error", err)
+	}
+	if seen != 3 {
+		t.Errorf("the callback ran %d times after asking to stop at 3", seen)
+	}
+}
+
+// Stats is read by the /metrics handler, which has no idea whether shutdown
+// has run. Pebble panics on a closed DB, so a shutdown racing a scrape would
+// take the process down on the way out.
+func TestStore_StatsAfterClose(t *testing.T) {
+	s, err := Open(Options{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	mustAppend(t, s, Entry{Series: ref("d", "k:v"), Points: []Point{{TimeMs: 1000, Sketch: sketchOf(t, 1)}}})
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := s.Stats(); got != (Stats{}) {
+		t.Errorf("Stats after Close: got %+v, want the zero value", got)
+	}
+}
+
+// Retention decides a series is empty and then deletes its index entry. An
+// append landing in between would leave live points that no later sweep can
+// find, because a sweep walks the index. Run under -race.
+func TestStore_SweepingWhileAppending(t *testing.T) {
+	clk := testutil.NewFakeClock(time.Unix(10_000, 0))
+	s := open(t, Options{Clock: clk, Retention: time.Hour})
+	r := ref("d", "k:v")
+	// Old enough that a sweep will find the series empty and want to drop it.
+	mustAppend(t, s, Entry{Series: r, Points: []Point{{TimeMs: 1_000_000, Sketch: sketchOf(t, 1)}}})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for range 20 {
+			if _, err := s.Sweep(context.Background()); err != nil {
+				t.Errorf("Sweep: %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := range 20 {
+			_, err := s.Append(context.Background(), []Entry{{
+				Series: r,
+				Points: []Point{{TimeMs: 9_000_000 + int64(i), Sketch: sketchOf(t, 1)}},
+			}})
+			if err != nil {
+				t.Errorf("Append: %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
+
+	// Every fresh point is inside the window, so a final sweep must leave
+	// them — and must still know the series exists to sweep it at all.
+	if _, err := s.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	got, err := s.Read(context.Background(), r, 9_000_000, 1<<42)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(got) == 0 {
+		t.Error("the appends are gone, or their index entry is — a later sweep can never reach them")
+	}
+	if n := s.Stats().Series; n != 1 {
+		t.Errorf("indexed series: got %d, want 1", n)
+	}
+}
+
+// A point that cannot be encoded fails the whole series rather than writing
+// the ones before it. A half-written series is worse than a rejected one: the
+// caller is told nothing landed, so nothing retries, and the keys that did
+// land are outside the window the intake believes it wrote.
+func TestStore_ABadPointWritesNoneOfItsSeries(t *testing.T) {
+	s := open(t, Options{})
+	r := ref("d", "k:v")
+	if _, err := s.Append(context.Background(), []Entry{{Series: r, Points: []Point{
+		{TimeMs: 1000, Sketch: sketchOf(t, 1)},
+		{TimeMs: -1, Sketch: sketchOf(t, 1)}, // unrepresentable in the key
+		{TimeMs: 3000, Sketch: sketchOf(t, 1)},
+	}}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got, err := s.Read(context.Background(), r, 0, 1<<42)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("stored %d points of a rejected series; nothing will retry them", len(got))
+	}
+	if n := s.Stats().Series; n != 0 {
+		t.Errorf("indexed %d series for a batch that stored nothing", n)
+	}
 }

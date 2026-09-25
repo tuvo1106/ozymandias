@@ -10,6 +10,7 @@ import (
 	"math"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/pebble"
@@ -100,9 +101,25 @@ type Options struct {
 	// Retention deletes sketches older than this. Negative keeps everything;
 	// zero takes the default (15 days), matching the TSDB's.
 	Retention time.Duration
-	Clock     clock.Clock
-	Logger    *slog.Logger
-	Registry  *selfmetrics.Registry
+	// Grace holds sketches past the retention cutoff.
+	//
+	// The two stores round the window differently and cannot be made to
+	// agree: the TSDB drops a whole block once its *newest* sample is older
+	// than retention, so a sample survives for up to one block range past
+	// the cutoff, while a sketch is a single key that goes exactly on it.
+	// Whichever way that gap falls, one store outlives the other — the only
+	// choice is which.
+	//
+	// Sketches outliving counts is the harmless direction. A sketch is only
+	// ever reached through its `<metric>.count` series, so one whose count
+	// is gone is invisible: it costs disk until the next sweep and nothing
+	// else. The other way round is a visible wrong answer — the count chart
+	// draws a line and p95 returns null over the same minutes. So set this
+	// to the TSDB's block range and let the sketches lag.
+	Grace    time.Duration
+	Clock    clock.Clock
+	Logger   *slog.Logger
+	Registry *selfmetrics.Registry
 }
 
 // Store keeps one DDSketch per series per bucket in Pebble.
@@ -118,16 +135,31 @@ type Options struct {
 type Store struct {
 	db        *pebble.DB
 	retention time.Duration
+	grace     time.Duration
 	clock     clock.Clock
 	log       *slog.Logger
 
+	// sweepMu keeps Truncate away from in-flight appends. Retention decides
+	// a series is empty, then deletes its index entry; an append that lands
+	// between those two steps writes points and — finding the id already
+	// known — does not rewrite the index entry that is about to be deleted.
+	// The series is then points with no index, which no later sweep finds.
+	// Appends hold it shared, so they still run concurrently with each other.
+	sweepMu sync.RWMutex
+
 	// mu guards ids, the canonical key of every series the store holds. It
 	// is loaded at Open and is what retention sweeps and what collisions are
-	// detected against.
+	// detected against. Never taken while holding sweepMu's write lock for
+	// anything but a map operation.
 	mu  sync.RWMutex
 	ids map[uint64]string
 
 	closeOnce sync.Once
+	// closed is read by Stats, which outlives the store: the gauges built on
+	// it stay registered on the server's registry, and Pebble panics on any
+	// operation after Close. A scrape arriving during shutdown must get a
+	// number, not take the process down with it.
+	closed atomic.Bool
 
 	appended, rejected, collisions *selfmetrics.Counter
 }
@@ -146,6 +178,9 @@ func Open(opts Options) (*Store, error) {
 	if opts.Retention == 0 {
 		opts.Retention = 15 * 24 * time.Hour
 	}
+	if opts.Grace < 0 {
+		opts.Grace = 0
+	}
 	db, err := pebble.Open(opts.Dir, &pebble.Options{Logger: pebbleLogger{opts.Logger}})
 	if err != nil {
 		return nil, fmt.Errorf("sketchstore: opening %s: %w", opts.Dir, err)
@@ -153,6 +188,7 @@ func Open(opts Options) (*Store, error) {
 	s := &Store{
 		db:         db,
 		retention:  opts.Retention,
+		grace:      opts.Grace,
 		clock:      opts.Clock,
 		log:        opts.Logger,
 		ids:        map[uint64]string{},
@@ -222,6 +258,9 @@ func (s *Store) Append(ctx context.Context, entries []Entry) (res AppendResult, 
 	if len(entries) == 0 {
 		return res, nil
 	}
+	s.sweepMu.RLock()
+	defer s.sweepMu.RUnlock()
+
 	batch := s.db.NewBatch()
 	defer func() { err = errors.Join(err, batch.Close()) }()
 
@@ -235,19 +274,28 @@ func (s *Store) Append(ctx context.Context, entries []Entry) (res AppendResult, 
 			res.Rejected = append(res.Rejected, tsdb.Rejected{Series: e.Series, Reason: err.Error()})
 			continue
 		}
-		n, err := appendPoints(batch, id, e.Points)
+		kvs, err := encodePoints(id, e.Points)
 		if err != nil {
 			res.Rejected = append(res.Rejected, tsdb.Rejected{Series: e.Series, Reason: err.Error()})
 			continue
 		}
-		if key := e.Series.Key(); s.known(id) != key {
+		// The index entry goes in before the points it indexes, so a batch
+		// that is only partly applied can leave an index entry with nothing
+		// under it — which retention sweeps — but never points with no index
+		// entry, which it cannot.
+		if key := e.Series.Key(); s.known(id) != key && newIDs[id] != key {
 			if err := batch.Set(seriesKey(id), []byte(key), nil); err != nil {
 				return res, fmt.Errorf("sketchstore: recording series %s: %w", key, err)
 			}
 			newIDs[id] = key
 		}
+		for _, kv := range kvs {
+			if err := batch.Set(kv.key, kv.value, nil); err != nil {
+				return res, fmt.Errorf("sketchstore: writing %s: %w", e.Series.Key(), err)
+			}
+		}
 		res.Series++
-		res.Points += n
+		res.Points += len(kvs)
 	}
 	if err := batch.Commit(pebble.Sync); err != nil {
 		return AppendResult{}, fmt.Errorf("sketchstore: committing %d series: %w", res.Series, err)
@@ -262,33 +310,42 @@ func (s *Store) Append(ctx context.Context, entries []Entry) (res AppendResult, 
 	return res, nil
 }
 
-// appendPoints writes one series' points into the batch.
+// encodePoints turns one series' points into the keys and values they will
+// be written under, or fails without having written anything.
 //
-// A point for a bucket that already has one replaces it. That is what makes
-// the agent's at-least-once delivery safe: a redelivered payload writes the
-// same bytes again. It is also why the intake writes the `.count` scalar
-// first and only stores sketches for series the TSDB accepted — the TSDB is
-// append-only, so letting it rule on ordering keeps one decision, not two.
-func appendPoints(batch *pebble.Batch, id uint64, points []Point) (int, error) {
-	n := 0
+// Encoding first and writing second is the whole point. A loop that wrote as
+// it encoded would leave the points before a failure committed with the rest
+// of the batch while its caller skipped the series-index entry — points no
+// sweep would ever find, because retention walks the index. Nothing is
+// half-written if nothing is written until everything is encoded.
+func encodePoints(id uint64, points []Point) ([]keyValue, error) {
+	out := make([]keyValue, 0, len(points))
 	for _, p := range points {
 		if p.Sketch == nil {
-			return 0, errors.New("nil sketch")
+			return nil, errors.New("nil sketch")
 		}
 		sec := p.TimeMs / 1000
 		if p.TimeMs < 0 || sec > MaxTimestamp {
-			return 0, fmt.Errorf("timestamp %dms is outside what the key format holds (unix seconds in 32 bits)", p.TimeMs)
+			return nil, fmt.Errorf("timestamp %dms is outside what the key format holds (unix seconds in 32 bits)", p.TimeMs)
 		}
 		v, err := encodeValue(p.Sketch)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
-		if err := batch.Set(pointKey(id, sec), v, nil); err != nil {
-			return 0, err
-		}
-		n++
+		out = append(out, keyValue{key: pointKey(id, sec), value: v})
 	}
-	return n, nil
+	return out, nil
+}
+
+// keyValue is one encoded point, ready to write.
+//
+// A point replaces the point already in its bucket, which is what makes the
+// agent's at-least-once delivery safe: a redelivered payload writes the same
+// bytes again. It is also why the intake writes the `.count` scalar first and
+// stores sketches only for the buckets the TSDB accepted — the TSDB is
+// append-only, so letting it rule on ordering keeps one decision, not two.
+type keyValue struct {
+	key, value []byte
 }
 
 // claim returns the id for ref, refusing one that another series already
@@ -320,15 +377,38 @@ func (s *Store) known(id uint64) string {
 
 // Read returns one series' sketches in [fromMs, toMs], ascending by time.
 // Both bounds are inclusive, as they are for [tsdb.MetricStore.Select].
-func (s *Store) Read(ctx context.Context, ref tsdb.SeriesRef, fromMs, toMs int64) (out []Point, err error) {
+//
+// It materializes the whole window, so it is for callers that know the window
+// is small — tests, and anything holding a handful of buckets. The query path
+// uses [Store.ReadEach], because a year of one series is three million
+// sketches and this would hold all of them at once.
+func (s *Store) Read(ctx context.Context, ref tsdb.SeriesRef, fromMs, toMs int64) ([]Point, error) {
+	var out []Point
+	err := s.ReadEach(ctx, ref, fromMs, toMs, func(p Point) error {
+		out = append(out, p)
+		return nil
+	})
+	return out, err
+}
+
+// ReadEach calls fn with each of one series' sketches in [fromMs, toMs],
+// ascending by time, and stops early if fn returns an error.
+//
+// Streaming rather than returning a slice, because nothing bounds how many
+// points a window holds. A query may cover a year, agents flush every ten
+// seconds, and the query layer's own limit is on output *buckets*, not on
+// stored points — so a single series can be three million sketches. Folding
+// each one into its bucket as it arrives costs the buckets; collecting them
+// first costs the window.
+func (s *Store) ReadEach(ctx context.Context, ref tsdb.SeriesRef, fromMs, toMs int64, fn func(Point) error) (err error) {
 	if toMs < fromMs {
-		return nil, nil
+		return nil
 	}
 	id := SeriesID(ref)
 	if held := s.known(id); held != "" && held != ref.Key() {
 		// Another series owns this id. Returning its sketches would be worse
 		// than returning none.
-		return nil, nil
+		return nil
 	}
 	from := clampSeconds(fromMs)
 	// The bound is exclusive, so it is the second after the last one wanted.
@@ -342,25 +422,27 @@ func (s *Store) Read(ctx context.Context, ref tsdb.SeriesRef, fromMs, toMs int64
 		UpperBound: upper,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("sketchstore: reading %s: %w", ref.Key(), err)
+		return fmt.Errorf("sketchstore: reading %s: %w", ref.Key(), err)
 	}
 	defer func() { err = errors.Join(err, it.Close()) }()
 
 	for it.First(); it.Valid(); it.Next() {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return err
 		}
 		k := it.Key()
 		if len(k) != pointKeyLen {
-			return nil, fmt.Errorf("sketchstore: %s: a %d-byte point key", ref.Key(), len(k))
+			return fmt.Errorf("sketchstore: %s: a %d-byte point key", ref.Key(), len(k))
 		}
 		sk, err := decodeValue(it.Value())
 		if err != nil {
-			return nil, fmt.Errorf("sketchstore: %s at %d: %w", ref.Key(), binary.BigEndian.Uint32(k[9:]), err)
+			return fmt.Errorf("sketchstore: %s at %d: %w", ref.Key(), binary.BigEndian.Uint32(k[9:]), err)
 		}
-		out = append(out, Point{TimeMs: int64(binary.BigEndian.Uint32(k[9:])) * 1000, Sketch: sk})
+		if err := fn(Point{TimeMs: int64(binary.BigEndian.Uint32(k[9:])) * 1000, Sketch: sk}); err != nil {
+			return err
+		}
 	}
-	return out, it.Error()
+	return it.Error()
 }
 
 // clampSeconds converts unix milliseconds to the seconds the key holds,
@@ -386,6 +468,10 @@ func (s *Store) Truncate(ctx context.Context, beforeMs int64) (droppedSeries int
 	if beforeMs <= 0 {
 		return 0, nil
 	}
+	// Exclusive for the whole sweep: "this series is empty" is only a stable
+	// answer while nothing is appending to it.
+	s.sweepMu.Lock()
+	defer s.sweepMu.Unlock()
 	before := clampSeconds(beforeMs)
 	s.mu.RLock()
 	ids := make([]uint64, 0, len(s.ids))
@@ -461,11 +547,14 @@ func (s *Store) Sweep(ctx context.Context) (droppedSeries int, err error) {
 	if s.retention < 0 {
 		return 0, nil
 	}
-	return s.Truncate(ctx, s.clock.Now().Add(-s.retention).UnixMilli())
+	return s.Truncate(ctx, s.clock.Now().Add(-s.retention-s.grace).UnixMilli())
 }
 
 // Stats reports the store's size.
 func (s *Store) Stats() Stats {
+	if s.closed.Load() {
+		return Stats{}
+	}
 	s.mu.RLock()
 	series := int64(len(s.ids))
 	s.mu.RUnlock()
@@ -481,7 +570,10 @@ func (s *Store) Stats() Stats {
 // a bug worth surviving rather than a crash worth causing.
 func (s *Store) Close() error {
 	err := errors.New("sketchstore: already closed")
-	s.closeOnce.Do(func() { err = s.db.Close() })
+	s.closeOnce.Do(func() {
+		s.closed.Store(true)
+		err = s.db.Close()
+	})
 	if err != nil && err.Error() == "sketchstore: already closed" {
 		return nil
 	}

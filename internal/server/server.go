@@ -121,9 +121,13 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	sk, err := sketchstore.Open(sketchstore.Options{
 		Dir:       filepath.Join(cfg.DataDir, sketchDir),
 		Retention: cfg.Storage.Retention,
-		Clock:     s.clock,
-		Logger:    s.log.With("component", "sketchstore"),
-		Registry:  s.reg,
+		// The TSDB drops blocks, not samples, so a count can outlive the
+		// cutoff by a block range. Let the sketches lag by the same amount
+		// rather than expiring first — see sketchstore.Options.Grace.
+		Grace:    cfg.Storage.BlockRange,
+		Clock:    s.clock,
+		Logger:   s.log.With("component", "sketchstore"),
+		Registry: s.reg,
 	})
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close())

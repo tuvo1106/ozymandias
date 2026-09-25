@@ -253,3 +253,91 @@ func TestSketches_AnEmptyBucketWritesNoMinOrMax(t *testing.T) {
 		_ = set.Close()
 	}
 }
+
+// The TSDB reports rejection per series, once, however many of that series'
+// samples it refused — and it stores the rest. So a series named in Rejected
+// means "some of these buckets did not land", and treating it as "none of
+// them did" drops sketches for buckets whose counts are sitting in the store:
+// the count chart has data and the percentile is null for the same minute.
+func TestSketches_APartiallyRefusedSeriesKeepsTheBucketsThatLanded(t *testing.T) {
+	e, sk := newSketchEnv(t, Options{})
+	tags := []string{"route:/a"}
+
+	// Establish the series at t=20, so anything at or before it is refused.
+	if rec, out := e.postSketches(sketchPayload(t, "d", tags, 1790000020, 5)); rec.Code != http.StatusAccepted || out["accepted"] != 1.0 {
+		t.Fatalf("setup: %d %v", rec.Code, out)
+	}
+
+	// Now a catch-up batch: t=10 is too old, t=30 and t=40 are fine. One
+	// series, three points, one rejection.
+	s := sketch.NewDefault()
+	if err := s.Add(1); err != nil {
+		t.Fatal(err)
+	}
+	points := []wire.SketchPoint{
+		{Timestamp: 1790000010, Sketch: s.ToWire()},
+		{Timestamp: 1790000030, Sketch: s.ToWire()},
+		{Timestamp: 1790000040, Sketch: s.ToWire()},
+	}
+	body, err := json.Marshal(wire.SketchesPayload{Sketches: []wire.SketchSeries{
+		{Metric: "d", Tags: tags, Interval: 10, Points: points},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec, out := e.postSketches(string(body)); rec.Code != http.StatusAccepted {
+		t.Fatalf("%d %v", rec.Code, out)
+	}
+
+	// The store is the arbiter: whatever timestamps `.count` holds, the
+	// sketches must hold exactly those.
+	counts := storedTimestamps(t, e, "d.count")
+	got := map[int64]bool{}
+	sketches, err := sk.Read(context.Background(), tsdb.NewSeriesRef("d", tags), 0, 1<<42)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	for _, p := range sketches {
+		got[p.TimeMs] = true
+	}
+	if len(counts) == 0 {
+		t.Fatal("no counts stored at all; the fixture is not exercising the case")
+	}
+	for ts := range counts {
+		if !got[ts] {
+			t.Errorf("bucket %d has a count but no sketch — p95 would be null where the count chart has data", ts)
+		}
+	}
+	for ts := range got {
+		if !counts[ts] {
+			t.Errorf("bucket %d has a sketch but no count, so nothing can ever select it", ts)
+		}
+	}
+	// And the case is the interesting one: the rejected bucket is absent and
+	// the two that followed it are present.
+	if got[1790000010*1000] {
+		t.Error("the out-of-order bucket was stored")
+	}
+	for _, ts := range []int64{1790000030, 1790000040} {
+		if !got[ts*1000] {
+			t.Errorf("bucket %d was dropped although its count landed", ts)
+		}
+	}
+}
+
+func storedTimestamps(t *testing.T, e *env, metric string) map[int64]bool {
+	t.Helper()
+	set, err := e.store.Select(context.Background(), tsdb.Selector{Metric: metric}, 0, 1<<62)
+	if err != nil {
+		t.Fatalf("Select(%s): %v", metric, err)
+	}
+	defer set.Close()
+	out := map[int64]bool{}
+	for set.Next() {
+		it := set.Iterator()
+		for it.Next() {
+			out[it.At().T] = true
+		}
+	}
+	return out
+}

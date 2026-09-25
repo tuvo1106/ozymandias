@@ -211,8 +211,8 @@ func (f *Forwarder) enqueueLocked(p *payload) {
 // disagree about a limit.
 func encode[T any](f *Forwarder, ep endpoint, items []T, name func(*T) string) ([]*payload, error) {
 	var out []*payload
-	open, close := `{"`+ep.key+`":[`, `]}`
-	envelope := len(open) + len(close)
+	prefix, suffix := `{"`+ep.key+`":[`, `]}`
+	envelope := len(prefix) + len(suffix)
 	var parts [][]byte
 	size := envelope
 	flush := func() error {
@@ -220,9 +220,9 @@ func encode[T any](f *Forwarder, ep endpoint, items []T, name func(*T) string) (
 			return nil
 		}
 		var raw bytes.Buffer
-		raw.WriteString(open)
+		raw.WriteString(prefix)
 		raw.Write(bytes.Join(parts, []byte(",")))
-		raw.WriteString(close)
+		raw.WriteString(suffix)
 		body, err := gzipBytes(raw.Bytes())
 		if err != nil {
 			return err

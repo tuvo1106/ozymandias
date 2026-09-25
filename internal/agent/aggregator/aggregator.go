@@ -303,8 +303,15 @@ func (a *Aggregator) update(kind Kind, b *bucket, s Sample, rate float64) {
 			b.sketch = sketch.New(a.alpha)
 		}
 		// The weight is 1/rate, so a sampled client still describes the true
-		// shape. AddWithCount refuses only what Add already refused, and Add
-		// has been checked above.
+		// shape.
+		//
+		// Today this error cannot happen: AddWithCount rejects a non-finite
+		// value or a non-positive weight, and the finite() guard at the top
+		// of Add has already excluded both. It stays checked anyway because
+		// the alternative is an ignored error across a package boundary — if
+		// the sketch ever grows a rejection this one does not anticipate, a
+		// counted drop is a diagnosable bug and a swallowed one is a p95
+		// that is quietly wrong.
 		if err := b.sketch.AddWithCount(s.Value, 1/rate); err != nil {
 			a.samplesDropped.Inc()
 		}
