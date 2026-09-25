@@ -1,0 +1,72 @@
+# golangci-lint v2. Run with `make lint`.
+#
+# Beyond the standard set, `revive`'s `exported` + `package-comments` rules
+# enforce the documentation standard (docs/plan/documentation.md §2): every
+# exported identifier has a doc comment and every package has a package
+# comment (which lives in its doc.go — scripts/check-docs.sh checks the file).
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - errorlint
+    - misspell
+    - nolintlint
+    - revive
+    - unconvert
+    - usestdlibvars
+  settings:
+    errcheck:
+      # Ignoring these is idiomatic: printing usage/errors to stderr, and
+      # closing read-side resources through an interface (response bodies,
+      # listeners). Concrete (*os.File).Close is deliberately NOT excluded —
+      # on a file we wrote, Close can report the write that failed, and the
+      # WAL and block writers must check it.
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint
+        - (io.Closer).Close
+        - (io.ReadCloser).Close
+        - (net.Listener).Close
+        - (net.Conn).Close
+        - (*compress/gzip.Reader).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (github.com/tuvo1106/ozymandias/internal/tsdb.SeriesSet).Close
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+        - name: blank-imports
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: receiver-naming
+        - name: var-naming
+        - name: unused-parameter
+          disabled: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+  exclusions:
+    # npm packages occasionally ship Go sources (flatted does); they are not
+    # ours and not in this module.
+    paths:
+      - web/node_modules
+      - sdk/node/node_modules
+    rules:
+      # Test helpers and tests don't need exported-symbol prose.
+      - path: _test\.go
+        linters: [revive, usestdlibvars]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/tuvo1106/ozymandias

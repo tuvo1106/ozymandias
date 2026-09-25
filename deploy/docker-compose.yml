@@ -1,0 +1,81 @@
+# ozymandias — local stack.  `make up` / `make down` (see Makefile).
+#
+#   ozyd  UI + API + (from M1) intake, on :9400. State in the named
+#              volume `ozymandias-data` (`make down-v` wipes it).
+#   agent      per-host collector: trace/health HTTP on :8126, statsd on
+#              :8125/udp (listening from M1).
+#
+# Both join the external network `ozymandias` (created by `make up`), which is
+# how instrumented apps' containers reach the agent by name:
+# OZY_AGENT_HOST=agent (docs/plan/integrations.md §0).
+#
+# Colima note: its default ssh port forwarder does NOT forward UDP from the
+# Mac into containers, so a host process (e.g. a dev server) can't reach
+# :8125/udp here. Run the agent natively (`make dev`) or switch Colima to
+# `portForwarder: grpc` — see docs/operations.md.
+#
+# The Docker socket mount the agent needs for container metrics and logs
+# arrives with those collectors in M3, together with the decision on how the
+# non-root agent is allowed to read it.
+
+name: ozymandias
+
+services:
+  ozyd:
+    build:
+      context: ..
+      args:
+        VERSION: ${OZY_VERSION:-dev}
+    image: ozymandias:${OZY_VERSION:-dev}
+    command: ["-config", "/etc/ozy/ozyd.yaml"]
+    environment:
+      OZY_LOG_FORMAT: json
+    ports:
+      - "9400:9400"
+    volumes:
+      - ozymandias-data:/data
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/ozyd", "healthcheck", "-config", "/etc/ozy/ozyd.yaml"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    # Graceful shutdown gets http.shutdown_timeout (10s); give it a margin
+    # before Docker escalates to SIGKILL.
+    stop_grace_period: 15s
+    networks: [ozymandias]
+
+  agent:
+    image: ozymandias:${OZY_VERSION:-dev}
+    entrypoint: ["/usr/local/bin/agent"]
+    command: ["-config", "/etc/ozy/agent.yaml"]
+    environment:
+      OZY_AGENT_INTAKE_URL: http://ozyd:9400
+      # The container's own hostname is a random id; tag data with the
+      # machine's name instead (`make up` exports it).
+      OZY_AGENT_HOSTNAME: ${OZY_HOSTNAME:-ozymandias-host}
+      OZY_AGENT_LOG_FORMAT: json
+    ports:
+      - "8126:8126"
+      - "8125:8125/udp"
+    volumes:
+      # Per-app fragments, editable without rebuilding the image.
+      - ./agent.d:/etc/ozy/agent.d:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/agent", "healthcheck", "-config", "/etc/ozy/agent.yaml"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    stop_grace_period: 15s
+    depends_on:
+      ozyd:
+        condition: service_healthy
+    networks: [ozymandias]
+
+volumes:
+  ozymandias-data:
+
+networks:
+  ozymandias:
+    external: true

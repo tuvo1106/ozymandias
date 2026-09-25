@@ -1,0 +1,87 @@
+# agent — reference configuration.
+#
+# Every setting is listed with its default. Values shown uncommented are the
+# ones this file actually sets; commented ones document the default.
+#
+# Precedence (lowest → highest):
+#   built-in defaults < this file < conf.d fragments < environment
+#
+# conf.d: every *.yaml in `confd_path` is merged over this file in file-name
+# order. Maps merge, lists append (so each app's fragment can add its own tags,
+# checks and log sources), and a scalar set in two files is an error naming
+# both. Per-app settings belong in deploy/agent.d/<app>.yaml, never here.
+#
+# Environment: any leaf can be overridden as OZY_AGENT_<PATH>, e.g.
+# OZY_AGENT_INTAKE_URL=http://ozyd:9400. Lists are comma-separated.
+# Unknown OZY_AGENT_* variables are only a warning — the SDKs'
+# OZY_AGENT_HOST shares the prefix and must not stop the agent.
+
+http:
+  # Listen address for trace intake from SDKs (POST /v1/traces, from M5),
+  # /healthz and /debug/vars. The statsd UDP port is configured under
+  # statsd: below.
+  addr: ":8126"
+  # Grace period for in-flight requests after SIGTERM. Must be positive.
+  shutdown_timeout: 10s
+
+intake:
+  # ozyd's base URL; the forwarder POSTs to /v1/* under it.
+  url: http://localhost:9400
+
+statsd:
+  # The extended StatsD UDP listener (docs/wire-protocol.md §A).
+  enabled: true
+  addr: ":8125"
+  # Socket receive buffer (SO_RCVBUF), bytes. The kernel buffer absorbs a
+  # burst while the readers are busy; when it fills, the kernel drops
+  # datagrams silently. The OS may cap it (macOS: kern.ipc.maxsockbuf).
+  read_buffer: 4194304
+  # Goroutines reading the socket, and parsing what they read.
+  readers: 2
+  workers: 2
+  # Datagrams waiting between readers and workers. When full, new datagrams
+  # are dropped and counted (ozy.agent.statsd.packets_dropped) — a
+  # reader never blocks.
+  queue_size: 1024
+
+aggregator:
+  # Bucket width: every metric context becomes one point per interval.
+  # Whole seconds.
+  flush_interval: 10s
+  # How long an idle context is remembered. A counter keeps sending 0 for
+  # this long after its last increment (so "no errors" isn't a gap).
+  context_expiry: 5m
+  # Values kept per histogram/timer/distribution context per bucket; beyond
+  # this, a uniform random sample (min, max, count and avg stay exact).
+  histogram_max_samples: 10000
+
+forwarder:
+  # One POST to ozyd.
+  timeout: 10s
+  # Compressed payloads held for retry while ozyd is unreachable. When
+  # full, the oldest are dropped (ozy.agent.forwarder.dropped). 64 MiB.
+  max_queue_bytes: 67108864
+  # The final delivery attempt on SIGTERM. Keep http.shutdown_timeout plus
+  # this under the container's stop grace period.
+  shutdown_timeout: 5s
+
+# Value of the `host` tag on everything this agent sends. Empty means the OS
+# hostname — set it explicitly in a container, where that is a random id.
+hostname: ""
+
+# Tags added to everything this agent sends. conf.d fragments append to this
+# list. Each is "key:value" or a bare "key".
+tags: []
+# tags:
+#   - env:dev
+
+# Directory of per-app fragments (see the header). Relative to the working
+# directory. A missing directory simply means "no fragments". Cannot be set
+# from inside a fragment.
+confd_path: ./deploy/agent.d
+
+log:
+  # debug | info | warn | error
+  level: info
+  # text | json
+  format: text

@@ -1,0 +1,47 @@
+.DS_Store
+*.pem
+*.key
+credentials/
+
+.env*
+!.env.example
+
+# Go
+/bin/
+*.test
+*.out
+coverage.*
+!coverage-thresholds.txt
+/testdata/fuzz-cache/
+
+# Runtime state (ozyd/agent data dirs when run natively)
+/data/
+
+# Web UI
+node_modules/
+web/coverage/
+web/playwright-report/
+web/test-results/
+*.tsbuildinfo
+# Vite builds straight into the Go embed dir; only the placeholder is tracked
+# so `go build` works before the UI has ever been built.
+internal/api/ui/dist/*
+!internal/api/ui/dist/.gitkeep
+
+# Python (SDK, from M1)
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+# SDK build output. Scoped: a bare `dist/` would also swallow the tracked
+# internal/api/ui/dist/.gitkeep that keeps `go build` working.
+sdk/**/dist/
+# Packed SDK artifacts staged by scripts/release-sdk.sh before they are copied
+# into the apps' vendor dirs.
+/dist/
+
+# App-integration detail that names the owner's private apps. Kept out of this
+# public repo on purpose (ADR-0012); the archive of record is the original
+# private repo.
+docs/private/

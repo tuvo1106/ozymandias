@@ -1,0 +1,14 @@
+# Local tooling and build output (the repo root .gitignore covers most of
+# this too; kept here so the package directory is self-contained).
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/

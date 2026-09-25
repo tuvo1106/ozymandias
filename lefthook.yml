@@ -1,0 +1,99 @@
+# Git hooks. Install once with: lefthook install
+
+commit-msg:
+  commands:
+    conventional-commit:
+      run: |
+        set -e
+        msg=$(head -1 "{1}")
+        case "$msg" in
+          Merge*|Revert*|fixup!*|squash!*) exit 0 ;;
+        esac
+        pattern='^(feat|fix|docs|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9-]+\))?!?: .{1,}'
+        if ! printf '%s' "$msg" | grep -qE "$pattern"; then
+          echo "✗ Commit message must follow Conventional Commits (see CONTRIBUTING.md)."
+          echo "  got:      $msg"
+          echo "  expected: feat(scope): subject"
+          echo "  types:    feat fix docs refactor perf test build ci chore revert"
+          exit 1
+        fi
+        if [ ${#msg} -gt 72 ]; then
+          echo "✗ Subject line is ${#msg} chars; keep it under 72."
+          exit 1
+        fi
+
+# The hooks are the fast gate (ADR-0013): pre-commit runs every quick check on
+# each commit, pre-push runs the complete `make ci`, and GitHub Actions re-runs
+# `make ci` on the PR as a backstop. `--no-verify` skips the local ones — don't,
+# except for a WIP commit you will fix before pushing.
+#
+# The gates check the working tree, not only what's staged: stash or commit
+# unrelated edits first, or a commit can pass or fail because of them.
+
+pre-push:
+  commands:
+    make-ci:
+      run: make ci
+
+pre-commit:
+  parallel: true
+  commands:
+    # --- Go ------------------------------------------------------------------
+    # Formatting is fixed in place and re-staged.
+    go-fmt:
+      glob: "*.go"
+      run: gofmt -w {staged_files}
+      stage_fixed: true
+    go-lint:
+      glob: "*.{go,mod,sum}"
+      run: golangci-lint run ./...
+    # Race tests + the coverage gates. Go's test cache (which also covers
+    # -coverprofile runs) re-runs only packages affected by the change, so
+    # this is a second or two when warm.
+    go-test:
+      glob: "*.{go,mod,sum,yaml}"
+      run: scripts/check-coverage.sh > /tmp/ozymandias-precommit-test.log 2>&1 || { grep -E "✗|FAIL|panic|--- " /tmp/ozymandias-precommit-test.log; exit 1; }
+
+    # --- repo-wide checks (grep-based, instant) --------------------------------
+    docs-check:
+      glob: "*.{go,md,yaml,yml}"
+      run: scripts/check-docs.sh
+    no-app-coupling:
+      glob: "*.{go,ts,tsx,py}"
+      run: scripts/check-no-app-coupling.sh
+
+    # --- Web UI ----------------------------------------------------------------
+    web-typecheck:
+      root: "web/"
+      glob: "*.{ts,tsx}"
+      run: npx --no-install tsc -b --noEmit
+    web-lint:
+      root: "web/"
+      glob: "*.{ts,tsx,js}"
+      run: npx --no-install eslint {staged_files}
+    # Only the tests that import the staged files.
+    web-test:
+      root: "web/"
+      glob: "*.{ts,tsx}"
+      run: npx --no-install vitest related --run --passWithNoTests {staged_files}
+
+    # --- SDKs ----------------------------------------------------------------
+    # Each SDK's whole suite: they're small (a few seconds) and a change to
+    # the shared goldens in pkg/wire/testdata must re-run both.
+    sdk-node:
+      glob: "{sdk/node/**,pkg/wire/testdata/statsd/**}"
+      run: cd sdk/node && npx --no-install tsc -p tsconfig.json --noEmit && npx --no-install eslint . && npx --no-install vitest run --coverage --silent
+    sdk-python:
+      glob: "{sdk/python/**,pkg/wire/testdata/statsd/**}"
+      run: cd sdk/python && uv run --locked ruff check -q && uv run --locked ruff format --check -q && uv run --locked mypy && uv run --locked pytest -q
+
+    # Treat this repo as public: no secrets committed, ever — not "temporarily",
+    # not in a branch you plan to squash.
+    no-secrets:
+      run: |
+        set -e
+        files=$(git diff --cached --name-only | grep -v '\.env\.example$' || true)
+        if printf '%s\n' "$files" | grep -qE '(^|/)(\.env(\..*)?$|.*\.key$|.*\.pem$|credentials/.*)'; then
+          echo "✗ Refusing to commit a secret file. Use environment variables instead."
+          exit 1
+        fi

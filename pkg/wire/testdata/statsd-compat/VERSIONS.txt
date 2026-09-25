@@ -1,0 +1,5 @@
+# Client versions used for the captures in this directory.
+# Regenerate with scripts/capture-statsd-compat.sh.
+datadogpy 0.53.0
+hot-shots 10.2.1
+captured   2026-09-20

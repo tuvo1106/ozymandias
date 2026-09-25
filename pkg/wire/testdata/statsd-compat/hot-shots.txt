@@ -1,0 +1,29 @@
+# Captured by scripts/capture-statsd-compat.sh — do not hand-edit.
+# client: hot-shots
+# datagram 1 (54 bytes, 1 lines)
+app.requests:1|c|#env:test,route:/api/items,method:get
+# datagram 2 (26 bytes, 1 lines)
+app.requests:7|c|#env:test
+# datagram 3 (30 bytes, 1 lines)
+app.queue.depth:-1|c|#env:test
+# datagram 4 (27 bytes, 1 lines)
+app.workers:4.5|g|#env:test
+# datagram 5 (34 bytes, 1 lines)
+app.payload.bytes:2048|h|#env:test
+# datagram 6 (38 bytes, 1 lines)
+app.request.duration:12.5|ms|#env:test
+# datagram 7 (28 bytes, 1 lines)
+app.latency:0.25|d|#env:test
+# datagram 8 (28 bytes, 1 lines)
+app.users:user-1|s|#env:test
+# datagram 9 (30 bytes, 1 lines)
+app.sampled:1|c|@0.5|#env:test
+# datagram 10 (55 bytes, 1 lines)
+_e{6,10}:deploy|shipped v1|t:info|#env:test,service:web
+# datagram 11 (43 bytes, 1 lines)
+_sc|app.can_connect|0|#env:test,service:web
+# datagram 12 (84 bytes, 4 lines)
+app.batched:1|c|#i:0
+app.batched:1|c|#i:1
+app.batched:1|c|#i:2
+app.batched:1|c|#i:3

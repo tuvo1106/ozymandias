@@ -1,0 +1,19 @@
+# Coverage gates enforced by scripts/check-coverage.sh (docs/plan/testing.md §1).
+#
+# <package glob, relative to the module root>   <minimum % of statements>
+#
+# Lowering any number here needs owner approval and an ADR.
+
+TOTAL                       80
+
+# Critical packages: encoders, parsers, state machines — the code whose bugs
+# silently corrupt data or pages the wrong person.
+pkg/wire                    90
+internal/agent/statsd       90
+internal/agent/aggregator   90
+internal/sketch             90
+internal/tsdb               90
+internal/tsdb/*             90
+internal/query/*            90
+internal/monitor            90
+internal/monitor/*          90

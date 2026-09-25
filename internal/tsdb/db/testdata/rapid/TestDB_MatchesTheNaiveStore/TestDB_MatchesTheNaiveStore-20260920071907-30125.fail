@@ -1,0 +1,174 @@
+# 2026/09/20 07:19:07.975677 [TestDB_MatchesTheNaiveStore] [rapid] draw steps: 1
+# 2026/09/20 07:19:07.975712 [TestDB_MatchesTheNaiveStore] [rapid] draw op0: "append"
+# 2026/09/20 07:19:07.975716 [TestDB_MatchesTheNaiveStore] [rapid] draw entries0: 3
+# 2026/09/20 07:19:07.975719 [TestDB_MatchesTheNaiveStore] [rapid] draw metrice0_0: "a.count"
+# 2026/09/20 07:19:07.975722 [TestDB_MatchesTheNaiveStore] [rapid] draw tagse0_0: []string{}
+# 2026/09/20 07:19:07.975728 [TestDB_MatchesTheNaiveStore] [rapid] draw tse0_0: []int64{0}
+# 2026/09/20 07:19:07.975735 [TestDB_MatchesTheNaiveStore] [rapid] draw ve0_0: 0
+# 2026/09/20 07:19:07.975736 [TestDB_MatchesTheNaiveStore] [rapid] draw metrice0_1: "a.count"
+# 2026/09/20 07:19:07.975737 [TestDB_MatchesTheNaiveStore] [rapid] draw tagse0_1: []string{}
+# 2026/09/20 07:19:07.975741 [TestDB_MatchesTheNaiveStore] [rapid] draw tse0_1: []int64{0, 0, 0, 0}
+# 2026/09/20 07:19:07.975743 [TestDB_MatchesTheNaiveStore] [rapid] draw ve0_1: 0
+# 2026/09/20 07:19:07.975744 [TestDB_MatchesTheNaiveStore] [rapid] draw ve0_1: 0
+# 2026/09/20 07:19:07.975745 [TestDB_MatchesTheNaiveStore] [rapid] draw ve0_1: 0
+# 2026/09/20 07:19:07.975745 [TestDB_MatchesTheNaiveStore] [rapid] draw ve0_1: 0
+# 2026/09/20 07:19:07.975746 [TestDB_MatchesTheNaiveStore] [rapid] draw metrice0_2: "a.count"
+# 2026/09/20 07:19:07.975747 [TestDB_MatchesTheNaiveStore] [rapid] draw tagse0_2: []string{}
+# 2026/09/20 07:19:07.975749 [TestDB_MatchesTheNaiveStore] [rapid] draw tse0_2: []int64{0, 0}
+# 2026/09/20 07:19:07.975751 [TestDB_MatchesTheNaiveStore] [rapid] draw ve0_2: 0
+# 2026/09/20 07:19:07.975752 [TestDB_MatchesTheNaiveStore] [rapid] draw ve0_2: 0
+# 2026/09/20 07:19:07.976017 [TestDB_MatchesTheNaiveStore] [rapid] draw steps: 2
+# 2026/09/20 07:19:07.976019 [TestDB_MatchesTheNaiveStore] [rapid] draw op1: "append"
+# 2026/09/20 07:19:07.976020 [TestDB_MatchesTheNaiveStore] [rapid] draw entries1: 1
+# 2026/09/20 07:19:07.976021 [TestDB_MatchesTheNaiveStore] [rapid] draw metrice1_0: "a.count"
+# 2026/09/20 07:19:07.976023 [TestDB_MatchesTheNaiveStore] [rapid] draw tagse1_0: []string{}
+# 2026/09/20 07:19:07.976025 [TestDB_MatchesTheNaiveStore] [rapid] draw tse1_0: []int64{0, 4, 10, 15}
+# 2026/09/20 07:19:07.976027 [TestDB_MatchesTheNaiveStore] [rapid] draw ve1_0: 3
+# 2026/09/20 07:19:07.976028 [TestDB_MatchesTheNaiveStore] [rapid] draw ve1_0: 3
+# 2026/09/20 07:19:07.976028 [TestDB_MatchesTheNaiveStore] [rapid] draw ve1_0: 2
+# 2026/09/20 07:19:07.976029 [TestDB_MatchesTheNaiveStore] [rapid] draw ve1_0: 1
+# 2026/09/20 07:19:07.976132 [TestDB_MatchesTheNaiveStore] [rapid] draw steps: 5
+# 2026/09/20 07:19:07.976133 [TestDB_MatchesTheNaiveStore] [rapid] draw op2: "cut"
+# 2026/09/20 07:19:07.992839 [TestDB_MatchesTheNaiveStore] [rapid] draw steps: 8
+# 2026/09/20 07:19:07.992848 [TestDB_MatchesTheNaiveStore] [rapid] draw op3: "append"
+# 2026/09/20 07:19:07.992851 [TestDB_MatchesTheNaiveStore] [rapid] draw entries3: 1
+# 2026/09/20 07:19:07.992853 [TestDB_MatchesTheNaiveStore] [rapid] draw metrice3_0: "b.gauge"
+# 2026/09/20 07:19:07.992859 [TestDB_MatchesTheNaiveStore] [rapid] draw tagse3_0: []string{}
+# 2026/09/20 07:19:07.992866 [TestDB_MatchesTheNaiveStore] [rapid] draw tse3_0: []int64{1}
+# 2026/09/20 07:19:07.992874 [TestDB_MatchesTheNaiveStore] [rapid] draw ve3_0: 2
+# 2026/09/20 07:19:07.993207 [TestDB_MatchesTheNaiveStore] stored 0 samples, naive stored 1
+# 
+v0.4.8#9504073050128933431
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0xaaaaaaaaaaaaa
+0x0
+0x0
+0x0
+0xaaaaaaaaaaaaa
+0x0
+0x0
+0x0
+0xaaaaaaaaaaaaa
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0xaaaaaaaaaaaaa
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0xaaaaaaaaaaaaa
+0x103d55ad5645c1
+0x86dff67ec3d0f
+0x4
+0x169f5d5fd18873
+0x12e3c5c91138e3
+0x1044ce3e81a208
+0xa
+0x18cc096a546a47
+0x74f3b97015870
+0x11625390558462
+0xf
+0x8b9bab30af9db
+0x5ee0e5e821f45
+0x1f117dd1d848e5
+0x3
+0x177142d438e4df
+0x43de70febb8f1
+0x3
+0x73645bc1c2e6c
+0x1b82776950b096
+0x2
+0x13fc161e64cd80
+0xe053a7ee2e8d6
+0x1
+0x51db239385c09
+0x111122e1025d71
+0x4
+0x19027d04e0c59f
+0x3
+0x19ec1628660e71
+0x9954de508f452
+0x7
+0xdc0e9c14c9174
+0x0
+0x1e4ac13823b8f1
+0x1
+0x0
+0x1be5284915328b
+0x1
+0x7c9a013531fc6
+0x11212d3d625587
+0x1
+0x1dd958271d1e2
+0x1
+0x2
+0x1f3e88e3986284
+0xc67ace9b08fba
+0x2

@@ -1,0 +1,52 @@
+# 2026/09/20 07:18:10.444056 [TestDB_MatchesTheNaiveStore] [rapid] draw steps: 1
+# 2026/09/20 07:18:10.444091 [TestDB_MatchesTheNaiveStore] [rapid] draw op0: "append"
+# 2026/09/20 07:18:10.444095 [TestDB_MatchesTheNaiveStore] [rapid] draw entries0: 2
+# 2026/09/20 07:18:10.444098 [TestDB_MatchesTheNaiveStore] [rapid] draw metrice0_0: "a.count"
+# 2026/09/20 07:18:10.444101 [TestDB_MatchesTheNaiveStore] [rapid] draw tagse0_0: []string{}
+# 2026/09/20 07:18:10.444110 [TestDB_MatchesTheNaiveStore] [rapid] draw tse0_0: []int64{1, 0}
+# 2026/09/20 07:18:10.444115 [TestDB_MatchesTheNaiveStore] [rapid] draw ve0_0: 0
+# 2026/09/20 07:18:10.444116 [TestDB_MatchesTheNaiveStore] [rapid] draw ve0_0: 0
+# 2026/09/20 07:18:10.444117 [TestDB_MatchesTheNaiveStore] [rapid] draw metrice0_1: "a.count"
+# 2026/09/20 07:18:10.444120 [TestDB_MatchesTheNaiveStore] [rapid] draw tagse0_1: []string{}
+# 2026/09/20 07:18:10.444121 [TestDB_MatchesTheNaiveStore] [rapid] draw tse0_1: []int64{0}
+# 2026/09/20 07:18:10.444121 [TestDB_MatchesTheNaiveStore] [rapid] draw ve0_1: 0
+# 2026/09/20 07:18:10.444250 [TestDB_MatchesTheNaiveStore] rejected [], naive rejected [a.count|]
+# 
+v0.4.8#16198034117600467022
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0xaaaaaaaaaaaaa
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
