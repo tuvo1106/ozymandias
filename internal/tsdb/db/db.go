@@ -438,14 +438,15 @@ func (db *DB) Close() error {
 	return err
 }
 
-// lookups returns the head's index and every block's, for metadata queries.
-func (db *DB) lookups() []index.Lookup {
+// blockLookups returns every block's index, for metadata queries. The head's
+// is deliberately not in here: [DB.metadata] has to read the head before it
+// asks which blocks exist, and a helper that returned both would hide that.
+func (db *DB) blockLookups() []index.Lookup {
 	db.mu.RLock()
-	blocks := db.blocks
-	out := make([]index.Lookup, 0, len(blocks)+1)
-	for _, b := range blocks {
+	defer db.mu.RUnlock()
+	out := make([]index.Lookup, 0, len(db.blocks))
+	for _, b := range db.blocks {
 		out = append(out, b.Lookup())
 	}
-	db.mu.RUnlock()
-	return append(out, db.head.Lookup())
+	return out
 }
