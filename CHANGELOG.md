@@ -103,6 +103,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   minus smoke, the crash loop and `fuzz-long`, but `make ci` also runs
   `make fuzz FUZZTIME=10s` and no step did — leaving the guard on the
   corrupt-input decoders enforced only by the local pre-push hook.
+- **CI runs on every pull request**, with no `paths-ignore`. `ci` is a required
+  status check on `main` now, and a required check that is never *reported* is
+  not a check that passed: a skipped workflow leaves the pull request waiting
+  on a status that will never arrive, so a docs-only change could never be
+  merged. Running it is not a no-op either — `make ci` includes
+  `make docs-check`.
 - **Compaction deletes its source blocks only once the merged block is
   serving.** `compact.Run` unlinked them before the database had opened the
   merged block or swapped it in, so a failure in either step left blocks gone
