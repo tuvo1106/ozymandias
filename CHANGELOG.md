@@ -55,6 +55,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   *cost in bits* of every bucket edge, which is what the bucket is, plus the
   duplicate-timestamp case on the delta-of-delta path, which the existing table
   covered for the first two samples but not the third.
+- **A boundary test for the chunk encoder's leading-zero clamp.** The count is
+  stored in five bits, so 32 or more is clamped to 31; at exactly 32 an
+  unclamped write keeps only the low five bits and stores it as 0, and the
+  decoder then rebuilds the value against a window 32 bits too wide. It turns
+  a value just above 1.0 into exactly -1.0. It needs the XOR of two consecutive
+  values to land in [2^31, 2^32), which neither the property test nor the
+  fuzzer had hit.
 
 ### Fixed
 
