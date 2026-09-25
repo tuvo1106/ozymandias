@@ -67,3 +67,8 @@ interval's increase.
 | `ozy.tsdb.blocks` | gauge | blocks | `store` | ozyd | Immutable blocks on disk; falls when compaction runs |
 | `ozy.tsdb.disk_bytes` | gauge | bytes | `store` | ozyd | Total size of the store on disk, log included |
 | `ozy.tsdb.wal_syncs` | gauge | syncs | `store` | ozyd | Write-ahead log flushes since startup (monotonic). Its *rate* is the check: ~1/`wal_sync_interval` while anything is being written, and a flat stretch means acknowledged samples are staying in the page cache longer than that |
+| `ozy.sketchstore.series` | gauge | series | | ozyd | Distribution series the sketch store holds |
+| `ozy.sketchstore.disk_bytes` | gauge | bytes | | ozyd | Estimated size of the sketch store on disk |
+| `ozy.sketchstore.points_appended` | count | points | | ozyd | Sketches written, one per series per bucket |
+| `ozy.sketchstore.series_rejected` | count | series | | ozyd | Sketch series the store refused (a ref it cannot key, a timestamp outside the key range, or an id collision) |
+| `ozy.sketchstore.id_collisions` | count | series | | ozyd | **Two series hashed to the same id.** One of them is being refused and its percentiles are missing. Expected to be zero forever — about one chance in 37 million at 100k series — so any value at all is worth a look; the log line names both series |
