@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
+	"github.com/tuvo1106/ozymandias/internal/tsdb/chunkenc"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/wal"
 )
 
@@ -68,13 +69,18 @@ func TestHead_SelectReportsACorruptChunkInsteadOfAShortRead(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	id := h.Postings().Select(tsdb.Selector{Metric: "m"})[0]
-	if n := len(h.series(id).chunks); n < 2 {
-		t.Fatalf("want at least two chunks, so the read has more to lose than the bad one: got %d", n)
+	ms := h.series(h.Postings().Select(tsdb.Selector{Metric: "m"})[0])
+	if len(ms.chunks) < 2 {
+		t.Fatalf("want at least two chunks, so the read has more to lose than the bad one: got %d", len(ms.chunks))
 	}
-	if !h.DamageOneChunk(id) {
-		t.Fatal("no chunk to damage")
+	// Truncate the first chunk's bytes. Its header still promises the full
+	// sample count, so the iterator runs off the end of the stream.
+	full := ms.chunks[0].chunk.Bytes()
+	damaged, err := chunkenc.FromBytes(append([]byte{}, full[:len(full)-1]...))
+	if err != nil {
+		t.Fatal(err)
 	}
+	ms.chunks[0].chunk = damaged
 
 	got, err := h.Select(tsdb.Selector{Metric: "m"}, 0, math.MaxInt64)
 	if err == nil {

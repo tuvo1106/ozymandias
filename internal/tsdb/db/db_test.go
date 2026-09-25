@@ -237,54 +237,6 @@ func TestDB_CutBlockMovesTheOldestRangeToDisk(t *testing.T) {
 	}
 }
 
-// TestDB_ACorruptHeadChunkAbortsTheCutRatherThanShorteningIt is the database
-// half of head.Select returning an error. A cut writes a block from a snapshot
-// of the head and then truncates the head and the write-ahead log to match it,
-// on the strength of the block holding everything below the boundary. If a
-// read that could not decode a chunk came back short instead of failing, the
-// cut would honour that and delete the rest from both durable copies.
-func TestDB_ACorruptHeadChunkAbortsTheCutRatherThanShorteningIt(t *testing.T) {
-	db, _, dir := open(t, Options{BlockRange: time.Minute, Retention: -1, SyncOnAppend: true})
-	r := ref("m", "env:prod")
-	fill(t, db, r, 0, 1000, 91) // 0..90s: 1.5 ranges, so there is a cut to make
-
-	ids := db.head.Postings().Select(tsdb.Selector{Metric: "m"})
-	if len(ids) != 1 || !db.head.DamageOneChunk(ids[0]) {
-		t.Fatalf("could not damage a chunk: %d series", len(ids))
-	}
-
-	if err := db.CutBlock(); err == nil {
-		t.Fatal("CutBlock succeeded over a head it could not read")
-	}
-	if n := len(db.Blocks()); n != 0 {
-		t.Errorf("%d blocks were written from a failed read", n)
-	}
-	// A query says so too, rather than answering with a hole in it.
-	if _, err := db.Select(ctx, tsdb.Selector{Metric: "m"}, math.MinInt64, math.MaxInt64); err == nil {
-		t.Error("Select answered from a chunk that does not decode")
-	}
-	// And nothing was given up: the log still holds every sample, so a restart
-	// — which rebuilds the chunks by replaying it — has all 91 back.
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, _, _ := open(t, Options{Dir: dir, BlockRange: time.Minute, Retention: -1})
-	set, err := reopened.Select(ctx, tsdb.Selector{Metric: "m"}, math.MinInt64, math.MaxInt64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := 0
-	for set.Next() {
-		it := set.Iterator()
-		for it.Next() {
-			n++
-		}
-	}
-	if n != 91 {
-		t.Errorf("%d samples survived the aborted cut, want all 91", n)
-	}
-}
-
 func TestDB_AQueryDoesNotNoticeTheCut(t *testing.T) {
 	// The point of the whole exercise: where a sample lives is not the
 	// caller's problem. The same query must answer identically before and

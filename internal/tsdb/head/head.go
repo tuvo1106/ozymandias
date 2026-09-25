@@ -488,36 +488,6 @@ func (h *Head) Series(id uint64) (tsdb.SeriesRef, bool) {
 	return ms.ref, true
 }
 
-// DamageOneChunk truncates the encoding of the first chunk of series id, so
-// that decoding it fails, and reports whether it found one to damage.
-//
-// It exists for tests in other packages, which is the only reason it is
-// exported. A chunk in memory can only be corrupted from inside this package,
-// and what the layer above does with a failed read of the head is the whole
-// point of [Head.Select] returning an error: a block cut that trusted a short
-// read would write a block missing those samples and then truncate the head
-// and the log to match it. Nothing in production calls this.
-func (h *Head) DamageOneChunk(id uint64) bool {
-	ms := h.series(id)
-	if ms == nil {
-		return false
-	}
-	ms.mu.Lock()
-	defer ms.mu.Unlock()
-	if len(ms.chunks) == 0 {
-		return false
-	}
-	// The header still promises the original sample count, so the iterator
-	// runs off the end of the stream instead of stopping early and clean.
-	full := ms.chunks[0].chunk.Bytes()
-	short, err := chunkenc.FromBytes(append([]byte{}, full[:len(full)-1]...))
-	if err != nil {
-		return false
-	}
-	ms.chunks[0].chunk = short
-	return true
-}
-
 // Lookup returns a read view of the head's index that takes the head's lock on
 // every call, for callers outside the head — the metadata queries.
 //
