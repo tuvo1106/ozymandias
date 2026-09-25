@@ -60,6 +60,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   batch.** One unencodable series used to fail the whole payload, discarding
   every other series in that flush — including the agent's own self-metrics —
   once per interval for as long as the bad input kept arriving.
+- **`scripts/check-docs.sh` checks self-metrics again.** Its pattern still
+  looked for `ozymandias.*` names, so after the rename it matched none of the
+  33 registered metrics and passed whether or not they were documented — in
+  the pre-commit hook and in `make ci` alike. It now matches `ozy.*` and fails
+  if it ever matches nothing at all.
+- **`make sdk-release` no longer aborts on the Python wheel.** The filename
+  was hard-coded as `ozymandias-*.whl` while the package is `ozy`, so the
+  script announced a file `uv build` had never produced and would have failed
+  at the copy the first time app-python was a target. The name now comes from
+  `pyproject.toml`, and a mismatch fails at the build step.
 
 ### Added
 

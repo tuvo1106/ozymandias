@@ -42,10 +42,19 @@ check_config internal/config deploy/ozyd.yaml
 check_config internal/agent/config deploy/agent.yaml
 
 # --- 4. self-metrics catalogued --------------------------------------------------
-while read -r name; do
-  grep -qF -- "\`$name\`" docs/metrics-catalog.md || err "metric $name is emitted but missing from docs/metrics-catalog.md"
-done < <(grep -rhoE '(Counter|Gauge|GaugeFunc)\("ozymandias\.[a-z0-9_.]+"' cmd internal --include='*.go' --exclude='*_test.go' 2>/dev/null |
+# The pattern has to track the metric namespace, and nothing else makes it: a
+# rename that outran it (ozymandias.* -> ozy.*) left this check matching
+# nothing and still printing ✓, for documented and undocumented metrics
+# alike. The emptiness guard is what makes that failure loud.
+metrics=$(grep -rhoE '(Counter|Gauge|GaugeFunc)\("ozy\.[a-z0-9_.]+"' cmd internal --include='*.go' --exclude='*_test.go' 2>/dev/null |
   sed -E 's/.*\("([^"]+)"/\1/' | sort -u)
+if [[ -z "$metrics" ]]; then
+  err "no self-metrics matched: this check's pattern has drifted from the code"
+else
+  while read -r name; do
+    grep -qF -- "\`$name\`" docs/metrics-catalog.md || err "metric $name is emitted but missing from docs/metrics-catalog.md"
+  done <<<"$metrics"
+fi
 
 # --- 5. relative Markdown links resolve -----------------------------------------
 root=$(pwd)

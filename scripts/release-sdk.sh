@@ -19,6 +19,7 @@ ROOT=$(pwd)
 
 NODE_VERSION=$(node -p "require('$ROOT/sdk/node/package.json').version")
 PY_VERSION=$(grep -m1 '^version' sdk/python/pyproject.toml | sed -E 's/.*"(.*)".*/\1/')
+PY_NAME=$(grep -m1 '^name' sdk/python/pyproject.toml | sed -E 's/.*"(.*)".*/\1/')
 
 # app → language, so each app gets only the artifact it can use.
 apps_node="app-node"
@@ -36,7 +37,12 @@ echo "  packed dist/$TARBALL"
 
 echo "→ building sdk/python@$PY_VERSION"
 (cd sdk/python && uv build --quiet --out-dir "$ROOT/dist")
-WHEEL="ozymandias-$PY_VERSION-py3-none-any.whl"
+# The wheel is named after [project].name, with '-' escaped to '_' (PEP 427)
+# — not after the repo. Hard-coding it is how this script came to announce a
+# file uv had never built and then fail at the cp, milestones later. The check
+# is the point: if the name ever drifts again it fails here, immediately.
+WHEEL="${PY_NAME//-/_}-$PY_VERSION-py3-none-any.whl"
+[[ -f dist/$WHEEL ]] || { echo "uv build produced no dist/$WHEEL"; exit 1; }
 echo "  built dist/$WHEEL"
 
 # Default to the apps whose integration has actually landed. Vendoring into an
@@ -60,7 +66,7 @@ for app in "${targets[@]}"; do
     rm -f "$dir"/vendor/ozy-*.tgz
     cp "dist/$TARBALL" "$dir/vendor/"
     echo "✓ $app ← vendor/$TARBALL"
-    echo "    package.json: \"ozymandias\": \"file:vendor/$TARBALL\"  (then npm install)"
+    echo "    package.json: \"ozy\": \"file:vendor/$TARBALL\"  (then npm install)"
     ;;
   esac
   case " $apps_python " in *" $app "*)
