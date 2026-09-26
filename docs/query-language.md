@@ -138,6 +138,44 @@ ignoring nulls; a bucket where every series is null stays null.
 are not an average of per-series percentiles, which is not a percentile of
 anything. They are refused on a metric that is not a distribution.
 
+### Worked example
+
+Two hosts serving one route, a `count` metric flushed every 10 seconds:
+
+| t | 0 | 10 | 20 | 30 | 40 | 50 |
+|---|---|---|---|---|---|---|
+| `host:a,route:/x` | 1 | 2 | 3 | 4 | 5 | 6 |
+| `host:b,route:/x` | 10 | 20 | 30 | 40 | 50 | 60 |
+
+**Stage 2, time-aggregate** at `interval=30`. The metric is a count, so each
+series' samples *sum* within each bucket:
+
+| series | `[0,30)` | `[30,60)` |
+|---|---|---|
+| `host:a` | 1+2+3 = **6** | 4+5+6 = **15** |
+| `host:b` | 10+20+30 = **60** | 40+50+60 = **150** |
+
+**Stages 3–5, group and space-aggregate.** Both series are `route:/x`, so they
+are one group, combined bucket by bucket:
+
+| query | `[0,30)` | `[30,60)` |
+|---|---|---|
+| `sum:req.count{*} by {route}` | 6+60 = **66** | 15+150 = **165** |
+| `avg:req.count{*} by {route}` | (6+60)/2 = **33** | (15+150)/2 = **82.5** |
+| `max:req.count{*} by {route}` | **60** | **150** |
+| `count:req.count{*} by {route}` | **2** | **2** |
+| `sum:…{*} by {route}.as_rate()` | 66/30 = **2.2** | 165/30 = **5.5** |
+| `avg:…{*} by {route}.rollup(max)` | max(3,30) = **30** | max(6,60) = **60** |
+
+The last row is the one to read twice. `.rollup(max)` changes **stage 2** — the
+largest *sample* in each bucket per series — and the `avg:` still runs at stage
+5 across the two series. Overriding the time aggregation does not move it.
+
+Doing the two stages in the other order would give different numbers for every
+row but `max`. `avg` space-first would be the mean of 11, 22, 33 = 22 rather
+than 33, which weights each host by how often it happened to report rather than
+by what it counted. That is why the order is fixed and not an option.
+
 ### Arithmetic and functions
 
 `+ - * /` join two queries by matching their group tag sets: a group present
