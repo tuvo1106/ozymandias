@@ -148,23 +148,35 @@ func TestEndToEnd_DistributionToPercentile(t *testing.T) {
 	// is exactly the right answer for the first flush alone. The store is
 	// the only thing that can answer "is every observation I am about to
 	// assert on actually here".
-	sketchCount := func(route string) float64 {
+	//
+	// The wait also insists on *two* buckets, which is the only way this test
+	// can tell that it is exercising the merge at all. 600 observations in one
+	// bucket would total the same, answer the same p95, and prove nothing —
+	// the hole an earlier version of this test fell into.
+	sketchesFor := func(route string) sketchState {
 		ref := tsdb.NewSeriesRef("http.request.duration",
 			[]string{"host:box", "route:" + route, "service:checkout"})
 		points, err := srv.sketches.Read(context.Background(), ref, 1790000000_000, 1790000019_999)
 		if err != nil {
-			t.Fatalf("reading sketches for %s: %v", route, err)
+			return sketchState{err: err}
 		}
-		var total float64
+		st := sketchState{buckets: len(points)}
 		for _, p := range points {
-			total += p.Sketch.Count()
+			st.observations += p.Sketch.Count()
 		}
-		return total
+		return st
 	}
+	// Eventually formats its message from arguments evaluated at the call
+	// site — before a single poll — so reading the store there would report
+	// the state before the first check and always say zero. A Stringer defers
+	// the read to the moment the failure is formatted, which is the only
+	// moment whose answer is worth printing.
 	testutil.Eventually(t, 5*time.Second, func() bool {
-		return sketchCount("/items") == 300 && sketchCount("/checkout") == 300
-	}, "sketches never completed: /items %v, /checkout %v of 300 each",
-		sketchCount("/items"), sketchCount("/checkout"))
+		return sketchesFor("/items").complete() && sketchesFor("/checkout").complete()
+	}, "sketches never completed (want 300 observations in 2 buckets each): %v",
+		lazy(func() string {
+			return fmt.Sprintf("/items %v, /checkout %v", sketchesFor("/items"), sketchesFor("/checkout"))
+		}))
 
 	got := query(url)
 	for route, values := range sent {
@@ -216,3 +228,30 @@ func slicesMax(values []float64) float64 {
 	}
 	return out
 }
+
+// sketchState is what the sketch store holds for one series over the query
+// window: how many observations, spread over how many buckets.
+type sketchState struct {
+	observations float64
+	buckets      int
+	err          error
+}
+
+// complete reports whether every observation the test sent for this series is
+// in the store, in the two buckets the two agent flushes produced.
+func (s sketchState) complete() bool {
+	return s.err == nil && s.observations == 300 && s.buckets == 2
+}
+
+func (s sketchState) String() string {
+	if s.err != nil {
+		return "unreadable: " + s.err.Error()
+	}
+	return fmt.Sprintf("%v observations in %d buckets", s.observations, s.buckets)
+}
+
+// lazy defers a failure message until something formats it. Without it,
+// testutil.Eventually's arguments describe the moment before its first poll.
+type lazy func() string
+
+func (f lazy) String() string { return f() }
