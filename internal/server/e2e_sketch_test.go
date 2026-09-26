@@ -17,6 +17,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/internal/sketch"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
+	"github.com/tuvo1106/ozymandias/internal/tsdb"
 )
 
 // L8: M2's last acceptance criterion, end to end in one process.
@@ -128,16 +129,42 @@ func TestEndToEnd_DistributionToPercentile(t *testing.T) {
 	// right if the two sketches were merged.
 	const url = "/api/v1/query?metric=http.request.duration&agg=p95&by=route" +
 		"&filter=service:checkout&from=1790000000&to=1790000019&interval=20"
-	// Wait on the counts rather than on the percentile: the forwarder
-	// delivers the two flushes independently, and a p95 that arrived from
-	// only the first would be a plausible number. The counts are exact, so
-	// "both flushes have landed" is a question with a yes-or-no answer.
 	const countsURL = "/api/v1/query?metric=http.request.duration.count&agg=sum&by=route" +
 		"&from=1790000000&to=1790000019&interval=20"
+
+	// Wait on the sketches themselves, and on nothing else.
+	//
+	// Two weaker signals both look right and are not. A p95 that arrived
+	// from only the first flush is a plausible number, so waiting for the
+	// percentile to be non-null proves nothing. And `.count` — which this
+	// test used to wait on — becomes visible *before* the sketch it was
+	// derived from: the intake writes the scalars first on purpose, so that
+	// the append-only store rules on which buckets exist (ADR-0015), and a
+	// sketch is written only for the buckets it accepted. Between those two
+	// writes a count is queryable and its sketch is not.
+	//
+	// That window is nanoseconds on a fast machine and wide enough to lose
+	// on a loaded CI runner, where this failed with a p95 of 1408.37 — which
+	// is exactly the right answer for the first flush alone. The store is
+	// the only thing that can answer "is every observation I am about to
+	// assert on actually here".
+	sketchCount := func(route string) float64 {
+		ref := tsdb.NewSeriesRef("http.request.duration",
+			[]string{"host:box", "route:" + route, "service:checkout"})
+		points, err := srv.sketches.Read(context.Background(), ref, 1790000000_000, 1790000019_999)
+		if err != nil {
+			t.Fatalf("reading sketches for %s: %v", route, err)
+		}
+		var total float64
+		for _, p := range points {
+			total += p.Sketch.Count()
+		}
+		return total
+	}
 	testutil.Eventually(t, 5*time.Second, func() bool {
-		c := query(countsURL)
-		return c["/items"] == 300 && c["/checkout"] == 300
-	}, "both flushes never landed: %+v", query(countsURL))
+		return sketchCount("/items") == 300 && sketchCount("/checkout") == 300
+	}, "sketches never completed: /items %v, /checkout %v of 300 each",
+		sketchCount("/items"), sketchCount("/checkout"))
 
 	got := query(url)
 	for route, values := range sent {
