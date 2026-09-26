@@ -16,6 +16,9 @@ import (
 type memSketches struct {
 	points map[string][]sketchstore.Point
 	err    error
+	// ignoreRange hands back every point regardless of the window, the way a
+	// store whose range is coarser than the query's grid would.
+	ignoreRange bool
 }
 
 func (m *memSketches) ReadEach(_ context.Context, ref tsdb.SeriesRef, fromMs, toMs int64, fn func(sketchstore.Point) error) error {
@@ -23,7 +26,7 @@ func (m *memSketches) ReadEach(_ context.Context, ref tsdb.SeriesRef, fromMs, to
 		return m.err
 	}
 	for _, p := range m.points[ref.Key()] {
-		if p.TimeMs < fromMs || p.TimeMs > toMs {
+		if !m.ignoreRange && (p.TimeMs < fromMs || p.TimeMs > toMs) {
 			continue
 		}
 		if err := fn(p); err != nil {
@@ -224,5 +227,69 @@ func TestEval_PercentileSelectsOnTheCountSeries(t *testing.T) {
 	sel := e.Store.(*memStore).selectors[0]
 	if sel.Metric != "lat"+wire.SuffixCount {
 		t.Errorf("selected %q, want the .count series", sel.Metric)
+	}
+}
+
+// A percentile's buckets are merged sketches; there is no choice of method,
+// because a merge is the only reduction that keeps the error bound. The
+// milestone's own example writes `.rollup(max, 60)` on a p95, so the width is
+// honoured and the discarded method is reported rather than dropped in
+// silence.
+func TestEval_RollupMethodOnAPercentileWarns(t *testing.T) {
+	e := sketchEnv(t, map[string]map[int64]*sketch.Sketch{
+		"host:a": {0: sketchOf(t, 1, 2, 3)},
+	})
+	res, err := runErr(e, "p95:lat{*}.rollup(max, 30)", 0, 59, 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Interval != 30 {
+		t.Errorf("interval %d, want the rollup's 30 — the width is still meaningful", res.Interval)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "max") {
+		t.Errorf("warnings %q, want one naming the discarded method", res.Warnings)
+	}
+	// A rollup that names no method has nothing to discard and nothing to say.
+	res, err = runErr(e, "p95:lat{*}", 0, 59, 30, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Warnings) != 0 {
+		t.Errorf("warnings %q on a query with no rollup", res.Warnings)
+	}
+}
+
+// A sketch read from the store but rejected by the grid must not register a
+// group: an all-null line in the legend is worse than no line.
+func TestEval_SketchesOffTheGridDrawNothing(t *testing.T) {
+	e := sketchEnv(t, map[string]map[int64]*sketch.Sketch{
+		"host:a": {0: sketchOf(t, 1)},
+	})
+	// Widen what the reader hands back to include a point outside the window,
+	// the way a store with a coarser range than the grid would.
+	reader := e.Sketches.(*memSketches)
+	for key := range reader.points {
+		reader.points[key] = append(reader.points[key],
+			sketchstore.Point{TimeMs: 9_000_000, Sketch: sketchOf(t, 99)})
+	}
+	reader.ignoreRange = true
+
+	res := run(t, e, "p95:lat{*}", 0, 59, 60)
+	if len(res.Series) != 1 {
+		t.Fatalf("got %d lines, want the one with a sketch in the window", len(res.Series))
+	}
+	if v := res.Series[0].Points[0].V; math.Abs(v-1) > 0.05 {
+		t.Errorf("p95 = %v, want ~1: the off-grid sketch must not be merged", v)
+	}
+
+	// And a series whose *only* sketches are off the grid draws nothing.
+	e2 := sketchEnv(t, map[string]map[int64]*sketch.Sketch{"host:a": {0: sketchOf(t, 1)}})
+	r2 := e2.Sketches.(*memSketches)
+	for key := range r2.points {
+		r2.points[key] = []sketchstore.Point{{TimeMs: 9_000_000, Sketch: sketchOf(t, 99)}}
+	}
+	r2.ignoreRange = true
+	if res := run(t, e2, "p95:lat{*}", 0, 59, 60); len(res.Series) != 0 {
+		t.Errorf("got %q, want no line at all", lines(res))
 	}
 }

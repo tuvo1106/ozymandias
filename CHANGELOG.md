@@ -61,6 +61,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `.rollup()`s asking for different widths is an error rather than a resample
   ([ADR-0016](docs/adr/0016-one-grid-per-query.md)) — resampling would have to
   either divide or repeat, and both invent data that then looks measured.
+  A template variable bound to several values of one key is a *choice*, like
+  the `IN` list it stands in for — a dashboard's multi-select means either
+  host, not both at once.
   Not yet wired to the HTTP API: `/api/v1/query` still serves M1's structured
   query until the endpoint moves over.
 

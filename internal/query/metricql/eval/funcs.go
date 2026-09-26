@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/tuvo1106/ozymandias/internal/query/metricql"
@@ -281,8 +282,14 @@ func (e *Evaluator) timeshift(ctx context.Context, c *metricql.Call, g grid, st 
 			offset, g.interval)
 	}
 	shifted := grid{first: g.first + offset, interval: g.interval, n: g.n}
-	if shifted.first < 0 {
-		return frame{}, fmt.Errorf("timeshift by %ds moves the window before the epoch", offset)
+	// The same bound plan applies to From and To, and for the same reason: the
+	// grid multiplies back out to milliseconds, and an offset is an unbounded
+	// number the caller chose. Without this, a large enough shift overflows
+	// int64 and hands the store a range that may be inverted.
+	end := shifted.first + int64(shifted.n)*shifted.interval
+	if shifted.first < 0 || end > maxTime || end < shifted.first {
+		return frame{}, fmt.Errorf(
+			"timeshift by %ds moves the window outside the representable range of [0, %d]", offset, maxTime)
 	}
 	f, err := e.node(ctx, c.Args[0], shifted, st)
 	if err != nil {
@@ -337,7 +344,11 @@ func histogramQuantile(f frame, label string, q float64, g grid) (frame, error) 
 				rest[k] = v
 			}
 		}
-		key := describe(&group{tags: rest})
+		// group.key, not the printed scope: Scope joins tags with ',' and no
+		// escaping, so {a: "x,b:y"} and {a: "x", b: "y"} render identically
+		// and two different histograms would be pooled into one, giving a
+		// quantile over a mixture.
+		key := (&group{tags: rest}).key()
 		h := hists[key]
 		if h == nil {
 			h = &hist{tags: rest}
@@ -389,15 +400,14 @@ const upperBound = "upper_bound"
 // parseBound reads a bucket boundary. "+Inf" is the last bucket of every
 // Prometheus histogram and has to be accepted; a negative bound is legal and
 // appears on any histogram of a signed quantity.
+//
+// [strconv.ParseFloat] rather than a scan, because a scan stops at the first
+// byte it cannot use and reports success: "10abc" would become 10, and a
+// mis-scraped boundary would quietly skew every quantile computed from it
+// instead of failing. NaN parses and is refused — a bucket has to sort.
 func parseBound(s string) (float64, error) {
-	switch strings.ToLower(s) {
-	case "+inf", "inf":
-		return math.Inf(1), nil
-	case "-inf":
-		return math.Inf(-1), nil
-	}
-	var v float64
-	if _, err := fmt.Sscanf(s, "%g", &v); err != nil {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(v) {
 		return 0, fmt.Errorf("%s=%q is not a bucket boundary", upperBound, s)
 	}
 	return v, nil

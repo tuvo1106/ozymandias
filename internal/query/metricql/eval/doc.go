@@ -9,9 +9,18 @@
 //     pass its matchers.
 //  3. Time-aggregate. Reduce each series to one value per bucket, by the
 //     method the metric's type implies or the one `.rollup()` names.
-//  4. Space-aggregate. Group the series by the `by` keys and combine each
-//     group bucket by bucket with the aggregator before the ':'.
-//  5. Combine. Fill gaps, apply functions, then arithmetic between nodes.
+//  4. Group by the `by` keys, then space-aggregate: combine each group bucket
+//     by bucket with the aggregator before the ':'.
+//  5. Modify the finished lines — `.as_rate()`, `.as_count()`, `.fill()` —
+//     then apply functions, then arithmetic between nodes.
+//
+// Modifiers run after the series have been combined, not before, and `fill` is
+// why. Filling a gap per series would invent a reporting host: one that sent
+// nothing would count as a zero in an `avg:` and drag it down by exactly as
+// much as the number of hosts that were down. Filled afterwards, only buckets
+// where *nothing* reported are filled, which is the question being asked.
+// `.rollup()` is the exception — it names the time aggregation, so its method
+// belongs to stage 3 and its width is settled before a sample is read.
 //
 // # Why time before space
 //

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
@@ -234,5 +235,90 @@ func TestEval_AScalarIsALine(t *testing.T) {
 	}
 	if res.Series[0].Scope() != "*" {
 		t.Errorf("scope %q, want *", res.Series[0].Scope())
+	}
+}
+
+// The numbers in docs/query-language.md's worked table, asserted. The doc is
+// normative and its `.rollup(max)` row was wrong — it gave the maximum across
+// *series* where the implementation takes the maximum sample per series and
+// then averages. A worked example nobody checks is a worked example that
+// teaches the wrong thing.
+func TestEval_TheWorkedExampleInTheDocs(t *testing.T) {
+	e := fixture()
+	for _, tc := range []struct{ query, want string }{
+		{"sum:req.count{route:/x} by {route}", "route:/x: 66,165"},
+		{"avg:req.count{route:/x} by {route}", "route:/x: 33,82.5"},
+		{"max:req.count{route:/x} by {route}", "route:/x: 60,150"},
+		{"count:req.count{route:/x} by {route}", "route:/x: 2,2"},
+		{"sum:req.count{route:/x} by {route}.as_rate()", "route:/x: 2.2,5.5"},
+		{"avg:req.count{route:/x} by {route}.rollup(max)", "route:/x: 16.5,33"},
+	} {
+		got := lines(run(t, e, tc.query, 0, 59, 30))
+		if len(got) != 1 || got[0] != tc.want {
+			t.Errorf("%s:\n got %q\nwant %q", tc.query, got, tc.want)
+		}
+	}
+}
+
+// A bucket boundary must be the whole tag and nothing else. A scan stops at the
+// first byte it cannot use and reports success, so "10abc" would become 10 and
+// a mis-scraped boundary would quietly skew every quantile computed from it.
+func TestParseBound_RejectsTrailingGarbage(t *testing.T) {
+	for _, bad := range []string{"10abc", "0.5x", "1 2", "", "abc", "NaN", "+", "0x10"} {
+		if v, err := parseBound(bad); err == nil {
+			t.Errorf("parseBound(%q) = %v, want an error", bad, v)
+		}
+	}
+	for _, good := range []struct {
+		in   string
+		want float64
+	}{
+		{"10", 10}, {"-0.5", -0.5}, {"1e3", 1000},
+		{"+Inf", math.Inf(1)}, {"inf", math.Inf(1)}, {"-Inf", math.Inf(-1)},
+		// Go's own float syntax allows underscores, and "1_000" is an
+		// unambiguous 1000. Accepting it costs nothing; what mattered was
+		// refusing a boundary with anything left over after the number.
+		{"1_000", 1000},
+	} {
+		v, err := parseBound(good.in)
+		if err != nil || v != good.want {
+			t.Errorf("parseBound(%q) = (%v, %v), want %v", good.in, v, err, good.want)
+		}
+	}
+}
+
+// timeshift's offset is an unbounded number the caller chose, and the grid
+// multiplies back out to milliseconds. Without the same bound plan applies to
+// the window, a large enough shift overflows and hands the store a range that
+// may be inverted.
+func TestEval_TimeshiftCannotMoveTheWindowOutOfRange(t *testing.T) {
+	// Whole multiples of the 60s interval, so the alignment check passes and
+	// the range check is the one under test.
+	for _, offset := range []string{"6e17", "-6e17", "9e18", "253402300860"} {
+		q := "timeshift(sum:req.count{*}, " + offset + ")"
+		_, err := runErr(fixture(), q, 0, 59, 60, nil)
+		if err == nil || !strings.Contains(err.Error(), "representable range") {
+			t.Errorf("%s: got %v, want a range error", q, err)
+		}
+	}
+}
+
+// Two histograms whose tags render identically when joined without escaping
+// must not be pooled: the quantile would be taken over a mixture of the two.
+func TestEval_HistogramsAreKeyedUnambiguously(t *testing.T) {
+	e := &Evaluator{
+		Store: &memStore{series: []tsdb.SeriesSamples{
+			// Rendered as "a:x,b:y,upper_bound:…" both ways.
+			series("h", []string{"a:x,b:y", "upper_bound:1"}, sec(0, 10)),
+			series("h", []string{"a:x", "b:y", "upper_bound:1"}, sec(0, 10)),
+			series("h", []string{"a:x,b:y", "upper_bound:+Inf"}, sec(0, 10)),
+			series("h", []string{"a:x", "b:y", "upper_bound:+Inf"}, sec(0, 10)),
+		}},
+		Types:   types{"h": wire.KindGauge},
+		Timeout: -1,
+	}
+	res := run(t, e, "histogram_quantile(0.5, avg:h{*} by {a,b,upper_bound})", 0, 59, 60)
+	if len(res.Series) != 2 {
+		t.Errorf("got %d histograms, want 2 — they were pooled into one", len(res.Series))
 	}
 }

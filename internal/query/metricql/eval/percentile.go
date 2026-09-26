@@ -66,10 +66,15 @@ func (e *Evaluator) percentile(ctx context.Context, q *metricql.Query, g grid, s
 		}
 		seen := false
 		err := e.Sketches.ReadEach(ctx, ref, g.first*1000, g.endMs()-1, func(p sketchstore.Point) error {
-			if err := sg.add(p, g); err != nil {
+			landed, err := sg.add(p, g)
+			if err != nil {
 				return err
 			}
-			seen = true
+			// Only a sketch that actually landed in a bucket counts as
+			// something to draw. A point read but rejected by the grid would
+			// otherwise register a group of nothing but nulls — an empty line
+			// in the legend, which is worse than no line.
+			seen = seen || landed
 			return nil
 		})
 		if errors.Is(err, sketch.ErrIncompatible) {
@@ -98,7 +103,7 @@ func (e *Evaluator) percentile(ctx context.Context, q *metricql.Query, g grid, s
 		}
 		f.groups = append(f.groups, grp)
 	}
-	return applyModifiers(f, q, g, kind)
+	return applyModifiers(f, q, g, kind, st)
 }
 
 // sketchGroup holds one group's merged sketch per output bucket.
@@ -112,19 +117,20 @@ type sketchGroup struct {
 // The first sketch to reach a bucket is cloned rather than kept: it belongs to
 // the store, and merging into it would write through into data the store
 // handed us.
-func (s *sketchGroup) add(p sketchstore.Point, g grid) error {
+// It reports whether the point landed on the grid at all.
+func (s *sketchGroup) add(p sketchstore.Point, g grid) (bool, error) {
 	i, ok := g.index(p.TimeMs / 1000)
 	if !ok {
-		return nil
+		return false, nil
 	}
 	if s.buckets[i] == nil {
 		s.buckets[i] = p.Sketch.Clone()
-		return nil
+		return true, nil
 	}
 	// Two sketches of one metric built at different relative accuracies.
 	// Answering from whichever subset happened to agree would be exactly the
 	// confident wrong answer sketches exist to avoid, so this is loud.
-	return s.buckets[i].Merge(p.Sketch)
+	return true, s.buckets[i].Merge(p.Sketch)
 }
 
 func (s *sketchGroup) quantile(i int, q float64) float64 {

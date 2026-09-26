@@ -67,7 +67,7 @@ func (e *Evaluator) query(ctx context.Context, q *metricql.Query, g grid, st *st
 	for _, key := range order {
 		f.groups = append(f.groups, groups[key].group())
 	}
-	return applyModifiers(f, q, g, kind)
+	return applyModifiers(f, q, g, kind, st)
 }
 
 func tooManySeries(q *metricql.Query) error {
@@ -86,17 +86,27 @@ func tooManySeries(q *metricql.Query) error {
 // "has this key at all" and the membership test runs here. It reads more
 // series than it keeps; a filter that can be pushed down still is.
 func (e *Evaluator) selector(q *metricql.Query, st *state) (tsdb.Selector, postFilter, error) {
-	sel := tsdb.Selector{Metric: q.Metric}
-	var post postFilter
+	// Resolve variables first, so that what they expand to goes through the
+	// same code below as a matcher somebody typed. A variable bound to two
+	// values of one key is an OR, exactly like the IN list it stands in for —
+	// they are two spellings of a dashboard's multi-select, and they had
+	// better not mean different things.
+	terms := make([]metricql.Matcher, 0, len(q.Filter))
 	for _, m := range q.Filter {
-		if m.Var != "" {
-			expanded, err := expandVar(m, st)
-			if err != nil {
-				return sel, post, err
-			}
-			sel.Matchers = append(sel.Matchers, expanded...)
+		if m.Var == "" {
+			terms = append(terms, m)
 			continue
 		}
+		expanded, err := expandVar(m, st)
+		if err != nil {
+			return tsdb.Selector{}, nil, err
+		}
+		terms = append(terms, expanded...)
+	}
+
+	sel := tsdb.Selector{Metric: q.Metric}
+	var post postFilter
+	for _, m := range terms {
 		if m.In {
 			post = append(post, m)
 			if !m.Neg {
@@ -142,7 +152,16 @@ func containsStar(s string) bool {
 // of wrong answer that gets believed. A variable bound to nothing is *not* an
 // error — that is what a template variable's "all" selection is — and it adds
 // no matcher.
-func expandVar(m metricql.Matcher, st *state) ([]tsdb.Matcher, error) {
+//
+// **Values of the same key are ORed**, not ANDed. This is the whole point: a
+// dashboard's multi-select binds `$host` to two hosts and means either of
+// them. Emitting two equality matchers would ask the store for a series tagged
+// `host:a` *and* `host:b`, which no series is, and the chart would come back
+// empty with nothing to explain why. Several values of one key therefore
+// become the same set match an `IN` list produces, so the two spellings of a
+// multi-select agree. Values of *different* keys still AND, which is what a
+// variable bound to `env:prod` and `region:eu` means.
+func expandVar(m metricql.Matcher, st *state) ([]metricql.Matcher, error) {
 	values, ok := st.vars[m.Var]
 	if !ok {
 		return nil, fmt.Errorf("$%s is not bound: the query uses it as a filter but the request supplied no value", m.Var)
@@ -151,13 +170,23 @@ func expandVar(m metricql.Matcher, st *state) ([]tsdb.Matcher, error) {
 		st.warnf("$%s resolved to no filter, so every value of it is included", m.Var)
 		return nil, nil
 	}
-	out := make([]tsdb.Matcher, 0, len(values))
+	byKey := map[string][]string{}
+	var order []string
 	for _, v := range values {
 		tag := tsdb.ParseTag(v)
 		if tag.Key == "" {
 			return nil, fmt.Errorf("$%s is bound to %q, which is not a key:value tag", m.Var, v)
 		}
-		out = append(out, matcherFor(tag.Key, tag.Value, false))
+		if _, seen := byKey[tag.Key]; !seen {
+			order = append(order, tag.Key)
+		}
+		byKey[tag.Key] = append(byKey[tag.Key], tag.Value)
+	}
+	out := make([]metricql.Matcher, 0, len(order))
+	for _, k := range order {
+		// One value keeps the equality matcher, which the store can index on;
+		// only a real choice pays for the membership test.
+		out = append(out, metricql.Matcher{Key: k, Values: byKey[k], In: len(byKey[k]) > 1})
 	}
 	return out, nil
 }

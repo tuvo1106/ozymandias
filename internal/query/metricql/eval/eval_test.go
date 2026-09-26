@@ -440,3 +440,115 @@ func TestEval_TimeoutApplies(t *testing.T) {
 		t.Errorf("got %v, want a deadline", err)
 	}
 }
+
+// A dashboard's multi-select binds one variable to several values of one key
+// and means *either* of them. Emitting two equality matchers would ask for a
+// series tagged both, which no series is, and the chart would come back empty
+// with nothing to explain why — the silent wrong answer, in the most ordinary
+// case there is.
+func TestEval_AMultiValuedVariableIsAChoice(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		vars map[string][]string
+		want []string
+	}{
+		{"one value", map[string][]string{"h": {"host:a"}}, []string{"host:a: 521"}},
+		{
+			"two values of one key are an OR",
+			map[string][]string{"h": {"host:a", "host:b"}},
+			[]string{"host:a: 521", "host:b: 210"},
+		},
+		{
+			"two keys still AND",
+			map[string][]string{"h": {"host:a", "route:/y"}},
+			[]string{"host:a: 500"},
+		},
+		{
+			"several values of one key, and another key",
+			map[string][]string{"h": {"host:a", "host:b", "route:/x"}},
+			[]string{"host:a: 21", "host:b: 210"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := runErr(fixture(), "sum:req.count{$h} by {host}", 0, 59, 60, tc.vars)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := lines(res); strings.Join(got, "|") != strings.Join(tc.want, "|") {
+				t.Errorf("\n got %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The same intent written two ways has to mean the same thing, or one of the
+// two spellings is a trap.
+func TestEval_AVariableAndAnInListAgree(t *testing.T) {
+	viaVar, err := runErr(fixture(), "sum:req.count{$h} by {host}", 0, 59, 60,
+		map[string][]string{"h": {"host:a", "host:b"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	viaIn, err := runErr(fixture(), "sum:req.count{host IN (a,b)} by {host}", 0, 59, 60, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := lines(viaVar), lines(viaIn); strings.Join(a, "|") != strings.Join(b, "|") {
+		t.Errorf("a variable gave %q but the IN list gave %q", a, b)
+	}
+}
+
+// fill's limit applies to every mode. Drawing a flat zero line forever after a
+// series stopped reporting is the most misleading of the four: it looks like a
+// measurement of nothing happening rather than an absence of measurement.
+func TestEval_FillLimitAppliesToZeroToo(t *testing.T) {
+	for _, tc := range []struct {
+		query string
+		want  string
+	}{
+		{"sum:req.count{route:/y} by {route}.fill(zero)", "route:/y: 100,0,0,400,0,0"},
+		{"sum:req.count{route:/y} by {route}.fill(zero, 10)", "route:/y: 100,0,_,400,0,_"},
+		{"sum:req.count{route:/y} by {route}.fill(zero, 20)", "route:/y: 100,0,0,400,0,0"},
+	} {
+		got := lines(run(t, fixture(), tc.query, 0, 59, 10))
+		if len(got) != 1 || got[0] != tc.want {
+			t.Errorf("%s:\n got %q\nwant %q", tc.query, got, tc.want)
+		}
+	}
+	// A leading run has no real data behind it to measure a limit from, so a
+	// limited fill leaves it alone while an unlimited one takes it.
+	e := fixture()
+	e.Store.(*memStore).series = []tsdb.SeriesSamples{
+		series("req.count", []string{"route:/z"}, sec(30, 7)),
+	}
+	for _, tc := range []struct {
+		query string
+		want  string
+	}{
+		{"sum:req.count{*} by {route}.fill(zero)", "route:/z: 0,0,0,7,0,0"},
+		{"sum:req.count{*} by {route}.fill(zero, 10)", "route:/z: _,_,_,7,0,_"},
+	} {
+		got := lines(run(t, e, tc.query, 0, 59, 10))
+		if len(got) != 1 || got[0] != tc.want {
+			t.Errorf("%s:\n got %q\nwant %q", tc.query, got, tc.want)
+		}
+	}
+}
+
+// Modifiers run on the combined line, and fill is the reason. Filling per
+// series would invent a reporting host: one that sent nothing would count as a
+// zero in an avg: and drag it down by exactly as many hosts as were down.
+func TestEval_FillRunsAfterTheSeriesAreCombined(t *testing.T) {
+	e := fixture()
+	e.Store.(*memStore).series = []tsdb.SeriesSamples{
+		series("req.count", []string{"host:a"}, sec(0, 10, 30, 10)),
+		series("req.count", []string{"host:b"}, sec(0, 20)), // stops reporting
+	}
+	// Bucket 1: only host:a reported, so the average of what reported is 10.
+	// Filled per series it would be (10+0)/2 = 5 — a number about a host that
+	// said nothing.
+	got := lines(run(t, e, "avg:req.count{*}.fill(zero)", 0, 59, 30))
+	if len(got) != 1 || got[0] != "*: 15,10" {
+		t.Errorf("got %q, want *: 15,10", got)
+	}
+}

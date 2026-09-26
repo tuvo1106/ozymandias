@@ -13,11 +13,24 @@ import (
 // rollup was consumed earlier — it decides the time aggregation and the grid,
 // both of which had to be known before any sample was read — so what is left
 // here is the three that transform a finished line.
-func applyModifiers(f frame, q *metricql.Query, g grid, kind wire.Kind) (frame, error) {
+func applyModifiers(f frame, q *metricql.Query, g grid, kind wire.Kind, st *state) (frame, error) {
+	_, isPercentile := q.Agg.Quantile()
 	for _, m := range q.Modifiers {
 		switch m.Kind {
 		case metricql.ModRollup:
-			// Already applied.
+			// The width was consumed by the planner and the method by the
+			// time aggregation — except on a percentile, which has no choice
+			// of method: its buckets are merged sketches, and a merge is the
+			// only reduction that keeps the error bound. Saying so is the
+			// point. The milestone's own example writes `.rollup(max, 60)` on
+			// a p95, and silently dropping half of what somebody typed is
+			// exactly the confident-wrong-answer habit this package keeps
+			// deciding against.
+			if isPercentile && m.Method != "" {
+				st.warnf(
+					"%s merges sketches, so the rollup method %q is not used; the bucket width still is",
+					q.Agg, m.Method)
+			}
 		case metricql.ModAsRate, metricql.ModAsCount:
 			if err := rateApplies(q, m.Kind, kind); err != nil {
 				return frame{}, err
@@ -83,7 +96,11 @@ const (
 // drawn at its last value. It is a distance per bucket, not a maximum gap
 // length — a twenty-minute hole with `fill(last, 300)` is filled for five
 // minutes and then stops, which is what "fill for up to five minutes" means.
-// Zero is no bound, which is what `.fill(last)` alone asks for.
+// Zero is no bound, which is what `.fill(last)` alone asks for. It applies to
+// **every** mode including `zero`: drawing a flat zero line forever after a
+// series stopped reporting is the most misleading of the four, because it
+// looks like a measurement of nothing happening rather than an absence of
+// measurement.
 //
 // A run of nulls at the *start* of the window has nothing behind it, so `last`
 // and `linear` leave it alone: inventing a value there would be inventing
@@ -100,14 +117,6 @@ func fill(f frame, mode fillMode, limit int64, g grid) {
 	}
 	for _, grp := range f.groups {
 		v := grp.values
-		if mode == fillZero {
-			for i := range v {
-				if math.IsNaN(v[i]) {
-					v[i] = 0
-				}
-			}
-			continue
-		}
 		for i := 0; i < len(v); i++ {
 			if !math.IsNaN(v[i]) {
 				continue
@@ -117,18 +126,31 @@ func fill(f frame, mode fillMode, limit int64, g grid) {
 			for j < len(v) && math.IsNaN(v[j]) {
 				j++
 			}
-			if i > 0 {
-				lo := v[i-1]
+			switch {
+			case i == 0:
+				// Nothing behind this run. `zero` is the one mode that does
+				// not need a value behind it — it asserts that absence means
+				// zero rather than carrying anything forward — so it fills,
+				// but only when no limit was given: a limit is a statement
+				// about distance from real data, and here there is none to
+				// measure from.
+				if mode == fillZero && limit == 0 {
+					for k := range j {
+						v[k] = 0
+					}
+				}
+			case mode == fillZero:
+				for k := i; k < j && k-i < reach; k++ {
+					v[k] = 0
+				}
+			case mode == fillLast:
+				for k := i; k < j && k-i < reach; k++ {
+					v[k] = v[i-1]
+				}
+			case mode == fillLinear && j < len(v):
 				// linear needs a point ahead to aim at; without one the gap
 				// stays a gap.
-				var step float64
-				if mode == fillLinear {
-					if j == len(v) {
-						i = j - 1
-						continue
-					}
-					step = (v[j] - lo) / float64(j-i+1)
-				}
+				lo, step := v[i-1], (v[j]-v[i-1])/float64(j-i+1)
 				for k := i; k < j && k-i < reach; k++ {
 					v[k] = lo + step*float64(k-i+1)
 				}
