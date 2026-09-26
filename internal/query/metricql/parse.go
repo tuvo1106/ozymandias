@@ -293,15 +293,19 @@ func (p *parser) filter() (Filter, error) {
 // matcher = [ "!" ] key ":" value | [ "!" ] key " IN (" values ")" | "$" var
 func (p *parser) matcher() (Matcher, error) {
 	var m Matcher
+	bang := -1
 	if p.tok.kind == tokBang {
-		m.Neg = true
+		m.Neg, bang = true, p.tok.pos
 		if err := p.advanceKey(); err != nil {
 			return m, err
 		}
 	}
 	if p.tok.kind == tokVar {
 		if m.Neg {
-			return m, errAt(p.tok.pos-1, "a template variable cannot be negated: put the '!' in what $%s expands to", p.tok.text)
+			// Point at the '!' itself, which is the character the message
+			// asks the user to move — it is not necessarily the byte before
+			// the '$', because space may sit between them.
+			return m, errAt(bang, "a template variable cannot be negated: put the '!' in what $%s expands to", p.tok.text)
 		}
 		m.Var = p.tok.text
 		return m, p.advance()
@@ -338,7 +342,7 @@ func (p *parser) matcher() (Matcher, error) {
 			return m, err
 		}
 		for {
-			p.advanceValue(",){")
+			p.advanceValue(",){}")
 			value := p.tok
 			if value.text == "" {
 				return m, errAt(value.pos, "expected a value in the list for %q", m.Key)
@@ -370,7 +374,11 @@ func (p *parser) matcher() (Matcher, error) {
 // quietly returning nothing.
 func checkTag(key string, value token) error {
 	if !wire.ValidTag(key + ":" + value.text) {
-		return errAt(value.pos, "%q is not a valid tag value: a tag is at most %d bytes and may not contain a comma or a newline", value.text, wire.MaxTagLen)
+		// Every rule, not the two most likely: a value rejected for bad UTF-8
+		// and told it is too long sends the reader looking in the wrong place.
+		return errAt(value.pos,
+			"%q is not a valid tag value: `key:value` must be valid UTF-8, at most %d bytes together, and free of commas and newlines",
+			value.text, wire.MaxTagLen)
 	}
 	return nil
 }
@@ -508,7 +516,7 @@ func (p *parser) seconds() (int64, error) {
 //
 // The lookahead is the '(' when this is called.
 func (p *parser) call(name token) (Node, error) {
-	sig, ok := Functions[name.text]
+	sig, ok := Lookup(name.text)
 	if !ok {
 		return nil, errAt(name.pos, "unknown function %q (have %s)", name.text, quoteList(FunctionNames()))
 	}

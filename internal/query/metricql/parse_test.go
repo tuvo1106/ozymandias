@@ -3,6 +3,7 @@ package metricql
 import (
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -321,8 +322,16 @@ func TestAgg_Quantile(t *testing.T) {
 
 func TestFunctionNames_AreSortedAndComplete(t *testing.T) {
 	names := FunctionNames()
-	if len(names) != len(Functions) {
-		t.Fatalf("listed %d of %d functions", len(names), len(Functions))
+	if len(names) != len(functions) {
+		t.Fatalf("listed %d of %d functions", len(names), len(functions))
+	}
+	for _, name := range names {
+		if _, ok := Lookup(name); !ok {
+			t.Errorf("FunctionNames lists %q but Lookup does not know it", name)
+		}
+	}
+	if _, ok := Lookup("nope"); ok {
+		t.Error("Lookup invented a function")
 	}
 	for i := 1; i < len(names); i++ {
 		if names[i-1] >= names[i] {
@@ -393,6 +402,92 @@ func TestParse_AnUnclosedFilterIsAnError(t *testing.T) {
 	} {
 		if n, err := Parse(src); err == nil {
 			t.Errorf("Parse(%q) returned %s, want an error", src, n)
+		}
+	}
+}
+
+// A value is trimmed of the same whitespace that separates tokens, newlines
+// included. Two symptoms if it is not: a filter written across lines ends its
+// value with a newline and is rejected for containing one, and a stray '\r'
+// — which no rule forbids inside a tag — makes a matcher that is accepted,
+// printed back faithfully, and can never match anything.
+func TestParse_ValuesAreTrimmedOfEveryWhitespace(t *testing.T) {
+	for _, src := range []string{
+		"sum:x{a:b}",
+		"sum:x{ a : b }",
+		"sum:x{\n\ta:b\n}",
+		"sum:x{a:b\r\n}",
+		"sum:x{a:b,\n c:d\n}\n",
+		"sum:x{a IN (\n b,\n c\n)}",
+	} {
+		t.Run(strconv.Quote(src), func(t *testing.T) {
+			n, err := Parse(src)
+			if err != nil {
+				t.Fatalf("%v", err)
+			}
+			for _, m := range n.(*Query).Filter {
+				for _, v := range m.Values {
+					if strings.TrimRight(v, " \t\r\n") != v {
+						t.Errorf("value %q keeps trailing whitespace", v)
+					}
+				}
+			}
+		})
+	}
+	// And a newline *inside* a value is still refused, because a stored tag
+	// cannot contain one.
+	if _, err := Parse("sum:x{a:b\nc}"); err == nil {
+		t.Error("a value containing a newline was accepted")
+	}
+}
+
+// A brace ends a value wherever one appears, including inside an IN list.
+// docs/query-language.md says so, so the two have to agree: a value that
+// swallowed a '}' would make a missing brace parse as a strange filter.
+func TestParse_BracesEndAValueInAListToo(t *testing.T) {
+	for _, src := range []string{
+		"sum:x{k:a}b}",
+		"sum:x{k IN (a}b)}",
+		"sum:x{k IN (a{b)}",
+	} {
+		if n, err := Parse(src); err == nil {
+			t.Errorf("Parse(%q) returned %s, want an error", src, n)
+		}
+	}
+}
+
+// The column of a negated-variable error is the '!' the message tells the user
+// to move, which is not always the byte before the '$'.
+func TestParse_NegatedVariableColumnPointsAtTheBang(t *testing.T) {
+	for _, tc := range []struct {
+		src string
+		col int
+	}{
+		{"sum:x{!$env}", 7},
+		{"sum:x{!  $env}", 7},
+		{"sum:x{a:b, ! $env}", 12},
+	} {
+		_, err := Parse(tc.src)
+		var perr *Error
+		if !errors.As(err, &perr) {
+			t.Fatalf("Parse(%q): got %v, want a parse error", tc.src, err)
+		}
+		if perr.Col != tc.col {
+			t.Errorf("Parse(%q): col %d, want %d (the '!')", tc.src, perr.Col, tc.col)
+		}
+	}
+}
+
+// A tag rejected for one reason must not be explained by another: a value with
+// bad UTF-8 told it is too long sends the reader looking in the wrong place.
+func TestParse_TagValueErrorNamesEveryRule(t *testing.T) {
+	_, err := Parse("sum:x{k:\xff}")
+	if err == nil {
+		t.Fatal("invalid UTF-8 was accepted")
+	}
+	for _, want := range []string{"UTF-8", "bytes", "commas"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
 		}
 	}
 }

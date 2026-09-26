@@ -60,9 +60,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running as a separate pass. AST nodes carry no source positions, which
   makes `parse(print(ast)) == ast` an exact property rather than a comparison
   modulo fields nobody reads; it is checked by `pgregory.net/rapid` and by
-  `FuzzParse`. A tag value deliberately cannot contain a brace, so that a
-  missing `}` is an error at the right column instead of a query that parses
-  wrongly and silently.
+  `FuzzParse`. A tag value deliberately cannot contain a brace — in a plain
+  `k:v` or inside an `IN` list — so that a missing `}` is an error at the right
+  column instead of a query that parses wrongly and silently.
 
 - **Percentiles are real: `p50`, `p75`, `p90`, `p95` and `p99`** on any
   `distribution` metric, and statsd type `d` now means one. Until now `d` was

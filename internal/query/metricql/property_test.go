@@ -98,7 +98,7 @@ func numberGen() *rapid.Generator[Node] {
 func callGen(depth int) *rapid.Generator[Node] {
 	return rapid.Custom(func(t *rapid.T) Node {
 		name := rapid.SampledFrom(FunctionNames()).Draw(t, "func")
-		sig := Functions[name]
+		sig, _ := Lookup(name)
 		n := rapid.IntRange(sig.Required, len(sig.Args)).Draw(t, "argc")
 		c := &Call{Func: name}
 		for i := range n {

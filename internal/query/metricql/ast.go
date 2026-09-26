@@ -13,7 +13,14 @@ import (
 // what [Node.String] guarantees.
 type Node interface {
 	// String returns the node's canonical text, parenthesised exactly where
-	// precedence requires. Parse(n.String()) equals n.
+	// precedence requires.
+	//
+	// For any tree [Parse] produced, Parse(n.String()) equals n — that is the
+	// round-trip property the package is tested against. It is not a promise
+	// about trees built by hand: a [Number] holding a negative value prints a
+	// '-' that re-parses as a [Unary], and one holding NaN or an infinity
+	// prints something the grammar has no literal for. Parse never builds
+	// either, so neither can arise from text.
 	String() string
 	node()
 }
@@ -183,6 +190,11 @@ func (*Binary) node() {}
 
 // String formats the literal the shortest way that reads back as the same
 // float64 ('g' with precision -1), so printing and re-parsing is exact.
+//
+// Only for a value [Parse] could have produced: a non-negative, finite one.
+// The grammar has no literal for a negative number — a '-' is always its own
+// [Unary] node — and none for NaN or an infinity, so a hand-built Number
+// holding one of those prints text that does not parse back. See [Node].
 func (n *Number) String() string { return strconv.FormatFloat(n.Value, 'g', -1, 64) }
 
 func (s *String) String() string { return strconv.Quote(s.Value) }

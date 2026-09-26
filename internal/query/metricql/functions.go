@@ -49,14 +49,18 @@ type Signature struct {
 	Required int
 }
 
-// Functions is every function the language has, and the shape of its
+// functions is every function the language has, and the shape of its
 // arguments. It is the parser's authority for "is this spelled right?", and
 // the evaluator's for "what am I being asked to compute" — one table, so a
 // function cannot be accepted by one and unimplemented by the other.
 //
-// It is exported so the query editor can offer completions from it rather
-// than from a second list that drifts.
-var Functions = map[string]Signature{
+// Unexported, and read through [Lookup]. An exported map would be writable by
+// anything that imports this package while [Parse] is reading it on another
+// goroutine, which is a data race no caller could fix from outside; it would
+// also be the global mutable state AGENTS.md §4 rules out. Nothing needs to
+// add a function at runtime — a function is code — so a read-only door is the
+// whole of the API.
+var functions = map[string]Signature{
 	// Shape, per bucket and per series.
 	"abs":   {Args: []ArgKind{ArgExpr}, Required: 1},
 	"log2":  {Args: []ArgKind{ArgExpr}, Required: 1},
@@ -88,11 +92,19 @@ var Functions = map[string]Signature{
 	"histogram_quantile": {Args: []ArgKind{ArgNumber, ArgExpr}, Required: 2},
 }
 
+// Lookup returns a function's signature. It is how the parser and the
+// evaluator ask the one table the same question.
+func Lookup(name string) (Signature, bool) {
+	sig, ok := functions[name]
+	return sig, ok
+}
+
 // FunctionNames lists the functions in sorted order, for error messages and
-// for the editor's completion list.
+// for the query editor's completion list — which is the reason this exists
+// rather than the editor keeping a second list that drifts.
 func FunctionNames() []string {
-	names := make([]string, 0, len(Functions))
-	for name := range Functions {
+	names := make([]string, 0, len(functions))
+	for name := range functions {
 		names = append(names, name)
 	}
 	sortStrings(names)

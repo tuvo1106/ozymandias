@@ -104,14 +104,14 @@ type lexer struct {
 	pos int
 }
 
+// whitespace is what separates tokens, and — because [lexer.nextValue] trims
+// it — what a tag value may not begin or end with. One definition, so the two
+// cannot drift apart.
+const whitespace = " \t\n\r"
+
 func (l *lexer) skipSpace() {
-	for l.pos < len(l.src) {
-		switch l.src[l.pos] {
-		case ' ', '\t', '\n', '\r':
-			l.pos++
-		default:
-			return
-		}
+	for l.pos < len(l.src) && strings.ContainsRune(whitespace, rune(l.src[l.pos])) {
+		l.pos++
 	}
 }
 
@@ -169,8 +169,15 @@ func (l *lexer) nextKey() (token, error) {
 //
 // A value is free text — `route:/api/items`, `url:http://x`, `version:1.2-rc*`
 // — so it has no lexical structure to speak of and is delimited only by what
-// follows it. Surrounding space is trimmed, so `a, b` inside an IN list is the
-// two values a and b.
+// follows it. Surrounding whitespace is trimmed, so `a, b` inside an IN list is
+// the two values a and b.
+//
+// "Whitespace" here has to mean exactly what it means between tokens, newlines
+// and carriage returns included, or a filter written across two lines — which
+// the grammar allows and a long query invites — ends its value with a newline
+// and is rejected for containing one. A stray '\r' is worse: no rule forbids
+// it inside a tag, so the matcher would be accepted, printed back faithfully,
+// and never match anything.
 //
 // A value therefore cannot contain ',', '{', '}' or, in a list, ')'. The
 // comma is the wire format's own tag separator so no stored tag has one
@@ -186,7 +193,7 @@ func (l *lexer) nextValue(stop string) token {
 	for l.pos < len(l.src) && !strings.ContainsRune(stop, rune(l.src[l.pos])) {
 		l.pos++
 	}
-	text := strings.TrimRight(l.src[start:l.pos], " \t")
+	text := strings.TrimRight(l.src[start:l.pos], whitespace)
 	return token{kind: tokValue, text: text, pos: start}
 }
 

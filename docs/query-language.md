@@ -21,7 +21,8 @@ sum:http.request.count{service:api,!status:2*} by {route}.as_rate()
 ```ebnf
 expr      = term { ("+" | "-") term } ;
 term      = factor { ("*" | "/") factor } ;
-factor    = [ "-" ] ( number | query | func_call | "(" expr ")" ) ;
+factor    = "-" factor
+          | number | query | func_call | "(" expr ")" ;
 
 func_call = ident "(" [ arg { "," arg } ] ")" ;
 arg       = expr | number | string ;
@@ -58,8 +59,10 @@ the intake lower-cases every key it stores, so a filter typed in capitals
 would otherwise match nothing and say nothing about why. A metric name and a
 tag value are taken exactly as written — the store distinguishes them.
 
-Whitespace between tokens is insignificant. A value may not begin or end with
-a space: `k: a ` selects `a`.
+Whitespace between tokens is insignificant, and a query may span lines. A value
+is trimmed of it on both sides — the same whitespace, newlines and carriage
+returns included — so `k: a ` selects `a` and a filter written across two lines
+means what it looks like.
 
 ### What a value may not contain
 
@@ -141,6 +144,9 @@ anything. They are refused on a metric that is not a distribution.
 on one side and not the other is dropped, and a scalar broadcasts over every
 group. Division by zero is null, not an error.
 
+In the table below `q` is a query or any expression, `n` a plain number and
+`"…"` a quoted keyword.
+
 | Function | Meaning |
 |---|---|
 | `abs(q)`, `log2(q)`, `log10(q)` | per point |
@@ -149,12 +155,21 @@ group. Division by zero is null, not an error.
 | `diff(q)` | per-bucket change, for a gauge reporting a running total |
 | `timeshift(q, secs)` | move `q`'s window, normally by a negative offset |
 | `top(q, n[, "mean"\|"sum"\|"min"\|"max"\|"last"][, "asc"\|"desc"])` | keep `n` groups |
-| `histogram_quantile(q, buckets)` | interpolate a quantile from cumulative `upper_bound` buckets |
+| `histogram_quantile(n, q)` | interpolate the quantile `n` from `q`'s cumulative `upper_bound` buckets — **the number comes first** |
 
 `histogram_quantile` is the path for metrics scraped from a Prometheus
 exporter, where buckets are all there is; `pXX` is the path for metrics that
 arrive as sketches. Both exist so the same data can be measured two ways and
-the error compared.
+the error compared:
+
+```
+histogram_quantile(0.9, sum:http.request.duration.bucket{service:api} by {upper_bound})
+p90:http.request.duration{service:api}
+```
+
+The quantile is the *first* argument, unlike every other function here, because
+that is the order Prometheus uses and the one anybody porting a query will
+type.
 
 A number-shaped argument must be a plain number, possibly negated —
 `clamp_min(q, 2*3)` is refused rather than folded.
