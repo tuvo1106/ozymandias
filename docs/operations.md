@@ -113,12 +113,32 @@ same `storage.retention` window, sweeps hourly, and deliberately runs one
 newest sample has expired, so a `.count` outlives the cutoff by up to a block,
 and a sketch expiring on the cutoff exactly would leave a window where the
 count chart draws a line and `p95` returns null. Sketches with no `.count` are
-unreachable rather than wrong, so the lag is the safe side to err on. Two
-self-metrics are worth
-an alert: `ozy.sketchstore.id_collisions` should be zero forever (a non-zero
-value means one metric's percentiles are being refused — the log line names
-both series), and `ozy.sketchstore.disk_bytes` grows with distribution
-cardinality, not with traffic.
+unreachable rather than wrong, so the lag is the safe side to err on.
+
+There is one transient with the same shape, and it lasts a single request: the
+intake writes the four scalars first so that the append-only store decides
+which buckets exist (ADR-0015), and writes the sketches for the buckets it
+accepted second. Between the two writes a `.count` is queryable and its sketch
+is not.
+
+What that looks like depends on the query window, and **only one of the two
+symptoms is obvious**. A window covering just the un-sketched bucket returns
+null — visibly missing. A window spanning several buckets where only the
+newest sketch has not landed returns a *number*, computed from the buckets
+that did land: plausible, wrong, and shifted towards whatever the older data
+says. That is not hypothetical — it is how this was found, as a p95 of 1408
+where 1440 was right, which is the exact p95 of the earlier half of the data.
+
+It resolves as soon as the request finishes and needs no action. It is,
+though, why a test or a script that waits for `.count` before reading a
+percentile is waiting on the wrong thing: the count is written first by
+design, so it is true before the thing being measured exists. Wait on the
+percentile settling, or on the sketch store.
+
+Two self-metrics are worth an alert: `ozy.sketchstore.id_collisions` should be
+zero forever (a non-zero value means one metric's percentiles are being
+refused — the log line names both series), and `ozy.sketchstore.disk_bytes`
+grows with distribution cardinality, not with traffic.
 
 | Setting | Default | What it controls |
 |---|---|---|

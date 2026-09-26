@@ -17,6 +17,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/internal/sketch"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
+	"github.com/tuvo1106/ozymandias/internal/tsdb"
 )
 
 // L8: M2's last acceptance criterion, end to end in one process.
@@ -128,16 +129,54 @@ func TestEndToEnd_DistributionToPercentile(t *testing.T) {
 	// right if the two sketches were merged.
 	const url = "/api/v1/query?metric=http.request.duration&agg=p95&by=route" +
 		"&filter=service:checkout&from=1790000000&to=1790000019&interval=20"
-	// Wait on the counts rather than on the percentile: the forwarder
-	// delivers the two flushes independently, and a p95 that arrived from
-	// only the first would be a plausible number. The counts are exact, so
-	// "both flushes have landed" is a question with a yes-or-no answer.
 	const countsURL = "/api/v1/query?metric=http.request.duration.count&agg=sum&by=route" +
 		"&from=1790000000&to=1790000019&interval=20"
+
+	// Wait on the sketches themselves, and on nothing else.
+	//
+	// Two weaker signals both look right and are not. A p95 that arrived
+	// from only the first flush is a plausible number, so waiting for the
+	// percentile to be non-null proves nothing. And `.count` — which this
+	// test used to wait on — becomes visible *before* the sketch it was
+	// derived from: the intake writes the scalars first on purpose, so that
+	// the append-only store rules on which buckets exist (ADR-0015), and a
+	// sketch is written only for the buckets it accepted. Between those two
+	// writes a count is queryable and its sketch is not.
+	//
+	// That window is nanoseconds on a fast machine and wide enough to lose
+	// on a loaded CI runner, where this failed with a p95 of 1408.37 — which
+	// is exactly the right answer for the first flush alone. The store is
+	// the only thing that can answer "is every observation I am about to
+	// assert on actually here".
+	//
+	// The wait also insists on *two* buckets, which is the only way this test
+	// can tell that it is exercising the merge at all. 600 observations in one
+	// bucket would total the same, answer the same p95, and prove nothing —
+	// the hole an earlier version of this test fell into.
+	sketchesFor := func(route string) sketchState {
+		ref := tsdb.NewSeriesRef("http.request.duration",
+			[]string{"host:box", "route:" + route, "service:checkout"})
+		points, err := srv.sketches.Read(context.Background(), ref, 1790000000_000, 1790000019_999)
+		if err != nil {
+			return sketchState{err: err}
+		}
+		st := sketchState{buckets: len(points)}
+		for _, p := range points {
+			st.observations += p.Sketch.Count()
+		}
+		return st
+	}
+	// Eventually formats its message from arguments evaluated at the call
+	// site — before a single poll — so reading the store there would report
+	// the state before the first check and always say zero. A Stringer defers
+	// the read to the moment the failure is formatted, which is the only
+	// moment whose answer is worth printing.
 	testutil.Eventually(t, 5*time.Second, func() bool {
-		c := query(countsURL)
-		return c["/items"] == 300 && c["/checkout"] == 300
-	}, "both flushes never landed: %+v", query(countsURL))
+		return sketchesFor("/items").complete() && sketchesFor("/checkout").complete()
+	}, "sketches never completed (want 300 observations in 2 buckets each): %v",
+		lazy(func() string {
+			return fmt.Sprintf("/items %v, /checkout %v", sketchesFor("/items"), sketchesFor("/checkout"))
+		}))
 
 	got := query(url)
 	for route, values := range sent {
@@ -189,3 +228,30 @@ func slicesMax(values []float64) float64 {
 	}
 	return out
 }
+
+// sketchState is what the sketch store holds for one series over the query
+// window: how many observations, spread over how many buckets.
+type sketchState struct {
+	observations float64
+	buckets      int
+	err          error
+}
+
+// complete reports whether every observation the test sent for this series is
+// in the store, in the two buckets the two agent flushes produced.
+func (s sketchState) complete() bool {
+	return s.err == nil && s.observations == 300 && s.buckets == 2
+}
+
+func (s sketchState) String() string {
+	if s.err != nil {
+		return "unreadable: " + s.err.Error()
+	}
+	return fmt.Sprintf("%v observations in %d buckets", s.observations, s.buckets)
+}
+
+// lazy defers a failure message until something formats it. Without it,
+// testutil.Eventually's arguments describe the moment before its first poll.
+type lazy func() string
+
+func (f lazy) String() string { return f() }
