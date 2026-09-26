@@ -13,10 +13,10 @@ import (
 // call evaluates a function.
 //
 // The parser has already checked the name and the shape of the arguments
-// against [metricql.Functions], so anything reaching here is spelled right and
-// every switch arm below has a matching entry in that table. A function in one
-// and not the other is the bug this arrangement is meant to make impossible,
-// and the default arm is what says so out loud.
+// against the table behind [metricql.Lookup], so anything reaching here is
+// spelled right and every switch arm below has a matching entry in it. A
+// function in one and not the other is the bug that arrangement exists to make
+// impossible, and the default arm is what says so out loud.
 func (e *Evaluator) call(ctx context.Context, c *metricql.Call, g grid, st *state) (frame, error) {
 	// timeshift is the one function that changes what its argument is
 	// evaluated over rather than what comes back, so it runs before the
