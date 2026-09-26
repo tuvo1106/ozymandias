@@ -9,11 +9,11 @@ A query reads left to right as the pipeline that answers it:
 ```
 sum:http.request.count{service:api,!status:2*} by {route}.as_rate()
 └┬┘ └────────┬───────┘ └──────────┬─────────┘    └──┬─┘  └───┬───┘
- │           │                    │                 │        └ 4. modify
+ │           │                    │                 │        └ 5. modify
  │           │                    │                 └ 3. group
- │           │                    └ 2. select
- │           └ of this metric
- └ 5. combine each group with this
+ │           │                    └ 1. select
+ │           └ of this metric, time-aggregated (2)
+ └ 4. combine each group with this
 ```
 
 ## Grammar
@@ -101,10 +101,17 @@ Negation matching series that lack the key entirely is the same rule
 
 ### 2. Time-aggregate
 
-Each selected series is reduced into buckets of `interval` seconds aligned to
-`from`. The default method comes from the metric's type — a gauge averages, a
-count sums, a distribution merges its sketches — and `.rollup(method[, secs])`
-overrides it. An empty bucket is null, not zero.
+Each selected series is reduced into buckets of `interval` seconds. The default
+method comes from the metric's type — a gauge averages, a count sums, a
+distribution merges its sketches — and `.rollup(method[, secs])` overrides it.
+An empty bucket is null, not zero.
+
+**Buckets are aligned to the epoch, not to `from`.** The first bucket starts at
+the largest multiple of `interval` at or before `from`, so the same query asked
+one second later returns the same buckets with the same timestamps instead of a
+chart that redraws as "now" moves. The cost is that the first bucket can begin
+before `from` and include samples from before it; a chart's leftmost point is
+therefore the one not to read too closely.
 
 This order is the reason a dashboard reads correctly: ten 10-second counts
 become one 100-second count *before* anything is summed across hosts.
@@ -112,12 +119,33 @@ become one 100-second count *before* anything is summed across hosts.
 ### 3. Group
 
 `by {k1,k2}` puts series with equal values for those keys in one group. A
-series missing one of the keys goes to the group `N/A` for that key. With no
-`by`, every selected series is one group.
+series missing one of the keys is grouped under its *absence*: the key is left
+off that group's tags, so one line comes back scoped by the keys it does have.
+With no `by`, every selected series is one group.
 
-### 4. Modify
+### 4. Space-aggregate
+
+The aggregator before the `:` combines a group's series bucket by bucket,
+ignoring nulls; a bucket where every series is null stays null.
+
+`p50`…`p99` merge the bucket's **sketches** and then take the quantile — they
+are not an average of per-series percentiles, which is not a percentile of
+anything. They are refused on a metric that is not a distribution.
+
+### 5. Modify
 
 Modifiers apply in the order written, and each kind may appear once.
+
+`.rollup()` is the exception to the numbering: it names the *time*
+aggregation, so its method is applied at stage 2 and its width decides the
+grid before a single sample is read. The other three apply to the finished
+line, **after** the series have been combined.
+
+That matters most for `fill`. Filling before the group were combined would
+invent a reporting series: a host that sent nothing would count as a zero in
+an `avg:`, dragging it down by exactly as much as the number of hosts that
+were down. Filling afterwards only fills buckets where *nothing* reported,
+which is the question the reader is asking.
 
 | Modifier | Effect |
 |---|---|
@@ -127,16 +155,52 @@ Modifiers apply in the order written, and each kind may appear once.
 | `.fill(mode[, secs])` | replace nulls: `zero`, `last`, `linear`, or `null` to keep them, optionally only within `secs` of real data |
 
 `.as_rate()` and `.as_count()` are refused on a metric that is not a count or
-a rate: the answer would be a number with no meaning.
+a rate: the answer would be a number with no meaning. Because they run after
+stage 4, they divide the *aggregated* line — which is the same number either
+way for `sum` and `avg`, since both are linear.
 
-### 5. Space-aggregate
+A `.rollup(method, …)` on a percentile query keeps its width and reports a
+warning that the method was not used: a percentile's buckets are merged
+sketches, and a merge is the only reduction that preserves the error bound.
 
-The aggregator before the `:` combines a group's series bucket by bucket,
-ignoring nulls; a bucket where every series is null stays null.
+### Worked example
 
-`p50`…`p99` merge the bucket's **sketches** and then take the quantile — they
-are not an average of per-series percentiles, which is not a percentile of
-anything. They are refused on a metric that is not a distribution.
+Two hosts serving one route, a `count` metric flushed every 10 seconds:
+
+| t | 0 | 10 | 20 | 30 | 40 | 50 |
+|---|---|---|---|---|---|---|
+| `host:a,route:/x` | 1 | 2 | 3 | 4 | 5 | 6 |
+| `host:b,route:/x` | 10 | 20 | 30 | 40 | 50 | 60 |
+
+**Stage 2, time-aggregate** at `interval=30`. The metric is a count, so each
+series' samples *sum* within each bucket:
+
+| series | `[0,30)` | `[30,60)` |
+|---|---|---|
+| `host:a` | 1+2+3 = **6** | 4+5+6 = **15** |
+| `host:b` | 10+20+30 = **60** | 40+50+60 = **150** |
+
+**Stages 3–5, group and space-aggregate.** Both series are `route:/x`, so they
+are one group, combined bucket by bucket:
+
+| query | `[0,30)` | `[30,60)` |
+|---|---|---|
+| `sum:req.count{*} by {route}` | 6+60 = **66** | 15+150 = **165** |
+| `avg:req.count{*} by {route}` | (6+60)/2 = **33** | (15+150)/2 = **82.5** |
+| `max:req.count{*} by {route}` | **60** | **150** |
+| `count:req.count{*} by {route}` | **2** | **2** |
+| `sum:…{*} by {route}.as_rate()` | 66/30 = **2.2** | 165/30 = **5.5** |
+| `avg:…{*} by {route}.rollup(max)` | (3+30)/2 = **16.5** | (6+60)/2 = **33** |
+
+The last row is the one to read twice. `.rollup(max)` changes **stage 2**: each
+series contributes its largest sample in the bucket — 3 for `host:a`, 30 for
+`host:b` — and the `avg:` still runs across the two series afterwards.
+Overriding the time aggregation does not move it.
+
+Doing the two stages in the other order would give different numbers for every
+row but `max`. `avg` space-first would be the mean of 11, 22, 33 = 22 rather
+than 33, which weights each host by how often it happened to report rather than
+by what it counted. That is why the order is fixed and not an option.
 
 ### Arithmetic and functions
 
