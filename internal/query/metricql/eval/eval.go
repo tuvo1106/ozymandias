@@ -100,24 +100,28 @@ type Series struct {
 	Metric string `json:"metric"`
 	// Tags holds the group-by keys and their values. A key that a group's
 	// series did not carry is absent rather than empty.
-	Tags   map[string]string `json:"tags"`
-	Points []Point           `json:"points"`
+	Tags map[string]string `json:"tags"`
+	// Scope is how a legend names this line: the group-by tags, sorted, or
+	// "*" for a query with no grouping — the spelling for "everything,
+	// aggregated together". It is derived from Tags and carried in the
+	// response so that every client renders a line's name the same way
+	// instead of each inventing its own join.
+	Scope  string  `json:"scope"`
+	Points []Point `json:"points"`
 }
 
-// Scope renders a line's group the way a legend names it: the group-by tags,
-// sorted, or "*" for a query with no grouping — the spelling for "everything,
-// aggregated together".
-func (s Series) Scope() string {
-	if len(s.Tags) == 0 {
+// scopeOf renders a group's tags the way a legend names them.
+func scopeOf(tags map[string]string) string {
+	if len(tags) == 0 {
 		return "*"
 	}
-	keys := make([]string, 0, len(s.Tags))
-	for k := range s.Tags {
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
 		keys = append(keys, k)
 	}
 	slices.Sort(keys)
 	for i, k := range keys {
-		keys[i] = wire.JoinTag(k, s.Tags[k])
+		keys[i] = wire.JoinTag(k, tags[k])
 	}
 	return strings.Join(keys, ",")
 }
@@ -157,6 +161,36 @@ func (p *Point) UnmarshalJSON(data []byte) error {
 // ErrNoSketchStore means a percentile was asked of a deployment that stores no
 // sketches. That is a server configuration answer, not a bad request.
 var ErrNoSketchStore = errors.New("this server has no sketch store")
+
+// ErrBadQuery marks a failure caused by what the query asked for rather than
+// by a store, a timeout or the server.
+//
+// Every refusal this package raises about a query's own meaning wraps it — a
+// percentile of a gauge, an unbound variable, a window that cannot be
+// represented, more series than the limit allows. An API can then answer 400
+// for those and 500 for the rest without matching on the text of an error
+// message, which is a classification that breaks the first time somebody
+// rewords one.
+var ErrBadQuery = errors.New("bad query")
+
+// badQuery carries a refusal's message without the sentinel's own words in
+// front of it. `fmt.Errorf("%w: …", ErrBadQuery, …)` would be shorter, but the
+// text it produces starts "bad query: ", and this text is shown to whoever
+// typed the query. They already know it was bad; what they need is the part
+// after the colon.
+type badQuery struct{ msg string }
+
+func (e *badQuery) Error() string { return e.msg }
+
+// Is makes errors.Is(err, ErrBadQuery) true without ErrBadQuery appearing in
+// the message.
+func (e *badQuery) Is(target error) bool { return target == ErrBadQuery }
+
+// badf builds a query error: the caller asked for something that cannot be
+// answered, and the message says what.
+func badf(format string, a ...any) error {
+	return &badQuery{fmt.Sprintf(format, a...)}
+}
 
 // Eval runs req.
 //
@@ -291,7 +325,7 @@ func (f frame) lines(n metricql.Node, g grid) []Series {
 		for i := range pts {
 			pts[i] = Point{T: g.at(i), V: f.scalar}
 		}
-		return []Series{{Metric: n.String(), Tags: map[string]string{}, Points: pts}}
+		return []Series{{Metric: n.String(), Tags: map[string]string{}, Scope: "*", Points: pts}}
 	}
 	out := make([]Series, 0, len(f.groups))
 	for _, grp := range f.groups {
@@ -299,9 +333,9 @@ func (f frame) lines(n metricql.Node, g grid) []Series {
 		for i := range pts {
 			pts[i] = Point{T: g.at(i), V: grp.values[i]}
 		}
-		out = append(out, Series{Metric: f.metric, Tags: grp.tags, Points: pts})
+		out = append(out, Series{Metric: f.metric, Tags: grp.tags, Scope: scopeOf(grp.tags), Points: pts})
 	}
-	slices.SortFunc(out, func(a, b Series) int { return strings.Compare(a.Scope(), b.Scope()) })
+	slices.SortFunc(out, func(a, b Series) int { return strings.Compare(a.Scope, b.Scope) })
 	return out
 }
 
@@ -316,7 +350,7 @@ func (e *Evaluator) node(ctx context.Context, n metricql.Node, g grid, st *state
 	case *metricql.String:
 		// The parser only accepts a string where a signature asks for one, so
 		// reaching here means a function read its arguments wrongly.
-		return frame{}, fmt.Errorf("the string %q is not a value", v.Value)
+		return frame{}, badf("the string %q is not a value", v.Value)
 	case *metricql.Unary:
 		f, err := e.node(ctx, v.X, g, st)
 		if err != nil {
@@ -330,5 +364,5 @@ func (e *Evaluator) node(ctx context.Context, n metricql.Node, g grid, st *state
 	case *metricql.Query:
 		return e.query(ctx, v, g, st)
 	}
-	return frame{}, fmt.Errorf("cannot evaluate %T", n)
+	return frame{}, badf("cannot evaluate %T", n)
 }

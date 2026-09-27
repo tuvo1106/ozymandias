@@ -28,7 +28,7 @@ import (
 func (e *Evaluator) percentile(ctx context.Context, q *metricql.Query, g grid, st *state, kind wire.Kind) (frame, error) {
 	quantile, _ := q.Agg.Quantile()
 	if kind != "" && kind != wire.KindDistribution {
-		return frame{}, fmt.Errorf("%s is a %s, not a distribution, so it has no percentiles", q.Metric, kind)
+		return frame{}, badf("%s is a %s, not a distribution, so it has no percentiles", q.Metric, kind)
 	}
 	if e.Sketches == nil {
 		return frame{}, fmt.Errorf("%s: %w", q.Agg, ErrNoSketchStore)
@@ -78,7 +78,7 @@ func (e *Evaluator) percentile(ctx context.Context, q *metricql.Query, g grid, s
 			return nil
 		})
 		if errors.Is(err, sketch.ErrIncompatible) {
-			return frame{}, fmt.Errorf("%s:%s: %w", q.Agg, q.Metric, err)
+			return frame{}, fmt.Errorf("%w: %s:%s: %w", ErrBadQuery, q.Agg, q.Metric, err)
 		}
 		if err != nil {
 			return frame{}, err

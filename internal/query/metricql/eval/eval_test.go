@@ -106,7 +106,7 @@ func lines(res Result) []string {
 			}
 			vals[i] = fmt.Sprintf("%g", p.V)
 		}
-		out = append(out, s.Scope()+": "+strings.Join(vals, ","))
+		out = append(out, s.Scope+": "+strings.Join(vals, ","))
 	}
 	return out
 }
@@ -550,5 +550,31 @@ func TestEval_FillRunsAfterTheSeriesAreCombined(t *testing.T) {
 	got := lines(run(t, e, "avg:req.count{*}.fill(zero)", 0, 59, 30))
 	if len(got) != 1 || got[0] != "*: 15,10" {
 		t.Errorf("got %q, want *: 15,10", got)
+	}
+}
+
+// The sentinel is for the API's status code, not for the reader. A message
+// that begins "bad query: " tells whoever typed the query something they
+// already know, and pushes the part they need past the fold.
+func TestErrBadQuery_ClassifiesWithoutPrefixingTheMessage(t *testing.T) {
+	err := badf("%s is a count, not a distribution", "x.count")
+	if !errors.Is(err, ErrBadQuery) {
+		t.Fatal("a refusal must classify as ErrBadQuery")
+	}
+	if got := err.Error(); got != "x.count is a count, not a distribution" {
+		t.Errorf("message %q", got)
+	}
+	// And it survives being given more context on the way up, which is how
+	// the evaluator names the node a refusal came from.
+	wrapped := fmt.Errorf("evaluating %s: %w", "sum:x{*}", err)
+	if !errors.Is(wrapped, ErrBadQuery) {
+		t.Error("wrapping lost the classification")
+	}
+	if !strings.Contains(wrapped.Error(), "evaluating sum:x{*}: x.count is a count") {
+		t.Errorf("wrapped message %q", wrapped)
+	}
+	// A store failure must not be mistaken for one.
+	if errors.Is(errors.New("sql: database is closed"), ErrBadQuery) {
+		t.Error("a store failure classified as a bad query")
 	}
 }

@@ -2,7 +2,6 @@ package eval
 
 import (
 	"context"
-	"fmt"
 	"math"
 
 	"github.com/tuvo1106/ozymandias/internal/query/metricql"
@@ -17,7 +16,7 @@ func (e *Evaluator) query(ctx context.Context, q *metricql.Query, g grid, st *st
 		return e.percentile(ctx, q, g, st, kind)
 	}
 	if kind == wire.KindDistribution {
-		return frame{}, fmt.Errorf(
+		return frame{}, badf(
 			"%s is a distribution, so %s is not a number it has: use p50, p75, p90, p95 or p99, or query %s%s, %s%s, %s%s or %s%s",
 			q.Metric, q.Agg, q.Metric, wire.SuffixCount, q.Metric, wire.SuffixSum,
 			q.Metric, wire.SuffixMin, q.Metric, wire.SuffixMax)
@@ -71,7 +70,7 @@ func (e *Evaluator) query(ctx context.Context, q *metricql.Query, g grid, st *st
 }
 
 func tooManySeries(q *metricql.Query) error {
-	return fmt.Errorf(
+	return badf(
 		"%s selects more than %d series; narrow the filter, or group with `by {…}` so that the answer is a few lines rather than thousands",
 		q, MaxSeriesPerNode)
 }
@@ -164,7 +163,7 @@ func containsStar(s string) bool {
 func expandVar(m metricql.Matcher, st *state) ([]metricql.Matcher, error) {
 	values, ok := st.vars[m.Var]
 	if !ok {
-		return nil, fmt.Errorf("$%s is not bound: the query uses it as a filter but the request supplied no value", m.Var)
+		return nil, badf("$%s is not bound: the query uses it as a filter but the request supplied no value", m.Var)
 	}
 	if len(values) == 0 {
 		st.warnf("$%s resolved to no filter, so every value of it is included", m.Var)
@@ -175,7 +174,7 @@ func expandVar(m metricql.Matcher, st *state) ([]metricql.Matcher, error) {
 	for _, v := range values {
 		tag := tsdb.ParseTag(v)
 		if tag.Key == "" {
-			return nil, fmt.Errorf("$%s is bound to %q, which is not a key:value tag", m.Var, v)
+			return nil, badf("$%s is bound to %q, which is not a key:value tag", m.Var, v)
 		}
 		if _, seen := byKey[tag.Key]; !seen {
 			order = append(order, tag.Key)
