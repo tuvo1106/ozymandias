@@ -78,7 +78,10 @@ func (e *Evaluator) percentile(ctx context.Context, q *metricql.Query, g grid, s
 			return nil
 		})
 		if errors.Is(err, sketch.ErrIncompatible) {
-			return frame{}, fmt.Errorf("%w: %s:%s: %w", ErrBadQuery, q.Agg, q.Metric, err)
+			// Not a badf: see ErrSketchesDisagree. The caller cannot rewrite
+			// their way out of this one, and the metric named here is what an
+			// operator needs to go looking with.
+			return frame{}, fmt.Errorf("%w: %s: %w", ErrSketchesDisagree, q.Metric, err)
 		}
 		if err != nil {
 			return frame{}, err

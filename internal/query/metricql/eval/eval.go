@@ -162,6 +162,17 @@ func (p *Point) UnmarshalJSON(data []byte) error {
 // sketches. That is a server configuration answer, not a bad request.
 var ErrNoSketchStore = errors.New("this server has no sketch store")
 
+// ErrSketchesDisagree marks a group whose sketches were built at different
+// relative accuracies, which is a property of what is stored and not of what
+// was asked.
+//
+// It is deliberately not an ErrBadQuery. Merging them would silently widen the
+// error bound past what the API promises, so the query is refused — but there
+// is no rewrite of it that would help, and telling the caller their query is
+// bad sends them looking in the one place the problem is not. The fix is an
+// operator's: find out which writer used the other accuracy.
+var ErrSketchesDisagree = errors.New("sketches of this metric were built at different relative accuracies")
+
 // ErrBadQuery marks a failure caused by what the query asked for rather than
 // by a store, a timeout or the server.
 //

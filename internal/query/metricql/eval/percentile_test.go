@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -195,9 +196,24 @@ func TestEval_PercentileRefusesIncompatibleSketches(t *testing.T) {
 		"host:a": {0: sketchOf(t, 1)},
 		"host:b": {0: coarse},
 	})
-	if _, err := runErr(e, "p95:lat{*}", 0, 59, 60, nil); err == nil ||
-		!strings.Contains(err.Error(), "different gamma") {
-		t.Errorf("got %v, want an incompatibility error", err)
+	_, err := runErr(e, "p95:lat{*}", 0, 59, 60, nil)
+	if err == nil || !strings.Contains(err.Error(), "different gamma") {
+		t.Fatalf("got %v, want an incompatibility error", err)
+	}
+	// It is the stored data that disagrees, not the query. Classifying this as
+	// ErrBadQuery would hand the caller a 400 and send them rewriting a query
+	// that was never the problem; the fix belongs to whoever is running the
+	// writer that used the other accuracy.
+	if !errors.Is(err, ErrSketchesDisagree) {
+		t.Errorf("%v does not classify as ErrSketchesDisagree", err)
+	}
+	if errors.Is(err, ErrBadQuery) {
+		t.Errorf("%v classifies as the caller's mistake, which it is not", err)
+	}
+	// And the metric is named, because that is what an operator goes looking
+	// with.
+	if !strings.Contains(err.Error(), "lat") {
+		t.Errorf("%v does not name the metric", err)
 	}
 }
 
