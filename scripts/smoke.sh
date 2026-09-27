@@ -190,6 +190,73 @@ check "the sketch store reports its size"  test "$(gauge_value ozy.sketchstore.s
 # them is being refused. It should be zero forever.
 check "no series hashed to the same id"    test "$(gauge_value ozy.sketchstore.id_collisions '')" = "0"
 
+# --- M3: the query language ----------------------------------------------------
+# The endpoint now evaluates metricql, so what is worth proving out here is the
+# part the M1 parameters could not express at all, and that the two spellings
+# reach the same engine.
+
+# query_expr <expr> [extra curl args…] — the last non-null point of the first
+# line of a metricql query, or "null".
+query_expr() {
+  local expr=$1
+  shift
+  curl -fsS --max-time 5 --get "$OZY_URL/api/v1/query" \
+    --data-urlencode "q=$expr" -d "from=$((M1_T0 - 10))" -d "to=$(date +%s)" "$@" |
+    python3 -c 'import json,sys
+d = json.load(sys.stdin)
+pts = [p[1] for s in d.get("series", []) for p in s["points"] if p[1] is not None]
+print(pts[-1] if pts else "null")'
+}
+# field <url> <json path…> — one value out of a response, as text.
+field() {
+  local url=$1
+  shift
+  curl -fsS --max-time 5 "$url" | python3 -c 'import json,sys
+d = json.load(sys.stdin)
+for k in sys.argv[1:]:
+    d = d[int(k)] if isinstance(d, list) else d[k]
+print(d)' "$@"
+}
+
+# A ratio of two queries is the shape M1 had no room for: two selections in
+# one request. A metric over itself is exactly 1 whatever the data did.
+check "a ratio of two queries"             test "$(query_expr \
+  'sum:smoke.latency.count{*} / sum:smoke.latency.count{*}')" = "1"
+# A template variable is bound by the caller, not written into the query.
+check "a template variable binds"          test "$(query_expr \
+  'sum:smoke.latency.count{$scope}' --data-urlencode 'var.scope=host:*')" = "100"
+# The response says what it evaluated, canonically spelled — which is what a
+# dashboard stores and what somebody migrating off the M1 parameters copies.
+check "the response echoes the query"      test "$(field \
+  "$OZY_URL/api/v1/query?metric=smoke.latency.count&agg=sum&by=host&from=$((M1_T0 - 10))&to=$(date +%s)" \
+  query)" = "sum:smoke.latency.count{*} by {host}"
+# And names each line the same way for every client.
+check "each line carries its scope"        test "$(field \
+  "$OZY_URL/api/v1/query?metric=smoke.latency.count&agg=sum&from=$((M1_T0 - 10))&to=$(date +%s)" \
+  series 0 scope)" = "*"
+# POST takes the same query, because a dashboard's outgrows a URL.
+# post_query <json body> — Σ of every non-null point, as an integer.
+post_query() {
+  curl -fsS --max-time 5 "$OZY_URL/api/v1/query" -d "$1" |
+    python3 -c 'import json,sys
+d = json.load(sys.stdin)
+print(int(sum(p[1] for s in d["series"] for p in s["points"] if p[1] is not None)))'
+}
+# POST takes the same query as a body, because a dashboard's outgrows a URL.
+# The body is built here and not inside the `$(…)` below: a `\"` written inside
+# a command substitution inside a quoted argument reaches curl as a literal
+# backslash, and the server sees JSON that is not the JSON written here.
+post_body="{\"q\": \"sum:smoke.latency.count{*}\", \"from\": $((M1_T0 - 10)), \"to\": $(date +%s)}"
+check "POST takes a query body"            test "$(post_query "$post_body")" = "100"
+
+# The editor endpoint answers 200 with a column to underline, not an exception.
+validate_col() { # <query> — "<ok> <col>" for a query that does not parse
+  curl -fsS --max-time 5 "$OZY_URL/api/v1/query/validate" --data-binary @- <<<"{\"q\": \"$1\"}" |
+    python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["ok"], d["error"]["col"])'
+}
+broken_col=$(validate_col 'sum:x{a:b by {k}')
+check "a broken query reports its column"  test "$broken_col" = "False 14"
+
 # The durability claim, end to end. The SIGTERM cycle near the top of this
 # script happened before any of this data existed, so repeating a query after
 # it proved nothing — which is what this check used to do. Kill ozyd
