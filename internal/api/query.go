@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -20,6 +19,32 @@ import (
 // memory; metricql's own limit is 8 KiB and this leaves room for the window
 // and the variables around it.
 const maxBodyBytes = 64 << 10
+
+// readBody decodes a JSON request body, strictly.
+//
+// http.MaxBytesReader rather than io.LimitReader: the latter truncates in
+// silence, so a body one byte over the limit is reported as malformed JSON —
+// "unexpected EOF" — and the caller goes looking for a missing brace that was
+// there all along. MaxBytesReader names the real problem.
+//
+// DisallowUnknownFields catches a misspelled field instead of ignoring it, and
+// the trailing-content check catches two JSON objects sent as one body, which
+// would otherwise silently use the first and discard the rest.
+func readBody(w http.ResponseWriter, r *http.Request, into any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(into); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			return fmt.Errorf("body is larger than %d bytes", maxBodyBytes)
+		}
+		return fmt.Errorf("body: %w", err)
+	}
+	if dec.More() {
+		return errors.New("body: trailing content after the JSON object")
+	}
+	return nil
+}
 
 // queryRequest is what both verbs and both spellings of a query come down to.
 //
@@ -36,8 +61,15 @@ type queryRequest struct {
 	By     string `json:"by"`
 	Agg    string `json:"agg"`
 
-	From     int64 `json:"from"`
-	To       int64 `json:"to"`
+	// From and To are pointers so that the JSON path can tell an explicit 0
+	// — the epoch, which the window rules allow — from a field that was not
+	// sent. The query string distinguishes them already ("" versus "0"), and
+	// two spellings of one request should not disagree about what `0` means.
+	// [queryRequest.window] resolves both to plain seconds.
+	From *int64 `json:"from"`
+	To   *int64 `json:"to"`
+	// Interval needs no pointer: zero already means "you choose", both here
+	// and in eval.Request.
 	Interval int64 `json:"interval"`
 
 	// Vars binds the query's `$name` template variables, each to zero or more
@@ -52,20 +84,11 @@ func (q *queryRequest) structured() bool {
 
 // readQueryRequest reads a query from either verb: GET from the query string,
 // POST from a JSON body.
-func (m *Metrics) readQueryRequest(r *http.Request) (queryRequest, error) {
-	now := m.Clock.Now().Unix()
+func (m *Metrics) readQueryRequest(w http.ResponseWriter, r *http.Request) (queryRequest, error) {
 	if r.Method == http.MethodPost {
 		var q queryRequest
-		dec := json.NewDecoder(io.LimitReader(r.Body, maxBodyBytes))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&q); err != nil {
-			return q, fmt.Errorf("body: %w", err)
-		}
-		if q.To == 0 {
-			q.To = now
-		}
-		if q.From == 0 {
-			q.From = q.To - defaultRange
+		if err := readBody(w, r, &q); err != nil {
+			return q, err
 		}
 		return q, nil
 	}
@@ -79,30 +102,64 @@ func (m *Metrics) readQueryRequest(r *http.Request) (queryRequest, error) {
 		By:     v.Get("by"),
 		Agg:    v.Get("agg"),
 	}
-	q.To = intParam(v.Get("to"), now, "to", &errs)
-	q.From = intParam(v.Get("from"), q.To-defaultRange, "from", &errs)
+	// Parsed only when present, so that a nil pointer means "not sent" and
+	// [queryRequest.window] is the only thing that decides a default. The
+	// zero passed to intParam is unreachable for the same reason.
+	if raw := v.Get("to"); raw != "" {
+		q.To = ptr(intParam(raw, 0, "to", &errs))
+	}
+	if raw := v.Get("from"); raw != "" {
+		q.From = ptr(intParam(raw, 0, "from", &errs))
+	}
 	q.Interval = intParam(v.Get("interval"), 0, "interval", &errs)
 	// `var.env=env:prod&var.env=env:dev` binds $env to two values. Repeating
 	// the parameter is how a multi-select arrives, and it is the shape
 	// url.Values already has.
+	//
+	// An empty value is dropped rather than bound. `?var.env=` is how a
+	// cleared template variable arrives from a form, and a query string has no
+	// way to say "zero values" otherwise; binding "" instead would refuse the
+	// request as "$env is bound to \"\", which is not a key:value tag" — the
+	// one thing a cleared "all" selection must not do.
 	for name, values := range v {
-		if after, ok := strings.CutPrefix(name, "var."); ok {
-			if q.Vars == nil {
-				q.Vars = map[string][]string{}
-			}
-			q.Vars[after] = values
+		after, ok := strings.CutPrefix(name, "var.")
+		if !ok {
+			continue
 		}
+		if q.Vars == nil {
+			q.Vars = map[string][]string{}
+		}
+		q.Vars[after] = slices.DeleteFunc(values, func(s string) bool {
+			return strings.TrimSpace(s) == ""
+		})
 	}
 	return q, errors.Join(errs...)
 }
 
+func ptr[T any](v T) *T { return &v }
+
+// window resolves From and To, defaulting to the last hour. It is the one
+// place the defaults live, so both verbs get the same ones.
+func (q *queryRequest) window(now int64) (from, to int64) {
+	to = now
+	if q.To != nil {
+		to = *q.To
+	}
+	from = to - defaultRange
+	if q.From != nil {
+		from = *q.From
+	}
+	return from, to
+}
+
 // query handles GET and POST /api/v1/query.
 func (m *Metrics) query(w http.ResponseWriter, r *http.Request) {
-	req, err := m.readQueryRequest(r)
+	req, err := m.readQueryRequest(w, r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	from, to := req.window(m.Clock.Now().Unix())
 	text, warnings, err := req.expression()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -115,13 +172,26 @@ func (m *Metrics) query(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := m.eval.Eval(r.Context(), eval.Request{
 		Expr:     expr,
-		From:     req.From,
-		To:       req.To,
+		From:     from,
+		To:       to,
 		Interval: req.Interval,
 		Vars:     req.Vars,
 	})
 	switch {
-	case errors.Is(err, eval.ErrNoSketchStore):
+	case errors.Is(err, context.Canceled) && r.Context().Err() != nil:
+		// The caller hung up: a new keystroke in the query box, a range
+		// change, a navigated-away tab. Nothing failed, nobody is reading the
+		// response, and logging it at ERROR would bury the failures that
+		// matter under the ones that are just somebody typing.
+		m.Logger.Debug("query abandoned by the client", "query", text)
+		writeError(w, statusClientClosedRequest, errors.New("the client closed the request"))
+		return
+	case errors.Is(err, eval.ErrNoSketchStore), errors.Is(err, eval.ErrSketchesDisagree):
+		// Both are the server's state rather than the query's: no sketch store
+		// configured, or two writers disagreeing about relative accuracy. The
+		// message names a metric and nothing internal, so it is kept — it is
+		// the only thing that tells an operator where to look.
+		m.Logger.Error("query cannot be answered by this server", "query", text, "err", err)
 		writeError(w, http.StatusServiceUnavailable, err)
 		return
 	case err != nil:
@@ -161,6 +231,17 @@ func (m *Metrics) query(w http.ResponseWriter, r *http.Request) {
 // server ran out of time rather than the caller asking for the impossible.
 // Everything left is a store failure, which is ours, so it is a 500 and the
 // body says nothing useful on purpose.
+// statusClientClosedRequest is nginx's 499. Go has no constant for it because
+// it is not in any RFC, but it is what every log aggregator already knows to
+// treat as "the client left" rather than as a server error, and no 4xx that is
+// in an RFC says that.
+const statusClientClosedRequest = 499
+
+// statusFor deliberately does not recognise context.Canceled. Whether a
+// cancellation means "the caller hung up" depends on whose context was
+// cancelled, which is something only the handler can see; a store that
+// cancelled its own work while the request is still live has failed, and
+// reporting that as the client's departure would hide it.
 func statusFor(err error) int {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
@@ -180,10 +261,8 @@ func (m *Metrics) validate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Q string `json:"q"`
 	}
-	dec := json.NewDecoder(io.LimitReader(r.Body, maxBodyBytes))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("body: %w", err))
+	if err := readBody(w, r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	type position struct {
@@ -267,7 +346,7 @@ func structuredExpression(q *queryRequest) (string, []string, error) {
 
 	var keys []string
 	for key := range strings.SplitSeq(q.By, ",") {
-		key = strings.TrimSpace(key)
+		key = strings.ToLower(strings.TrimSpace(key)) // as the lexer does
 		if key == "" {
 			continue
 		}
@@ -295,6 +374,12 @@ func filterTerms(filter string) ([]string, []string, error) {
 		neg := strings.HasPrefix(term, "!")
 		rest := strings.TrimPrefix(term, "!")
 		key, value := wire.SplitTag(rest)
+		// Lower-cased first, because the lexer lower-cases a key as it reads
+		// one: `q=…{Env:dev}` evaluates as `env:dev`, so `filter=Env:dev` must
+		// too. Validating the original would make this path stricter than the
+		// parser it claims to mirror, and reject a request the query language
+		// accepts.
+		key = strings.ToLower(key)
 		if key == "" {
 			return nil, nil, fmt.Errorf("filter term %q has no tag key", term)
 		}

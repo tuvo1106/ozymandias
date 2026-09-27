@@ -18,7 +18,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   it is widened to `k:*` and a warning says so. The 366-day cap on `to - from`
   is replaced by the evaluator's 30-second wall-clock budget, which bounds the
   same thing without guessing how much data a day holds. The bucket cap is
-  1500, down from 10,000 — already more points than a chart draws.
+  1500, down from 10,000 — already more points than a chart draws. And one
+  limit is new: a query node selects at most 1000 series, where M1 would
+  happily aggregate a hundred thousand into one line. A bare query on a
+  high-cardinality metric that used to draw a chart now asks for a narrower
+  filter or a `by`.
   Every piece of a structured request is now validated against the parser's own
   rules before it is interpolated, because that path builds a program out of
   strings the caller sent: an `agg` of `x{*}} + sum:other{*`, or a tag value
@@ -77,6 +81,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   where" with a 1-based column, and `200` either way — it is for an editor
   calling on each keystroke, which wants something to underline rather than an
   exception.
+- **A `499` when the caller hangs up.** An editor that re-queries on every
+  keystroke abandons requests constantly; each one used to be a `500` and an
+  `ERROR query failed` line, which is how a log stops being worth reading.
+  Only the *request's* context counts — work that cancelled itself while the
+  caller was still waiting has failed, and is still a `500`.
+- **A `503`, not a `400`, when a metric's sketches disagree about accuracy.**
+  Two writers using different relative accuracies is a property of what is
+  stored, and no rewrite of the query fixes it, so telling the caller their
+  query was bad sent them looking in the one place the problem was not. The
+  message names the metric, because that is what an operator goes looking
+  with.
 
 - **The metricql evaluator** (`internal/query/metricql/eval`): an AST now runs
   against the stores. Select, time-aggregate, group, space-aggregate, then fill,

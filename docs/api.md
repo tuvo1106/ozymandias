@@ -114,12 +114,13 @@ decide which.
 | `q` | | The query, e.g. `sum:http.request.count{env:dev} by {route}.as_rate()` |
 | `from`, `to` | last hour | Unix seconds, inclusive. Both in `[0, 253402300799]`, `to` after `from` |
 | `interval` | ~300 points | Bucket width in seconds, at most 1500 buckets. The default is the range / 300 rounded up to a multiple of 10. A `.rollup(_, secs)` in the query sets it too, and disagreeing with it is an error rather than a resample ([ADR-0016](adr/0016-one-grid-per-query.md)) |
-| `var.<name>` | | Binds the query's `$<name>`. **Repeat the parameter** for a multi-select: `var.env=env:dev&var.env=env:prod` means either, not both. Present with no value binds it to nothing, which is a dashboard's "all" |
+| `var.<name>` | | Binds the query's `$<name>` to one or more `key:value` tags. **Repeat the parameter** for a multi-select: `var.env=env:dev&var.env=env:prod` means either, not both. An empty value is dropped, so `var.env=` (a cleared selection) constrains nothing and warns — which is a dashboard's "all" |
 
 `POST` takes the same fields as a JSON object (`{"q":…,"from":…,"to":…,
 "interval":…,"vars":{"env":["env:dev"]}}`), because a generated dashboard
-query outgrows a URL. Unknown fields are a `400`, and the body is capped at
-64 KiB. `from`/`to` default the same way.
+query outgrows a URL. `from`/`to` default the same way, and `0` is the epoch on
+both verbs rather than a field that was not sent. An unknown field, trailing
+content after the object, or a body over 64 KiB is a `400` that says which.
 
 ```console
 $ curl -s --get localhost:9400/api/v1/query --data-urlencode \
@@ -147,13 +148,18 @@ $ curl -s --get localhost:9400/api/v1/query --data-urlencode \
   It is always present, empty when there is nothing to say.
 - Series are sorted by `scope`, so a chart's legend is stable across requests.
 
-Status codes. `400 {"status":"error","error":"…"}` is the caller's: a parse
-error (whose message carries the column), or a query the evaluator refuses —
-a percentile of a gauge, an unbound `$var`, more than 1000 series in one
-node, more than 1500 buckets. `503` means the query ran past its 30-second
-budget, or asked for a percentile on a server with no sketch store. `500` is
-ours; its body says only that the query could not be answered, and the reason
-goes to the log, because a store's error names files and tables.
+Status codes:
+
+| Code | Means | Body |
+|---|---|---|
+| `400` | The caller's: a parse error (whose message carries the column), or a query the evaluator refuses — a percentile of a gauge, an unbound `$var`, more than 1000 series in one node, more than 1500 buckets, a body that is malformed or too large | the reason, written to be shown to whoever typed the query |
+| `499` | The caller hung up before the answer was ready. Not an error, and not logged as one — an editor that re-queries on each keystroke abandons requests constantly | `the client closed the request` |
+| `503` | The server cannot answer this, now: the 30-second budget ran out, there is no sketch store for a percentile, or this metric's sketches were built at different relative accuracies | the reason, which names the metric — it is what an operator goes looking with |
+| `500` | Ours | `the query could not be answered`, and nothing else; the real reason goes to the log, because a store's error names files, tables and plans |
+
+A cancelled context is only a `499` when it is the *request's* context that was
+cancelled. Work that cancelled itself while the caller was still waiting has
+failed, and is a `500`.
 
 A percentile aggregator takes a different path. It selects on
 `<metric>.count`, reads the sketches of the series it finds, **merges** every
@@ -181,16 +187,27 @@ Every piece is validated against the same rules the parser would apply before
 it is interpolated, because this path builds a program out of strings the
 caller sent: an `agg` of `x{*}} + sum:other{*`, or a tag value containing a
 brace, is a `400` rather than a query of the caller's choosing running under
-parameters that describe a different one.
+parameters that describe a different one. "The same rules" includes the
+lexer's lower-casing of tag keys, so `filter=Env:dev` and `q=…{Env:dev}` agree
+on meaning `env:dev`.
 
 M1's bare `k` term ("has the tag `k` with no value") has no spelling in the
 query language — `k:` is a parse error on purpose — so it is widened to `k:*`
 and a warning says so. Use `q=` to be exact.
 
-Two M1 limits are gone. The 366-day cap on `to - from` is replaced by the
+Four limits changed. The 366-day cap on `to - from` is replaced by the
 30-second wall-clock budget, which bounds the same thing — work — without
 guessing at how much data a day holds. The 10,000-bucket cap is now 1500,
-which is already more points than a chart draws.
+already more points than a chart draws. A filter value still cannot contain a
+comma, because the comma separates terms — but it now cannot contain `{` or
+`}` either, and says so rather than producing a different query.
+
+And one limit is new, which is the one to know about: **a query node may select
+at most 1000 series.** M1 had no such cap — it would aggregate a
+hundred-thousand-series metric into one line and only the bucket count bounded
+the answer. A bare `?metric=<something high-cardinality>` that used to return
+a chart now returns `400 … selects more than 1000 series`, and the fix is a
+narrower `filter` or a `by` that says which lines you actually wanted.
 
 ### `POST /api/v1/query/validate`
 

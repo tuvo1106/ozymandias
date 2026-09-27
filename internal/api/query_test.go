@@ -7,11 +7,17 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/tuvo1106/ozymandias/internal/meta"
 	"github.com/tuvo1106/ozymandias/internal/query/metricql"
 	"github.com/tuvo1106/ozymandias/internal/query/metricql/eval"
+	"github.com/tuvo1106/ozymandias/internal/testutil"
+	"github.com/tuvo1106/ozymandias/internal/tsdb"
+	"github.com/tuvo1106/ozymandias/internal/tsdb/naive"
+	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
 // post sends a JSON body and returns the status and the decoded object.
@@ -362,5 +368,160 @@ func TestStatusFor(t *testing.T) {
 		if got := statusFor(tc.err); got != tc.want {
 			t.Errorf("%s: %d, want %d", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A dashboard whose template variable is cleared sends the parameter with no
+// value. Binding "" would refuse the request as "not a key:value tag" — the
+// one thing an "all" selection must not do.
+func TestQuery_AClearedVariableMeansAll(t *testing.T) {
+	h, _ := metricsAPI(t)
+	for _, spelling := range []string{"&var.env=", "&var.env", "&var.env=&var.env="} {
+		t.Run(spelling, func(t *testing.T) {
+			code, out := get(t, h,
+				"/api/v1/query?q="+urlEncode("sum:http.request.count{$env} by {route}")+window+spelling)
+			if code != 200 {
+				t.Fatalf("%d %v", code, out)
+			}
+			if n := len(seriesOf(t, out)); n != 2 {
+				t.Errorf("got %d lines, want every route — an unconstrained $env is not a filter", n)
+			}
+			warnings := out["warnings"].([]any)
+			if len(warnings) != 1 || !strings.Contains(warnings[0].(string), "env") {
+				t.Errorf("warnings %v, want one saying $env constrained nothing", warnings)
+			}
+		})
+	}
+}
+
+// The explorer re-queries every ten seconds and passes an AbortSignal, so an
+// abandoned request is ordinary traffic, not a failure. A 500 and an ERROR line
+// per keystroke would bury the failures that matter.
+func TestQuery_AnAbandonedRequestIsNotAServerError(t *testing.T) {
+	h, _ := metricsAPI(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/query?q="+urlEncode("sum:http.request.count{*}")+window, nil)
+	h.ServeHTTP(rec, req.WithContext(ctx))
+	if rec.Code != 499 {
+		t.Errorf("status %d, want 499 (the client closed the request), not a 5xx", rec.Code)
+	}
+}
+
+// A cancellation that did not come from the caller is a failure, and must not
+// be filed as somebody closing a tab.
+func TestStatusFor_DoesNotReadCancellationAsTheClientLeaving(t *testing.T) {
+	if got := statusFor(fmt.Errorf("reading: %w", context.Canceled)); got != 500 {
+		t.Errorf("%d, want 500: only the handler can see whose context was cancelled", got)
+	}
+}
+
+// Both spellings of the window must mean the same thing, including the epoch:
+// on POST, `"from": 0` used to be indistinguishable from an absent field and
+// silently became `to - 3600`.
+func TestQuery_TheEpochIsAWindowNotAnAbsentField(t *testing.T) {
+	h, _ := metricsAPI(t)
+	code, out := post(t, h, "/api/v1/query",
+		`{"q":"sum:http.request.count{*}","from":0,"to":86400,"interval":86400}`)
+	if code != 200 {
+		t.Fatalf("%d %v", code, out)
+	}
+	if out["from"] != 0.0 {
+		t.Errorf("from %v, want 0 — an explicit epoch is a value, not a missing field", out["from"])
+	}
+
+	// And a `to` on its own still takes the default range back from it.
+	code, out = post(t, h, "/api/v1/query", `{"q":"sum:http.request.count{*}","to":1790000000}`)
+	if code != 200 {
+		t.Fatalf("%d %v", code, out)
+	}
+	if out["from"] != float64(1790000000-3600) {
+		t.Errorf("from %v, want an hour before to", out["from"])
+	}
+}
+
+// A body one byte over the limit is not malformed JSON, and saying it is sends
+// the caller looking for a brace that was never missing.
+func TestQuery_AnOversizedBodySaysSo(t *testing.T) {
+	h, _ := metricsAPI(t)
+	big := `{"q":"sum:x{k:` + strings.Repeat("v", 70<<10) + `}"}`
+	code, out := post(t, h, "/api/v1/query", big)
+	if code != 400 {
+		t.Fatalf("%d %v", code, out)
+	}
+	if msg := out["error"].(string); !strings.Contains(msg, "larger than") {
+		t.Errorf("error %q, want it to say the body was too large", msg)
+	}
+
+	// Two objects in one body is not a request with the first one in it.
+	if code, out := post(t, h, "/api/v1/query", `{"q":"sum:x{*}"} {"q":"sum:y{*}"}`); code != 400 {
+		t.Errorf("%d %v, want 400 for trailing content", code, out)
+	}
+}
+
+// The lexer lower-cases a tag key as it reads one, so the structured path must
+// too — otherwise it refuses a request that `q=` accepts, while its comment
+// claims to apply the parser's own rules.
+func TestQuery_StructuredKeysAreLowerCasedLikeTheLexerDoes(t *testing.T) {
+	h, _ := metricsAPI(t)
+	code, out := get(t, h, "/api/v1/query?metric=http.request.count&filter=Env:dev&by=Route&agg=sum"+window)
+	if code != 200 {
+		t.Fatalf("%d %v", code, out)
+	}
+	if got := out["query"]; got != "sum:http.request.count{env:dev} by {route}" {
+		t.Errorf("query %q, want the keys lower-cased", got)
+	}
+	if n := len(seriesOf(t, out)); n != 2 {
+		t.Errorf("got %d lines, want the same answer q= would give", n)
+	}
+}
+
+// sketchlessAPI is the fixture for the two conditions that are the server's
+// rather than the query's: a distribution metric exists and is queryable, but
+// this server has nothing to answer percentiles from.
+func sketchlessAPI(t *testing.T) http.Handler {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := naive.Open(filepath.Join(dir, "m.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	md, err := meta.Open(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = md.Close() })
+	ctx := context.Background()
+	if err := md.Observe(ctx, "lat", wire.KindDistribution, 10, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := md.Observe(ctx, "lat.count", wire.KindCount, 10, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(ctx, []tsdb.SeriesSamples{{
+		Series:  tsdb.NewSeriesRef("lat.count", []string{"host:a"}),
+		Samples: []tsdb.Sample{{T: (now.Unix() - 10) * 1000, V: 5}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	(&Metrics{Store: store, Types: md, Clock: testutil.NewFakeClock(now)}).Register(mux)
+	return mux
+}
+
+// A server with no sketch store cannot answer a percentile, and that is its
+// own shortcoming rather than a bad request: the same query on a server that
+// has one is correct. 503 says "not here, not now"; 400 would say "never".
+func TestQuery_APercentileWithNoSketchStoreIs503(t *testing.T) {
+	h := sketchlessAPI(t)
+	code, out := get(t, h, "/api/v1/query?q="+urlEncode("p95:lat{*}")+window)
+	if code != 503 {
+		t.Fatalf("%d %v, want 503", code, out)
+	}
+	if msg := out["error"].(string); !strings.Contains(msg, "sketch store") {
+		t.Errorf("error %q, want it to name what is missing", msg)
 	}
 }

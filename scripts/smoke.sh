@@ -257,6 +257,12 @@ validate_col() { # <query> — "<ok> <col>" for a query that does not parse
 broken_col=$(validate_col 'sum:x{a:b by {k}')
 check "a broken query reports its column"  test "$broken_col" = "False 14"
 
+# A dashboard whose template variable is cleared sends the parameter empty. It
+# has to mean "all" — binding "" would refuse the request, which is how a
+# dashboard goes blank the moment somebody clears a selector.
+check "a cleared variable means all"       test "$(query_expr \
+  'sum:smoke.latency.count{$scope}' --data-urlencode 'var.scope=')" = "100"
+
 # The durability claim, end to end. The SIGTERM cycle near the top of this
 # script happened before any of this data existed, so repeating a query after
 # it proved nothing — which is what this check used to do. Kill ozyd
