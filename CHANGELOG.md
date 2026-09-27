@@ -66,6 +66,41 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Dashboards are stored, validated and provisioned.** `GET/POST
+  /api/v1/dashboards` and `GET/PUT/DELETE /api/v1/dashboards/{id}`, with the
+  definition's JSON specified in [docs/dashboards.md](docs/dashboards.md):
+  twelve-column layout, six widget types (`timeseries`, `query_value`,
+  `toplist`, `table`, `heatmap`, `note`), template variables, y-axis bounds and
+  conditional formats.
+  A definition is **validated on the way in and stored verbatim** — byte for
+  byte, formatting included — and served back from those bytes rather than from
+  a re-encoding, so a dashboard exported from one ozyd and imported into another
+  does not acquire a diff from this build's JSON encoder.
+  Validation refuses what is certain to fail later: a query that does not parse,
+  an unknown widget type, a layout off the grid, a field belonging to another
+  type, and — the one that cannot be checked one widget at a time — a `$var` no
+  `template_vars` entry declares. It deliberately does *not* run the queries: a
+  dashboard for a service that has not shipped yet is a legitimate dashboard,
+  and saving one should not depend on the data being there.
+- **Dashboards-as-code.** Directories in `provisioning.paths` are read at
+  startup and upserted by the definition's `uid`, so an app repo keeps its own
+  dashboards in git and mounts the directory. Such a dashboard is read-only over
+  HTTP (`409`, saying to edit the file) because provisioning runs again at every
+  restart and would otherwise silently undo the edit.
+  **One bad file does not stop the others, or startup** — the directories come
+  from config and an app mounts its own, so one team's typo must not be an
+  outage for everybody's monitoring at the moment monitoring is most wanted.
+  Failures are logged with the path and counted. An unchanged file is not a
+  write, so `updated_at` keeps meaning what it says across restarts.
+- **A first `Home` dashboard** (`deploy/dashboards/home.json`), baked into the
+  image: ingest rate, refusals, store and head size, per-agent throughput.
+  Per-service health cards arrive in M6 when there are monitors to colour them
+  by.
+- **`metricql.Walk` and `metricql.Variables`** are exported, so more than one
+  caller can ask a question of a whole expression. The evaluator's private
+  traversal is gone in favour of the shared one; `Variables` is what lets a
+  dashboard's `$vars` be checked against its declarations.
+
 - **`/api/v1/query` speaks the query language.** `?q=` takes any metricql
   expression, so a rate, a ratio of two queries, a `top(…)` or a percentile is
   now one request where M1 could only select-group-aggregate one metric.

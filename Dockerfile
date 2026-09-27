@@ -40,8 +40,14 @@ COPY --from=build /out/ozyd /out/agent /usr/local/bin/
 COPY --from=build --chown=65532:65532 /out/data /data
 COPY deploy/ozyd.yaml deploy/agent.yaml /etc/ozy/
 COPY deploy/agent.d/ /etc/ozy/agent.d/
+# Dashboards-as-code are baked in rather than mounted, so the image is
+# self-contained and behaves the same in CI as on a laptop. An operator adds
+# their own by mounting a directory and listing it in OZY_PROVISIONING_PATHS,
+# which is comma-separated.
+COPY deploy/dashboards/ /etc/ozy/dashboards/
 ENV OZY_DATA_DIR=/data \
-    OZY_AGENT_CONFD_PATH=/etc/ozy/agent.d
+    OZY_AGENT_CONFD_PATH=/etc/ozy/agent.d \
+    OZY_PROVISIONING_PATHS=/etc/ozy/dashboards
 USER nonroot:nonroot
 EXPOSE 9400 8126 8125/udp
 ENTRYPOINT ["/usr/local/bin/ozyd"]

@@ -16,5 +16,6 @@ internal/sketchstore        90
 internal/tsdb               90
 internal/tsdb/*             90
 internal/query/*            90
+internal/dashboard          90
 internal/monitor            90
 internal/monitor/*          90

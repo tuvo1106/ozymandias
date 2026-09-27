@@ -85,8 +85,20 @@ log:
 provisioning:
   # Directories of dashboard (M3) and monitor (M6) JSON definitions, upserted
   # by `uid` at startup. Several are allowed, so an app can mount its own
-  # directory next to ozymandias's. Nothing reads these until M3.
-  paths: []
+  # directory next to ozymandias's — a later directory wins, which is how an
+  # app deliberately overrides a stock dashboard.
+  #
+  # Only *.json directly in each directory; subdirectories are not scanned, so
+  # a work-in-progress can sit next to the real ones. A missing directory is
+  # skipped with a log line rather than being an error, and one unreadable file
+  # does not stop the others or startup — see docs/api.md#provisioning.
+  #
+  # The path below is relative to the repo root, for `make dev`. The container
+  # bakes the same directory into the image and points here with
+  # OZY_PROVISIONING_PATHS=/etc/ozy/dashboards.
+  paths:
+    - ./deploy/dashboards
   # paths:
   #   - ./deploy/dashboards
+  #   - /etc/ozy/dashboards.d   # an app's own, mounted
   #   - ./deploy/monitors
