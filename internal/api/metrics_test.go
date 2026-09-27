@@ -107,7 +107,8 @@ func TestQuery_Filters(t *testing.T) {
 func TestQuery_BadRequests(t *testing.T) {
 	h, _ := metricsAPI(t)
 	for url, want := range map[string]string{
-		"/api/v1/query":                               "valid metric name",
+		"/api/v1/query":                               "q (a query) or metric",
+		"/api/v1/query?metric=9bad":                   "valid metric name",
 		"/api/v1/query?metric=m&from=x":               "from must be an integer",
 		"/api/v1/query?metric=m&agg=nope":             "agg",
 		"/api/v1/query?metric=m&filter=:x":            "no tag key",

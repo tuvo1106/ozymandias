@@ -3,19 +3,19 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/meta"
-	"github.com/tuvo1106/ozymandias/internal/query/simple"
+	"github.com/tuvo1106/ozymandias/internal/query/metricql/eval"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
-// MetricTypes tells the query API each metric's type (implemented by
-// internal/meta).
+// MetricTypes tells the query layer each metric's type, which decides how its
+// samples reduce over time. Implemented by internal/meta.
 type MetricTypes interface {
 	Metric(name string) (meta.Metric, bool)
 }
@@ -26,8 +26,15 @@ type Metrics struct {
 	Types MetricTypes
 	// Sketches answers the percentile aggregators. Nil means a percentile
 	// query is refused with a reason rather than answered from nothing.
-	Sketches simple.SketchReader
+	Sketches eval.SketchReader
 	Clock    clock.Clock // default clock.Real()
+	// Logger records the store failures the response deliberately does not
+	// describe. Nil discards them.
+	Logger *slog.Logger
+
+	// eval is built by Register from the fields above. It holds no per-query
+	// state, so one serves every request.
+	eval *eval.Evaluator
 }
 
 // Limits for the metadata endpoints' ?limit=.
@@ -43,61 +50,18 @@ func (m *Metrics) Register(mux *http.ServeMux) {
 	if m.Clock == nil {
 		m.Clock = clock.Real()
 	}
+	if m.Logger == nil {
+		m.Logger = slog.New(slog.DiscardHandler)
+	}
+	m.eval = &eval.Evaluator{Store: m.Store, Sketches: m.Sketches, Types: m.Types}
+	// POST takes the same query as GET, in a JSON body: a generated dashboard
+	// query outgrows a URL long before it outgrows metricql's 8 KiB limit.
 	mux.HandleFunc("GET /api/v1/query", m.query)
+	mux.HandleFunc("POST /api/v1/query", m.query)
+	mux.HandleFunc("POST /api/v1/query/validate", m.validate)
 	mux.HandleFunc("GET /api/v1/metrics", m.metrics)
 	mux.HandleFunc("GET /api/v1/tags", m.tagKeys)
 	mux.HandleFunc("GET /api/v1/tags/values", m.tagValues)
-}
-
-// query handles GET /api/v1/query?metric=&filter=&by=&agg=&from=&to=&interval=.
-func (m *Metrics) query(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	var errs []error
-	now := m.Clock.Now().Unix()
-	to := intParam(q.Get("to"), now, "to", &errs)
-	from := intParam(q.Get("from"), to-defaultRange, "from", &errs)
-	interval := intParam(q.Get("interval"), 0, "interval", &errs)
-	filters, err := simple.ParseFilter(q.Get("filter"))
-	if err != nil {
-		errs = append(errs, err)
-	}
-	if len(errs) > 0 {
-		writeError(w, http.StatusBadRequest, errors.Join(errs...))
-		return
-	}
-	req := simple.Request{
-		Metric:   q.Get("metric"),
-		Filters:  filters,
-		By:       splitList(q.Get("by")),
-		Agg:      simple.Agg(q.Get("agg")),
-		From:     from,
-		To:       to,
-		Interval: interval,
-		// Empty, not a kind: an unrecorded metric is read as a level for time
-		// aggregation, but "unknown" and "known to be a gauge" are different
-		// answers to "does this have percentiles?".
-		Kind: "",
-	}
-	if md, ok := m.Types.Metric(req.Metric); ok {
-		req.Kind = md.Type
-	}
-	if err := req.Validate(); err != nil {
-		writeError(w, http.StatusBadRequest, err)
-		return
-	}
-	res, err := simple.Run(r.Context(), m.Store, m.Sketches, req)
-	if errors.Is(err, simple.ErrNoSketchStore) {
-		writeError(w, http.StatusServiceUnavailable, err)
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, struct {
-		Status string `json:"status"`
-		simple.Result
-	}{"ok", res})
 }
 
 // metrics handles GET /api/v1/metrics?prefix=&limit=.
@@ -168,16 +132,6 @@ func intParam(s string, def int64, name string, errs *[]error) int64 {
 		return def
 	}
 	return v
-}
-
-func splitList(s string) []string {
-	var out []string
-	for part := range strings.SplitSeq(s, ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -1,0 +1,30 @@
+OK
+{
+  "from": 1789999980,
+  "interval": 20,
+  "query": "sum:http.request.count{route:/a} by {route} / sum:http.request.count{*} by {route}",
+  "series": [
+    {
+      "metric": "sum:http.request.count{route:/a} by {route} / sum:http.request.count{*} by {route}",
+      "points": [
+        [
+          1789999980000,
+          1
+        ],
+        [
+          1790000000000,
+          null
+        ]
+      ],
+      "scope": "route:/a",
+      "tags": {
+        "route": "/a"
+      }
+    }
+  ],
+  "status": "ok",
+  "to": 1790000000,
+  "warnings": [
+    "sum:http.request.count{route:/a} by {route} / sum:http.request.count{*} by {route}: no match on the left for route:/b, so that line is not drawn"
+  ]
+}

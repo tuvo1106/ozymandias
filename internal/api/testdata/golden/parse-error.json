@@ -1,0 +1,5 @@
+Bad Request
+{
+  "error": "col 31: expected ',' or '}' but found '{'",
+  "status": "error"
+}

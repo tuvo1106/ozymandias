@@ -2,7 +2,6 @@ package eval
 
 import (
 	"context"
-	"fmt"
 	"math"
 	"slices"
 	"strconv"
@@ -59,7 +58,7 @@ func (e *Evaluator) call(ctx context.Context, c *metricql.Call, g grid, st *stat
 	case "moving_avg":
 		n := int(literal(c.Args[1]))
 		if n < 1 {
-			return frame{}, fmt.Errorf("moving_avg needs a window of at least one bucket, not %v", literal(c.Args[1]))
+			return frame{}, badf("moving_avg needs a window of at least one bucket, not %v", literal(c.Args[1]))
 		}
 		return perLine(args[0], label, func(v []float64) []float64 { return movingAvg(v, n) }), nil
 	case "top":
@@ -67,7 +66,7 @@ func (e *Evaluator) call(ctx context.Context, c *metricql.Call, g grid, st *stat
 	case "histogram_quantile":
 		return histogramQuantile(args[1], label, literal(c.Args[0]), g)
 	}
-	return frame{}, fmt.Errorf("%s parses but is not implemented", c.Func)
+	return frame{}, badf("%s parses but is not implemented", c.Func)
 }
 
 // literal reads a number-shaped argument. The parser guarantees the shape, so
@@ -179,7 +178,7 @@ func top(f frame, label string, c *metricql.Call) (frame, error) {
 	}
 	n := int(literal(c.Args[1]))
 	if n < 1 {
-		return frame{}, fmt.Errorf("top needs a count of at least one, not %v", literal(c.Args[1]))
+		return frame{}, badf("top needs a count of at least one, not %v", literal(c.Args[1]))
 	}
 	reducer, order := "mean", "desc"
 	if len(c.Args) > 2 {
@@ -277,7 +276,7 @@ func (e *Evaluator) timeshift(ctx context.Context, c *metricql.Call, g grid, st 
 	// compare bucket [0,60) against [-90,-30), which is not the same shape of
 	// window and would show as a phase error nobody could explain.
 	if offset%g.interval != 0 {
-		return frame{}, fmt.Errorf(
+		return frame{}, badf(
 			"timeshift by %ds is not a whole number of %ds buckets; use a multiple of the interval so the two windows line up",
 			offset, g.interval)
 	}
@@ -288,7 +287,7 @@ func (e *Evaluator) timeshift(ctx context.Context, c *metricql.Call, g grid, st 
 	// int64 and hands the store a range that may be inverted.
 	end := shifted.first + int64(shifted.n)*shifted.interval
 	if shifted.first < 0 || end > maxTime || end < shifted.first {
-		return frame{}, fmt.Errorf(
+		return frame{}, badf(
 			"timeshift by %ds moves the window outside the representable range of [0, %d]", offset, maxTime)
 	}
 	f, err := e.node(ctx, c.Args[0], shifted, st)
@@ -313,10 +312,10 @@ func (e *Evaluator) timeshift(ctx context.Context, c *metricql.Call, g grid, st 
 // not record where inside a bucket its observations were.
 func histogramQuantile(f frame, label string, q float64, g grid) (frame, error) {
 	if q < 0 || q > 1 {
-		return frame{}, fmt.Errorf("histogram_quantile needs a quantile in [0,1], not %v", q)
+		return frame{}, badf("histogram_quantile needs a quantile in [0,1], not %v", q)
 	}
 	if f.isScalar {
-		return frame{}, fmt.Errorf("histogram_quantile needs a query grouped by %q, not a number", upperBound)
+		return frame{}, badf("histogram_quantile needs a query grouped by %q, not a number", upperBound)
 	}
 	// Group the lines by everything except the bucket boundary: each of those
 	// is one histogram, spread over as many lines as it has buckets.
@@ -330,7 +329,7 @@ func histogramQuantile(f frame, label string, q float64, g grid) (frame, error) 
 	for _, grp := range f.groups {
 		raw, ok := grp.tags[upperBound]
 		if !ok {
-			return frame{}, fmt.Errorf(
+			return frame{}, badf(
 				"histogram_quantile needs the bucket boundary in the grouping: add `by {%s}` to the query it is given",
 				upperBound)
 		}
@@ -408,7 +407,7 @@ const upperBound = "upper_bound"
 func parseBound(s string) (float64, error) {
 	v, err := strconv.ParseFloat(s, 64)
 	if err != nil || math.IsNaN(v) {
-		return 0, fmt.Errorf("%s=%q is not a bucket boundary", upperBound, s)
+		return 0, badf("%s=%q is not a bucket boundary", upperBound, s)
 	}
 	return v, nil
 }

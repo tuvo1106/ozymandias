@@ -80,10 +80,7 @@ func join(left, right frame, b *metricql.Binary, g grid, st *state) frame {
 	return out
 }
 
-func describe(g *group) string {
-	s := Series{Tags: g.tags}
-	return s.Scope()
-}
+func describe(g *group) string { return scopeOf(g.tags) }
 
 // operator returns the arithmetic for an operator.
 //

@@ -233,8 +233,8 @@ func TestEval_AScalarIsALine(t *testing.T) {
 			t.Errorf("point %v, want 100 at every bucket", p)
 		}
 	}
-	if res.Series[0].Scope() != "*" {
-		t.Errorf("scope %q, want *", res.Series[0].Scope())
+	if res.Series[0].Scope != "*" {
+		t.Errorf("scope %q, want *", res.Series[0].Scope)
 	}
 }
 

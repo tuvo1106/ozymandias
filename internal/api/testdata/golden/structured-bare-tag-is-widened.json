@@ -1,0 +1,28 @@
+OK
+{
+  "from": 1789999980,
+  "interval": 20,
+  "query": "sum:http.request.count{env:*}",
+  "series": [
+    {
+      "metric": "http.request.count",
+      "points": [
+        [
+          1789999980000,
+          8
+        ],
+        [
+          1790000000000,
+          null
+        ]
+      ],
+      "scope": "*",
+      "tags": {}
+    }
+  ],
+  "status": "ok",
+  "to": 1790000000,
+  "warnings": [
+    "the filter term \"env\" asked for the bare tag \"env\", which the query language cannot express; it was widened to env:* — use q= to be exact"
+  ]
+}

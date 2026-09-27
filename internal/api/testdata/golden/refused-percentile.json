@@ -1,0 +1,5 @@
+Bad Request
+{
+  "error": "http.request.count is a count, not a distribution, so it has no percentiles",
+  "status": "error"
+}

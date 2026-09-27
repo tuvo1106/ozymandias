@@ -1,0 +1,45 @@
+OK
+{
+  "from": 1789999980,
+  "interval": 20,
+  "query": "sum:http.request.count{$env} by {route}",
+  "series": [
+    {
+      "metric": "http.request.count",
+      "points": [
+        [
+          1789999980000,
+          7
+        ],
+        [
+          1790000000000,
+          null
+        ]
+      ],
+      "scope": "route:/a",
+      "tags": {
+        "route": "/a"
+      }
+    },
+    {
+      "metric": "http.request.count",
+      "points": [
+        [
+          1789999980000,
+          1
+        ],
+        [
+          1790000000000,
+          null
+        ]
+      ],
+      "scope": "route:/b",
+      "tags": {
+        "route": "/b"
+      }
+    }
+  ],
+  "status": "ok",
+  "to": 1790000000,
+  "warnings": []
+}

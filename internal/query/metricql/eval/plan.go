@@ -32,16 +32,16 @@ func DefaultInterval(from, to int64) int64 {
 // every such rule surprises somebody.
 func (e *Evaluator) plan(req Request) (grid, error) {
 	if req.Expr == nil {
-		return grid{}, fmt.Errorf("no query to evaluate")
+		return grid{}, badf("no query to evaluate")
 	}
 	if req.To <= req.From {
-		return grid{}, fmt.Errorf("to (%d) must be after from (%d)", req.To, req.From)
+		return grid{}, badf("to (%d) must be after from (%d)", req.To, req.From)
 	}
 	if req.From < 0 || req.To > maxTime {
-		return grid{}, fmt.Errorf("from (%d) and to (%d) must be unix seconds within [0, %d]", req.From, req.To, maxTime)
+		return grid{}, badf("from (%d) and to (%d) must be unix seconds within [0, %d]", req.From, req.To, maxTime)
 	}
 	if req.Interval < 0 {
-		return grid{}, fmt.Errorf("interval %d must be positive", req.Interval)
+		return grid{}, badf("interval %d must be positive", req.Interval)
 	}
 
 	interval := req.Interval
@@ -60,7 +60,7 @@ func (e *Evaluator) plan(req Request) (grid, error) {
 			case interval == 0:
 				interval, source = m.Seconds, fmt.Sprintf("the rollup on %s", q)
 			case interval != m.Seconds:
-				err = fmt.Errorf(
+				err = badf(
 					"%s asks for %ds buckets but %s asks for %ds: one query answers on one set of buckets, so these cannot be combined",
 					source, interval, fmt.Sprintf("the rollup on %s", q), m.Seconds)
 			}
@@ -76,7 +76,7 @@ func (e *Evaluator) plan(req Request) (grid, error) {
 	first := floorTo(req.From, interval)
 	n := (req.To-first)/interval + 1
 	if n > MaxBuckets {
-		return grid{}, fmt.Errorf(
+		return grid{}, badf(
 			"%d buckets at %ds; the limit is %d — use a coarser interval or a shorter range",
 			n, interval, MaxBuckets)
 	}

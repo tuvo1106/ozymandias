@@ -1,0 +1,8 @@
+OK
+{
+  "error": {
+    "col": 14,
+    "msg": "expected ',' or '}' but found '{'"
+  },
+  "ok": false
+}

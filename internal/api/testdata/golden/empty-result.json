@@ -1,0 +1,10 @@
+OK
+{
+  "from": 1789999980,
+  "interval": 20,
+  "query": "sum:http.request.count{route:/nothing}",
+  "series": [],
+  "status": "ok",
+  "to": 1790000000,
+  "warnings": []
+}

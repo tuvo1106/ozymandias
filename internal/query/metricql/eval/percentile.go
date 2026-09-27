@@ -28,7 +28,7 @@ import (
 func (e *Evaluator) percentile(ctx context.Context, q *metricql.Query, g grid, st *state, kind wire.Kind) (frame, error) {
 	quantile, _ := q.Agg.Quantile()
 	if kind != "" && kind != wire.KindDistribution {
-		return frame{}, fmt.Errorf("%s is a %s, not a distribution, so it has no percentiles", q.Metric, kind)
+		return frame{}, badf("%s is a %s, not a distribution, so it has no percentiles", q.Metric, kind)
 	}
 	if e.Sketches == nil {
 		return frame{}, fmt.Errorf("%s: %w", q.Agg, ErrNoSketchStore)
@@ -78,7 +78,10 @@ func (e *Evaluator) percentile(ctx context.Context, q *metricql.Query, g grid, s
 			return nil
 		})
 		if errors.Is(err, sketch.ErrIncompatible) {
-			return frame{}, fmt.Errorf("%s:%s: %w", q.Agg, q.Metric, err)
+			// Not a badf: see ErrSketchesDisagree. The caller cannot rewrite
+			// their way out of this one, and the metric named here is what an
+			// operator needs to go looking with.
+			return frame{}, fmt.Errorf("%w: %s: %w", ErrSketchesDisagree, q.Metric, err)
 		}
 		if err != nil {
 			return frame{}, err

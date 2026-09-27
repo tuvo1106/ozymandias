@@ -1,7 +1,6 @@
 package eval
 
 import (
-	"fmt"
 	"math"
 
 	"github.com/tuvo1106/ozymandias/internal/query/metricql"
@@ -55,7 +54,7 @@ func applyModifiers(f frame, q *metricql.Query, g grid, kind wire.Kind, st *stat
 		case metricql.ModFill:
 			fill(f, fillMode(m.Method), m.Seconds, g)
 		default:
-			return frame{}, fmt.Errorf("unknown modifier %q", m.Kind)
+			return frame{}, badf("unknown modifier %q", m.Kind)
 		}
 	}
 	return f, nil
@@ -73,7 +72,7 @@ func rateApplies(q *metricql.Query, mod metricql.ModKind, kind wire.Kind) error 
 		// contradict. The query returns no data anyway.
 		return nil
 	default:
-		return fmt.Errorf("%s is a %s, so .%s() does not apply to it — only a count or a rate has one",
+		return badf("%s is a %s, so .%s() does not apply to it — only a count or a rate has one",
 			q.Metric, kind, mod)
 	}
 }
