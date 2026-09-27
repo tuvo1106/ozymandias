@@ -16,6 +16,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/buildinfo"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/config"
+	"github.com/tuvo1106/ozymandias/internal/dashboard"
 	"github.com/tuvo1106/ozymandias/internal/httpserve"
 	"github.com/tuvo1106/ozymandias/internal/intake"
 	"github.com/tuvo1106/ozymandias/internal/meta"
@@ -161,6 +162,16 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		Store: store, Types: md, Sketches: sk, Clock: s.clock,
 		Logger: s.log.With("component", "query"),
 	}).Register(mux)
+	(&api.Dashboards{
+		Store: md, Clock: s.clock,
+		Logger: s.log.With("component", "dashboards"),
+	}).Register(mux)
+	// Provisioned before serving, so the first request cannot arrive at a
+	// deployment whose dashboards-as-code have not loaded yet. It never fails
+	// startup: see the comment on dashboard.Provision — one app's typo in a
+	// mounted directory must not be an outage for everybody's monitoring.
+	dashboard.Provision(context.Background(), api.ProvisionStore{DB: md},
+		cfg.Provisioning.Paths, s.clock.Now(), s.log.With("component", "dashboards"))
 	if opts.UI != nil {
 		mux.Handle("GET /", opts.UI)
 	}
