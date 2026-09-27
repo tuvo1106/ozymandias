@@ -9,6 +9,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The M1 query parameters are translated, not reimplemented.**
+  `metric`/`filter`/`by`/`agg` are now written out as a metricql query and run
+  through the one evaluator; `internal/query/simple` is gone. The response's
+  `query` field shows the translation, which is how somebody migrating finds
+  out what to type. Three behaviours moved with it. A bare `k` filter term
+  ("has the tag `k` with no value") has no spelling in the query language, so
+  it is widened to `k:*` and a warning says so. The 366-day cap on `to - from`
+  is replaced by the evaluator's 30-second wall-clock budget, which bounds the
+  same thing without guessing how much data a day holds. The bucket cap is
+  1500, down from 10,000 — already more points than a chart draws.
+  Every piece of a structured request is now validated against the parser's own
+  rules before it is interpolated, because that path builds a program out of
+  strings the caller sent: an `agg` of `x{*}} + sum:other{*`, or a tag value
+  containing a brace, is refused rather than run.
 - **The project is now `ozymandias`, and the repo is public** (ADR-0012). The
   working name it carried while the repo was private was a pun on a commercial
   product — not a name to publish under. Everything typed uses the short token
@@ -47,6 +61,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Python; a first publish would use PyPI `ozy` and npm `@tuvo1106/ozy`.
 
 ### Added
+
+- **`/api/v1/query` speaks the query language.** `?q=` takes any metricql
+  expression, so a rate, a ratio of two queries, a `top(…)` or a percentile is
+  now one request where M1 could only select-group-aggregate one metric.
+  `POST /api/v1/query` takes the same request as JSON, because a generated
+  dashboard query outgrows a URL. `var.<name>=` (repeated, for a multi-select)
+  binds the query's template variables.
+  Responses carry three new fields: `query`, the canonical spelling of what was
+  actually evaluated; `scope` on each series, so every client names a line the
+  same way instead of each inventing its own join of the tags; and `warnings`,
+  always present, for what the caller should know but that did not stop the
+  query.
+- **`POST /api/v1/query/validate`** answers "does this parse, and if not,
+  where" with a 1-based column, and `200` either way — it is for an editor
+  calling on each keystroke, which wants something to underline rather than an
+  exception.
 
 - **The metricql evaluator** (`internal/query/metricql/eval`): an AST now runs
   against the stores. Select, time-aggregate, group, space-aggregate, then fill,

@@ -1,0 +1,5 @@
+OK
+{
+  "ok": true,
+  "query": "sum:x{a:b} by {k}"
+}

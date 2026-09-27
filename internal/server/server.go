@@ -157,7 +157,10 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	mux.Handle("GET /healthz", httpserve.Health(Component, s.started, s.clock.Now, nil))
 	mux.Handle("GET /debug/vars", s.reg.Handler())
 	s.intake.Register(mux)
-	(&api.Metrics{Store: store, Types: md, Sketches: sk, Clock: s.clock}).Register(mux)
+	(&api.Metrics{
+		Store: store, Types: md, Sketches: sk, Clock: s.clock,
+		Logger: s.log.With("component", "query"),
+	}).Register(mux)
 	if opts.UI != nil {
 		mux.Handle("GET /", opts.UI)
 	}
