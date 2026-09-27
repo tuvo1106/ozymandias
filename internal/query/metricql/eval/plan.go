@@ -47,7 +47,7 @@ func (e *Evaluator) plan(req Request) (grid, error) {
 	interval := req.Interval
 	source := "the interval parameter"
 	var err error
-	walk(req.Expr, func(n metricql.Node) {
+	metricql.Walk(req.Expr, func(n metricql.Node) {
 		q, ok := n.(*metricql.Query)
 		if !ok || err != nil {
 			return
@@ -81,22 +81,6 @@ func (e *Evaluator) plan(req Request) (grid, error) {
 			n, interval, MaxBuckets)
 	}
 	return grid{first: first, interval: interval, n: int(n)}, nil
-}
-
-// walk calls fn on n and every node beneath it, parents first.
-func walk(n metricql.Node, fn func(metricql.Node)) {
-	fn(n)
-	switch v := n.(type) {
-	case *metricql.Unary:
-		walk(v.X, fn)
-	case *metricql.Binary:
-		walk(v.Left, fn)
-		walk(v.Right, fn)
-	case *metricql.Call:
-		for _, a := range v.Args {
-			walk(a, fn)
-		}
-	}
 }
 
 // rollup is how a bucket's samples reduce to one value.
