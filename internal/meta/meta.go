@@ -52,7 +52,7 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("meta: %w", err)
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + dashboardSchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("meta %s: %w", path, err)
 	}
