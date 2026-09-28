@@ -30,14 +30,26 @@ export type Display = "line" | "area" | "bars" | "points";
 /** How a line collapses to the one number a query_value or cell shows. */
 export type Reducer = "last" | "avg" | "sum" | "min" | "max";
 
-/** Every reducer this build can apply, for checking one that arrived as text. */
-export const REDUCERS: readonly Reducer[] = [
-  "last",
-  "avg",
-  "sum",
-  "min",
-  "max",
-];
+/**
+ * Every reducer this build can apply, as a map so the compiler requires an
+ * entry for each — the same trick, and for the same reason, as the renderer
+ * table in DashboardGrid.
+ *
+ * A `readonly Reducer[]` would not do it: a list only promises that each
+ * element *is* a Reducer, never that every Reducer is listed. Adding a sixth
+ * to the union and to [[reduceSeries]]'s switch would then compile clean while
+ * [[isReducer]] answered false for it, and every widget using it would drop
+ * its rows and announce that this build cannot apply a reducer this build
+ * applies correctly — the quiet wrong answer, reached from the maintenance
+ * side.
+ */
+const REDUCERS = {
+  last: true,
+  avg: true,
+  sum: true,
+  min: true,
+  max: true,
+} satisfies Record<Reducer, true>;
 
 /**
  * Whether this build knows how to apply `v`.
@@ -48,7 +60,7 @@ export const REDUCERS: readonly Reducer[] = [
  * one this build has never heard of.
  */
 export function isReducer(v: string | undefined): v is Reducer {
-  return v !== undefined && (REDUCERS as readonly string[]).includes(v);
+  return v !== undefined && Object.hasOwn(REDUCERS, v);
 }
 
 /** A conditional format's comparison. */

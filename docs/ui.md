@@ -132,9 +132,12 @@ A widget whose `type` this build does not know says so in its own frame rather
 than taking the page down with it — which is what an older UI and a newer
 `ozyd` look like, and is worth seeing as one broken square instead of one
 broken application. A `reducer` it does not know is the same case one level
-down: that query is left out and the widget says which reducer it could not
-apply, because a toplist that had quietly dropped the row would read as a
-complete ranking.
+down: the widget names the reducer it cannot apply and shows nothing for that
+query — a dash in a table's cell, a missing row in a toplist. It says so rather
+than dropping the row silently, because a toplist one row short reads as a
+complete ranking, and it says it *instead of* "No data", because a widget that
+had series and could not reduce them is not a service that has stopped
+reporting.
 
 Changing the time range or a variable **keeps the last answer on screen** and
 dims it until the new one lands, so the page fades rather than empties. A

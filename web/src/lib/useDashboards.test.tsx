@@ -208,6 +208,25 @@ describe("useDashboardData", () => {
     expect(result.current.isRefreshing).toBe(true);
   });
 
+  // `enabled: false` does not stop a placeholder being computed, so a dashboard
+  // that loses its last heatmap keeps the old map as one and dims forever with
+  // nothing in flight.
+  it("does not dim forever when a dashboard loses its last heatmap", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ from: 1, to: 2, interval: 60, bins: 0, series: [], warnings: [] }))),
+    );
+    const withHeatmap: DashboardRequests = { chunks: [], heatmaps: [{ widgetId: "h", q: "dist:lat{*}" }] };
+    const without: DashboardRequests = { chunks: [], heatmaps: [] };
+    const { result, rerender } = renderHook(({ r }: { r: DashboardRequests }) => useDashboardData(r, DEFAULT_VIEW_STATE, [], "dashboard-1"), {
+      wrapper,
+      initialProps: { r: withHeatmap },
+    });
+    await waitFor(() => expect(result.current.sketches.get("h")?.data).toBeDefined());
+    rerender({ r: without });
+    expect(result.current.isRefreshing).toBe(false);
+  });
+
   it("reports a failed request rather than pretending the widgets are empty", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "a batch takes at most 50 queries" }), { status: 400 })));
     const { result } = renderHook(() => useDashboardData(requests(slot("a", "qa")), DEFAULT_VIEW_STATE, [], "d1"), { wrapper });

@@ -79,33 +79,37 @@ function answered(
 }
 
 /**
- * A note for every reducer in this widget that this build cannot apply.
+ * The widget's own complaint about a reducer this build cannot apply, if any.
  *
- * Without it an unknown reducer reduces to null, and null already means "this
- * line had nothing measurable" — so a toplist filters the row out and the
- * reader sees a nine-row ranking and believes that is all the data. A square
- * that is visibly broken beats a square that is quietly short, which is the
- * same judgement [[UnknownWidget]] makes for a type it cannot draw.
+ * An **error** rather than a warning, which is two decisions.
+ *
+ * It is the widget's problem and not the query's: the server answered, and
+ * this build cannot do what the definition asks of the answer. That is the
+ * same thing [[UnknownWidget]] says about a type it cannot draw, and it earns
+ * the same treatment — including suppressing "No data", because a toplist
+ * whose every reducer is unknown has no rows *and* has series, and telling the
+ * reader a reporting service is silent is the failure this whole file keeps
+ * circling.
+ *
+ * And the wording has to hold for all three widgets that take a reducer. The
+ * row really is gone from a toplist, but a table keeps the column and fills it
+ * with dashes, and a query_value shows one — so "left out" was true of one of
+ * them and a lie about a full column of dashes.
  */
-function reducerWarnings(widget: Widget): string[] {
+function reducerProblem(widget: Widget): string | undefined {
   const unknown = new Set<string>();
   for (const q of widget.queries ?? []) {
     if (q.reducer !== undefined && !isReducer(q.reducer))
       unknown.add(q.reducer);
   }
-  return [...unknown].map(
-    (r) =>
-      `This build cannot apply a "${r}" reducer, so that query is left out.`,
-  );
+  if (unknown.size === 0) return undefined;
+  const names = [...unknown].map((r) => `"${r}"`).join(", ");
+  return `This build cannot apply ${unknown.size === 1 ? "a" : "the"} ${names} reducer${unknown.size === 1 ? "" : "s"}, so nothing is shown for ${unknown.size === 1 ? "that query" : "those queries"}.`;
 }
 
 /** Every warning across a widget's queries, deduplicated. */
-function allWarnings(
-  results: readonly (BatchResult | undefined)[],
-  widget?: Widget,
-): string[] {
-  const server = results.flatMap((r) => r?.warnings ?? []);
-  return [...new Set([...server, ...(widget ? reducerWarnings(widget) : [])])];
+function allWarnings(results: readonly (BatchResult | undefined)[]): string[] {
+  return [...new Set(results.flatMap((r) => r?.warnings ?? []))];
 }
 
 /** A row of one query's answer: the series, labelled the way a legend wants. */
@@ -201,7 +205,7 @@ export function formatWidgetValue(
 
 /** One number, reduced from one query's line. */
 export function QueryValueWidget({ widget, results }: WidgetProps) {
-  const error = firstError(results);
+  const error = firstError(results) ?? reducerProblem(widget);
   const lines = linesOf(widget, results);
   // A query_value shows one number, so a query that grouped has more answers
   // than the widget has room for. Showing the first would be a lie by
@@ -226,7 +230,7 @@ export function QueryValueWidget({ widget, results }: WidgetProps) {
     <WidgetFrame
       title={widget.title}
       error={error}
-      warnings={allWarnings(results, widget)}
+      warnings={allWarnings(results)}
       empty={answered(widget, results) && lines.length === 0}
     >
       <div className="flex h-full flex-col items-center justify-center">
@@ -245,7 +249,7 @@ export function QueryValueWidget({ widget, results }: WidgetProps) {
 
 /** Rows ranked by their reduced value, biggest first. */
 export function ToplistWidget({ widget, results }: WidgetProps) {
-  const error = firstError(results);
+  const error = firstError(results) ?? reducerProblem(widget);
   // Each line by its own query's reducer. A toplist may carry several queries
   // and each carries its own rule, so one taken from `queries[0]` and applied
   // to all of them ranks the rows by two different questions.
@@ -268,7 +272,7 @@ export function ToplistWidget({ widget, results }: WidgetProps) {
     <WidgetFrame
       title={widget.title}
       error={error}
-      warnings={allWarnings(results, widget)}
+      warnings={allWarnings(results)}
       empty={answered(widget, results) && rows.length === 0}
     >
       <ol className="h-full overflow-auto text-sm">
@@ -304,7 +308,7 @@ export function ToplistWidget({ widget, results }: WidgetProps) {
  * back in — which is what makes the row mean one thing.
  */
 export function TableWidget({ widget, results }: WidgetProps) {
-  const error = firstError(results);
+  const error = firstError(results) ?? reducerProblem(widget);
   const queries = widget.queries ?? [];
   const rows = new Map<string, (number | null)[]>();
   queries.forEach((query, i) => {
@@ -327,7 +331,7 @@ export function TableWidget({ widget, results }: WidgetProps) {
     <WidgetFrame
       title={widget.title}
       error={error}
-      warnings={allWarnings(results, widget)}
+      warnings={allWarnings(results)}
       empty={answered(widget, results) && rows.size === 0}
     >
       <div className="h-full overflow-auto">

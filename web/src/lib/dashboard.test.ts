@@ -4,6 +4,7 @@ import {
   gridArea,
   gridRows,
   matchConditionalFormat,
+  isReducer,
   reduceSeries,
   widgetsInReadingOrder,
   type Reducer,
@@ -104,6 +105,26 @@ describe("reduceSeries", () => {
 // delivers one this build has never heard of. Falling off the end of the
 // switch returns undefined, which the signature says is impossible and the
 // first `.toFixed` on it turns into a blank application.
+describe("isReducer", () => {
+  // Not a list of the five: the point is that the compiler requires an entry
+  // per union member, so a sixth added to `Reducer` and to reduceSeries cannot
+  // be quietly missing here. This test only guards the runtime half.
+  it("accepts every reducer reduceSeries can apply", () => {
+    for (const r of ["last", "avg", "sum", "min", "max"] as const) {
+      expect(isReducer(r)).toBe(true);
+      expect(reduceSeries([1, 2], r)).not.toBeNull();
+    }
+  });
+
+  it("rejects a string that is not one, and nothing at all", () => {
+    expect(isReducer("median")).toBe(false);
+    expect(isReducer(undefined)).toBe(false);
+    // Object.hasOwn, not `in`: "toString" is on every object's prototype.
+    expect(isReducer("toString")).toBe(false);
+    expect(isReducer("constructor")).toBe(false);
+  });
+});
+
 describe("reduceSeries with a reducer this build does not know", () => {
   it("is null, not undefined", () => {
     const unknown = "median" as Reducer;

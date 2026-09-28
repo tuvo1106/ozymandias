@@ -160,6 +160,34 @@ describe("a reducer this build does not know", () => {
   // Dropping the row silently is the failure to avoid: null already means
   // "this line had nothing measurable", so a reader would see a short ranking
   // and believe that was all the data. The row still goes; the widget says so.
+  // "No data" means the service is not reporting (docs/ui.md §3). A toplist
+  // whose every reducer is unknown has no rows *and* has series, so saying it
+  // would tell the reader a reporting service is silent.
+  it("does not also say No data when nothing could be reduced", () => {
+    const w = widget({
+      type: "toplist",
+      queries: [{ q: "sum:a{*} by {r}", reducer: "median" as DashboardQuery["reducer"] }],
+    });
+    render(<ToplistWidget widget={w} results={[ok(0, [line({ r: "a" }, [5])])]} />);
+    expect(screen.getByText(/cannot apply a "median" reducer/)).toBeInTheDocument();
+    expect(screen.queryByText("No data")).not.toBeInTheDocument();
+  });
+
+  it("does not claim a table's query was left out when its column is still there", () => {
+    const w = widget({
+      type: "table",
+      queries: [
+        { q: "sum:a{*} by {r}", reducer: "median" as DashboardQuery["reducer"] },
+        { q: "sum:b{*} by {r}", reducer: "sum" },
+      ],
+    });
+    render(<TableWidget widget={w} results={[ok(0, [line({ r: "a" }, [5])]), ok(1, [line({ r: "a" }, [1, 2])])]} />);
+    // The column is still drawn, with a dash in it — so the message must not
+    // say the query was "left out".
+    expect(screen.getAllByRole("columnheader")).toHaveLength(3);
+    expect(screen.getByText(/nothing is shown for that query/)).toBeInTheDocument();
+  });
+
   it("says so rather than quietly shortening a toplist", () => {
     const w = widget({
       type: "toplist",

@@ -79,9 +79,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the page (ADR-0017). A widget type this build does not know says so in its own
   frame instead of taking the application down, which is what an older UI and a
   newer `ozyd` look like; so does a `reducer` it does not know, rather than
-  dropping the row and leaving a short ranking that reads as a complete one. A `note`'s markdown is rendered as text, not HTML:
-  anybody who can POST a dashboard can write one. Read the pages in
-  `docs/ui.md`.
+  dropping the row and leaving a short ranking that reads as a complete one. A
+  `note`'s markdown is rendered as text, not HTML: anybody who can POST a
+  dashboard can write one. Read the pages in `docs/ui.md`.
 - **The heatmap widget draws the sketch itself**, not a percentile taken from
   it: a column per bucket, a band per bin, brightness logarithmic in how many
   observations fell there, and a real gap where nothing was recorded. Set

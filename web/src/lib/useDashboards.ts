@@ -241,7 +241,8 @@ export function useDashboardData(
     // nothing to say it is showing the previous window — and on a mixed one
     // the dim would clear the moment the lines landed, while the heatmaps were
     // still answering the old question.
-    isRefreshing: batch.isPlaceholderData || sketches.isRefreshing,
+    isRefreshing:
+      (chunks.length > 0 && batch.isPlaceholderData) || sketches.isRefreshing,
     error: (batch.error as Error | undefined) ?? batch.data?.error ?? null,
     range: answered
       ? { from: answered.from, to: answered.to }
@@ -318,7 +319,15 @@ export function useDashboardSketches(
   });
   return {
     sketches: query.data ?? EMPTY_SKETCHES,
-    isRefreshing: query.isPlaceholderData,
+    // `enabled: false` does not stop a placeholder being computed — query-core
+    // only asks whether the query is pending, and a disabled one is. So a
+    // dashboard that loses its last heatmap while keeping its id retains the
+    // old map as a placeholder, `isPlaceholderData` stays true, and nothing
+    // will ever fetch to clear it: the page dims and stays dimmed with nothing
+    // in flight. Not reachable today — a mounted definition cannot lose a
+    // widget without a refetch, and the definition query has none — which is
+    // exactly the kind of latch that comes true the day one is added.
+    isRefreshing: heatmaps.length > 0 && query.isPlaceholderData,
   };
 }
 
