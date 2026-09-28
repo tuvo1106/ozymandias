@@ -51,6 +51,24 @@ func TestShippedDashboards(t *testing.T) {
 					assertMetricsExist(t, w.ID, q.Q)
 				}
 			}
+			if !d.Template {
+				return
+			}
+			// A shipped template is served through
+			// /api/v1/dashboards/service/<name>, and an instance that does not
+			// validate is one the UI cannot offer to save a copy of. Checked
+			// here rather than only in template_test.go, because this is the
+			// definition that actually ships.
+			inst, err := d.Instantiate("checkout")
+			if err != nil {
+				t.Fatalf("it is a template and will not instantiate: %v", err)
+			}
+			if err := inst.Validate(); err != nil {
+				t.Errorf("its instance does not validate: %v", err)
+			}
+			if _, err := d.Metrics(); err != nil {
+				t.Errorf("its metrics cannot be read, so it discovers no services: %v", err)
+			}
 		})
 	}
 	if found == 0 {
