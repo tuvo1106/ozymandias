@@ -215,7 +215,7 @@ describe("a widget type this build does not know", () => {
     render(
       <DashboardGrid
         widgets={widgets}
-        byWidget={new Map([["known", new Map([[0, ok(0, [line({}, [1, 2])])]])]])}
+        byWidget={new Map([["known", new Map([[0, { asked: widgets[0]!.queries![0]!.q.trim(), result: ok(0, [line({}, [1, 2])]) }]])]])}
         sketches={new Map()}
         syncKey="k"
       />,

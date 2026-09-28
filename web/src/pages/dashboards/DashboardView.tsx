@@ -13,7 +13,10 @@ import { useMemo } from "react";
 import { useSearchParams } from "react-router";
 import type { Dashboard } from "../../lib/dashboard";
 import { firstMetric } from "../../lib/dashboard";
-import { collectRequests } from "../../lib/dashboardQueries";
+import {
+  collectRequests,
+  sharedWarnings,
+} from "../../lib/dashboardQueries";
 import {
   parseViewState,
   serializeViewState,
@@ -61,10 +64,11 @@ export function DashboardView({
     dashboard.template_vars,
     syncKey,
   );
-  const metric = useMemo(
-    () => firstMetric(dashboard.widgets) ?? "",
-    [dashboard.widgets],
+  const shared = useMemo(
+    () => sharedWarnings(dashboard.widgets, data.byWidget, data.sketches),
+    [dashboard.widgets, data.byWidget, data.sketches],
   );
+  const hidden = useMemo(() => new Set(shared), [shared]);
 
   // The x-axis covers the window the *server evaluated*, not the one the data
   // happens to span — otherwise a series that stopped reporting an hour ago
@@ -79,7 +83,6 @@ export function DashboardView({
   const xRange: [number, number] | undefined = data.range
     ? [data.range.from, data.range.to]
     : undefined;
-  const canRefresh = state.range.kind === "relative";
 
   return (
     <div className="flex flex-col gap-4">
@@ -95,37 +98,11 @@ export function DashboardView({
         {actions}
       </header>
 
-      <div className="flex flex-wrap items-center gap-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-        <VariableBar
-          variables={dashboard.template_vars ?? []}
-          state={state}
-          metric={metric}
-          onChange={(name, value) =>
-            update({ vars: { ...state.vars, [name]: value } })
-          }
-        />
-        <TimeRangePicker
-          key={JSON.stringify(state.range)}
-          range={state.range}
-          onChange={(range: TimeRange) => update({ range })}
-        />
-        <label
-          className="flex items-center gap-2 text-sm"
-          title={
-            canRefresh
-              ? undefined
-              : "A fixed time window doesn't change, so there is nothing to refresh."
-          }
-        >
-          <input
-            type="checkbox"
-            checked={state.live && canRefresh}
-            disabled={!canRefresh}
-            onChange={(e) => update({ live: e.target.checked })}
-          />
-          Auto-refresh every {REFRESH_INTERVAL_MS / 1000}s
-        </label>
-      </div>
+      <DashboardControls
+        dashboard={dashboard}
+        state={state}
+        onChange={update}
+      />
 
       {/* A failed *request* is the only thing that blanks the page: a failed
           query is one widget's problem and is drawn inside it (ADR-0017). */}
@@ -154,15 +131,93 @@ export function DashboardView({
               : "transition-opacity"
           }
         >
+          <SharedWarnings warnings={shared} />
           <DashboardGrid
             widgets={dashboard.widgets}
             byWidget={data.byWidget}
             sketches={data.sketches}
             xRange={xRange}
             syncKey={syncKey}
+            hiddenWarnings={hidden}
           />
         </div>
       )}
     </div>
+  );
+}
+
+/** Props for DashboardControls. */
+export interface DashboardControlsProps {
+  dashboard: Dashboard;
+  state: DashboardViewState;
+  onChange: (patch: Partial<DashboardViewState>) => void;
+}
+
+/**
+ * The bar above a dashboard: its variables, the time picker and auto-refresh.
+ * Shared by the view and the editor, because the editor's preview answers the
+ * same question the view does and should be scoped the same way.
+ */
+export function DashboardControls({
+  dashboard,
+  state,
+  onChange: update,
+}: DashboardControlsProps) {
+  const metric = useMemo(
+    () => firstMetric(dashboard.widgets) ?? "",
+    [dashboard.widgets],
+  );
+  const canRefresh = state.range.kind === "relative";
+  return (
+      <div className="flex flex-wrap items-center gap-4 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+      <VariableBar
+        variables={dashboard.template_vars ?? []}
+        state={state}
+        metric={metric}
+        onChange={(name, value) =>
+          update({ vars: { ...state.vars, [name]: value } })
+        }
+      />
+      <TimeRangePicker
+        key={JSON.stringify(state.range)}
+        range={state.range}
+        onChange={(range: TimeRange) => update({ range })}
+      />
+      <label
+        className="flex items-center gap-2 text-sm"
+        title={
+          canRefresh
+            ? undefined
+            : "A fixed time window doesn't change, so there is nothing to refresh."
+        }
+      >
+        <input
+          type="checkbox"
+          checked={state.live && canRefresh}
+          disabled={!canRefresh}
+          onChange={(e) => update({ live: e.target.checked })}
+        />
+        Auto-refresh every {REFRESH_INTERVAL_MS / 1000}s
+      </label>
+    </div>
+  );
+}
+
+/**
+ * The warnings every answering widget shares, said once above the grid. See
+ * [[sharedWarnings]] for when a warning qualifies — and why nothing does
+ * while any widget is still waiting.
+ */
+export function SharedWarnings({ warnings }: { warnings: readonly string[] }) {
+  if (warnings.length === 0) return null;
+  return (
+    <ul
+      aria-label="Warnings on every widget"
+      className="mb-3 space-y-0.5 rounded-md border border-amber-200 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:text-amber-500"
+    >
+      {warnings.map((w) => (
+        <li key={w}>Every widget: {w}</li>
+      ))}
+    </ul>
   );
 }

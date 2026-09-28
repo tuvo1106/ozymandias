@@ -43,6 +43,7 @@ export function HeatmapWidget({
   sketch,
   xRange,
   syncKey,
+  hiddenWarnings,
 }: WidgetProps) {
   const { series, others } = useMemo(
     () => primarySeries(sketch?.data?.series ?? []),
@@ -54,7 +55,9 @@ export function HeatmapWidget({
 
   // Every note the picture cannot make: an error bar, the groups this widget
   // is not the place for, and the observations the axis cannot hold.
-  const notes = [...(sketch?.data?.warnings ?? [])];
+  const notes = (sketch?.data?.warnings ?? []).filter(
+    (w) => !hiddenWarnings?.has(w),
+  );
   const alpha = relativeAccuracy(buckets);
   if (alpha > 0)
     notes.push(`Bands are accurate to ±${(alpha * 100).toFixed(1)}%`);

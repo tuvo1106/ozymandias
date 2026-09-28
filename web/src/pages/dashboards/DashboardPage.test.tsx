@@ -340,3 +340,36 @@ describe("a service dashboard", () => {
     expect(await screen.findByText("No template dashboard covers ghost.")).toBeInTheDocument();
   });
 });
+
+describe("a warning every widget carries", () => {
+  // The stock service dashboard repeated "$env resolved to no filter" on all
+  // six widgets. Said once above the grid, and not in any widget.
+  const env = "$env resolved to no filter";
+  const withWarning = (w: string[]) => ({
+    ...batch,
+    results: batch.results.map((r) => ({ ...r, warnings: w })),
+  });
+
+  it("is said once above the grid instead of in each widget", async () => {
+    mockApi((url, init) => {
+      if (url.pathname === "/api/v1/query/batch") return { body: withWarning([env]) };
+      if (url.pathname === "/api/v1/query/sketch") return { body: { ...sketch, warnings: [env] } };
+      return defaultApi(url, init);
+    });
+    renderAt("/dashboards/2");
+    const hoisted = await screen.findByRole("list", { name: "Warnings on every widget" });
+    expect(hoisted).toHaveTextContent(env);
+    expect(screen.getAllByText(new RegExp(env.replace("$", "\\$")))).toHaveLength(1);
+  });
+
+  it("stays in each widget while one widget has not answered", async () => {
+    mockApi((url, init) => {
+      if (url.pathname === "/api/v1/query/batch") return { body: withWarning([env]) };
+      if (url.pathname === "/api/v1/query/sketch") return { body: HANG };
+      return defaultApi(url, init);
+    });
+    renderAt("/dashboards/2");
+    await waitFor(() => expect(screen.getAllByText(env)).toHaveLength(2));
+    expect(screen.queryByRole("list", { name: "Warnings on every widget" })).not.toBeInTheDocument();
+  });
+});

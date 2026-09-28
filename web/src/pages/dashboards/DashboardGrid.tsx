@@ -22,7 +22,7 @@ import {
 } from "../../lib/dashboard";
 import type { BatchResult } from "../../lib/dashboardsApi";
 import type { SketchState } from "../../lib/useDashboards";
-import { widgetResults } from "../../lib/dashboardQueries";
+import { widgetResults, widgetSketch, type Answer } from "../../lib/dashboardQueries";
 import { HeatmapWidget } from "./HeatmapWidget";
 import { WidgetFrame } from "./WidgetFrame";
 import {
@@ -41,13 +41,15 @@ export const ROW_HEIGHT = 64;
 export interface DashboardGridProps {
   widgets: readonly Widget[];
   /** Results by widget id, then by the query's index within that widget. */
-  byWidget: Map<string, Map<number, BatchResult>>;
+  byWidget: Map<string, Map<number, Answer<BatchResult>>>;
   /** Sketches by widget id; only heatmaps have one. */
   sketches: Map<string, SketchState>;
   /** The evaluated window, so every chart's x-axis covers it. */
   xRange?: [number, number];
   /** Charts sharing this key share a cursor; one per dashboard. */
   syncKey: string;
+  /** Warnings said once above the grid; see [[sharedWarnings]]. */
+  hiddenWarnings?: ReadonlySet<string>;
 }
 
 /**
@@ -96,6 +98,7 @@ export function DashboardGrid({
   sketches,
   xRange,
   syncKey,
+  hiddenWarnings,
 }: DashboardGridProps) {
   const ordered = widgetsInReadingOrder(widgets);
   return (
@@ -120,7 +123,8 @@ export function DashboardGrid({
               results={widgetResults(widget, byWidget)}
               xRange={xRange}
               syncKey={syncKey}
-              sketch={sketches.get(widget.id)}
+              sketch={widgetSketch(widget, sketches)}
+              hiddenWarnings={hiddenWarnings}
             />
           </div>
         );

@@ -36,7 +36,7 @@ function answer(values: number[]) {
 }
 
 const valueFor = (data: ReturnType<typeof useDashboardData>, widgetId: string) =>
-  data.byWidget.get(widgetId)?.get(0)?.series[0]?.points[0]?.[1];
+  data.byWidget.get(widgetId)?.get(0)?.result.series[0]?.points[0]?.[1];
 
 afterEach(() => vi.unstubAllGlobals());
 

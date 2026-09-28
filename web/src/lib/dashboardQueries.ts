@@ -78,6 +78,22 @@ export function requestsKey(requests: DashboardRequests): string {
 }
 
 /**
+ * One answer, and the query text it answers.
+ *
+ * The text travels with the answer because an answer outlives the definition
+ * that asked for it: `keepPreviousData` holds it on screen while the next
+ * request runs, and in the editor the definition changes on every keystroke.
+ * Paired by `(widget, index)` alone, deleting a widget's first query would
+ * hand the first query's answer to what had been the second — a line drawn
+ * under another query's name, which is the worst failure a dashboard has.
+ */
+export interface Answer<T> {
+  /** The trimmed text that was sent for this slot. */
+  asked: string;
+  result: T;
+}
+
+/**
  * Puts a chunk's results back against the slots that asked for them.
  *
  * Matched on the result's own `index` rather than on array position: the
@@ -86,17 +102,20 @@ export function requestsKey(requests: DashboardRequests): string {
  * reordered or dropped one would silently show a widget somebody else's
  * numbers — the worst failure a dashboard has.
  */
-export function pairResults<T extends { index: number }>(slots: readonly QuerySlot[], results: readonly T[]): Map<string, Map<number, T>> {
-  const byWidget = new Map<string, Map<number, T>>();
+export function pairResults<T extends { index: number }>(
+  slots: readonly QuerySlot[],
+  results: readonly T[],
+): Map<string, Map<number, Answer<T>>> {
+  const byWidget = new Map<string, Map<number, Answer<T>>>();
   for (const result of results) {
     const slot = slots[result.index];
     if (!slot) continue;
     let widget = byWidget.get(slot.widgetId);
     if (!widget) {
-      widget = new Map<number, T>();
+      widget = new Map<number, Answer<T>>();
       byWidget.set(slot.widgetId, widget);
     }
-    widget.set(slot.queryIndex, result);
+    widget.set(slot.queryIndex, { asked: slot.q, result });
   }
   return byWidget;
 }
@@ -116,13 +135,92 @@ export function mergeWidgetResults<T>(maps: readonly Map<string, Map<number, T>>
 
 /**
  * One widget's results in the order its queries are written, with a hole
- * where a query produced nothing.
+ * where a query has no answer *to the text it now says*.
  *
  * Ordered by the definition rather than by what came back, because a table's
  * columns and a chart's legend are in the author's order and a missing answer
- * must not shift the rest along.
+ * must not shift the rest along. An answer to different text is a hole, not
+ * a stand-in: see [[Answer]]. A window change keeps the same text, so it
+ * still pairs, and the page dims it as the previous window's (useDashboards).
  */
-export function widgetResults<T>(widget: Widget, byWidget: Map<string, Map<number, T>>): (T | undefined)[] {
+export function widgetResults<T>(
+  widget: Widget,
+  byWidget: Map<string, Map<number, Answer<T>>>,
+): (T | undefined)[] {
   const byIndex = byWidget.get(widget.id);
-  return (widget.queries ?? []).map((_, i) => byIndex?.get(i));
+  return (widget.queries ?? []).map((query, i) => {
+    const answer = byIndex?.get(i);
+    return answer && answer.asked === query.q.trim() ? answer.result : undefined;
+  });
+}
+
+/**
+ * A heatmap's sketch, if it answers one of the widget's queries as written
+ * now — the same rule as [[widgetResults]], for the one widget that is not in
+ * the batch.
+ */
+export function widgetSketch<S extends { asked: string }>(
+  widget: Widget,
+  sketches: Map<string, S>,
+): S | undefined {
+  const sketch = sketches.get(widget.id);
+  if (!sketch) return undefined;
+  return (widget.queries ?? []).some((q) => q.q.trim() === sketch.asked) ? sketch : undefined;
+}
+
+/** What a widget said, as far as warnings go. */
+type Said =
+  /** Nothing asked: a note, or a widget whose every query is blank. */
+  | { kind: "nothing asked" }
+  /** Asked, and nothing has come back for its current text yet. */
+  | { kind: "waiting" }
+  /** Every answer was a refusal, which carries no warnings either way. */
+  | { kind: "refused" }
+  | { kind: "answered"; warnings: Set<string> };
+
+/**
+ * The warnings every answering widget on the dashboard carries, to be said
+ * once above the grid instead of once per widget.
+ *
+ * The case this exists for is a service template's `$env` resolving to
+ * nothing: every query mentions it, so every widget said the same sentence.
+ * The hazard is concluding "every widget" from the ones that have spoken, so:
+ *
+ *   - **nothing is hoisted until every widget that asked has answered.** A
+ *     widget still waiting might not carry the warning, and hoisting early
+ *     would move a sentence out of it and back on the next render.
+ *   - **a widget whose every query was refused is left out**, because a
+ *     refusal has no warnings to compare — its silence is not disagreement.
+ *     It still shows its own error.
+ *   - **at least two widgets must share it.** One widget's warning is that
+ *     widget's, and moving it away from the thing it is about helps nobody.
+ */
+export function sharedWarnings<
+  R extends { status: string; warnings: readonly string[] },
+  S extends { asked: string; data?: { warnings: readonly string[] }; error?: string },
+>(
+  widgets: readonly Widget[],
+  byWidget: Map<string, Map<number, Answer<R>>>,
+  sketches: Map<string, S>,
+): string[] {
+  const said: Said[] = widgets.map((w): Said => {
+    if (w.type === "note" || !(w.queries ?? []).some((q) => q.q.trim() !== "")) return { kind: "nothing asked" };
+    if (w.type === "heatmap") {
+      const s = widgetSketch(w, sketches);
+      if (!s) return { kind: "waiting" };
+      if (!s.data) return { kind: "refused" };
+      return { kind: "answered", warnings: new Set(s.data.warnings) };
+    }
+    const results = widgetResults(w, byWidget);
+    const asked = (w.queries ?? []).map((q) => q.q.trim() !== "");
+    if (results.some((r, i) => asked[i] && r === undefined)) return { kind: "waiting" };
+    const ok = results.filter((r): r is R => r !== undefined && r.status === "ok");
+    if (ok.length === 0) return { kind: "refused" };
+    return { kind: "answered", warnings: new Set(ok.flatMap((r) => r.warnings)) };
+  });
+  if (said.some((s) => s.kind === "waiting")) return [];
+  const answered = said.flatMap((s) => (s.kind === "answered" ? [s.warnings] : []));
+  if (answered.length < 2) return [];
+  const [first, ...rest] = answered as [Set<string>, ...Set<string>[]];
+  return [...first].filter((w) => rest.every((s) => s.has(w)));
 }

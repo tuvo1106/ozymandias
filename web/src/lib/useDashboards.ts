@@ -16,6 +16,7 @@ import type { Dashboard, StoredDashboard } from "./dashboard";
 import {
   mergeWidgetResults,
   pairResults,
+  type Answer,
   requestsKey,
   type DashboardRequests,
 } from "./dashboardQueries";
@@ -81,6 +82,8 @@ export function useServiceDashboards(
 
 /** One heatmap's answer: the sketch, or why there isn't one. */
 export interface SketchState {
+  /** The trimmed query text this answers; see [[Answer]]. */
+  asked: string;
   data?: SketchResponse;
   /**
    * The server's own sentence. A string rather than an Error because a widget
@@ -93,7 +96,7 @@ export interface SketchState {
 /** What a dashboard's widgets need to draw themselves. */
 export interface DashboardData {
   /** Results by widget id, then by the query's index within that widget. */
-  byWidget: Map<string, Map<number, BatchResult>>;
+  byWidget: Map<string, Map<number, Answer<BatchResult>>>;
   /** Sketches by widget id; only heatmap widgets have an entry. */
   sketches: Map<string, SketchState>;
 
@@ -304,8 +307,8 @@ export function useDashboardSketches(
         out.set(
           h.widgetId,
           r.status === "fulfilled"
-            ? { data: r.value }
-            : { error: (r.reason as Error).message },
+            ? { asked: h.q, data: r.value }
+            : { asked: h.q, error: (r.reason as Error).message },
         );
       });
       return out;
