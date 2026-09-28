@@ -12,9 +12,10 @@
  *     guessed at from the code.
  *   - **404** — the dashboard was deleted while it was being edited. The
  *     draft is still here; saving it as new is the way out.
- *   - **no status** — ozyd could not be reached. Nothing is known about
- *     whether anything was written — but a request that never connected wrote
- *     nothing, so trying again is safe.
+ *   - **no status** — no answer arrived. That is *not* "nothing was
+ *     written": a request can reach ozyd and lose its answer on the way back,
+ *     and the two look identical from here. Retrying a PUT is harmless; a
+ *     POST may create the dashboard twice, so the editor says to check first.
  *   - anything else — ozyd's own failure, with its status.
  */
 import { ApiError } from "./metricsApi";

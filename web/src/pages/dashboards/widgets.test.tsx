@@ -188,6 +188,33 @@ describe("a reducer this build does not know", () => {
     expect(screen.getByText(/nothing is shown for that query/)).toBeInTheDocument();
   });
 
+  // The server accepts conditional_formats on a table; until the editor
+  // mirrored its rules, the table drew none of them.
+  it("colours a table's cells by its conditional formats, first match wins", () => {
+    const w = widget({
+      type: "table",
+      queries: [{ q: "sum:a{*} by {r}", reducer: "last" }],
+      conditional_formats: [
+        { op: ">", value: 10, color: "red" },
+        { op: ">", value: 1, color: "yellow" },
+        { op: ">", value: 0, color: "chartreuse" },
+      ],
+    });
+    render(
+      <TableWidget
+        widget={w}
+        results={[ok(0, [line({ r: "hot" }, [50]), line({ r: "warm" }, [5]), line({ r: "odd" }, [0.5]), line({ r: "cold" }, [0])])]}
+      />,
+    );
+    const cell = (group: string) => within(screen.getByRole("row", { name: new RegExp(group) })).getByRole("cell");
+    expect(cell("hot").className).toMatch(/text-red-600/);
+    expect(cell("warm").className).toMatch(/text-amber-600/);
+    // A colour this build does not have draws the value plainly, not not at all.
+    expect(cell("odd")).toHaveTextContent("0.5");
+    expect(cell("odd").className).not.toMatch(/text-(red|amber|emerald|sky)/);
+    expect(cell("cold").className).not.toMatch(/text-(red|amber)/);
+  });
+
   it("says so rather than quietly shortening a toplist", () => {
     const w = widget({
       type: "toplist",

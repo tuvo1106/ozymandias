@@ -21,6 +21,7 @@ import {
   type Widget,
 } from "../../lib/dashboard";
 import type { BatchResult } from "../../lib/dashboardsApi";
+import type { FormatColor } from "../../lib/dashboardEditor";
 import type { SketchState } from "../../lib/useDashboards";
 import type { Series } from "../../lib/metricsApi";
 import { WidgetFrame } from "./WidgetFrame";
@@ -188,15 +189,30 @@ export function TimeseriesWidget({
   );
 }
 
-/** The colours a conditional format may name, mapped to this build's palette. */
-const FORMAT_COLORS: Record<string, string> = {
+/**
+ * The colours a conditional format may name, mapped to this build's palette.
+ * `satisfies` so a palette name added to [[FORMAT_COLORS]] must be drawn here.
+ */
+const FORMAT_CLASSES = {
   red: "text-red-600 dark:text-red-400",
   yellow: "text-amber-600 dark:text-amber-400",
   green: "text-emerald-600 dark:text-emerald-400",
   blue: "text-sky-600 dark:text-sky-400",
   grey: "text-zinc-500",
   gray: "text-zinc-500",
-};
+} satisfies Record<FormatColor, string>;
+
+/**
+ * The class for a value under a widget's conditional formats, or undefined
+ * when no rule matches. A rule naming a colour this build does not have
+ * draws in the default colour — the editor shows the unknown name as itself,
+ * and a value that renders at all beats one that vanishes.
+ */
+function formatClass(value: number | null, widget: Widget): string | undefined {
+  const format = matchConditionalFormat(value, widget.conditional_formats);
+  if (!format) return undefined;
+  return Object.hasOwn(FORMAT_CLASSES, format.color) ? FORMAT_CLASSES[format.color as FormatColor] : undefined;
+}
 
 /**
  * Formats one reduced number, honouring the widget's `precision`.
@@ -238,10 +254,7 @@ export function QueryValueWidget({
         first.query.reducer,
       )
     : null;
-  const format = matchConditionalFormat(value, widget.conditional_formats);
-  const color = format
-    ? (FORMAT_COLORS[format.color] ?? "text-zinc-900 dark:text-zinc-100")
-    : "text-zinc-900 dark:text-zinc-100";
+  const color = formatClass(value, widget) ?? "text-zinc-900 dark:text-zinc-100";
   return (
     <WidgetFrame
       title={widget.title}
@@ -390,7 +403,7 @@ export function TableWidget({
                   {label}
                 </th>
                 {cells.map((cell, i) => (
-                  <td key={i} className="py-1 pl-2 text-right tabular-nums">
+                  <td key={i} className={`py-1 pl-2 text-right tabular-nums ${formatClass(cell, widget) ?? ""}`}>
                     {formatWidgetValue(cell, widget.precision)}
                   </td>
                 ))}
