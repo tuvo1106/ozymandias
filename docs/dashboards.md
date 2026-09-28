@@ -192,12 +192,34 @@ and zero are different.
 
 A definition with `"template": true` is not shown as itself. It is instantiated
 once per service, so a newly onboarded app has a useful overview before anybody
-writes JSON for it.
+writes JSON for it. `deploy/dashboards/service.json` is the one ozymandias ships:
+throughput, 5xx rate, p95 latency and a latency heatmap, all from the
+`http.request.*` metrics every SDK sends.
 
 A template **must declare a `service` template variable**, because that is what
 it is instantiated over. Without the rule a `"template": true` dashboard stores
 fine and then appears nowhere at all, which is the least debuggable outcome
-available.
+available. The variable's `tag` is what the services are looked up under, so a
+store that spells the label `service.name` is a one-line change to the template
+rather than a rewrite of every query.
+
+**Instantiation binds, it does not rewrite.** An instance is the same definition
+with the `service` variable's `default` set to a service name; the queries still
+say `$service` and the evaluator resolves them per request, exactly as it does
+for `$env`. So the definition a reader sees and the query the server runs are the
+same string, and there is no substitution pass in the package that promises not
+to interpret data.
+
+What else an instance differs by: `template` and `uid` are cleared — it is not
+itself instantiable, and nothing stores it — and its title gains `": <service>"`,
+so a picker showing four of them is a picker. An instance is a definition the API
+would accept, which is what makes "save a copy of this" possible.
+
+**Which services exist** is `GET /api/v1/dashboards/services`: the values of the
+`service` tag on the metrics the templates themselves query. It is not "seen in
+the last day" — nothing here can answer that. See
+[api.md](api.md#get-apiv1dashboardsservices) for the shape and
+[ADR-0020](adr/0020-services-come-from-the-tag-index.md) for why.
 
 ## Limits
 

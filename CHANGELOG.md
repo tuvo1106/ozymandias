@@ -66,6 +66,24 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A dashboard per service, without anybody writing JSON for it.** A definition
+  with `"template": true` is served instantiated rather than as itself:
+  `GET /api/v1/dashboards/service/{name}` binds its `service` variable to one
+  service and answers every template, and `GET /api/v1/dashboards/services` lists
+  the names to offer. `deploy/dashboards/service.json` is the shipped template —
+  throughput, 5xx rate, p95 latency and a latency heatmap from the
+  `http.request.*` metrics every SDK sends.
+  Instantiation **binds** the variable rather than rewriting `$service` in the
+  query text, so the definition a reader sees and the query the server runs stay
+  the same string. The services are the tag values of the metrics the templates
+  themselves query — *not* "seen in the last day" as the plan asked for, which
+  nothing in ozymandias can answer: the tag index takes no time range and the
+  metadata database tracks metrics rather than services (ADR-0020, and the M3
+  spec is amended). So a service that stopped reporting is listed until its
+  series fall out of retention, and a service that reports none of a template's
+  metrics is not listed at all — its instance would be a grid of empty charts.
+  An unknown name is a `404` rather than that grid, because a typo in a runbook's
+  URL reads as "the service is down".
 - **The distribution behind a metric, not just a number from it.**
   `GET|POST /api/v1/query/sketch` answers a new `dist:` aggregator —
   `dist:http.request.latency{service:api} by {route}` — with the merged sketch

@@ -139,6 +139,12 @@ statsd 'smoke.gauge:1|g' 'smoke.gauge:2|g' 'smoke.gauge:7|g'
 # A distribution, sent as a hundred distinct values so the percentiles have
 # something to be wrong about: p50 is 50, p95 is 95, p99 is 99.
 statsd $(i=1; while [ $i -le 100 ]; do printf "smoke.latency:%d|d|#source:smoke " "$i"; i=$((i + 1)); done)
+# The two metrics the shipped template dashboard is built on, tagged with a
+# service so that template instantiation has something to discover. Sent here so
+# they ride the same flush as everything else; asserted in the M3 block.
+SMOKE_SVC=smoke-svc
+statsd "http.request.count:1|c|#service:$SMOKE_SVC,route:/items,status:200" \
+       "http.request.duration:12|d|#service:$SMOKE_SVC,route:/items"
 # The protocol is the interface: no SDK, no library, just a shell script and nc.
 check "examples/cron-script.sh runs"       docker run --rm --network ozymandias \
   -e OZY_AGENT_HOST=agent -e JOB=smoke \
@@ -394,6 +400,72 @@ check "and is then gone"                    test "$(curl -s -o /dev/null -w '%{h
 check "a broken definition is refused"      test "$(curl -s -o /dev/null -w '%{http_code}' \
   -X POST "$OZY_URL/api/v1/dashboards" \
   -d '{"title":"bad","widgets":[{"id":"w","type":"timeseries","layout":{"x":0,"y":0,"w":1,"h":1},"queries":[{"q":"sum:x{a:b by {k}","display":"line"}]}]}')" = "400"
+
+# --- M3: dashboard templates ---------------------------------------------------
+# A template is the one dashboard nobody writes: it is provisioned once and
+# served per service. Three things only an end-to-end check covers — that the
+# shipped template is in the image and validates in the binary that shipped,
+# that service discovery finds a service through the real tag index (including a
+# distribution, whose tags live on its `.count`), and that instantiation binds
+# the variable rather than rewriting the query.
+
+# wait_service <name> — poll until discovery sees it. The metrics it is
+# discovered from arrive on the agent's flush like everything else.
+wait_service() {
+  for _ in $(seq 1 30); do
+    [[ "$(json_field "$OZY_URL/api/v1/dashboards/services" "'$1' in d[\"services\"]")" == "True" ]] && return 0
+    sleep 1
+  done
+  echo "  $1 is not in $(curl -fsS --max-time 5 "$OZY_URL/api/v1/dashboards/services")" >&2
+  return 1
+}
+check "the service template was provisioned" \
+  test "$(json_field "$OZY_URL/api/v1/dashboards" \
+    '[x["uid"] for x in d["dashboards"] if x.get("uid")=="service"][0]')" = "service"
+# A template is not shown as itself, so it says so in the definition the list
+# serves.
+check "and is marked as a template" \
+  test "$(json_field "$OZY_URL/api/v1/dashboards" \
+    '[x.get("template") for x in d["dashboards"] if x.get("uid")=="service"][0]')" = "True"
+check "the service is discovered from the template's metrics" wait_service "$SMOKE_SVC"
+# Discovery is not "every tag value in the store": nothing sent a service tag on
+# smoke.test, and the template does not query it.
+check "and nothing else is" \
+  test "$(json_field "$OZY_URL/api/v1/dashboards/services" \
+    'len(d["services"])')" = "1"
+check "the list is not truncated" \
+  test "$(json_field "$OZY_URL/api/v1/dashboards/services" 'd["truncated"]')" = "False"
+check "and no template row is unreadable" \
+  test "$(json_field "$OZY_URL/api/v1/dashboards/services" 'len(d["unreadable"])')" = "0"
+# The instance: one per template, titled for the service, with the variable bound
+# and the query text untouched.
+svc_url="$OZY_URL/api/v1/dashboards/service/$SMOKE_SVC"
+check "the template instantiates for it" \
+  test "$(json_field "$svc_url" 'd["dashboards"][0]["template_uid"]')" = "service"
+check "the instance names the service" \
+  test "$(json_field "$svc_url" "'$SMOKE_SVC' in d[\"dashboards\"][0][\"dashboard\"][\"title\"]")" = "True"
+check "the service variable is bound" \
+  test "$(json_field "$svc_url" \
+    '[v["default"] for v in d["dashboards"][0]["dashboard"]["template_vars"] if v["name"]=="service"][0]')" = "$SMOKE_SVC"
+check "the instance is not itself a template" \
+  test "$(json_field "$svc_url" '"template" in d["dashboards"][0]["dashboard"]')" = "False"
+# Bound, not rewritten: the evaluator resolves $service per request.
+check "the queries still say \$service" \
+  test "$(json_field "$svc_url" \
+    'all("$service" in q["q"] for w in d["dashboards"][0]["dashboard"]["widgets"] for q in w.get("queries", []))')" = "True"
+# An unknown service is a 404, not a grid of empty charts.
+check "an unknown service is refused" \
+  test "$(curl -s -o /dev/null -w '%{http_code}' \
+    "$OZY_URL/api/v1/dashboards/service/not-a-service")" = "404"
+# And the instance is a definition the API would accept, which is what makes
+# "save a copy of this" possible.
+copy=$(curl -fsS --max-time 5 "$svc_url" |
+  python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["dashboards"][0]["dashboard"]))')
+copied=$(curl -fsS --max-time 5 -X POST "$OZY_URL/api/v1/dashboards" -d "$copy" |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+check "an instance can be saved as a dashboard" test -n "$copied"
+# Deleted again: a smoke run should not leave rows behind for the next one.
+curl -fsS --max-time 5 -o /dev/null -X DELETE "$OZY_URL/api/v1/dashboards/$copied"
 
 # The durability claim, end to end. The SIGTERM cycle near the top of this
 # script happened before any of this data existed, so repeating a query after

@@ -163,7 +163,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		Logger: s.log.With("component", "query"),
 	}).Register(mux)
 	(&api.Dashboards{
-		Store: md, Clock: s.clock,
+		Store: md, Values: store, Types: md, Clock: s.clock,
 		Logger: s.log.With("component", "dashboards"),
 	}).Register(mux)
 	// Provisioned before serving, so the first request cannot arrive at a
