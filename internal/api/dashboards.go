@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/clock"
@@ -45,6 +46,12 @@ type Dashboards struct {
 	Store  DashboardStore
 	Clock  clock.Clock  // default clock.Real()
 	Logger *slog.Logger // nil discards
+
+	// mu guards reported, which remembers why each unreadable row was
+	// unreadable so that a broken one is logged once rather than once per
+	// request — see [Dashboards.logUnreadable].
+	mu       sync.Mutex
+	reported map[int64]string
 }
 
 // Register mounts the endpoints on mux.
@@ -78,16 +85,41 @@ type storedDashboard struct {
 	Definition json.RawMessage `json:"-"`
 }
 
+// dashboardMetadata is the database's half of a stored dashboard: the columns the
+// response adds to the author's definition.
+//
+// A named type at package scope rather than one declared inside MarshalJSON, so
+// that a test can compare its field names against [reservedFields] — the list a
+// definition is refused for claiming. Two copies of "which keys belong to the
+// database" that can drift apart is how that defence becomes imaginary again.
+type dashboardMetadata struct {
+	ID          int64     `json:"id"`
+	Provisioned bool      `json:"provisioned"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+// reservedFields are the keys [dashboardMetadata] contributes to a response. A
+// stored definition containing any of them is refused rather than served — see
+// [storedDashboard.MarshalJSON].
+var reservedFields = []string{"id", "provisioned", "created_at", "updated_at"}
+
 // MarshalJSON splices the definition's fields alongside the metadata, so the
 // response is one flat object.
 //
-// Hand-written rather than an embedded struct, because the definition is stored
-// as bytes and never decoded here — that is what keeps a dashboard exported from
-// one ozyd and imported into another from acquiring a diff. Decoding into a map
-// and re-encoding would sort the keys, drop the author's formatting, and turn
-// every number into a float64.
+// Hand-written rather than an embedded struct, because the definition is spliced
+// as bytes rather than decoded and re-encoded. What that buys is narrower than an
+// earlier version of this comment claimed, so, precisely: the author's key
+// *order* survives, which a map would sort, and so does every number exactly as
+// written, which a map would turn into a float64 — 12345678901234567890 comes
+// back itself rather than as 1.2345678901234567e+19. What does *not* survive is
+// whitespace and HTML escaping: encoding/json runs a custom MarshalJSON's bytes
+// through compact and escapes <, > and & inside strings, so a pretty-printed
+// definition is served minified with "a <b>" as "a \u003cb\u003e" whatever this
+// method does. The *stored* bytes are untouched either way — the compaction
+// belongs to the response, not to the database.
 //
-// # The metadata goes last, and the result is checked
+// # The metadata cannot be overridden, and the result is checked
 //
 // Both of those are scars. Splicing bytes means reasoning about bytes, and this
 // function got that wrong three times:
@@ -101,43 +133,52 @@ type storedDashboard struct {
 //     the merge emitted a trailing comma.
 //   - It wrote the metadata *first*, with a comment claiming that this stopped a
 //     definition containing an "id" from overwriting the database's. That is
-//     backwards: in JSON the last of two duplicate keys wins, in Go and in a
-//     browser alike, so metadata-first meant the definition won. The defence was
-//     imaginary.
+//     backwards: given two keys of one name, the parsers we have keep the last,
+//     so metadata-first meant the definition won. The defence was imaginary.
 //
 // The first two are fixed by trimming and by testing the trimmed body. The third
-// is fixed by ordering: the definition's fields are written first and the
-// metadata last, so the database's id, provisioned flag and timestamps are the
-// ones that survive whatever a row contains. Nothing can currently put them in a
-// definition — dashboard.Parse refuses unknown fields on both the API and the
-// provisioning path — but a hand-edited row should not be able to lie about its
-// own id.
+// took two attempts. Ordering — the definition first, the metadata last — is not
+// a fix on its own, because "the last duplicate key wins" is what parsers happen
+// to do and not something JSON promises: Go's own encoding/json/v2 rejects
+// duplicate object names outright, so for such a client the row would be a parse
+// error rather than a win for the database. A response whose meaning depends on
+// whose parser reads it is not an answer. So a definition carrying one of the
+// four [reservedFields] is *refused* here, and the ordering stays behind it as a
+// second line of defence.
 //
-// The merged bytes are also checked with json.Valid before they leave. Being
-// honest about what that buys, since overclaiming is how the three above
-// happened: encoding/json already validates whatever a custom MarshalJSON
-// returns — it runs the bytes through compact and reports a MarshalerError — so
-// this check cannot be the only thing standing between a splicing bug and a
-// client. Removing it leaves every test in this package passing.
+// Refused rather than served with those keys stripped, which would keep the
+// dashboard renderable: stripping means locating and cutting a member out of raw
+// bytes, and the list above is this function's record at byte surgery. Such a row
+// cannot be created through the API or by provisioning — dashboard.Parse refuses
+// unknown fields on both paths — so it is a hand-edited database, and the useful
+// answer to one is which row and why. It costs a decode of the definition on the
+// way out, into map[string]json.RawMessage so that only the top level is
+// interpreted and nothing is re-encoded. That is the price of the guarantee being
+// a guarantee.
 //
-// It is kept for two smaller reasons, and the first of them had to be *made*
-// true: a review pointed out that naming the dashboard is worthless if the
-// message is discarded, which is exactly what writeJSON did with it. The
-// handlers now marshal through writeJSONErr and log the id, so the sentence
-// "it names the dashboard" describes something that happens. The second reason
-// is that it makes the method correct on its own rather than
-// correct-because-of-its-caller, which matters the first time something marshals
-// one of these by hand.
+// # What catches a malformed definition
 //
-// The guarantee still lives in the tests, not in this line.
+// The decode above, now, and the encoder afterwards. There used to be a third
+// thing: the merged bytes were re-checked with json.Valid, under a comment that
+// admitted encoding/json validates a custom MarshalJSON's output anyway — it runs
+// the bytes through compact and reports a MarshalerError — and then claimed that
+// removing the line left every test in the package passing. That was false; a
+// test asserted the error came from *this* method, and it failed without it.
+// Checking fixed the sentence, and the line is unreachable now regardless: a
+// definition that is not a valid object is rejected by reservedField, and a valid
+// object's members followed by the metadata's members are a valid object. An
+// unreachable guard defended by an untrue sentence is the imaginary defence in
+// the third bullet above wearing a different hat, so it is gone.
+//
+// A splicing bug introduced *below* this comment would therefore be caught where
+// the last one was: by the encoder, at the caller, as a 500 rather than an empty
+// 200 — and the error names the dashboard, which reaches an operator only because
+// the handlers marshal through writeJSONErr and log the id. A review caught that
+// being claimed while writeJSON dropped the message on the floor.
+//
+// The guarantee lives in the tests either way.
 func (s storedDashboard) MarshalJSON() ([]byte, error) {
-	type metadata struct {
-		ID          int64     `json:"id"`
-		Provisioned bool      `json:"provisioned"`
-		CreatedAt   time.Time `json:"created_at"`
-		UpdatedAt   time.Time `json:"updated_at"`
-	}
-	head, err := json.Marshal(metadata{s.ID, s.Provisioned, s.CreatedAt, s.UpdatedAt})
+	head, err := json.Marshal(dashboardMetadata{s.ID, s.Provisioned, s.CreatedAt, s.UpdatedAt})
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +194,17 @@ func (s storedDashboard) MarshalJSON() ([]byte, error) {
 	}
 	if def[0] != '{' || def[len(def)-1] != '}' {
 		return nil, fmt.Errorf("dashboard %d: the stored definition is not a JSON object", s.ID)
+	}
+	// Refused, not overridden: a response cannot carry the same key twice and
+	// still mean one thing to every client. See the method comment.
+	name, err := s.reservedField(def)
+	if err != nil {
+		return nil, err
+	}
+	if name != "" {
+		return nil, fmt.Errorf(
+			"dashboard %d: the stored definition contains %q, which the database owns — fix the row",
+			s.ID, name)
 	}
 	// {"title":…} + {"id":…,"updated_at":…} -> {"title":…,"id":…,"updated_at":…}
 	//
@@ -171,13 +223,26 @@ func (s storedDashboard) MarshalJSON() ([]byte, error) {
 	// head is `{"id":…}`; everything after its opening brace, including the
 	// closing one, completes the object.
 	merged = append(merged, head[1:]...)
-
-	// Belt over the stdlib's brace, for a better message — see the method
-	// comment. json.Marshal would reject these bytes anyway.
-	if !json.Valid(merged) {
-		return nil, fmt.Errorf("dashboard %d: splicing the stored definition did not produce valid JSON", s.ID)
-	}
 	return merged, nil
+}
+
+// reservedField reports the first of [reservedFields] the definition claims, or
+// "" if it claims none.
+//
+// The values are decoded as json.RawMessage so that only the top level is
+// interpreted: what gets spliced is still the definition's own bytes, and a
+// number buried in a widget is never turned into a float64 and back.
+func (s storedDashboard) reservedField(def []byte) (string, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(def, &top); err != nil {
+		return "", fmt.Errorf("dashboard %d: the stored definition is not valid JSON: %w", s.ID, err)
+	}
+	for _, name := range reservedFields {
+		if _, ok := top[name]; ok {
+			return name, nil
+		}
+	}
+	return "", nil
 }
 
 func rowToWire(r meta.DashboardRow) storedDashboard {
@@ -209,11 +274,11 @@ func (d *Dashboards) list(w http.ResponseWriter, r *http.Request) {
 	for _, row := range rows {
 		body, err := json.Marshal(rowToWire(row))
 		if err != nil {
-			d.Logger.Error("a stored dashboard could not be encoded; it is omitted from the list",
-				"id", row.ID, "uid", row.UID, "err", err)
+			d.logUnreadable(row, err, "a stored dashboard could not be encoded; it is omitted from the list")
 			unreadable = append(unreadable, row.ID)
 			continue
 		}
+		d.encoded(row.ID)
 		out = append(out, body)
 	}
 	writeJSON(w, http.StatusOK, struct {
@@ -252,8 +317,46 @@ func (d *Dashboards) get(w http.ResponseWriter, r *http.Request) {
 // the only place the id can appear.
 func (d *Dashboards) writeDashboard(w http.ResponseWriter, code int, row meta.DashboardRow) {
 	if err := writeJSONErr(w, code, rowToWire(row)); err != nil {
-		d.Logger.Error("a stored dashboard could not be encoded", "id", row.ID, "uid", row.UID, "err", err)
+		d.logUnreadable(row, err, "a stored dashboard could not be encoded")
+		return
 	}
+	d.encoded(row.ID)
+}
+
+// logUnreadable reports a row whose definition could not be encoded: once per
+// row, and again only if the reason changes.
+//
+// Not on every request, which is what it used to be. The list endpoint is what a
+// dashboard picker polls, and a hand-edited row stays broken until somebody fixes
+// the database — so an Error record per poll is an unbounded stream of identical
+// lines, burying everything else in the log for a condition that is not going to
+// change. The durable signal is `unreadable` in the response; the log's job is to
+// say *why*, and it only has to say it once.
+//
+// Keyed on the reason as well as the id, so that a row edited into a different
+// kind of broken is still heard, and cleared by [Dashboards.encoded] when a row
+// comes back, so that a row which breaks twice is reported twice.
+func (d *Dashboards) logUnreadable(row meta.DashboardRow, err error, msg string) {
+	reason := err.Error()
+	d.mu.Lock()
+	last, seen := d.reported[row.ID]
+	if d.reported == nil {
+		d.reported = make(map[int64]string)
+	}
+	d.reported[row.ID] = reason
+	d.mu.Unlock()
+	if seen && last == reason {
+		return
+	}
+	d.Logger.Error(msg, "id", row.ID, "uid", row.UID, "err", err)
+}
+
+// encoded forgets a row that marshalled cleanly, so the next failure is logged
+// even when it is the same failure as the last one.
+func (d *Dashboards) encoded(id int64) {
+	d.mu.Lock()
+	delete(d.reported, id)
+	d.mu.Unlock()
 }
 
 func (d *Dashboards) create(w http.ResponseWriter, r *http.Request) {

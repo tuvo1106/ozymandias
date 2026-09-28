@@ -1,13 +1,16 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -535,54 +538,164 @@ func TestWriteJSON_AMarshalFailureIsStillAJSONResponse(t *testing.T) {
 }
 
 // The database owns id, provisioned and the timestamps, and a stored definition
-// must not be able to lie about them.
+// that claims one of them is refused rather than served.
 //
 // Nothing can put those keys in a definition through the API or through
-// provisioning — dashboard.Parse refuses unknown fields — so this is a
-// hand-edited row, which is exactly the case the original comment claimed to
-// defend against and did not. Writing the metadata first meant the definition's
-// duplicate key came second, and in JSON the last one wins.
-func TestDashboards_TheDatabaseOwnsTheMetadataWhateverTheRowSays(t *testing.T) {
+// provisioning — dashboard.Parse refuses unknown fields — so this is a hand-edited
+// row, which is exactly the case the original comment claimed to defend against
+// and did not: it wrote the metadata first, so the definition's duplicate key came
+// second and won.
+//
+// Writing the metadata last fixes that for parsers which keep the last of two
+// duplicate keys, which is all the ones we have and none that promise it —
+// encoding/json/v2 rejects duplicate object names outright. A response whose
+// meaning depends on whose parser reads it is not worth serving, so the row is
+// refused: the id is named in `unreadable`, the reason is logged, and a direct GET
+// is a 500 with a body.
+func TestDashboards_ARowClaimingTheMetadataIsRefused(t *testing.T) {
+	// A value per reserved field, looked up rather than ranged over, so that
+	// adding a metadata column without extending this table fails here.
+	values := map[string]string{
+		"id":          "999",
+		"provisioned": "false",
+		"created_at":  `"1999-01-01T00:00:00Z"`,
+		"updated_at":  `"1999-01-01T00:00:00Z"`,
+	}
+	for _, field := range reservedFields {
+		t.Run(field, func(t *testing.T) {
+			value, ok := values[field]
+			if !ok {
+				t.Fatalf("reservedFields has %q and this test has no value for it", field)
+			}
+			liar := fmt.Sprintf(`{"title":"Liar",%q:%s,"widgets":[]}`, field, value)
+
+			// The message names the field and the dashboard, because somebody
+			// has to go and edit a row.
+			_, err := storedDashboard{ID: 7, Definition: json.RawMessage(liar)}.MarshalJSON()
+			if err == nil {
+				t.Fatalf("a definition claiming %q was spliced", field)
+			}
+			for _, want := range []string{field, "7"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%v does not mention %q", err, want)
+				}
+			}
+
+			h, db := dashboardsAPI(t)
+			if _, _, err := db.UpsertProvisionedDashboard(context.Background(), meta.DashboardRow{
+				UID: "liar", Title: "Liar", Definition: []byte(liar),
+			}, now); err != nil {
+				t.Fatal(err)
+			}
+			rec, _ := send(t, h, http.MethodGet, "/api/v1/dashboards/1", "")
+			if rec.Code != 500 {
+				t.Errorf("GET one gave %d, want 500 (body: %s)", rec.Code, rec.Body.String())
+			}
+			if rec.Body.Len() == 0 {
+				t.Error("an empty body: indistinguishable from success")
+			}
+
+			rec, out := send(t, h, http.MethodGet, "/api/v1/dashboards", "")
+			if rec.Code != 200 {
+				t.Fatalf("the list gave %d", rec.Code)
+			}
+			if u, ok := out["unreadable"].([]any); !ok || len(u) != 1 || u[0] != 1.0 {
+				t.Errorf("unreadable = %v, want [1]", out["unreadable"])
+			}
+		})
+	}
+}
+
+// The ordering behind the refusal: the definition's fields are spliced first and
+// the metadata last. It is the second line of defence rather than the only one
+// now, but it is the thing the original code had backwards, so it stays pinned.
+func TestStoredDashboard_TheMetadataIsSplicedLast(t *testing.T) {
+	raw, err := storedDashboard{
+		ID: 1, Provisioned: true, Definition: json.RawMessage(`{"title":"x"}`),
+	}.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	title, id := bytes.Index(raw, []byte(`"title"`)), bytes.Index(raw, []byte(`"id"`))
+	if title < 0 || id < 0 || title > id {
+		t.Errorf("the metadata is not last: %s", raw)
+	}
+}
+
+// reservedFields and dashboardMetadata are two statements of one fact. A column
+// added to the response without a line in the list would be claimable again by a
+// stored definition, silently, which is how this hole opened the first time.
+func TestReservedFieldsCoverEveryMetadataKey(t *testing.T) {
+	raw, err := json.Marshal(dashboardMetadata{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range reservedFields {
+		if _, ok := keys[name]; !ok {
+			t.Errorf("reservedFields lists %q, which dashboardMetadata does not emit", name)
+		}
+	}
+	for name := range keys {
+		if !slices.Contains(reservedFields, name) {
+			t.Errorf("dashboardMetadata emits %q and reservedFields does not list it: a stored definition could claim it", name)
+		}
+	}
+}
+
+// What splicing bytes actually preserves, and what it does not.
+//
+// Pinned because the method comment claimed more than it delivered: it credited
+// the splice with keeping "the author's formatting", which encoding/json strips
+// from a custom MarshalJSON's output regardless. Key order and number fidelity are
+// the real benefits and are worth keeping; whitespace and HTML escaping are not
+// available at any price, and a comment saying otherwise should have a test
+// disagreeing with it.
+func TestStoredDashboard_WhatTheSpliceKeepsAndWhatItDoesNot(t *testing.T) {
+	pretty := "{\n  \"z\": 1,\n  \"a\": 2,\n  \"big\": 12345678901234567890,\n  \"note\": \"a <b> & c\"\n}\n"
+	raw, err := json.Marshal(storedDashboard{ID: 1, Definition: json.RawMessage(pretty)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+
+	// Kept: the author's order. A map would sort "a" before "z".
+	if z, a := strings.Index(got, `"z"`), strings.Index(got, `"a"`); z < 0 || a < 0 || z > a {
+		t.Errorf("key order was not preserved: %s", got)
+	}
+	// Kept: the number as written. A float64 round trip gives 1.2345678901234567e+19.
+	if !strings.Contains(got, "12345678901234567890") {
+		t.Errorf("the integer did not survive: %s", got)
+	}
+	// Not kept, whatever MarshalJSON does: the encoder compacts...
+	if strings.Contains(got, "\n ") {
+		t.Errorf("indentation survived, so the comment about compaction is wrong: %q", got)
+	}
+	// ...and escapes < > & inside strings.
+	if !strings.Contains(got, `\u003cb\u003e`) {
+		t.Errorf("< and > reached the client unescaped, so the comment about escaping is wrong: %s", got)
+	}
+
+	// And the database keeps the bytes it was given: the compaction is the
+	// response's, not the store's.
 	h, db := dashboardsAPI(t)
-	liar := `{"title":"Liar","id":999,"provisioned":false,` +
-		`"created_at":"1999-01-01T00:00:00Z","updated_at":"1999-01-01T00:00:00Z",` +
-		`"widgets":[{"id":"w","type":"note","layout":{"x":0,"y":0,"w":1,"h":1},"markdown":"hi"}]}`
 	if _, _, err := db.UpsertProvisionedDashboard(context.Background(), meta.DashboardRow{
-		UID: "liar", Title: "Liar", Definition: []byte(liar),
+		UID: "fmt", Title: "Fmt", Definition: []byte(pretty),
 	}, now); err != nil {
 		t.Fatal(err)
 	}
-
-	rec, out := send(t, h, http.MethodGet, "/api/v1/dashboards/1", "")
-	if rec.Code != 200 {
-		t.Fatalf("%d %v", rec.Code, out)
+	row, err := db.Dashboard(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if out["id"] != 1.0 {
-		t.Errorf("id = %v, want 1 — the row's own claim won", out["id"])
+	if string(row.Definition) != pretty {
+		t.Errorf("the stored definition was rewritten:\n got: %q\nwant: %q", row.Definition, pretty)
 	}
-	if out["provisioned"] != true {
-		t.Errorf("provisioned = %v, want true — the definition overrode the database", out["provisioned"])
-	}
-	// Checked assertions, not `.(string)`: in the regression this guards
-	// against, these fields are absent or a number, and a bare assertion panics
-	// — taking the rest of the package's run with it instead of reporting which
-	// field the row managed to claim.
-	for _, field := range []string{"created_at", "updated_at"} {
-		got, ok := out[field].(string)
-		if !ok {
-			t.Errorf("%s is %T (%v), want the database's timestamp as a string", field, out[field], out[field])
-			continue
-		}
-		if strings.HasPrefix(got, "1999") {
-			t.Errorf("%s = %q, want the database's", field, got)
-		}
-	}
-	// The author's own fields still come through.
-	if out["title"] != "Liar" {
-		t.Errorf("title = %v", out["title"])
-	}
-	if _, ok := out["widgets"].([]any); !ok {
-		t.Errorf("widgets missing from %v", out)
+	if rec, _ := send(t, h, http.MethodGet, "/api/v1/dashboards/1", ""); rec.Code != 200 {
+		t.Errorf("a pretty-printed definition is unserveable: %d %s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -746,12 +859,14 @@ func TestDashboards_AnUnencodableRowIsLoggedWithItsID(t *testing.T) {
 	}, now); err != nil {
 		t.Fatal(err)
 	}
-	sink := &logSink{}
-	mux := http.NewServeMux()
-	(&Dashboards{Store: db, Clock: testutil.NewFakeClock(now), Logger: slog.New(sink)}).Register(mux)
-
 	for _, path := range []string{"/api/v1/dashboards/1", "/api/v1/dashboards"} {
-		sink.records = nil
+		// A handler each: the log is deduplicated per row now, so a second
+		// request through the same handler is deliberately silent — see
+		// TestDashboards_ABrokenRowIsLoggedOnceNotOncePerPoll.
+		sink := &logSink{}
+		mux := http.NewServeMux()
+		(&Dashboards{Store: db, Clock: testutil.NewFakeClock(now), Logger: slog.New(sink)}).Register(mux)
+
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 
@@ -767,5 +882,70 @@ func TestDashboards_AnUnencodableRowIsLoggedWithItsID(t *testing.T) {
 		if sink.records[0].Level != slog.LevelError {
 			t.Errorf("%s: level = %v", path, sink.records[0].Level)
 		}
+	}
+}
+
+// A permanently broken row must not log once per request.
+//
+// The list endpoint is what a dashboard picker polls, so an Error record per poll
+// is an unbounded stream of identical lines describing a condition that will not
+// change until somebody edits the database — and it buries everything else in the
+// log. The response's `unreadable` array is the durable signal; the log's job is to
+// say why, once.
+func TestDashboards_ABrokenRowIsLoggedOnceNotOncePerPoll(t *testing.T) {
+	db, err := meta.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	store := func(def string) {
+		t.Helper()
+		if _, _, err := db.UpsertProvisionedDashboard(ctx, meta.DashboardRow{
+			UID: "broken", Title: "Broken", Definition: []byte(def),
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store(`{"title":}`)
+
+	sink := &logSink{}
+	mux := http.NewServeMux()
+	(&Dashboards{Store: db, Clock: testutil.NewFakeClock(now), Logger: slog.New(sink)}).Register(mux)
+	poll := func() {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/dashboards", nil))
+		if rec.Code != 200 {
+			t.Fatalf("the list gave %d", rec.Code)
+		}
+	}
+
+	for range 5 {
+		poll()
+	}
+	if len(sink.records) != 1 {
+		t.Errorf("%d records for five polls of one broken row, want 1", len(sink.records))
+	}
+
+	// Broken in a new way is news again: the reason is part of the key, so an
+	// edit that trades one breakage for another is not swallowed.
+	store(`[1,2]`)
+	poll()
+	if len(sink.records) != 2 {
+		t.Errorf("%d records, want 2 — a different reason was suppressed", len(sink.records))
+	}
+
+	// And a row that comes back is forgotten, so breaking it again is reported
+	// rather than deduplicated against the old reason.
+	store(`{"uid":"broken","title":"Broken","widgets":[]}`)
+	poll()
+	if len(sink.records) != 2 {
+		t.Errorf("%d records: a readable row logged", len(sink.records))
+	}
+	store(`[1,2]`)
+	poll()
+	if len(sink.records) != 3 {
+		t.Errorf("%d records, want 3 — a row that broke twice was reported once", len(sink.records))
 	}
 }
