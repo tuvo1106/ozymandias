@@ -26,16 +26,25 @@ export type SaveState =
   | { kind: "idle" }
   | { kind: "saving" }
   | { kind: "saved"; dashboard: StoredDashboard }
-  /** Saved — the server said so — but its answer could not be read. */
-  | { kind: "savedUnreadable" }
+  /**
+   * Saved — the server said so — but its answer could not be read.
+   * `created` says whether that request was a create: what is safe next
+   * depends on the request, not on whether the page had an id before it
+   * (a "save as new" from a deleted dashboard's editor is a create too).
+   */
+  | { kind: "savedUnreadable"; created: boolean }
   | { kind: "refused"; message: string }
   | { kind: "conflict"; message: string }
   | { kind: "gone" }
-  | { kind: "unreachable"; message: string }
+  /** No answer arrived. `created` as for savedUnreadable. */
+  | { kind: "unreachable"; message: string; created: boolean }
   | { kind: "failed"; status: number | undefined; message: string };
 
-/** The state a failed save leaves the editor in. */
-export function saveFailure(e: unknown): SaveState {
+/**
+ * The state a failed save leaves the editor in. `created` is whether the
+ * request was a create (POST), which decides what retrying risks.
+ */
+export function saveFailure(e: unknown, created: boolean): SaveState {
   if (!(e instanceof ApiError)) {
     return { kind: "failed", status: undefined, message: e instanceof Error ? e.message : String(e) };
   }
@@ -47,7 +56,7 @@ export function saveFailure(e: unknown): SaveState {
     case 404:
       return { kind: "gone" };
     case undefined:
-      return { kind: "unreachable", message: e.message };
+      return { kind: "unreachable", message: e.message, created };
     default:
       return { kind: "failed", status: e.status, message: e.message };
   }

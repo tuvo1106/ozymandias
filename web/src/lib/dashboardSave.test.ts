@@ -38,13 +38,17 @@ describe("createDashboard / updateDashboard", () => {
 
 describe("saveFailure", () => {
   it("gives each status its own state", () => {
-    expect(saveFailure(new ApiError("bad", 400))).toEqual({ kind: "refused", message: "bad" });
-    expect(saveFailure(new ApiError("uid taken", 409))).toEqual({ kind: "conflict", message: "uid taken" });
-    expect(saveFailure(new ApiError("gone", 404))).toEqual({ kind: "gone" });
-    expect(saveFailure(new ApiError("ozyd is unreachable: x"))).toEqual({ kind: "unreachable", message: "ozyd is unreachable: x" });
-    expect(saveFailure(new ApiError("ours", 500))).toEqual({ kind: "failed", status: 500, message: "ours" });
-    expect(saveFailure(new TypeError("boom"))).toEqual({ kind: "failed", status: undefined, message: "boom" });
-    expect(saveFailure("?")).toEqual({ kind: "failed", status: undefined, message: "?" });
+    expect(saveFailure(new ApiError("bad", 400), false)).toEqual({ kind: "refused", message: "bad" });
+    expect(saveFailure(new ApiError("uid taken", 409), false)).toEqual({ kind: "conflict", message: "uid taken" });
+    expect(saveFailure(new ApiError("gone", 404), false)).toEqual({ kind: "gone" });
+    expect(saveFailure(new ApiError("ozyd is unreachable: x"), true)).toEqual({
+      kind: "unreachable",
+      message: "ozyd is unreachable: x",
+      created: true,
+    });
+    expect(saveFailure(new ApiError("ours", 500), false)).toEqual({ kind: "failed", status: 500, message: "ours" });
+    expect(saveFailure(new TypeError("boom"), false)).toEqual({ kind: "failed", status: undefined, message: "boom" });
+    expect(saveFailure("?", false)).toEqual({ kind: "failed", status: undefined, message: "?" });
   });
 });
 

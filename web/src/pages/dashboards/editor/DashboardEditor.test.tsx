@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -353,5 +353,148 @@ describe("import and export", () => {
     await userEvent.paste('{"widgets": 3}');
     expect(screen.getByText("title is missing or not a string.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Replace the draft" })).toBeDisabled();
+  });
+});
+
+describe("review fixes: the draft survives", () => {
+  it("a change of view scope on a copy keeps the seed, and the draft", async () => {
+    mockApi();
+    const router = renderAt("/dashboards/new?copy=2");
+    await screen.findByRole("heading", { name: "Checkout (copy)" });
+    const title = screen.getByRole("textbox", { name: "Title" });
+    await userEvent.type(title, " edited");
+    await userEvent.click(screen.getByRole("checkbox", { name: /Auto-refresh/ }));
+    expect(router.state.location.search).toContain("copy=2");
+    expect(router.state.location.search).toContain("live=0");
+    expect(screen.getByRole("heading", { name: "Checkout (copy) edited" })).toBeInTheDocument();
+  });
+
+  it("a failed refetch after a save keeps the editor on screen", async () => {
+    let gets = 0;
+    mockApi(
+      over((path, init) => {
+        if (path !== "/api/v1/dashboards/2") return undefined;
+        if (init?.method === "PUT") return { body: stored };
+        gets++;
+        // A 4xx, which the app does not retry, so the query really does end
+        // in error while holding its data — a 5xx would still be retrying
+        // when the assertions run, and the test would pin nothing.
+        return gets === 1 ? { body: stored } : { status: 403, body: { error: "gone away" } };
+      }),
+    );
+    await openEditor();
+    await userEvent.type(screen.getByRole("textbox", { name: "Title" }), "!");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(gets).toBeGreaterThan(1));
+    // Give the failed refetch time to settle into the query's error state.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByRole("heading", { name: "Checkout!" })).toBeInTheDocument();
+    expect(screen.queryByText("gone away")).not.toBeInTheDocument();
+  });
+
+  it("saving does not re-run the preview", async () => {
+    let batches = 0;
+    mockApi(
+      over((path, init) => {
+        if (path === "/api/v1/query/batch") batches++;
+        if (path === "/api/v1/dashboards/2" && init?.method === "PUT") return { body: stored };
+        return undefined;
+      }),
+    );
+    await openEditor();
+    await waitFor(() => expect(batches).toBe(1));
+    await userEvent.type(screen.getByRole("textbox", { name: "Title" }), "!");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved.");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(batches).toBe(1);
+  });
+
+  it("clearing a field and typing it back is not an unsaved change", async () => {
+    mockApi();
+    await openEditor();
+    await userEvent.click(screen.getByRole("region", { name: "Throughput" }));
+    const title = screen.getByRole("textbox", { name: "Title" });
+    await userEvent.clear(title);
+    await userEvent.type(title, "Throughput");
+    expect(screen.queryByText(/unsaved changes/)).not.toBeInTheDocument();
+  });
+});
+
+describe("review fixes: what a create may do next", () => {
+  it("after 'save as new' loses its answer, says to check rather than that retrying is safe", async () => {
+    mockApi(
+      over((path, init) => {
+        if (init?.method === "PUT") return { status: 404, body: { error: "no dashboard 2" } };
+        if (path === "/api/v1/dashboards" && init?.method === "POST") return "unreachable";
+        return undefined;
+      }),
+    );
+    await openEditor();
+    await userEvent.type(screen.getByRole("textbox", { name: "Title" }), "!");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Save it as a new dashboard" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/check the dashboard list before creating it again/);
+  });
+
+  it("after 'save as new' returns an unreadable answer, locks saving", async () => {
+    mockApi(
+      over((path, init) => {
+        if (init?.method === "PUT") return { status: 404, body: { error: "no dashboard 2" } };
+        if (path === "/api/v1/dashboards" && init?.method === "POST") return { status: 201, body: {} };
+        return undefined;
+      }),
+    );
+    await openEditor();
+    await userEvent.type(screen.getByRole("textbox", { name: "Title" }), "!");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Save it as a new dashboard" }));
+    expect(await screen.findByText(/does not know the new dashboard/)).toBeInTheDocument();
+    await userEvent.type(screen.getByRole("textbox", { name: "Title" }), "?");
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("does not carry a 'Saved.' banner in history past the render it was for", async () => {
+    mockApi(
+      over((path, init) => {
+        if (path === "/api/v1/dashboards" && init?.method === "POST") return { status: 201, body: { ...stored, id: 7 } };
+        if (path === "/api/v1/dashboards/7") return { body: { ...stored, id: 7 } };
+        return undefined;
+      }),
+    );
+    const router = renderAt("/dashboards/new");
+    await userEvent.click(await screen.findByRole("button", { name: "Create" }));
+    expect(await screen.findByText("Saved.")).toBeInTheDocument();
+    await waitFor(() => expect(router.state.location.state).toBeNull());
+    expect(router.state.location.pathname).toBe("/dashboards/7/edit");
+  });
+});
+
+describe("review fixes: download", () => {
+  // Firefox ignores a click on a detached anchor, and revoking the URL in the
+  // same task can pull the blob out from under the download.
+  it("clicks an attached anchor and revokes the URL only afterwards", async () => {
+    mockApi();
+    const revoke = vi.fn();
+    // jsdom has neither; set them on the real URL and put it back after.
+    const saved = { create: URL.createObjectURL, revoke: URL.revokeObjectURL };
+    URL.createObjectURL = () => "blob:x";
+    URL.revokeObjectURL = revoke;
+    let attached: boolean | undefined;
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      attached = this.isConnected;
+      expect(revoke).not.toHaveBeenCalled();
+    });
+    await openEditor();
+    await userEvent.click(screen.getByRole("button", { name: "JSON" }));
+    // fireEvent, not userEvent: the latter awaits timers, which would run the
+    // deferred revoke before this could see that it had not run yet.
+    fireEvent.click(screen.getByRole("button", { name: "Download .json" }));
+    expect(attached).toBe(true);
+    expect(revoke).not.toHaveBeenCalled();
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:x"));
+    click.mockRestore();
+    URL.createObjectURL = saved.create;
+    URL.revokeObjectURL = saved.revoke;
   });
 });

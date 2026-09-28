@@ -43,6 +43,12 @@ import { button } from "./fields";
 import { JsonPanel } from "./JsonPanel";
 import { WidgetEditor } from "./WidgetEditor";
 
+/** The query parameters that say where a new draft came from. */
+const SEED_PARAMS = ["copy", "service", "template"] as const;
+
+/** The query-key kinds under "dashboards" that hold definitions. */
+const DEFINITION_KEYS = new Set(["list", "one", "service", "services"]);
+
 /** How long the draft must be still before the preview asks about it. */
 export const PREVIEW_DEBOUNCE_MS = 400;
 
@@ -65,9 +71,25 @@ export function EditDashboardPage() {
   const valid = Number.isInteger(numeric) && numeric > 0;
   const query = useDashboard(valid ? numeric : undefined);
   const location = useLocation();
+  const justSaved = (location.state as { saved?: boolean } | null)?.saved === true;
+  // Captured once: the effect below clears the history state before the
+  // dashboard has loaded, and the banner is for when it has.
+  const [savedOnArrival] = useState(justSaved);
+  const navigate = useNavigate();
+  // The flag is for the render right after a create, and history keeps
+  // location state across reloads — so it is cleared once read, or a reload
+  // that discarded unsaved edits would open under a "Saved." banner.
+  useEffect(() => {
+    if (justSaved) navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+  }, [justSaved, location.pathname, location.search, navigate]);
   if (!valid) return <Failed message={`"${id}" is not a dashboard id`} />;
-  if (query.error) return <Failed message={(query.error as Error).message} />;
-  if (!query.data) return <Loading what="the dashboard" />;
+  // Data before error: TanStack keeps `data` and sets `error` when a
+  // *refetch* fails, and a failed refetch — ozyd gone for a moment, the
+  // invalidation after a save — must not unmount the editor and its draft.
+  if (!query.data) {
+    if (query.error) return <Failed message={(query.error as Error).message} />;
+    return <Loading what="the dashboard" />;
+  }
   if (query.data.provisioned) {
     // The server would answer a save with 409; saying so before any editing
     // is kinder than after it.
@@ -84,13 +106,12 @@ export function EditDashboardPage() {
       </div>
     );
   }
-  const justSaved = (location.state as { saved?: boolean } | null)?.saved === true;
   return (
     <Editor
       key={query.data.id}
       initial={definitionOf(query.data).definition}
       storedId={query.data.id}
-      initialSave={justSaved ? { kind: "saved", dashboard: query.data } : { kind: "idle" }}
+      initialSave={savedOnArrival ? { kind: "saved", dashboard: query.data } : { kind: "idle" }}
     />
   );
 }
@@ -110,13 +131,17 @@ export function NewDashboardPage() {
 
   if (copyParam !== null) {
     if (!copyValid) return <Failed message={`"${copyParam}" is not a dashboard id to copy`} />;
-    if (stored.error) return <Failed message={`Could not load the dashboard to copy: ${(stored.error as Error).message}`} />;
-    if (!stored.data) return <Loading what="the dashboard to copy" />;
+    if (!stored.data) {
+      if (stored.error) return <Failed message={`Could not load the dashboard to copy: ${(stored.error as Error).message}`} />;
+      return <Loading what="the dashboard to copy" />;
+    }
     return <Editor key={`copy-${copyId}`} initial={copyOf(stored.data)} initialSave={{ kind: "idle" }} />;
   }
   if (service !== "") {
-    if (instances.error) return <Failed message={`Could not load ${service}'s dashboards: ${(instances.error as Error).message}`} />;
-    if (!instances.data) return <Loading what={`${service}'s dashboards`} />;
+    if (!instances.data) {
+      if (instances.error) return <Failed message={`Could not load ${service}'s dashboards: ${(instances.error as Error).message}`} />;
+      return <Loading what={`${service}'s dashboards`} />;
+    }
     const instance = instances.data.find((i) => String(i.template_id) === template);
     if (!instance)
       return <Failed message={`No template${template ? ` #${template}` : ""} covers ${service}, so there is nothing to copy.`} />;
@@ -162,7 +187,18 @@ function Editor({ initial, storedId: initialId, initialSave }: EditorProps) {
   const preview = useDebouncedValue(draft, PREVIEW_DEBOUNCE_MS);
   const [params, setParams] = useSearchParams();
   const state = useMemo(() => parseViewState(params), [params]);
-  const update = (patch: Partial<DashboardViewState>) => setParams(serializeViewState({ ...state, ...patch }), { replace: true });
+  // The view state is written *beside* the page's own parameters: on
+  // /dashboards/new the query string also holds the seed (?copy=, ?service=,
+  // ?template=), and replacing it wholesale would turn the page into a blank
+  // new dashboard — remounting the editor and discarding the draft.
+  const update = (patch: Partial<DashboardViewState>) => {
+    const next = serializeViewState({ ...state, ...patch });
+    for (const k of SEED_PARAMS) {
+      const v = params.get(k);
+      if (v !== null) next.set(k, v);
+    }
+    setParams(next, { replace: true });
+  };
   const requests = useMemo(() => collectRequests(preview.widgets), [preview.widgets]);
   const syncKey = `editor-${storedId ?? "new"}`;
   const data = useDashboardData(requests, state, preview.template_vars, syncKey);
@@ -183,7 +219,7 @@ function Editor({ initial, storedId: initialId, initialSave }: EditorProps) {
   const selected = panel.kind === "widget" ? draft.widgets.find((w) => w.id === panel.id) : undefined;
   // Saving again after a create whose answer could not be read would create
   // a second dashboard: the first exists, and this page does not know its id.
-  const locked = save.kind === "savedUnreadable" && storedId === undefined;
+  const locked = save.kind === "savedUnreadable" && save.created;
 
   const doSave = async (asNew: boolean) => {
     const sent = definitionOf(draft).definition;
@@ -192,15 +228,18 @@ function Editor({ initial, storedId: initialId, initialSave }: EditorProps) {
     try {
       const r = id === undefined ? await createDashboard(sent) : await updateDashboard(id, sent);
       setBaseline(draft);
-      await client.invalidateQueries({ queryKey: ["dashboards"] });
+      // The definitions only — not the preview's batch and sketch entries,
+      // which share the "dashboards" prefix and whose answers a save does
+      // not change — and not awaited: the save is done when ozyd said so.
+      void client.invalidateQueries({ predicate: (q) => DEFINITION_KEYS.has(String(q.queryKey[1])) });
       if (r.kind === "unreadable") {
-        setSave({ kind: "savedUnreadable" });
+        setSave({ kind: "savedUnreadable", created: id === undefined });
         return;
       }
       setSave({ kind: "saved", dashboard: r.dashboard });
       if (id === undefined) navigate(`/dashboards/${r.dashboard.id}/edit`, { replace: true, state: { saved: true } });
     } catch (e) {
-      setSave(saveFailure(e));
+      setSave(saveFailure(e, id === undefined));
     }
   };
 
@@ -264,7 +303,7 @@ function Editor({ initial, storedId: initialId, initialSave }: EditorProps) {
         </div>
       </header>
 
-      <SaveStatus save={save} storedId={storedId} dirty={dirty} onSaveAsNew={() => void doSave(true)} />
+      <SaveStatus save={save} dirty={dirty} onSaveAsNew={() => void doSave(true)} />
       {notice ? (
         <p role="status" className="text-xs text-zinc-600 dark:text-zinc-300">
           {notice}
@@ -337,12 +376,10 @@ function Editor({ initial, storedId: initialId, initialSave }: EditorProps) {
  */
 function SaveStatus({
   save,
-  storedId,
   dirty,
   onSaveAsNew,
 }: {
   save: SaveState;
-  storedId: number | undefined;
   dirty: boolean;
   onSaveAsNew: () => void;
 }) {
@@ -371,7 +408,7 @@ function SaveStatus({
     case "savedUnreadable":
       return box(
         "border-amber-200 text-amber-800 dark:border-amber-900 dark:text-amber-400",
-        storedId === undefined ? (
+        save.created ? (
           <>
             Saved — ozyd said so — but its answer could not be read, so this page does not know the new dashboard&apos;s id. Find it in the{" "}
             <Link className="underline" to="/dashboards">
@@ -415,7 +452,7 @@ function SaveStatus({
       return box(
         bad,
         <p>
-          {save.message}. Whether this was saved is not known{storedId === undefined ? " — check the dashboard list before creating it again, or it may exist twice" : "; saving again is safe"}.
+          {save.message}. Whether this was saved is not known{save.created ? " — check the dashboard list before creating it again, or it may exist twice" : "; saving again is safe"}.
         </p>,
         "alert",
       );

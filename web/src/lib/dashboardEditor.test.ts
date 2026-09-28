@@ -6,6 +6,8 @@ import {
   editDashboard,
   exportDefinition,
   leadingAggregator,
+  MAX_TITLE_BYTES,
+  withSuffix,
   nextWidgetId,
   readEnum,
   readImport,
@@ -231,6 +233,20 @@ describe("definitions, copies and exports", () => {
   it("copies without the uid, which is the original's identity", () => {
     expect(copyOf(stored)).toEqual({ ...base, title: "Checkout (copy)" });
   });
+
+  // A template instance's title is already cut to the limit by the server;
+  // appending alone would make a copy whose first save is refused.
+  it("keeps a copy's title within the server's limit, in bytes", () => {
+    const long = copyOf({ ...base, title: "é".repeat(150) }).title;
+    expect(new TextEncoder().encode(long).length).toBeLessThanOrEqual(MAX_TITLE_BYTES);
+    expect(long.endsWith(" (copy)")).toBe(true);
+    expect(long).not.toContain("\uFFFD");
+  });
+
+  it("cuts on a character, never inside one", () => {
+    expect(withSuffix("aé", "!", 3)).toBe("a!"); // é would need bytes 2–3
+    expect(withSuffix("abc", "!", 10)).toBe("abc!");
+  });
 });
 
 describe("readImport", () => {
@@ -259,6 +275,32 @@ describe("readImport", () => {
     expect(r).toEqual({ kind: "ok", dashboard: base, dropped: ["id", "provisioned", "created_at", "updated_at"] });
   });
 
+  // Everything the editor calls a string method on has to be a string, or an
+  // "ok" import is a TypeError on the next render — the draft gone with it.
+  it("refuses shapes the editor would crash on, naming each", () => {
+    const r = readImport(
+      JSON.stringify({
+        title: "t",
+        description: 3,
+        template_vars: [{ tag: "env" }, null, { name: "a", tag: "b", default: 1 }],
+        widgets: [{ id: "w", type: "note", layout: { x: 0, y: 0, w: 1, h: 1 }, markdown: 5, title: [], yaxis: 1, conditional_formats: [2] }],
+      }),
+    );
+    expect(r).toEqual({
+      kind: "notDashboard",
+      problems: [
+        "widgets[0]: title is not a string.",
+        "widgets[0]: markdown is not a string.",
+        "widgets[0]: yaxis is not an object.",
+        "widgets[0]: conditional_formats must be a list of objects.",
+        "description is not a string.",
+        "template_vars[0]: name is missing or not a string.",
+        "template_vars[1] is not an object.",
+        "template_vars[2]: default is not a string.",
+      ],
+    });
+  });
+
   it("leaves what the server judges to the server", () => {
     const odd = { title: "t", widgets: [{ ...chart, type: "log_stream", queries: [{ q: "not a query" }] }] };
     expect(readImport(JSON.stringify(odd))).toMatchObject({ kind: "ok", dropped: [] });
@@ -275,5 +317,16 @@ describe("helpers", () => {
   it("compares definitions by content", () => {
     expect(sameDefinition(base, structuredClone(base))).toBe(true);
     expect(sameDefinition(base, { ...base, title: "x" })).toBe(false);
+  });
+
+  // Clearing a field deletes its key; typing the same value back re-adds it
+  // at the end. That is the same definition, not an unsaved change.
+  it("ignores key order, but not array order", () => {
+    let d = editDashboard(base, { type: "setWidget", id: "req", patch: { title: undefined } });
+    d = editDashboard(d, { type: "setWidget", id: "req", patch: { title: "req/s" } });
+    expect(Object.keys(d.widgets[0] as Widget).at(-1)).toBe("title");
+    expect(sameDefinition(base, d)).toBe(true);
+    const two = { ...base, widgets: [chart, { ...chart, id: "b" }] };
+    expect(sameDefinition(two, { ...two, widgets: [...two.widgets].reverse() })).toBe(false);
   });
 });

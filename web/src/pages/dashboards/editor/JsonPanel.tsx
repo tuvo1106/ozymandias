@@ -35,8 +35,13 @@ export function JsonPanel({ dashboard, onImport }: JsonPanelProps) {
     const a = document.createElement("a");
     a.href = url;
     a.download = `${dashboard.uid || dashboard.title.replace(/[^\w-]+/g, "-").toLowerCase() || "dashboard"}.json`;
+    // Attached, clicked, detached; the URL revoked on a later task. Firefox
+    // ignores a click on a detached anchor, and revoking synchronously can
+    // pull the blob out from under a download that has not started reading.
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   };
 
   return (

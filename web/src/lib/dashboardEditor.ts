@@ -500,7 +500,33 @@ export function copyOf(d: Dashboard): Dashboard {
   const { definition } = definitionOf(d);
   const rest: Record<string, unknown> = { ...definition };
   delete rest.uid;
-  return { ...(rest as unknown as Dashboard), title: `${definition.title} (copy)` };
+  return { ...(rest as unknown as Dashboard), title: withSuffix(definition.title, COPY_SUFFIX, MAX_TITLE_BYTES) };
+}
+
+/** The server's title limit, in UTF-8 bytes (`dashboard.MaxTitle`). */
+export const MAX_TITLE_BYTES = 200;
+const COPY_SUFFIX = " (copy)";
+
+/**
+ * `text + suffix`, cutting `text` so the whole fits in `max` UTF-8 bytes.
+ *
+ * Needed because a template instance's title is already cut to the limit by
+ * the server (template.go), so a copy that only appended would be refused on
+ * its first save for a title the author never typed. Cut on a code point, so
+ * the result is never a broken character.
+ */
+export function withSuffix(text: string, suffix: string, max: number): string {
+  const enc = new TextEncoder();
+  const room = max - enc.encode(suffix).length;
+  let out = "";
+  let used = 0;
+  for (const ch of text) {
+    const n = enc.encode(ch).length;
+    if (used + n > room) break;
+    out += ch;
+    used += n;
+  }
+  return out + suffix;
 }
 
 /** The result of reading pasted or uploaded JSON as a definition. */
@@ -544,21 +570,51 @@ export function readImport(text: string): ImportReading {
         problems.push(`widgets[${i}]: layout needs numeric x, y, w and h.`);
       if (w.queries !== undefined && (!Array.isArray(w.queries) || !w.queries.every((q) => isRecord(q) && typeof q.q === "string")))
         problems.push(`widgets[${i}]: queries must be a list of {"q": "…"}.`);
+      // Text the editor calls string methods on. A number here would not be
+      // "unknown to this build", it would be a TypeError in the render.
+      for (const k of ["title", "markdown"] as const)
+        if (w[k] !== undefined && typeof w[k] !== "string") problems.push(`widgets[${i}]: ${k} is not a string.`);
+      if (w.yaxis !== undefined && !isRecord(w.yaxis)) problems.push(`widgets[${i}]: yaxis is not an object.`);
+      if (w.conditional_formats !== undefined && (!Array.isArray(w.conditional_formats) || !w.conditional_formats.every(isRecord)))
+        problems.push(`widgets[${i}]: conditional_formats must be a list of objects.`);
     });
-  if (body.template_vars !== undefined && !Array.isArray(body.template_vars))
-    problems.push("template_vars is not a list.");
+  if (body.description !== undefined && typeof body.description !== "string") problems.push("description is not a string.");
+  if (body.template_vars !== undefined) {
+    if (!Array.isArray(body.template_vars)) problems.push("template_vars is not a list.");
+    else
+      // Every consumer of a variable — the variable bar, the URL state, the
+      // query editor's $ completion — reads name and tag as strings.
+      body.template_vars.forEach((v: unknown, i) => {
+        if (!isRecord(v)) return problems.push(`template_vars[${i}] is not an object.`);
+        if (typeof v.name !== "string") problems.push(`template_vars[${i}]: name is missing or not a string.`);
+        if (typeof v.tag !== "string") problems.push(`template_vars[${i}]: tag is missing or not a string.`);
+        if (v.default !== undefined && typeof v.default !== "string") problems.push(`template_vars[${i}]: default is not a string.`);
+      });
+  }
   if (problems.length) return { kind: "notDashboard", problems };
   const { definition, dropped } = definitionOf(body as unknown as Dashboard);
   return { kind: "ok", dashboard: definition, dropped };
 }
 
 /**
- * Whether two drafts are the same definition. By their JSON, which is
- * key-order sensitive — acceptable, since an edit keeps the order of the keys
- * it does not touch, so the only way to reorder them is to change something.
+ * Whether two drafts are the same definition, whatever order their keys are
+ * in. Order-insensitive because removing a field and typing it back re-adds
+ * the key at the end of the object: comparing raw `JSON.stringify` output
+ * would then call an unchanged draft modified, arm the leave-page prompt and
+ * enable Save for nothing. Array order still counts — widgets and queries are
+ * in the author's order, and reordering them is a change.
  */
 export function sameDefinition(a: Dashboard, b: Dashboard): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+  return canonical(a) === canonical(b);
+}
+
+/** JSON with every object's keys sorted, and undefined-valued keys dropped as JSON drops them. */
+function canonical(v: unknown): string {
+  return JSON.stringify(v, (_k, value: unknown) =>
+    isRecord(value)
+      ? Object.fromEntries(Object.keys(value).sort().map((k) => [k, value[k]]))
+      : value,
+  );
 }
 
 /** Whether a layout is on the grid as the server counts it. */

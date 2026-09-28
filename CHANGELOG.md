@@ -12,8 +12,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`conditional_formats` is refused outside `query_value` and `table`.** A
   timeseries, toplist or heatmap accepted them and drew nothing; the rule in
   docs/dashboards.md ("a field that belongs to another type is an error") now
-  holds for them too. A stored definition that carried one keeps loading, but
-  saving it again needs the field removed — the editor lists it for removal.
+  holds for them too. What that does to a definition that already has one:
+  an ordinary stored dashboard still loads (a stored row is served without
+  being re-validated), but saving it again needs the field removed — the
+  editor lists it for removal. A **template**, though, is re-validated every
+  time it is instantiated, so a stored template carrying one stops producing
+  service dashboards (it is listed in `unreadable` and logged), and a
+  provisioning file carrying one fails to provision. Remove the field from the
+  file or the row.
 - **The M1 query parameters are translated, not reimplemented.**
   `metric`/`filter`/`by`/`agg` are now written out as a metricql query and run
   through the one evaluator; `internal/query/simple` is gone. The response's
