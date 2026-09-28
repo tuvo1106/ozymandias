@@ -50,15 +50,15 @@ export interface QueryResult {
 type FetchLike = typeof fetch;
 
 /**
- * GETs a JSON document and turns every failure into an ApiError with a
- * message fit for the page: the server's own `{"error": …}` text when it sent
- * one, otherwise the status line or the network error. Aborts pass through
+ * Issues a request and turns every failure into an ApiError with a message fit
+ * for the page: the server's own `{"error": …}` text when it sent one,
+ * otherwise the status line or the network error. Aborts pass through
  * untouched so callers (TanStack Query) can recognise and ignore them.
  */
-export async function getJSON(url: string, fetchImpl: FetchLike = fetch, signal?: AbortSignal): Promise<unknown> {
+async function requestJSON(url: string, init: RequestInit, fetchImpl: FetchLike): Promise<unknown> {
   let res: Response;
   try {
-    res = await fetchImpl(url, { signal, headers: { Accept: "application/json" } });
+    res = await fetchImpl(url, init);
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") throw err;
     throw new ApiError(`ozyd is unreachable: ${err instanceof Error ? err.message : String(err)}`, undefined, {
@@ -71,6 +71,27 @@ export async function getJSON(url: string, fetchImpl: FetchLike = fetch, signal?
     throw new ApiError(msg ?? `ozyd answered ${res.status} ${res.statusText}`.trim(), res.status);
   }
   return body;
+}
+
+/** GETs a JSON document. See [[requestJSON]] for how failures are reported. */
+export async function getJSON(url: string, fetchImpl: FetchLike = fetch, signal?: AbortSignal): Promise<unknown> {
+  return requestJSON(url, { signal, headers: { Accept: "application/json" } }, fetchImpl);
+}
+
+/**
+ * POSTs a JSON document and reads the JSON answer.
+ *
+ * The query endpoints take either verb, and the UI uses POST for anything
+ * carrying a query: a dashboard's variables are a nested object that would
+ * have to be flattened into a query string, and a long filter run through a
+ * GET is one proxy's URL limit away from a 414 nobody can reproduce.
+ */
+export async function postJSON(url: string, body: unknown, fetchImpl: FetchLike = fetch, signal?: AbortSignal): Promise<unknown> {
+  return requestJSON(
+    url,
+    { method: "POST", signal, headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) },
+    fetchImpl,
+  );
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
