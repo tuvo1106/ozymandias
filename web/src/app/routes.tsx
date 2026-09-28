@@ -26,6 +26,28 @@ export const routes: RouteObject[] = [
     children: [
       { index: true, element: <Home /> },
       {
+        path: "dashboards",
+        children: [
+          {
+            index: true,
+            lazy: async () => ({ Component: (await import("../pages/dashboards/DashboardsIndex")).DashboardsIndex }),
+          },
+          // Before ":id", so a service dashboard is not read as a dashboard
+          // whose id is the word "service" — react-router prefers the more
+          // specific static segment, and this ordering makes that visible
+          // rather than relying on it.
+          {
+            path: "service/:name",
+            lazy: async () => ({ Component: (await import("../pages/dashboards/DashboardPage")).ServiceDashboardPage }),
+          },
+          {
+            path: ":id",
+            lazy: async () => ({ Component: (await import("../pages/dashboards/DashboardPage")).StoredDashboardPage }),
+          },
+          { path: "*", element: <NotFound /> },
+        ],
+      },
+      {
         path: "metrics",
         children: [
           { index: true, element: <Navigate to="/metrics/explorer" replace /> },
