@@ -112,8 +112,9 @@ type discovery struct {
 // services. Parse runs Validate, which parses every query and requires the
 // service variable, so [dashboard.Dashboard.Metrics] has nothing left to refuse,
 // and [dashboard.Dashboard.Instantiate] refuses only a definition that is not a
-// template and a blank service name — the first excluded by the branch above,
-// the second by the filter on the values below.
+// template and a blank service name — the first excluded by [claimsTemplate],
+// which reads the same field Parse does, the second by the filter on the values
+// below.
 //
 // That last one is why the filter is not just `v != ""`. A tag value is free
 // text, so `service: ` reaches the store; it was discovered, and the
