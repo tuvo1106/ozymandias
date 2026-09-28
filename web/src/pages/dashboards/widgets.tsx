@@ -14,6 +14,7 @@ import { useMemo } from "react";
 import { TimeseriesChart } from "../../charts/TimeseriesChart";
 import { alignSeries, formatValue, seriesLabel } from "../../lib/chartData";
 import {
+  isReducer,
   matchConditionalFormat,
   reduceSeries,
   type DashboardQuery,
@@ -77,9 +78,34 @@ function answered(
   return !(widget.queries ?? []).some((q) => q.q.trim() !== "");
 }
 
+/**
+ * A note for every reducer in this widget that this build cannot apply.
+ *
+ * Without it an unknown reducer reduces to null, and null already means "this
+ * line had nothing measurable" — so a toplist filters the row out and the
+ * reader sees a nine-row ranking and believes that is all the data. A square
+ * that is visibly broken beats a square that is quietly short, which is the
+ * same judgement [[UnknownWidget]] makes for a type it cannot draw.
+ */
+function reducerWarnings(widget: Widget): string[] {
+  const unknown = new Set<string>();
+  for (const q of widget.queries ?? []) {
+    if (q.reducer !== undefined && !isReducer(q.reducer))
+      unknown.add(q.reducer);
+  }
+  return [...unknown].map(
+    (r) =>
+      `This build cannot apply a "${r}" reducer, so that query is left out.`,
+  );
+}
+
 /** Every warning across a widget's queries, deduplicated. */
-function allWarnings(results: readonly (BatchResult | undefined)[]): string[] {
-  return [...new Set(results.flatMap((r) => r?.warnings ?? []))];
+function allWarnings(
+  results: readonly (BatchResult | undefined)[],
+  widget?: Widget,
+): string[] {
+  const server = results.flatMap((r) => r?.warnings ?? []);
+  return [...new Set([...server, ...(widget ? reducerWarnings(widget) : [])])];
 }
 
 /** A row of one query's answer: the series, labelled the way a legend wants. */
@@ -200,7 +226,7 @@ export function QueryValueWidget({ widget, results }: WidgetProps) {
     <WidgetFrame
       title={widget.title}
       error={error}
-      warnings={allWarnings(results)}
+      warnings={allWarnings(results, widget)}
       empty={answered(widget, results) && lines.length === 0}
     >
       <div className="flex h-full flex-col items-center justify-center">
@@ -242,7 +268,7 @@ export function ToplistWidget({ widget, results }: WidgetProps) {
     <WidgetFrame
       title={widget.title}
       error={error}
-      warnings={allWarnings(results)}
+      warnings={allWarnings(results, widget)}
       empty={answered(widget, results) && rows.length === 0}
     >
       <ol className="h-full overflow-auto text-sm">
@@ -301,7 +327,7 @@ export function TableWidget({ widget, results }: WidgetProps) {
     <WidgetFrame
       title={widget.title}
       error={error}
-      warnings={allWarnings(results)}
+      warnings={allWarnings(results, widget)}
       empty={answered(widget, results) && rows.size === 0}
     >
       <div className="h-full overflow-auto">

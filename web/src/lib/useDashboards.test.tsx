@@ -143,10 +143,69 @@ describe("useDashboardData", () => {
     const heatmap = (widgetId: string) => [{ widgetId, q: "dist:lat{*}" }];
 
     const a = renderHook(() => useDashboardSketches(heatmap("a-widget"), DEFAULT_VIEW_STATE, [], "dashboard-1"), { wrapper: shared });
-    await waitFor(() => expect(a.result.current.get("a-widget")?.data).toBeDefined());
+    await waitFor(() => expect(a.result.current.sketches.get("a-widget")?.data).toBeDefined());
 
     const b = renderHook(() => useDashboardSketches(heatmap("b-widget"), DEFAULT_VIEW_STATE, [], "dashboard-2"), { wrapper: shared });
-    await waitFor(() => expect(b.result.current.get("b-widget")?.data).toBeDefined());
+    await waitFor(() => expect(b.result.current.sketches.get("b-widget")?.data).toBeDefined());
+  });
+
+  // The observer outlives a change of dashboard — one route match, and the
+  // second definition is usually already cached, so nothing unmounts — and
+  // plain `keepPreviousData` would hand dashboard 1's answer to dashboard 2's
+  // widgets. Two dashboards share widget ids far more often than they should:
+  // the same template instantiated for two services has identical ids by
+  // construction.
+  it("does not stand one dashboard's answer in for another's", async () => {
+    let value = 11;
+    vi.stubGlobal("fetch", vi.fn(async () => answer([value])));
+    const r = requests(slot("shared-id", "qa"));
+    const { result, rerender } = renderHook(({ id }: { id: string }) => useDashboardData(r, DEFAULT_VIEW_STATE, [], id), {
+      wrapper,
+      initialProps: { id: "dashboard-1" },
+    });
+    await waitFor(() => expect(valueFor(result.current, "shared-id")).toBe(11));
+
+    // The second dashboard's answer never arrives, which is exactly when a
+    // placeholder is on screen.
+    value = 22;
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    rerender({ id: "dashboard-2" });
+    expect(valueFor(result.current, "shared-id")).toBeUndefined();
+  });
+
+  it("still stands the last answer in for the same dashboard", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => answer([11])));
+    const r = requests(slot("a", "qa"));
+    const { result, rerender } = renderHook(({ state }: { state: typeof DEFAULT_VIEW_STATE }) => useDashboardData(r, state, [], "dashboard-1"), {
+      wrapper,
+      initialProps: { state: DEFAULT_VIEW_STATE },
+    });
+    await waitFor(() => expect(valueFor(result.current, "a")).toBe(11));
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    rerender({ state: { ...DEFAULT_VIEW_STATE, range: { kind: "relative", preset: "4h" } } });
+    expect(valueFor(result.current, "a")).toBe(11);
+    expect(result.current.isRefreshing).toBe(true);
+  });
+
+  // A dashboard of nothing but heatmaps has no batch at all, so a dim that
+  // read only the batch would leave it undimmed with nothing to say it is
+  // showing the previous window.
+  it("dims a dashboard whose only widgets are heatmaps", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ from: 1, to: 2, interval: 60, bins: 0, series: [], warnings: [] }))),
+    );
+    const r: DashboardRequests = { chunks: [], heatmaps: [{ widgetId: "h", q: "dist:lat{*}" }] };
+    const { result, rerender } = renderHook(({ state }: { state: typeof DEFAULT_VIEW_STATE }) => useDashboardData(r, state, [], "dashboard-1"), {
+      wrapper,
+      initialProps: { state: DEFAULT_VIEW_STATE },
+    });
+    await waitFor(() => expect(result.current.sketches.get("h")?.data).toBeDefined());
+    expect(result.current.isRefreshing).toBe(false);
+
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    rerender({ state: { ...DEFAULT_VIEW_STATE, range: { kind: "relative", preset: "4h" } } });
+    expect(result.current.isRefreshing).toBe(true);
   });
 
   it("reports a failed request rather than pretending the widgets are empty", async () => {

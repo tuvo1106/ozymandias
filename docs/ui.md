@@ -131,7 +131,10 @@ which one it is:
 A widget whose `type` this build does not know says so in its own frame rather
 than taking the page down with it — which is what an older UI and a newer
 `ozyd` look like, and is worth seeing as one broken square instead of one
-broken application.
+broken application. A `reducer` it does not know is the same case one level
+down: that query is left out and the widget says which reducer it could not
+apply, because a toplist that had quietly dropped the row would read as a
+complete ranking.
 
 Changing the time range or a variable **keeps the last answer on screen** and
 dims it until the new one lands, so the page fades rather than empties. A

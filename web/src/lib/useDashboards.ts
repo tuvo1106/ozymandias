@@ -10,11 +10,7 @@
  * chunk is its own cache entry, so a dashboard that grows past a chunk
  * boundary does not invalidate the chunks before it.
  */
-import {
-  keepPreviousData,
-  useQuery,
-  type UseQueryResult,
-} from "@tanstack/react-query";
+import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { useMemo } from "react";
 import type { Dashboard, StoredDashboard } from "./dashboard";
 import {
@@ -100,8 +96,6 @@ export interface DashboardData {
   byWidget: Map<string, Map<number, BatchResult>>;
   /** Sketches by widget id; only heatmap widgets have an entry. */
   sketches: Map<string, SketchState>;
-  /** True while nothing has arrived yet; a refetch keeps the old answer. */
-  isPending: boolean;
 
   /**
    * True while the answer on screen belongs to a *previous* window or variable
@@ -196,7 +190,22 @@ export function useDashboardData(
     },
     enabled: chunks.length > 0,
     refetchInterval: live ? REFRESH_INTERVAL_MS : (false as const),
-    placeholderData: keepPreviousData,
+    // `keepPreviousData`, but only within one dashboard. Plain
+    // `keepPreviousData` keeps whatever *this observer* last saw, whichever key
+    // produced it — and an observer outlives a change of dashboard, because
+    // `/dashboards/1 → /dashboards/2` is one route match and the second
+    // definition is usually already cached, so nothing unmounts. The previous
+    // dashboard's answer would then stand in for this one and be paired by
+    // widget id, and two dashboards share ids far more often than they should:
+    // the same template instantiated for two services has identical ids by
+    // construction, so service B would briefly show service A's numbers.
+    //
+    // Naming the dashboard in the key is what makes this checkable — and is
+    // also what created the hazard, since before it the two shared one entry
+    // outright. The key says whose answer this is; this says whose answer may
+    // stand in for it.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[ID_IN_KEY] === id ? previous : undefined,
   });
   const sketches = useDashboardSketches(
     requests.heatmaps,
@@ -223,12 +232,16 @@ export function useDashboardData(
   // would sit on the requested window forever, which is right to within a
   // bucket and wrong in exactly the way the server's own `from`/`to` exist to
   // correct.
-  const fromSketch = [...sketches.values()].find((s) => s.data)?.data;
+  const fromSketch = [...sketches.sketches.values()].find((s) => s.data)?.data;
   return {
     byWidget,
-    sketches,
-    isPending: chunks.length > 0 && batch.isPending,
-    isRefreshing: batch.isPlaceholderData,
+    sketches: sketches.sketches,
+    // Either half of the page: a dashboard of nothing but heatmaps has no
+    // batch at all, so reading only that one would leave it undimmed with
+    // nothing to say it is showing the previous window — and on a mixed one
+    // the dim would clear the moment the lines landed, while the heatmaps were
+    // still answering the old question.
+    isRefreshing: batch.isPlaceholderData || sketches.isRefreshing,
     error: (batch.error as Error | undefined) ?? batch.data?.error ?? null,
     range: answered
       ? { from: answered.from, to: answered.to }
@@ -261,7 +274,7 @@ export function useDashboardSketches(
   vars: Dashboard["template_vars"],
   id: string,
   now: () => number = Date.now,
-): Map<string, SketchState> {
+): { sketches: Map<string, SketchState>; isRefreshing: boolean } {
   const bound = bindVars(vars, state);
   const live = state.live && state.range.kind === "relative";
   const key = JSON.stringify(heatmaps.map((h) => h.q));
@@ -298,14 +311,22 @@ export function useDashboardSketches(
     },
     enabled: heatmaps.length > 0,
     refetchInterval: live ? REFRESH_INTERVAL_MS : (false as const),
-    placeholderData: keepPreviousData,
+    // Only within one dashboard — see the batch above for what plain
+    // `keepPreviousData` does across two.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[ID_IN_KEY] === id ? previous : undefined,
   });
-  return query.data ?? EMPTY_SKETCHES;
+  return {
+    sketches: query.data ?? EMPTY_SKETCHES,
+    isRefreshing: query.isPlaceholderData,
+  };
 }
 
 /** What a dashboard with no heatmaps, or one still waiting, hands the grid. */
 const EMPTY_SKETCHES: Map<string, SketchState> = new Map();
 
+/** Where the dashboard id sits in both query keys above. */
+const ID_IN_KEY = 2;
 /**
  * The values a template variable's tag takes, for one selector.
  *

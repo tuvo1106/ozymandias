@@ -103,8 +103,8 @@ describe("reducers", () => {
         { q: "sum:b{*} by {r}", reducer: "sum" },
       ],
     });
-    render(<ToplistWidget widget={w} results={[ok(0, [line({ r: "a" }, [1, 9])]), ok(1, [line({ r: "b" }, [1, 9])])]} />);
-    const rows = screen.getAllByRole("listitem").map((li) => li.textContent);
+    const { container } = render(<ToplistWidget widget={w} results={[ok(0, [line({ r: "a" }, [1, 9])]), ok(1, [line({ r: "b" }, [1, 9])])]} />);
+    const rows = [...container.querySelectorAll("ol > li")].map((li) => li.textContent);
     // max of [1,9] is 9; sum of [1,9] is 10 — not 9 and 9, and not 10 and 10.
     expect(rows).toEqual(["x{r:b}10", "x{r:a}9"]);
   });
@@ -135,8 +135,8 @@ describe("reducers", () => {
         { q: "sum:b{*} by {r}", reducer: "last" },
       ],
     });
-    render(<ToplistWidget widget={w} results={[ok(0, [line({ r: "same" }, [1])]), ok(1, [line({ r: "same" }, [2])])]} />);
-    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    const { container } = render(<ToplistWidget widget={w} results={[ok(0, [line({ r: "same" }, [1])]), ok(1, [line({ r: "same" }, [2])])]} />);
+    expect(container.querySelectorAll("ol > li")).toHaveLength(2);
     expect(complain.mock.calls.flat().join(" ")).not.toMatch(/same key/i);
     complain.mockRestore();
   });
@@ -154,9 +154,13 @@ describe("a reducer this build does not know", () => {
     });
     render(<QueryValueWidget widget={w} results={[ok(0, [line({}, [1, 2, 3])])]} />);
     expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.getByText(/cannot apply a "median" reducer/)).toBeInTheDocument();
   });
 
-  it("drops the row from a toplist rather than ranking by undefined", () => {
+  // Dropping the row silently is the failure to avoid: null already means
+  // "this line had nothing measurable", so a reader would see a short ranking
+  // and believe that was all the data. The row still goes; the widget says so.
+  it("says so rather than quietly shortening a toplist", () => {
     const w = widget({
       type: "toplist",
       queries: [
@@ -164,8 +168,9 @@ describe("a reducer this build does not know", () => {
         { q: "sum:b{*} by {r}", reducer: "sum" },
       ],
     });
-    render(<ToplistWidget widget={w} results={[ok(0, [line({ r: "a" }, [5])]), ok(1, [line({ r: "b" }, [1, 2])])]} />);
-    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["x{r:b}3"]);
+    const { container } = render(<ToplistWidget widget={w} results={[ok(0, [line({ r: "a" }, [5])]), ok(1, [line({ r: "b" }, [1, 2])])]} />);
+    expect([...container.querySelectorAll("ol > li")].map((li) => li.textContent)).toEqual(["x{r:b}3"]);
+    expect(screen.getByText(/cannot apply a "median" reducer/)).toBeInTheDocument();
   });
 });
 

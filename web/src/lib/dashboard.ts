@@ -30,6 +30,27 @@ export type Display = "line" | "area" | "bars" | "points";
 /** How a line collapses to the one number a query_value or cell shows. */
 export type Reducer = "last" | "avg" | "sum" | "min" | "max";
 
+/** Every reducer this build can apply, for checking one that arrived as text. */
+export const REDUCERS: readonly Reducer[] = [
+  "last",
+  "avg",
+  "sum",
+  "min",
+  "max",
+];
+
+/**
+ * Whether this build knows how to apply `v`.
+ *
+ * Needed because `Reducer` is a compile-time claim about a string that arrives
+ * at runtime: a stored definition is served back without being re-validated,
+ * so a hand-edited row or an `ozyd` that has learnt a sixth reducer delivers
+ * one this build has never heard of.
+ */
+export function isReducer(v: string | undefined): v is Reducer {
+  return v !== undefined && (REDUCERS as readonly string[]).includes(v);
+}
+
 /** A conditional format's comparison. */
 export type Op = ">" | ">=" | "<" | "<=" | "=" | "!=";
 
