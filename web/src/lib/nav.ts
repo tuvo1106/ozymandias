@@ -34,7 +34,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
     path: "/dashboards",
     milestone: "M3",
     description: "Saved grids of widgets, provisioned from git, with template variables and a shared crosshair.",
-    live: false,
+    live: true,
   },
   {
     label: "Infrastructure",

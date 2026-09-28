@@ -22,7 +22,10 @@ describe("NAV_ITEMS", () => {
     }
   });
 
-  it("has Metrics live from M1 and everything else still coming", () => {
-    expect(NAV_ITEMS.filter((i) => i.live).map((i) => i.label)).toEqual(["Metrics"]);
+  // The list grows a milestone at a time, and a section going live is a
+  // deliberate act — so it is written down here rather than inferred, and
+  // turning a flag on without meaning to fails.
+  it("has Metrics and Dashboards live, and everything else still coming", () => {
+    expect(NAV_ITEMS.filter((i) => i.live).map((i) => i.label)).toEqual(["Metrics", "Dashboards"]);
   });
 });

@@ -70,6 +70,8 @@ stay manual, once per milestone.
 - [docs/adr/](docs/adr/) — decision log
 - [docs/operations.md](docs/operations.md) — running and configuring it
 - [docs/api.md](docs/api.md) — the HTTP API
+- [docs/ui.md](docs/ui.md) — the web UI, page by page
+- [docs/dashboards.md](docs/dashboards.md) — the dashboard definition
 - [docs/metrics-catalog.md](docs/metrics-catalog.md) — every metric ozymandias emits about itself
 - [docs/sdk/python.md](docs/sdk/python.md), [docs/sdk/node.md](docs/sdk/node.md) — the SDKs
 - [docs/benchmarks.md](docs/benchmarks.md) — measured numbers for the hot paths

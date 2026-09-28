@@ -40,6 +40,11 @@ check "agent forwards to ozyd by name" body_has "$AGENT_URL/healthz" '"intake_ur
 check "ozyd self-metrics"             body_has "$OZY_URL/debug/vars" 'ozy.build.info'
 check "UI index served"                    body_has "$OZY_URL/" '<div id="root">'
 check "UI deep link falls back to index"   body_has "$OZY_URL/logs/live" '<div id="root">'
+# The dashboard routes are client-side, so a deep link only works if the server
+# serves the index for a path it has no file for. Both shapes, because the
+# service one has a segment the router matches ahead of ":id".
+check "a dashboard deep link is served"    body_has "$OZY_URL/dashboards/1" '<div id="root">'
+check "a service dashboard link is served" body_has "$OZY_URL/dashboards/service/api" '<div id="root">'
 check "UI index is not cached"             header_has "$OZY_URL/" 'cache-control: no-cache'
 
 # M0 acceptance: SIGTERM → clean exit (0) within the grace period.
@@ -356,6 +361,19 @@ sketch_err() { # <query> <endpoint> — the error message
 }
 check "a number is sent to /query"         test -n "$(sketch_err 'p95:smoke.latency%7B*%7D' 'query/sketch' | grep 'api/v1/query')"
 check "a distribution is sent to /sketch"  test -n "$(sketch_err 'dist:smoke.latency%7B*%7D' 'query' | grep 'api/v1/query/sketch')"
+# POST with variables is the verb the heatmap widget uses, and nothing above
+# covers it: a dashboard's `dist:` query carries `$service`/`$env` and the
+# bindings are an object, which is why it is not a query string.
+# Built in a variable first — see the note above the single-query POST.
+sketch_post_body="{\"q\": \"dist:smoke.latency{\$scope}\", \"from\": $((M1_T0 - 10)), \"to\": $(date +%s), \"vars\": {\"scope\": []}}"
+sketch_post_field() { # <python expression over the decoded response, as `d`>
+  curl -fsS --max-time 10 "$OZY_URL/api/v1/query/sketch" -d "$sketch_post_body" |
+    python3 -c "import json,sys
+d = json.load(sys.stdin)
+print($1)"
+}
+check "POST /sketch takes bound variables" test "$(sketch_post_field 'len(d["series"]) > 0')" = "True"
+check "and answers with an interval"       test "$(sketch_post_field 'd["interval"] > 0')" = "True"
 
 # --- M3: dashboards ------------------------------------------------------------
 # Provisioning happens at startup, inside the container, from a directory baked

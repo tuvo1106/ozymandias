@@ -12,7 +12,7 @@
       "id": "intro",
       "type": "note",
       "layout": {"x": 0, "y": 0, "w": 12, "h": 1},
-      "markdown": "Every chart here comes from `http.request.count` and `http.request.duration`, which an app sends through the SDK's HTTP instrumentation. Empty charts mean this service is not sending them — see [the SDK README](https://github.com/tuvo1106/ozymandias/tree/main/sdk) — not that it is down."
+      "markdown": "Every chart here comes from `http.request.count` and `http.request.duration`, which an app sends through the SDK's HTTP instrumentation. Empty charts mean this service is not sending them — see the SDK docs at github.com/tuvo1106/ozymandias/tree/main/sdk — not that it is down."
     },
     {
       "id": "throughput",
