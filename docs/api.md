@@ -256,9 +256,9 @@ Every dashboard, by title, definitions included.
 
 ```console
 $ curl -s localhost:9400/api/v1/dashboards
-{"status":"ok","count":1,"dashboards":[
-  {"id":1,"provisioned":true,"created_at":"...","updated_at":"...",
-   "uid":"home","title":"Home","widgets":[…]}]}
+{"status":"ok","count":1,"unreadable":[],"dashboards":[
+  {"uid":"home","title":"Home","widgets":[…],
+   "id":1,"provisioned":true,"created_at":"...","updated_at":"..."}]}
 ```
 
 `dashboards` is always an array, empty rather than `null`. Each entry is the
@@ -277,6 +277,13 @@ The list carries every definition rather than a summary. Twenty dashboards is a
 few tens of kilobytes, and the alternative — a list plus a fetch per row — is
 what makes a dashboard picker feel slow.
 
+`unreadable` names any rows whose stored definition could not be spliced into a
+response, and is always present. Each row is encoded separately so that one
+unusable definition costs its own entry rather than the whole list: the picker is
+built on this endpoint, so a single hand-edited row must not become "nobody can
+open anything". The reason is logged with the id; the response says only that the
+row exists and cannot be rendered.
+
 ### `POST /api/v1/dashboards`
 
 Creates one. The body is a definition. Answers `201` with the stored object and
@@ -285,7 +292,7 @@ have known it.
 
 ```console
 $ curl -s -X POST localhost:9400/api/v1/dashboards -d @checkout.json
-{"id":2,"provisioned":false,"created_at":"...","updated_at":"...","title":"Checkout",…}
+{"title":"Checkout",…,"id":2,"provisioned":false,"created_at":"...","updated_at":"..."}
 ```
 
 ### `GET /api/v1/dashboards/{id}`

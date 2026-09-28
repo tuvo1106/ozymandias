@@ -120,13 +120,16 @@ type storedDashboard struct {
 // this check cannot be the only thing standing between a splicing bug and a
 // client. Removing it leaves every test in this package passing.
 //
-// It is kept for two smaller reasons. It names the dashboard, where the
-// stdlib's error names only the type, and that id is what somebody grepping the
-// database needs. And it makes the method correct on its own rather than
-// correct-because-of-its-caller, which matters the first time something
-// marshals one of these by hand.
+// It is kept for two smaller reasons, and the first of them had to be *made*
+// true: a review pointed out that naming the dashboard is worthless if the
+// message is discarded, which is exactly what writeJSON did with it. The
+// handlers now marshal through writeJSONErr and log the id, so the sentence
+// "it names the dashboard" describes something that happens. The second reason
+// is that it makes the method correct on its own rather than
+// correct-because-of-its-caller, which matters the first time something marshals
+// one of these by hand.
 //
-// The guarantee lives in the tests, not in this line.
+// The guarantee still lives in the tests, not in this line.
 func (s storedDashboard) MarshalJSON() ([]byte, error) {
 	type metadata struct {
 		ID          int64     `json:"id"`
@@ -193,18 +196,39 @@ func (d *Dashboards) list(w http.ResponseWriter, r *http.Request) {
 		d.fail(w, r, "listing dashboards", err)
 		return
 	}
-	out := make([]storedDashboard, 0, len(rows))
+	// Marshalled a row at a time, so that one unusable definition costs its own
+	// entry rather than the whole list.
+	//
+	// Encoding the slice in one call would make a single bad row a 500 for every
+	// dashboard — and the list is what the picker is built on, so the blast
+	// radius of one hand-edited row would be "nobody can open anything". A
+	// dashboard that cannot be rendered is still worth naming, so its id goes in
+	// `unreadable` rather than vanishing.
+	out := make([]json.RawMessage, 0, len(rows))
+	unreadable := []int64{}
 	for _, row := range rows {
-		out = append(out, rowToWire(row))
+		body, err := json.Marshal(rowToWire(row))
+		if err != nil {
+			d.Logger.Error("a stored dashboard could not be encoded; it is omitted from the list",
+				"id", row.ID, "uid", row.UID, "err", err)
+			unreadable = append(unreadable, row.ID)
+			continue
+		}
+		out = append(out, body)
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Status string `json:"status"`
 		// A count, because a client that paginates later will want it and
 		// adding it afterwards is a breaking change for anyone who counted the
-		// array themselves.
+		// array themselves. It counts what is in `dashboards`, not what is in
+		// the database — see `unreadable`.
 		Count      int               `json:"count"`
-		Dashboards []storedDashboard `json:"dashboards"`
-	}{"ok", len(out), out})
+		Dashboards []json.RawMessage `json:"dashboards"`
+		// Unreadable names the rows whose definitions could not be spliced.
+		// Always present: a client should be able to tell "nothing is wrong"
+		// from "this field does not exist in your version".
+		Unreadable []int64 `json:"unreadable"`
+	}{"ok", len(out), out, unreadable})
 }
 
 func (d *Dashboards) get(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +241,19 @@ func (d *Dashboards) get(w http.ResponseWriter, r *http.Request) {
 		d.fail(w, r, "reading a dashboard", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, rowToWire(row))
+	d.writeDashboard(w, http.StatusOK, row)
+}
+
+// writeDashboard answers with one stored dashboard, logging the id if its
+// definition cannot be spliced.
+//
+// The logging is the point. A row that will not marshal is a row somebody has to
+// go and fix, and the response deliberately says nothing about it, so the log is
+// the only place the id can appear.
+func (d *Dashboards) writeDashboard(w http.ResponseWriter, code int, row meta.DashboardRow) {
+	if err := writeJSONErr(w, code, rowToWire(row)); err != nil {
+		d.Logger.Error("a stored dashboard could not be encoded", "id", row.ID, "uid", row.UID, "err", err)
+	}
 }
 
 func (d *Dashboards) create(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +274,7 @@ func (d *Dashboards) create(w http.ResponseWriter, r *http.Request) {
 	// 201 with a Location header: a client that just created a dashboard needs
 	// its URL, and the id is not something it could have known.
 	w.Header().Set("Location", "/api/v1/dashboards/"+strconv.FormatInt(row.ID, 10))
-	writeJSON(w, http.StatusCreated, rowToWire(row))
+	d.writeDashboard(w, http.StatusCreated, row)
 }
 
 func (d *Dashboards) update(w http.ResponseWriter, r *http.Request) {
@@ -260,7 +296,7 @@ func (d *Dashboards) update(w http.ResponseWriter, r *http.Request) {
 		d.fail(w, r, "updating a dashboard", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, rowToWire(row))
+	d.writeDashboard(w, http.StatusOK, row)
 }
 
 func (d *Dashboards) delete(w http.ResponseWriter, r *http.Request) {

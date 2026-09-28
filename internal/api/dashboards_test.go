@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -562,8 +563,19 @@ func TestDashboards_TheDatabaseOwnsTheMetadataWhateverTheRowSays(t *testing.T) {
 	if out["provisioned"] != true {
 		t.Errorf("provisioned = %v, want true — the definition overrode the database", out["provisioned"])
 	}
-	if got := out["updated_at"].(string); strings.HasPrefix(got, "1999") {
-		t.Errorf("updated_at = %q, want the database's", got)
+	// Checked assertions, not `.(string)`: in the regression this guards
+	// against, these fields are absent or a number, and a bare assertion panics
+	// — taking the rest of the package's run with it instead of reporting which
+	// field the row managed to claim.
+	for _, field := range []string{"created_at", "updated_at"} {
+		got, ok := out[field].(string)
+		if !ok {
+			t.Errorf("%s is %T (%v), want the database's timestamp as a string", field, out[field], out[field])
+			continue
+		}
+		if strings.HasPrefix(got, "1999") {
+			t.Errorf("%s = %q, want the database's", field, got)
+		}
 	}
 	// The author's own fields still come through.
 	if out["title"] != "Liar" {
@@ -574,9 +586,13 @@ func TestDashboards_TheDatabaseOwnsTheMetadataWhateverTheRowSays(t *testing.T) {
 	}
 }
 
-// json.Valid is the check that replaces reasoning about bytes. It has to be
-// reachable: a stored definition that splices into something unparseable must
-// be a 500 with a body, not a 200 a client cannot read.
+// A stored definition that splices into something unparseable must be a 500 with
+// a body, not a 200 a client cannot read.
+//
+// Deliberately silent about *which* layer enforces that: json.Valid in
+// MarshalJSON and encoding/json's own compact pass both reject these, and this
+// test passes if either does. Naming json.Valid as "the check" here would
+// reinstate exactly the claim the method comment retracts.
 func TestDashboards_AnUnspliceableDefinitionIsRefusedNotServed(t *testing.T) {
 	for _, def := range []string{
 		`{"title":"x",}`,        // a trailing comma of their own
@@ -627,5 +643,129 @@ func TestStoredDashboard_InvalidOutputCannotReachAClient(t *testing.T) {
 	writeJSON(rec, http.StatusOK, bad)
 	if rec.Code != 500 {
 		t.Errorf("writeJSON gave %d, want 500", rec.Code)
+	}
+}
+
+// One unusable row must not make every dashboard unreachable.
+//
+// The list is what a picker is built on, so encoding the slice in one call turned
+// a single hand-edited row into "nobody can open anything". Each row is
+// marshalled separately now, and the bad one is named rather than silently
+// dropped — a dashboard that exists and cannot be rendered is worth knowing
+// about.
+func TestDashboards_OneUnreadableRowDoesNotSinkTheList(t *testing.T) {
+	h, db := dashboardsAPI(t)
+	ctx := context.Background()
+	for _, tc := range []struct{ uid, title, def string }{
+		{"good", "Good", `{"uid":"good","title":"Good","widgets":[]}`},
+		{"broken", "Broken", `{"title":}`},
+		{"alsogood", "Also good", `{"uid":"alsogood","title":"Also good","widgets":[]}`},
+	} {
+		if _, _, err := db.UpsertProvisionedDashboard(ctx, meta.DashboardRow{
+			UID: tc.uid, Title: tc.title, Definition: []byte(tc.def),
+		}, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec, out := send(t, h, http.MethodGet, "/api/v1/dashboards", "")
+	if rec.Code != 200 {
+		t.Fatalf("%d %v — one bad row took the whole list down", rec.Code, out)
+	}
+	list, ok := out["dashboards"].([]any)
+	if !ok {
+		t.Fatalf("dashboards is %T", out["dashboards"])
+	}
+	if len(list) != 2 {
+		t.Errorf("got %d dashboards, want the 2 readable ones", len(list))
+	}
+	if out["count"] != 2.0 {
+		t.Errorf("count = %v, want 2 — it counts what was returned", out["count"])
+	}
+	unreadable, ok := out["unreadable"].([]any)
+	if !ok {
+		t.Fatalf("unreadable is %T, want an array", out["unreadable"])
+	}
+	if len(unreadable) != 1 || unreadable[0] != 2.0 {
+		t.Errorf("unreadable = %v, want [2]", unreadable)
+	}
+	// The good ones are whole, not truncated.
+	for _, d := range list {
+		m := d.(map[string]any)
+		if m["title"] == nil || m["id"] == nil {
+			t.Errorf("a surviving entry is incomplete: %v", m)
+		}
+	}
+}
+
+// With nothing wrong, the field is an empty array rather than absent: a client
+// should be able to tell "nothing is wrong" from "your version has no such
+// field".
+func TestDashboards_UnreadableIsAlwaysPresent(t *testing.T) {
+	h, _ := dashboardsAPI(t)
+	_, out := send(t, h, http.MethodGet, "/api/v1/dashboards", "")
+	if u, ok := out["unreadable"].([]any); !ok || len(u) != 0 {
+		t.Errorf("unreadable = %v (%T), want []", out["unreadable"], out["unreadable"])
+	}
+}
+
+// logSink captures records so a test can assert what an operator would see.
+type logSink struct{ records []slog.Record }
+
+func (s *logSink) Enabled(context.Context, slog.Level) bool { return true }
+func (s *logSink) Handle(_ context.Context, r slog.Record) error {
+	s.records = append(s.records, r)
+	return nil
+}
+func (s *logSink) WithAttrs([]slog.Attr) slog.Handler { return s }
+func (s *logSink) WithGroup(string) slog.Handler      { return s }
+
+func (s *logSink) attr(i int, key string) any {
+	var out any
+	s.records[i].Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			out = a.Value.Any()
+			return false
+		}
+		return true
+	})
+	return out
+}
+
+// The response deliberately says nothing about which row is broken, so the log
+// is the only place the id can appear. A review caught this being claimed and
+// not done: writeJSON discarded the error, so the id reached nobody.
+func TestDashboards_AnUnencodableRowIsLoggedWithItsID(t *testing.T) {
+	db, err := meta.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, _, err := db.UpsertProvisionedDashboard(context.Background(), meta.DashboardRow{
+		UID: "broken", Title: "Broken", Definition: []byte(`{"title":}`),
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	sink := &logSink{}
+	mux := http.NewServeMux()
+	(&Dashboards{Store: db, Clock: testutil.NewFakeClock(now), Logger: slog.New(sink)}).Register(mux)
+
+	for _, path := range []string{"/api/v1/dashboards/1", "/api/v1/dashboards"} {
+		sink.records = nil
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+
+		if len(sink.records) == 0 {
+			t.Fatalf("%s: nothing was logged, so the id reached nobody", path)
+		}
+		if got := sink.attr(0, "id"); got != int64(1) {
+			t.Errorf("%s: logged id = %v (%T), want 1", path, got, got)
+		}
+		if got := sink.attr(0, "uid"); got != "broken" {
+			t.Errorf("%s: logged uid = %v", path, got)
+		}
+		if sink.records[0].Level != slog.LevelError {
+			t.Errorf("%s: level = %v", path, sink.records[0].Level)
+		}
 	}
 }

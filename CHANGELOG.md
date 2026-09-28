@@ -231,6 +231,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **One unusable dashboard row no longer sinks the whole list.** `GET
+  /api/v1/dashboards` encoded every row in one call, so a single definition that
+  could not be spliced made the endpoint a `500` — and the list is what a
+  dashboard picker is built on, so the blast radius of one hand-edited row was
+  "nobody can open anything". Rows are encoded one at a time now; a row that
+  cannot be rendered is named in a new always-present `unreadable` array and the
+  reason is logged with its id, rather than vanishing or taking the others with
+  it.
+
 - **A dashboard's stored definition could have overridden its own metadata.**
   The response splices the definition's fields beside the database's `id`,
   `provisioned` and timestamps, and wrote the metadata *first* — with a comment

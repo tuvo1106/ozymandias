@@ -142,7 +142,16 @@ func intParam(s string, def int64, name string, errs *[]error) int64 {
 // success the client cannot parse and the server never mentions. That is not
 // hypothetical: it is how a dashboard whose stored JSON ended in a newline
 // presented itself, and it cost an afternoon.
-func writeJSON(w http.ResponseWriter, code int, v any) {
+func writeJSON(w http.ResponseWriter, code int, v any) { _ = writeJSONErr(w, code, v) }
+
+// writeJSONErr is writeJSON for a response assembled from stored bytes, where a
+// marshal failure means a row somebody has to go and find. It answers exactly as
+// writeJSON does and hands the error back so the caller can log it with the id.
+//
+// Without this, an error message naming the dashboard is written and then
+// dropped on the floor — which is what the json.Valid check in dashboards.go was
+// justified by, and what it was not actually doing.
+func writeJSONErr(w http.ResponseWriter, code int, v any) error {
 	body, err := json.Marshal(v)
 	if err != nil {
 		// Nothing useful can be said about our own encoder to a caller, but a
@@ -159,6 +168,7 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	_, _ = w.Write(append(body, '\n'))
+	return err
 }
 
 func writeError(w http.ResponseWriter, code int, err error) {
