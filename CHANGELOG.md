@@ -72,7 +72,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   service and answers every template, and `GET /api/v1/dashboards/services` lists
   the names to offer. `deploy/dashboards/service.json` is the shipped template —
   throughput, 5xx rate, p95 latency and a latency heatmap from the
-  `http.request.*` metrics every SDK sends.
+  `http.request.*` metrics every SDK sends. Its 5xx rate is a chart rather than
+  a number, because an empty selection produces no series rather than a series
+  of zeros: as a number a healthy service renders an empty square, which reads
+  as "broken". `docs/dashboards.md` says so where somebody writing a template
+  will read it.
   Instantiation **binds** the variable rather than rewriting `$service` in the
   query text, so the definition a reader sees and the query the server runs stay
   the same string. The services are the tag values of the metrics the templates

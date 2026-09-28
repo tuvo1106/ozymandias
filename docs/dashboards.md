@@ -215,6 +215,18 @@ itself instantiable, and nothing stores it — and its title gains `": <service>
 so a picker showing four of them is a picker. An instance is a definition the API
 would accept, which is what makes "save a copy of this" possible.
 
+**A ratio is blank, not zero, when its numerator matches nothing.** This is worth
+knowing before writing a template, because it decides which widget to use. An
+empty selection produces *no series* — not a series of zeros — and no modifier
+changes that: `.fill(zero)` fills empty buckets inside a series that exists. So
+`sum:http.request.count{status:5*} / sum:http.request.count{*}` has nothing to
+divide for a service with no 5xx, and the evaluator drops the group with a
+warning saying so. As a `query_value` that renders as an empty square precisely
+when the service is healthy, which reads as "broken". The shipped template
+therefore draws its 5xx rate as a **timeseries**, where no line legibly means no
+errors, and says so in the widget title. Expressing "0 when nothing matched"
+would need a new modifier and its own ADR.
+
 **Which services exist** is `GET /api/v1/dashboards/services`: the values of the
 `service` tag on the metrics the templates themselves query. It is not "seen in
 the last day" — nothing here can answer that. See

@@ -24,19 +24,14 @@
     },
     {
       "id": "error-rate",
-      "type": "query_value",
-      "title": "5xx rate",
+      "type": "timeseries",
+      "title": "5xx rate (no line means no 5xx)",
       "layout": {"x": 8, "y": 1, "w": 4, "h": 3},
       "queries": [{
         "q": "sum:http.request.count{$service,$env,status:5*}.as_rate() / sum:http.request.count{$service,$env}.as_rate() * 100",
-        "reducer": "last"
+        "display": "bars"
       }],
-      "precision": 2,
-      "conditional_formats": [
-        {"op": ">=", "value": 5, "color": "red"},
-        {"op": ">=", "value": 1, "color": "yellow"},
-        {"op": ">=", "value": 0, "color": "green"}
-      ]
+      "yaxis": {"min": 0, "unit": "%"}
     },
     {
       "id": "latency",
