@@ -66,6 +66,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A whole dashboard in one request.** `POST /api/v1/query/batch` takes a list
+  of queries and one window, interval and set of template variables, and answers
+  with one result per query — each with its own `status`, `interval`, `series`,
+  `warnings` and, on a failure, a `code` and `error`. The interval is per result
+  because `.rollup(method, seconds)` sets the grid of the query it is written on,
+  so one batch can hold results on different bucket widths. One broken widget no longer blanks the
+  other eleven: the HTTP status describes the request, and whether each *query*
+  worked is that query's own business (ADR-0017). The batch shares one
+  30-second deadline rather than one per query, because fifty queries of thirty
+  seconds each is not a timeout.
+  Queries that select the same series are **selected and bucketized once** for
+  the whole batch: a query node splits into select-and-reduce, which is cached
+  per request, and group-and-aggregate, which is not. Six dashboard-shaped
+  queries over a thousand series take 4.9 ms instead of 10.8 ms and ask the
+  store once instead of six times. The cache is capped at 16 MiB per request,
+  after which the batch keeps answering without sharing (ADR-0018).
+
 - **Dashboards are stored, validated and provisioned.** `GET/POST
   /api/v1/dashboards` and `GET/PUT/DELETE /api/v1/dashboards/{id}`, with the
   definition's JSON specified in [docs/dashboards.md](docs/dashboards.md):
@@ -479,7 +496,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   expiry, gauge last-write-wins, histogram reservoir with `.avg`/`.min`/`.max`/`.median`/
   `.95percentile`/`.count`, and late samples folded into the oldest open bucket.
 - Agent forwarder: payloads split at 5000 series / 2 MiB, gzipped, retried with full-jitter
-  backoff honouring `Retry-After`, buffered in a 64 MiB drop-oldest queue, with a final
+  backoff honouring `Retry-After`, buffered in a 16 MiB drop-oldest queue, with a final
   delivery attempt on SIGTERM.
 - `ozyd` intake `POST /v1/series` with per-series rejection, a metadata DB that pins a
   metric's first-seen type, and the `MetricStore` interface with a naive SQLite implementation.

@@ -31,12 +31,18 @@ const maxBodyBytes = 64 << 10
 // the trailing-content check catches two JSON objects sent as one body, which
 // would otherwise silently use the first and discard the rest.
 func readBody(w http.ResponseWriter, r *http.Request, into any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	return readBodyLimit(w, r, maxBodyBytes, into)
+}
+
+// readBodyLimit is readBody with the limit named, for the batch endpoint, whose
+// body is legitimately fifty times larger than one query's.
+func readBodyLimit(w http.ResponseWriter, r *http.Request, limit int64, into any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(into); err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			return fmt.Errorf("body is larger than %d bytes", maxBodyBytes)
+			return fmt.Errorf("body is larger than %d bytes", limit)
 		}
 		return fmt.Errorf("body: %w", err)
 	}
@@ -53,13 +59,12 @@ func readBody(w http.ResponseWriter, r *http.Request, into any) error {
 // somebody to decide which one it meant, and that somebody should be the
 // caller rather than this file.
 type queryRequest struct {
-	Q string `json:"q"`
-
-	// The M1 structured form. [structuredExpression] turns it into `q`.
-	Metric string `json:"metric"`
-	Filter string `json:"filter"`
-	By     string `json:"by"`
-	Agg    string `json:"agg"`
+	// querySpec is embedded rather than named so that the JSON shape is
+	// unchanged — an anonymous struct's fields are flattened by encoding/json —
+	// while a batch entry, which has a query and no window of its own, can be
+	// the same type and reuse the same translation instead of a second copy of
+	// it that drifts.
+	querySpec
 
 	// From and To are pointers so that the JSON path can tell an explicit 0
 	// — the epoch, which the window rules allow — from a field that was not
@@ -77,8 +82,21 @@ type queryRequest struct {
 	Vars map[string][]string `json:"vars"`
 }
 
+// querySpec is the two spellings of one query: the query language, or the M1
+// structured parameters. It is what a batch entry is, and what a single request
+// carries alongside its window.
+type querySpec struct {
+	Q string `json:"q"`
+
+	// The M1 structured form. [structuredExpression] turns it into `q`.
+	Metric string `json:"metric"`
+	Filter string `json:"filter"`
+	By     string `json:"by"`
+	Agg    string `json:"agg"`
+}
+
 // structured reports whether the request used the M1 parameters.
-func (q *queryRequest) structured() bool {
+func (q *querySpec) structured() bool {
 	return q.Metric != "" || q.Filter != "" || q.By != "" || q.Agg != ""
 }
 
@@ -96,13 +114,13 @@ func (m *Metrics) readQueryRequest(w http.ResponseWriter, r *http.Request) (quer
 
 	v := r.URL.Query()
 	var errs []error
-	q := queryRequest{
+	q := queryRequest{querySpec: querySpec{
 		Q:      v.Get("q"),
 		Metric: v.Get("metric"),
 		Filter: v.Get("filter"),
 		By:     v.Get("by"),
 		Agg:    v.Get("agg"),
-	}
+	}}
 	// Parsed only when present, so that a nil pointer means "not sent" and
 	// [queryRequest.window] is the only thing that decides a default. The
 	// zero passed to intParam is unreachable for the same reason.
@@ -307,7 +325,7 @@ func (m *Metrics) validate(w http.ResponseWriter, r *http.Request) {
 
 // expression returns the query language text to evaluate, plus any warnings
 // raised in getting there.
-func (q *queryRequest) expression() (string, []string, error) {
+func (q *querySpec) expression() (string, []string, error) {
 	switch {
 	case q.Q != "" && q.structured():
 		return "", nil, errors.New("send either q= or the metric/filter/by/agg parameters, not both")
@@ -333,7 +351,7 @@ var aggs = []string{"avg", "sum", "min", "max", "count", "p50", "p75", "p90", "p
 // validation is deliberately the same rules the parser would apply, so the
 // only queries this can produce are ones the caller could have written by
 // hand.
-func structuredExpression(q *queryRequest) (string, []string, error) {
+func structuredExpression(q *querySpec) (string, []string, error) {
 	agg := q.Agg
 	if agg == "" {
 		agg = "avg"

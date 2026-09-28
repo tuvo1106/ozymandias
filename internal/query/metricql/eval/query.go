@@ -28,38 +28,33 @@ func (e *Evaluator) query(ctx context.Context, q *metricql.Query, g grid, st *st
 	}
 	method := rollupFor(q, defaultRollup(kind))
 
-	set, err := e.Store.Select(ctx, sel, g.first*1000, g.endMs()-1)
+	// Select the series and reduce each onto the grid. Split out because it is
+	// the half of a query node another query in the same batch may already have
+	// done — see [Evaluator.Batch].
+	series, err := e.selectBucketed(ctx, q, sel, post, g, method, st)
 	if err != nil {
 		return frame{}, err
 	}
-	defer set.Close()
 
+	// Group and aggregate across series, which is the half that belongs to this
+	// query alone: `by {route}` and `by {status}` want the same selection and
+	// different answers from it.
+	//
+	// Nothing here writes to b.values. It must not: with a batch's cache those
+	// bytes belong to every query that shares the selection, and mutating them
+	// in place would show up as another widget's numbers changing. accumulator
+	// reads them and keeps its own running totals.
 	groups := map[string]*accumulator{}
 	var order []string
-	selected := 0
-	for set.Next() {
-		ref := set.Series()
-		if !post.matches(ref) {
-			continue
-		}
-		if selected++; selected > MaxSeriesPerNode {
-			return frame{}, tooManySeries(q)
-		}
-		values := bucketize(set.Iterator(), g, method)
-		if values == nil {
-			continue
-		}
-		key, tags := groupOf(ref, q.By)
+	for _, b := range series {
+		key, tags := groupOf(b.ref, q.By)
 		acc := groups[key]
 		if acc == nil {
 			acc = newAccumulator(q.Agg, g.n, tags)
 			groups[key] = acc
 			order = append(order, key)
 		}
-		acc.add(values)
-	}
-	if err := set.Err(); err != nil {
-		return frame{}, err
+		acc.add(b.values)
 	}
 
 	f := frame{metric: q.Metric, groups: make([]*group, 0, len(order))}

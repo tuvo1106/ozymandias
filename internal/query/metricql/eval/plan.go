@@ -21,6 +21,32 @@ func DefaultInterval(from, to int64) int64 {
 	return max(iv, 10)
 }
 
+// ValidateWindow checks what can be known about a window before an expression is
+// looked at: that it runs forwards, that it is within the representable range,
+// and that the interval is not negative.
+//
+// Exported because a batch needs to refuse a bad window *once*, at the request
+// level, rather than once per query. Without it, a time picker sending
+// `to <= from` produced a 200 carrying fifty identical copies of the same
+// message — which is how a client learns to stop reading them. The planner still
+// calls it, so the rules cannot be enforced in one place and skipped in the
+// other.
+//
+// It deliberately does not check the bucket count: that depends on the interval
+// the planner settles on, which a `.rollup()` inside the expression can change.
+func ValidateWindow(from, to, interval int64) error {
+	if to <= from {
+		return badf("to (%d) must be after from (%d)", to, from)
+	}
+	if from < 0 || to > maxTime {
+		return badf("from (%d) and to (%d) must be unix seconds within [0, %d]", from, to, maxTime)
+	}
+	if interval < 0 {
+		return badf("interval %d must be positive", interval)
+	}
+	return nil
+}
+
 // plan validates the request and chooses the grid every node will share.
 //
 // The interval comes from the first of these that the request has: the
@@ -34,14 +60,8 @@ func (e *Evaluator) plan(req Request) (grid, error) {
 	if req.Expr == nil {
 		return grid{}, badf("no query to evaluate")
 	}
-	if req.To <= req.From {
-		return grid{}, badf("to (%d) must be after from (%d)", req.To, req.From)
-	}
-	if req.From < 0 || req.To > maxTime {
-		return grid{}, badf("from (%d) and to (%d) must be unix seconds within [0, %d]", req.From, req.To, maxTime)
-	}
-	if req.Interval < 0 {
-		return grid{}, badf("interval %d must be positive", req.Interval)
+	if err := ValidateWindow(req.From, req.To, req.Interval); err != nil {
+		return grid{}, err
 	}
 
 	interval := req.Interval
