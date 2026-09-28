@@ -129,7 +129,7 @@ function ResultChart({ result }: { result: QueryResult }) {
       <p className="mb-2 text-xs text-zinc-500">
         {result.series.length} series · {result.interval}s buckets
       </p>
-      <TimeseriesChart data={data} labels={labels} xRange={xRange} />
+      <TimeseriesChart data={data} labels={labels} xRange={xRange} height={320} />
     </>
   );
 }

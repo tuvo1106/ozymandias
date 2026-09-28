@@ -32,6 +32,29 @@ export function alignSeries(series: readonly Series[]): AlignedData {
 }
 
 /**
+ * Whether any value in a series stands alone — a number with null on both
+ * sides (or at an end with null beside it).
+ *
+ * A line is drawn *between* values, so a value with no neighbour has no
+ * segment to appear in and the series renders as an empty chart. That is the
+ * worst thing a chart can do: the reader concludes the service sent nothing,
+ * when it sent exactly one thing.
+ *
+ * uPlot's own rule for showing point markers counts the x axis — it hides them
+ * once the chart has more x values than it has room for markers — so on a wide
+ * window at a fine interval it hides them precisely when they are the only
+ * thing that would be visible. This asks the question the drawing actually
+ * depends on instead: are there values a line cannot reach?
+ */
+export function hasIsolatedValues(ys: readonly (number | null | undefined)[]): boolean {
+  for (let i = 0; i < ys.length; i++) {
+    if (ys[i] == null) continue;
+    if (ys[i - 1] == null && ys[i + 1] == null) return true;
+  }
+  return false;
+}
+
+/**
  * The legend label for a series: `metric{k:v,k2:v2}` with tag keys sorted so
  * a label never changes with the order the server listed them in. A series
  * with no group tags is the whole selection, spelled `{*}`.

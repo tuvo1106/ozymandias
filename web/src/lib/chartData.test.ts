@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { alignSeries, formatValue, OVERFLOW_COLOR, seriesColor, seriesLabel } from "./chartData";
+import { alignSeries, formatValue, hasIsolatedValues, OVERFLOW_COLOR, seriesColor, seriesLabel } from "./chartData";
 import type { Series } from "./metricsApi";
 
 const s = (points: [number, number | null][], tags: Record<string, string> = {}): Series => ({
@@ -122,5 +122,36 @@ describe("the first bucket is inside the chart's x range", () => {
     const firstX = data[0][0];
     expect(firstX).toBe(1000);
     expect(firstX).toBeLessThan(1005); // the `from` a caller would have asked for
+  });
+});
+
+describe("hasIsolatedValues", () => {
+  it("finds a value a line cannot reach", () => {
+    expect(hasIsolatedValues([null, 1, null])).toBe(true);
+    expect(hasIsolatedValues([1, null, null])).toBe(true);
+    expect(hasIsolatedValues([null, null, 1])).toBe(true);
+  });
+
+  it("is false when every value has a neighbour to be joined to", () => {
+    expect(hasIsolatedValues([1, 2, 3])).toBe(false);
+    expect(hasIsolatedValues([1, 2, null, null, 3, 4])).toBe(false);
+  });
+
+  it("is false for a series with nothing in it", () => {
+    expect(hasIsolatedValues([])).toBe(false);
+    expect(hasIsolatedValues([null, null])).toBe(false);
+  });
+
+  // The case that prompted it: two samples an hour apart, 181 buckets wide.
+  it("finds the two-samples-in-a-window case, which drew as an empty chart", () => {
+    const ys = new Array<number | null>(181).fill(null);
+    ys[5] = 100;
+    ys[160] = 100;
+    expect(hasIsolatedValues(ys)).toBe(true);
+  });
+
+  // A single value is one value with no neighbours, not a special case.
+  it("treats a one-point series as isolated", () => {
+    expect(hasIsolatedValues([7])).toBe(true);
   });
 });
