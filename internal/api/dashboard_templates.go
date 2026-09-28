@@ -129,19 +129,24 @@ func (d *Dashboards) discover(ctx context.Context) (discovery, error) {
 	seen := map[string]bool{}
 	lookups := 0
 	for _, row := range rows {
-		def, err := dashboard.Parse(row.Definition)
-		if err != nil {
-			// Only reported if the row *meant* to be a template. Every other
-			// unparseable row on this path is somebody else's dashboard, and
-			// this endpoint is not where to hear about it — the list endpoint
-			// is.
-			if claimsTemplate(row.Definition) {
-				d.logDropped(row, err, "a template dashboard does not validate, so it is instantiated for nobody")
-				out.unreadable = append(out.unreadable, row.ID)
-			}
+		// The cheap question first. Most rows are somebody's ordinary
+		// dashboard, and all this needs from one is a single boolean —
+		// while [dashboard.Parse] answers it by validating the whole
+		// definition, which runs the metricql parser over every query in it.
+		// Fifty ordinary dashboards of a thousand queries each measured 73ms a
+		// request in BenchmarkDiscover, for rows the answer then discards.
+		if !claimsTemplate(row.Definition) {
 			continue
 		}
-		if !def.Template {
+		def, err := dashboard.Parse(row.Definition)
+		if err != nil {
+			// Reported, because the row *meant* to be a template: that is what
+			// the shallow check above establishes, and a template that appears
+			// nowhere is the least debuggable outcome there is. An ordinary row
+			// that will not parse is not this endpoint's business — the list
+			// endpoint is where a row nobody can read belongs.
+			d.logDropped(row, err, "a template dashboard does not validate, so it is instantiated for nobody")
+			out.unreadable = append(out.unreadable, row.ID)
 			continue
 		}
 		d.forget(report{row.ID, reportTemplate})
@@ -209,11 +214,16 @@ func (d *Dashboards) discover(ctx context.Context) (discovery, error) {
 // claimsTemplate reports whether these bytes are a definition that means to be a
 // template, without checking anything else about it.
 //
-// It is how a row that says `"template": true` and does not validate gets named
-// instead of vanishing — which is the whole reason the validation rule about
-// declaring `service` exists, so failing to honour it here would be odd.
-// [dashboard.Parse] cannot answer this, because it answers by failing and its
-// error says nothing about what the author intended.
+// It does two jobs, and the second one is why it runs before
+// [dashboard.Parse] rather than after:
+//
+//   - it is how a row that says `"template": true` and does not validate gets
+//     named instead of vanishing — Parse cannot answer that, because it answers
+//     by failing and its error says nothing about what the author intended;
+//   - it keeps the cost of these endpoints proportional to the number of
+//     *templates* rather than to the number of dashboards. Parse validates, and
+//     validating means parsing every query in the definition, which is a lot of
+//     work to discover that a row is somebody's ordinary dashboard.
 //
 // Unknown fields are deliberately allowed: this is not the validating path. A
 // definition that is not JSON at all claims nothing and is skipped, which is not

@@ -560,7 +560,7 @@ nothing to discover services from, and "no services" would be a lie.
 
 | Code | Means |
 |---|---|
-| `400` | The definition does not validate (the message names every problem, not just the first), the body is over 1 MiB, or `{id}` is not a positive integer |
+| `400` | The definition does not validate (the message names every problem, not just the first), the body is over 1 MiB, `{id}` is not a positive integer, or `{name}` is longer than a whole tag (200 bytes) |
 | `404` | No dashboard with that id, or no such service on `/dashboards/service/{name}` |
 | `409` | This dashboard is **provisioned from a file**, so a write would be undone at the next restart. The message says to edit the file instead |
 | `499` | The caller hung up; not logged as an error |

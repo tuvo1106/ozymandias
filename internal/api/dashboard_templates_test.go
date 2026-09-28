@@ -656,3 +656,52 @@ func TestTemplates_DiscoveryStopsOnceTheServiceCapIsReached(t *testing.T) {
 		t.Errorf("asked %d metrics after the first one filled the cap: %v", len(vals.asked), vals.asked)
 	}
 }
+
+// How much a template endpoint costs when most dashboards are not templates.
+//
+// The interesting number is the non-template row: discovery has to learn one
+// boolean from it, and dashboard.Parse answers that by validating the whole
+// definition — which means running the metricql parser over every query in it.
+// Fifty ordinary dashboards of a thousand queries each is 50,000 query parses
+// for a request that wanted none of them.
+//
+// Measured on an M-series laptop, 50 such dashboards, none of them templates:
+//
+//	Parse first (what this was):   73ms/op
+//	claimsTemplate first:        10.3ms/op
+//
+// The remaining 10ms is reading 50 definitions out of SQLite and scanning them
+// for one field, which is the floor for "is any of these a template" without a
+// column to index. If these endpoints ever get hot enough to care, that column —
+// or a cache — is the next step, and this benchmark is how to tell.
+func BenchmarkDiscover(b *testing.B) {
+	t := &testing.T{}
+	plain := strings.Replace(bigTemplate(t, 1000), `"template":true,`, "", 1)
+	if t.Failed() {
+		b.Fatal("fixture")
+	}
+	defs := make([]string, 50)
+	for i := range defs {
+		defs[i] = strings.Replace(plain, `"uid":"big"`, fmt.Sprintf(`"uid":"big%d"`, i), 1)
+	}
+	db, err := meta.Open(filepath.Join(b.TempDir(), "meta.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = db.Close() })
+	for i, def := range defs {
+		if _, err := db.CreateDashboard(context.Background(), meta.DashboardRow{
+			UID: fmt.Sprintf("d%d", i), Title: "d", Definition: []byte(def),
+		}, now); err != nil {
+			b.Fatal(err)
+		}
+	}
+	d := &Dashboards{Store: db, Values: &tagValues{}, Types: types{},
+		Clock: testutil.NewFakeClock(now), Logger: slog.New(slog.DiscardHandler)}
+	b.ResetTimer()
+	for range b.N {
+		if _, err := d.discover(context.Background()); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

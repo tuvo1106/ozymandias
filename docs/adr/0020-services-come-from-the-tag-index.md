@@ -69,7 +69,13 @@ because there is nothing further to learn from asking.
   `Types MetricTypes`). They are optional fields: without them the two template
   endpoints answer `503` with a reason, and dashboard CRUD is unaffected — which
   keeps CRUD tests free of a metric store.
-- Cost per request is one tag-index lookup per distinct metric per template, and
+- Cost per request is proportional to the number of *templates*, not to the
+  number of dashboards: a row is checked for `"template": true` with a shallow
+  decode before it is validated, because validating means parsing every query in
+  a definition and most rows are somebody's ordinary dashboard. Fifty
+  thousand-query dashboards, none of them templates, went from 73ms a request to
+  10.3ms (`BenchmarkDiscover`).
+- Cost per request is also one tag-index lookup per distinct metric per template, and
   the number of templates is bounded by nothing — anybody who can `POST` a
   dashboard can mark one — so the lookups are capped at **500 per request** and a
   request that hits the cap answers `"truncated": true`. A count rather than a
