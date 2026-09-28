@@ -263,6 +263,48 @@ check "a broken query reports its column"  test "$broken_col" = "False 14"
 check "a cleared variable means all"       test "$(query_expr \
   'sum:smoke.latency.count{$scope}' --data-urlencode 'var.scope=')" = "100"
 
+# --- M3: one dashboard, one request --------------------------------------------
+# The batch endpoint is what a dashboard actually calls. Three things here that
+# no unit test sees: the real store behind the shared selection, a request whose
+# body is built by a shell the way a client's would be, and the shape a client
+# decodes — in particular that one broken query does not take the others down.
+#
+# The body is built in a variable first, for the reason spelled out above the
+# single-query POST: a `\"` inside a command substitution reaches curl as a
+# literal backslash.
+batch_body="{\"queries\": ["
+batch_body="$batch_body {\"q\": \"sum:smoke.latency.count{*}\"},"
+batch_body="$batch_body {\"q\": \"avg:smoke.latency.count{*} by {host}\"},"
+batch_body="$batch_body {\"q\": \"sum:smoke.latency.count{\"}"
+batch_body="$batch_body ], \"from\": $((M1_T0 - 10)), \"to\": $(date +%s)}"
+# batch_field <expr> — a python expression over the decoded response, as `d`.
+batch_field() {
+  curl -fsS --max-time 10 "$OZY_URL/api/v1/query/batch" -d "$batch_body" |
+    python3 -c "import json,sys
+d = json.load(sys.stdin)
+print($1)"
+}
+check "a batch answers every query"        test "$(batch_field 'len(d["results"])')" = "3"
+check "a batch keeps the request order"    test "$(batch_field '[r["index"] for r in d["results"]]')" \
+  = "[0, 1, 2]"
+check "the good queries answered"          test "$(batch_field \
+  'sum(1 for r in d["results"] if r["status"] == "ok")')" = "2"
+# The whole point: one unparseable query is that query's failure and nobody
+# else's. A 400 for the batch here would mean a dashboard goes blank on a typo.
+check "one bad query is not a bad batch"   test "$(batch_field 'd["status"]')" = "ok"
+check "the bad query reports its own code" test "$(batch_field 'd["results"][2]["code"]')" = "400"
+# series and warnings are always there, on a failure as much as on a success:
+# a client must be able to tell "nothing to draw" from "field not in your version".
+check "every result has the same shape"    test "$(batch_field \
+  'all("series" in r and "warnings" in r for r in d["results"])')" = "True"
+# The batch's numbers agree with asking one at a time, which is what the shared
+# selection must not change.
+check "a batch agrees with a single query" test "$(batch_field \
+  'int(sum(p[1] for p in d["results"][0]["series"][0]["points"] if p[1] is not None))')" = "100"
+# The grid belongs to the batch and is reported once, so a client can draw a
+# shared crosshair without asking each widget what it was drawn on.
+check "the batch reports one grid"         test "$(batch_field 'd["interval"] > 0')" = "True"
+
 # --- M3: dashboards ------------------------------------------------------------
 # Provisioning happens at startup, inside the container, from a directory baked
 # into the image. That is three things the unit tests cannot check: that the

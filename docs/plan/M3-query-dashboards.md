@@ -62,10 +62,16 @@ top(sum:container.cpu.usage{compose_project:app-python} by {container_name}, 5, 
 ### API
 
 `GET|POST /api/v1/query?q=<expr>&from=&to=&interval=` — response as in M1
-§3.4 plus `"query":<normalized text>`, `"warnings":[]`, per-series `"scope"`
-(`route:/api/comics`) and `"expr_index"`. M1's structured endpoint is kept as a
+§3.4 plus `"query":<normalized text>`, `"warnings":[]` and per-series `"scope"`
+(`route:/api/comics`). M1's structured endpoint is kept as a
 thin adapter that builds a query string. `POST /api/v1/query/validate` →
 `{ok, error:{msg, col}}` for the editor.
+
+> **Amended (ADR-0017).** This section originally also specified a per-series
+> `"expr_index"`. One request evaluates one expression, so it would have been
+> `0` on every line; on the batch endpoint below, which is where it would have
+> meant something, the per-query `results[]` entry carries the index instead.
+> The field is not built.
 
 ## 2. Dashboards
 
@@ -93,9 +99,16 @@ Metadata tables: `dashboards(id, title, description, definition_json, created_at
   bins over time, via `GET /api/v1/query/sketch?q=&from=&to=` returning merged
   bins per bucket), `note`. Later milestones add log, trace and monitor
   widgets — the full catalog and the end-state UI are in [`ui.md`](ui.md).
-- `POST /api/v1/query/batch {queries:[…], from, to}` evaluates a whole
-  dashboard in one request, sharing series selection between queries with the
-  same selector.
+- `POST /api/v1/query/batch {queries:[…], from, to, interval, vars}` evaluates a
+  whole dashboard in one request, sharing series selection between queries with
+  the same selector. The window, the interval and the template variables belong
+  to the batch: queries planned onto different grids share nothing, and a
+  dashboard has one time picker (ADR-0016, ADR-0018). The response is one result
+  per query, each with its own status and error, so one broken widget does not
+  blank the other eleven (ADR-0017). Sharing is a per-request cache of
+  select-and-bucketize, capped at 64 MiB and measured in ADR-0018;
+  the batch also shares one 30-second deadline, because fifty queries of thirty
+  seconds each is not a timeout.
 - **Dashboard templates:** a definition with `"template": true` and a required
   `$service` variable is instantiated virtually for every service seen in the
   last day (`/dashboards/service/<name>`), so a newly onboarded app has a

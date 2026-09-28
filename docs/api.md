@@ -229,6 +229,65 @@ editor already knows where it put the caret. On success, `query` is the
 canonical spelling, which is what an editor's "format" produces and what a
 dashboard stores.
 
+### `POST /api/v1/query/batch`
+
+A whole dashboard in one request. Takes a list of queries and **one** window,
+interval and set of template variables:
+
+```console
+$ curl -s localhost:9400/api/v1/query/batch -d '{
+    "queries": [
+      {"q": "sum:http.request.count{service:api,$env} by {route}"},
+      {"q": "avg:http.request.count{service:api,$env}"},
+      {"metric": "queue.depth", "agg": "max"}
+    ],
+    "from": 1790000000, "to": 1790003600,
+    "vars": {"env": ["env:prod"]}}'
+{"status":"ok","from":1790000000,"to":1790003600,"interval":20,"results":[
+  {"index":0,"status":"ok","query":"sum:http.request.count{service:api,$env} by {route}",
+   "series":[…],"warnings":[]},
+  {"index":1,"status":"ok","query":"avg:http.request.count{service:api,$env}",
+   "series":[…],"warnings":[]},
+  {"index":2,"status":"error","query":"max:queue.depth{*}","series":[],"warnings":[],
+   "code":400,"error":"queue.depth selects more than 1000 series; narrow the filter, …"}]}
+```
+
+Each entry of `queries` is spelled like a single query — `q`, or the M1
+`metric`/`filter`/`by`/`agg` parameters, which are translated the same way — and
+nothing else. There is no per-query window: **the window, the interval and the
+variables belong to the batch**, because two queries planned onto different
+grids share no work and a dashboard has one time picker (ADR-0016, ADR-0018).
+
+**Every query gets its own result, and its own failure.** `results` is in
+request order and each entry repeats its `index`, so a result survives being
+handed to the widget that asked for it. `status` is `ok` or `error`; `series`
+and `warnings` are always present, empty rather than absent; `code` and `error`
+appear only on a failure. `code` is the status the same query would have been
+answered with on `/api/v1/query` — `400` the query's fault, `503` out of time or
+not answerable by this server, `500` ours, with the message replaced and the
+real one logged — so a client has one rule for both endpoints.
+
+The HTTP status describes the *request*, not the queries in it: `400` for a body
+that is not a batch, no queries, or more than 50 of them; `200` otherwise, even
+when every query failed. One typo in one widget must not blank a dashboard
+(ADR-0017).
+
+`interval` is the grid every result shares, echoed once. It is `0` only when
+nothing was evaluated — there is no grid to report then.
+
+**One deadline for the batch,** not one per query: fifty queries of thirty
+seconds each is twenty-five minutes. A batch that runs out of time reports the
+queries that answered and fails the rest with `503` and "the batch ran out of
+time before this query was evaluated" — the fix is to ask for fewer things at
+once, not for a shorter window.
+
+Queries with the same selector, post-filter, grid and rollup are selected and
+bucketized **once** for the whole batch, which is the reason to send them
+together rather than in parallel requests. The saving is real — 2.2× on six
+dashboard-shaped queries over a thousand series — and bounded: the cache is
+capped at 64 MiB per request, after which the batch keeps answering without
+sharing.
+
 ## Dashboards
 
 A dashboard is a stored JSON definition — what to draw, not what was drawn. The
