@@ -548,3 +548,23 @@ func TestTemplates_AFixedThenRebrokenTemplateIsReportedAgain(t *testing.T) {
 		t.Errorf("logged %d times across break, fix and break, want 2:\n%s", n, logs.String())
 	}
 }
+
+// A tag value is free text, so `service: ` is a value the intake accepts — and
+// a blank name is one Instantiate refuses. Discovering it would put a name in
+// the list that the instantiation endpoint then answers 500 for.
+func TestTemplates_ABlankTagValueIsNotAService(t *testing.T) {
+	vals := &tagValues{values: map[string][]string{
+		"http.request.count/service": {" ", "\t", "checkout"},
+	}}
+	h, _, _ := templatesAPI(t, vals, types{}, serviceTemplate)
+
+	_, out := send(t, h, http.MethodGet, "/api/v1/dashboards/services", "")
+	if got := strings0f(t, out["services"], "services"); !slices.Equal(got, []string{"checkout"}) {
+		t.Errorf("services = %q", got)
+	}
+	// And the name it would have produced is a 404 rather than a 500.
+	rec, _ := send(t, h, http.MethodGet, "/api/v1/dashboards/service/%20", "")
+	if rec.Code != 404 {
+		t.Errorf("a blank service name gave %d, want 404", rec.Code)
+	}
+}

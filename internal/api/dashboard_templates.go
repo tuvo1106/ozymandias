@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/tuvo1106/ozymandias/internal/dashboard"
 	"github.com/tuvo1106/ozymandias/internal/meta"
@@ -84,13 +85,21 @@ type discovery struct {
 // # What a failure means here
 //
 // A row that says it is a template and does not validate is *named* — that is
-// what unreadable is for. Everything after [dashboard.Parse] is an error this
-// build should not be able to produce: Parse runs Validate, which parses every
-// query and requires the service variable, so [dashboard.Dashboard.Metrics] and
-// [dashboard.Dashboard.Instantiate] have nothing left to refuse. If one of them
-// does anyway, this build's validator and its readers disagree, which is ours
-// and not the row's — so it becomes a 500 rather than a quietly shorter list of
-// services. No guard here pretends to handle it gracefully.
+// what unreadable is for.
+//
+// Everything after [dashboard.Parse] is an error this build should not be able
+// to produce, so it becomes a 500 rather than a quietly shorter list of
+// services. Parse runs Validate, which parses every query and requires the
+// service variable, so [dashboard.Dashboard.Metrics] has nothing left to refuse,
+// and [dashboard.Dashboard.Instantiate] refuses only a definition that is not a
+// template and a blank service name — the first excluded by the branch above,
+// the second by the filter on the values below.
+//
+// That last one is why the filter is not just `v != ""`. A tag value is free
+// text, so `service: ` reaches the store; it was discovered, and the
+// instantiation endpoint answered it with a 500. An unreachable branch here is
+// unreachable because something upstream excludes it, and that is worth writing
+// down rather than asserting.
 func (d *Dashboards) discover(ctx context.Context) (discovery, error) {
 	rows, err := d.Store.Dashboards(ctx)
 	if err != nil {
@@ -129,9 +138,14 @@ func (d *Dashboards) discover(ctx context.Context) (discovery, error) {
 				return discovery{}, fmt.Errorf("the values of %s on %s: %w", key, m, err)
 			}
 			for _, v := range vals {
-				// A series carrying the bare tag `service` with no value has no
-				// service to name, and an instance titled ": " is not one.
-				if v != "" {
+				// A series carrying the bare tag `service`, or one whose value
+				// is a space, has no service to name — and an instance titled
+				// ": " is not one. Trimmed rather than compared to "": a tag
+				// value is free text, so `service: ` is a value the intake
+				// accepts, and [dashboard.Dashboard.Instantiate] refuses a blank
+				// name. Discovering one would put a name in the list that the
+				// instantiation endpoint then could not serve.
+				if strings.TrimSpace(v) != "" {
 					seen[v] = true
 				}
 			}
@@ -291,11 +305,19 @@ func (d *Dashboards) serviceDashboards(w http.ResponseWriter, r *http.Request) {
 	for _, t := range disc.templates {
 		inst, err := t.def.Instantiate(name)
 		if err != nil {
-			// Ours, not the row's: discover only returns templates that
-			// validated, and the two things Instantiate refuses are the two
-			// things validation requires. See its comment.
-			d.fail(w, r, "instantiating a template dashboard", fmt.Errorf(
-				"dashboard %d validated and then would not instantiate: %w", t.row.ID, err))
+			// Ours, not the caller's: discover returns only templates that
+			// validated, and only names it filtered, which between them exclude
+			// everything Instantiate refuses. See its comment — including the
+			// blank service name that used to get through.
+			//
+			// Not through d.fail, which reads the ErrInvalid these wrap as "the
+			// caller sent a bad definition" and answers 400 with the message.
+			// The caller sent a URL; a 400 would tell them to fix something that
+			// is not theirs, and the message names a database row.
+			d.Logger.Error("a template validated and then would not instantiate",
+				"id", t.row.ID, "uid", t.row.UID, "service", name, "err", err)
+			writeError(w, http.StatusInternalServerError,
+				errors.New("the request could not be completed"))
 			return
 		}
 		out = append(out, serviceDashboard{
