@@ -82,9 +82,51 @@ type storedDashboard struct {
 // response is one flat object.
 //
 // Hand-written rather than an embedded struct, because the definition is stored
-// as bytes and never decoded here — see the type comment on [Dashboards]. The
-// two objects are merged textually: the metadata first, so a definition that
-// somehow contained an "id" cannot overwrite the database's.
+// as bytes and never decoded here — that is what keeps a dashboard exported from
+// one ozyd and imported into another from acquiring a diff. Decoding into a map
+// and re-encoding would sort the keys, drop the author's formatting, and turn
+// every number into a float64.
+//
+// # The metadata goes last, and the result is checked
+//
+// Both of those are scars. Splicing bytes means reasoning about bytes, and this
+// function got that wrong three times:
+//
+//   - It assumed the definition's last byte was '}'. A definition read from a
+//     file ends with a newline, so every provisioned dashboard served malformed
+//     JSON — behind an HTTP 200, because the encoder had already written the
+//     status line. Every test passed, since every fixture was a single-line
+//     string.
+//   - It used len(def) > 2 to mean "has fields". `{ }` and `{\n}` have none, so
+//     the merge emitted a trailing comma.
+//   - It wrote the metadata *first*, with a comment claiming that this stopped a
+//     definition containing an "id" from overwriting the database's. That is
+//     backwards: in JSON the last of two duplicate keys wins, in Go and in a
+//     browser alike, so metadata-first meant the definition won. The defence was
+//     imaginary.
+//
+// The first two are fixed by trimming and by testing the trimmed body. The third
+// is fixed by ordering: the definition's fields are written first and the
+// metadata last, so the database's id, provisioned flag and timestamps are the
+// ones that survive whatever a row contains. Nothing can currently put them in a
+// definition — dashboard.Parse refuses unknown fields on both the API and the
+// provisioning path — but a hand-edited row should not be able to lie about its
+// own id.
+//
+// The merged bytes are also checked with json.Valid before they leave. Being
+// honest about what that buys, since overclaiming is how the three above
+// happened: encoding/json already validates whatever a custom MarshalJSON
+// returns — it runs the bytes through compact and reports a MarshalerError — so
+// this check cannot be the only thing standing between a splicing bug and a
+// client. Removing it leaves every test in this package passing.
+//
+// It is kept for two smaller reasons. It names the dashboard, where the
+// stdlib's error names only the type, and that id is what somebody grepping the
+// database needs. And it makes the method correct on its own rather than
+// correct-because-of-its-caller, which matters the first time something
+// marshals one of these by hand.
+//
+// The guarantee lives in the tests, not in this line.
 func (s storedDashboard) MarshalJSON() ([]byte, error) {
 	type metadata struct {
 		ID          int64     `json:"id"`
@@ -109,20 +151,30 @@ func (s storedDashboard) MarshalJSON() ([]byte, error) {
 	if def[0] != '{' || def[len(def)-1] != '}' {
 		return nil, fmt.Errorf("dashboard %d: the stored definition is not a JSON object", s.ID)
 	}
-	// {"id":…,"updated_at":…} + {"title":…} -> {"id":…,"updated_at":…,"title":…}
+	// {"title":…} + {"id":…,"updated_at":…} -> {"title":…,"id":…,"updated_at":…}
 	//
 	// The body is trimmed before being tested for emptiness, not measured with
 	// len(def) > 2. `{ }` and `{\n}` are objects with no fields, and a length
 	// test calls them non-empty and emits a trailing comma — which is the same
-	// mistake as the one above, a byte test standing in for a semantic one.
+	// mistake as assuming the last byte, a byte test standing in for a semantic
+	// one.
 	body := bytes.TrimSpace(def[1 : len(def)-1])
 	merged := make([]byte, 0, len(head)+len(body)+1)
-	merged = append(merged, head[:len(head)-1]...)
+	merged = append(merged, '{')
 	if len(body) > 0 {
-		merged = append(merged, ',')
 		merged = append(merged, body...)
+		merged = append(merged, ',')
 	}
-	return append(merged, '}'), nil
+	// head is `{"id":…}`; everything after its opening brace, including the
+	// closing one, completes the object.
+	merged = append(merged, head[1:]...)
+
+	// Belt over the stdlib's brace, for a better message — see the method
+	// comment. json.Marshal would reject these bytes anyway.
+	if !json.Valid(merged) {
+		return nil, fmt.Errorf("dashboard %d: splicing the stored definition did not produce valid JSON", s.ID)
+	}
+	return merged, nil
 }
 
 func rowToWire(r meta.DashboardRow) storedDashboard {

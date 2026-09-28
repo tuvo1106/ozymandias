@@ -264,10 +264,14 @@ $ curl -s localhost:9400/api/v1/dashboards
 `dashboards` is always an array, empty rather than `null`. Each entry is the
 database's columns (`id`, `provisioned`, `created_at`, `updated_at`) with the
 definition's fields spliced in beside them, not nested — a client that just
-fetched a dashboard wants to render it, not unwrap it. The metadata is written
-first, so a definition that somehow contained an `id` could not claim it (and
-in fact could not be stored at all: `id` is not a field of a definition, and
-unknown fields are refused).
+fetched a dashboard wants to render it, not unwrap it.
+
+**The database's metadata wins.** `id`, `provisioned`, `created_at` and
+`updated_at` are written *after* the definition's fields, because in JSON the
+last of two duplicate keys is the one a parser keeps. Nothing can put those keys
+in a definition in the first place — they are not fields of one, and unknown
+fields are refused on both the API and the provisioning path — but a row that
+somehow contained them cannot lie about its own id.
 
 The list carries every definition rather than a summary. Twenty dashboards is a
 few tens of kilobytes, and the alternative — a list plus a fetch per row — is

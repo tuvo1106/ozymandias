@@ -231,6 +231,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A dashboard's stored definition could have overridden its own metadata.**
+  The response splices the definition's fields beside the database's `id`,
+  `provisioned` and timestamps, and wrote the metadata *first* — with a comment
+  claiming that this stopped a definition containing an `id` from overwriting the
+  database's. It is the opposite: in JSON the last of two duplicate keys wins, so
+  metadata-first meant the definition won. The metadata is written last now.
+  Nothing could reach it — those are not fields of a definition and unknown
+  fields are refused on both write paths — so this was an imaginary defence
+  rather than a live bug, which is its own kind of problem.
+
 - **A JSON response could be an empty `200`.** `writeJSON` encoded straight to
   the `ResponseWriter`, so the status line was already sent when the encoder
   failed — and the error was discarded. A success the client cannot parse and

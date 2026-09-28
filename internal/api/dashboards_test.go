@@ -532,3 +532,100 @@ func TestWriteJSON_AMarshalFailureIsStillAJSONResponse(t *testing.T) {
 		t.Errorf("%v", out)
 	}
 }
+
+// The database owns id, provisioned and the timestamps, and a stored definition
+// must not be able to lie about them.
+//
+// Nothing can put those keys in a definition through the API or through
+// provisioning — dashboard.Parse refuses unknown fields — so this is a
+// hand-edited row, which is exactly the case the original comment claimed to
+// defend against and did not. Writing the metadata first meant the definition's
+// duplicate key came second, and in JSON the last one wins.
+func TestDashboards_TheDatabaseOwnsTheMetadataWhateverTheRowSays(t *testing.T) {
+	h, db := dashboardsAPI(t)
+	liar := `{"title":"Liar","id":999,"provisioned":false,` +
+		`"created_at":"1999-01-01T00:00:00Z","updated_at":"1999-01-01T00:00:00Z",` +
+		`"widgets":[{"id":"w","type":"note","layout":{"x":0,"y":0,"w":1,"h":1},"markdown":"hi"}]}`
+	if _, _, err := db.UpsertProvisionedDashboard(context.Background(), meta.DashboardRow{
+		UID: "liar", Title: "Liar", Definition: []byte(liar),
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, out := send(t, h, http.MethodGet, "/api/v1/dashboards/1", "")
+	if rec.Code != 200 {
+		t.Fatalf("%d %v", rec.Code, out)
+	}
+	if out["id"] != 1.0 {
+		t.Errorf("id = %v, want 1 — the row's own claim won", out["id"])
+	}
+	if out["provisioned"] != true {
+		t.Errorf("provisioned = %v, want true — the definition overrode the database", out["provisioned"])
+	}
+	if got := out["updated_at"].(string); strings.HasPrefix(got, "1999") {
+		t.Errorf("updated_at = %q, want the database's", got)
+	}
+	// The author's own fields still come through.
+	if out["title"] != "Liar" {
+		t.Errorf("title = %v", out["title"])
+	}
+	if _, ok := out["widgets"].([]any); !ok {
+		t.Errorf("widgets missing from %v", out)
+	}
+}
+
+// json.Valid is the check that replaces reasoning about bytes. It has to be
+// reachable: a stored definition that splices into something unparseable must
+// be a 500 with a body, not a 200 a client cannot read.
+func TestDashboards_AnUnspliceableDefinitionIsRefusedNotServed(t *testing.T) {
+	for _, def := range []string{
+		`{"title":"x",}`,        // a trailing comma of their own
+		`{"title":}`,            // a missing value
+		`{"title":"x" "b":"y"}`, // a missing comma
+		`{"a":{"b":1}`,          // unbalanced inside, balanced outside
+	} {
+		t.Run(def, func(t *testing.T) {
+			h, db := dashboardsAPI(t)
+			if _, _, err := db.UpsertProvisionedDashboard(context.Background(), meta.DashboardRow{
+				UID: "x", Title: "X", Definition: []byte(def),
+			}, now); err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/dashboards/1", nil))
+			if rec.Code != 500 {
+				t.Errorf("status %d, want 500 (body: %s)", rec.Code, rec.Body.String())
+			}
+			if rec.Body.Len() == 0 {
+				t.Error("an empty body: indistinguishable from success")
+			}
+		})
+	}
+}
+
+// Who actually enforces valid output, pinned so that the method comment's
+// honesty survives somebody deleting the json.Valid line.
+//
+// encoding/json runs a custom MarshalJSON's bytes through compact, so invalid
+// output is a MarshalerError either way. This asserts the behaviour rather than
+// the mechanism: a dashboard that cannot be spliced must not reach a client,
+// whichever layer notices.
+func TestStoredDashboard_InvalidOutputCannotReachAClient(t *testing.T) {
+	bad := storedDashboard{ID: 7, Definition: json.RawMessage(`{"title":}`)}
+
+	if _, err := bad.MarshalJSON(); err == nil {
+		t.Error("MarshalJSON accepted an unspliceable definition")
+	} else if !strings.Contains(err.Error(), "7") {
+		t.Errorf("%v does not name the dashboard", err)
+	}
+	// And through the encoder, which is the path that actually runs.
+	if _, err := json.Marshal(bad); err == nil {
+		t.Error("json.Marshal accepted it")
+	}
+
+	rec := httptest.NewRecorder()
+	writeJSON(rec, http.StatusOK, bad)
+	if rec.Code != 500 {
+		t.Errorf("writeJSON gave %d, want 500", rec.Code)
+	}
+}
