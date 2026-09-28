@@ -2,8 +2,10 @@ package dashboard
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // template is good() marked as one, with the variable a template must declare.
@@ -293,5 +295,51 @@ func TestMetrics_AnUnparseableQueryIsAnError(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("Metrics() = %v for a dashboard whose only query is blank", got)
+	}
+}
+
+// The title invariant, swept over every length that can matter: inside the byte
+// limit, still valid UTF-8, and still naming the service as far as the limit
+// allows.
+//
+// A sweep rather than a property test, and that is a correction: the first
+// version of this drew titles from rapid and passed with the rune-boundary walk
+// removed *and* with the service name dropped entirely, because rapid biases
+// toward small values — over 100 runs its longest title was 45 bytes against a
+// 200-byte limit, so the truncation branch never ran. The region where anything
+// is cut is small enough to enumerate, so it is enumerated. Four rune widths,
+// because the bug this guards is byte arithmetic on a string measured in runes.
+func TestInstanceTitle_StaysWithinTheLimitAndKeepsTheName(t *testing.T) {
+	for _, pad := range []rune{'a', 'é', 'ᚠ', '😀'} {
+		w := utf8.RuneLen(pad)
+		for runes := 0; runes <= (MaxTitle+8)/w; runes++ {
+			title := strings.Repeat(string(pad), runes)
+			for _, service := range []string{
+				"a", "checkout", strings.Repeat("s", MaxTitle-3), strings.Repeat("s", MaxTitle-2),
+				strings.Repeat("s", MaxTitle-1), strings.Repeat("s", MaxTitle+1),
+			} {
+				got := instanceTitle(title, service)
+				where := fmt.Sprintf("%d×%q + %d-byte service", runes, pad, len(service))
+				if len(got) > MaxTitle {
+					t.Fatalf("%s: %d bytes, over the %d limit", where, len(got), MaxTitle)
+				}
+				if !utf8.ValidString(got) {
+					t.Fatalf("%s: not valid UTF-8: %q", where, got)
+				}
+				// The service is what tells two instances apart, so it survives
+				// whole whenever it fits, and the title is what gets cut when it
+				// does not.
+				if len(service)+2 > MaxTitle {
+					continue
+				}
+				if !strings.HasSuffix(got, ": "+service) {
+					t.Fatalf("%s: %q does not end with the service name", where, got)
+				}
+				if kept := truncate(title, MaxTitle-len(service)-2); !strings.HasPrefix(got, kept) {
+					t.Fatalf("%s: %q lost more of the title than it had to (%d bytes were available)",
+						where, got, len(kept))
+				}
+			}
+		}
 	}
 }

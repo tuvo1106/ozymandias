@@ -134,7 +134,11 @@ func (d *Dashboard) Instantiate(service string) (Dashboard, error) {
 // including its key, cannot be — trims the name itself.
 func instanceTitle(title, service string) string {
 	suffix := ": " + service
-	if room := MaxTitle - len(suffix); room > 0 {
+	// `>= 0`, not `> 0`: a suffix that exactly fills the limit leaves room for
+	// no title and is still a title. Written as `> 0` first, which dropped the
+	// ": " from a 198-byte service name and was found by the sweep in
+	// template_test.go rather than by reading this.
+	if room := MaxTitle - len(suffix); room >= 0 {
 		return truncate(title, room) + suffix
 	}
 	return truncate(service, MaxTitle)
