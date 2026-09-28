@@ -110,10 +110,15 @@ Metadata tables: `dashboards(id, title, description, definition_json, created_at
   the batch also shares one 30-second deadline, because fifty queries of thirty
   seconds each is not a timeout.
 - **Dashboard templates:** a definition with `"template": true` and a required
-  `$service` variable is instantiated virtually for every service seen in the
-  last day (`/dashboards/service/<name>`), so a newly onboarded app has a
-  useful overview before anyone writes JSON. Provisioning reads every directory
-  in `provisioning.paths`, so an app repo can mount its own dashboards.
+  `$service` variable is instantiated virtually for every service the store
+  holds one of the template's own metrics for (`/dashboards/service/<name>`,
+  listed by `/dashboards/services`), so a newly onboarded app has a useful
+  overview before anyone writes JSON. Provisioning reads every directory in
+  `provisioning.paths`, so an app repo can mount its own dashboards. ~~every
+  service seen in the last day~~ — nothing here can answer that: the tag index
+  takes no time range and `internal/meta` tracks no service at all, so the only
+  time-bounded source would be a `Select` per metric per page load (ADR-0020).
+  `deploy/dashboards/service.json` is the shipped template.
 - A first version of the **Home / Overview** dashboard (`deploy/dashboards/home.json`):
   per-service health cards + ingest health; completed in M6.
 - CRUD: `GET/POST /api/v1/dashboards`, `GET/PUT/DELETE /api/v1/dashboards/{id}`;

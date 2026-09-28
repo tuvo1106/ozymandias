@@ -454,15 +454,127 @@ dashboard — and `updated_at` does.
 `204`, with no body: there is nothing left to describe, and a body saying so is
 a body every client has to decide whether to parse.
 
+### `GET /api/v1/dashboards/services`
+
+The services a template dashboard can be instantiated for.
+
+```console
+$ curl -s localhost:9400/api/v1/dashboards/services
+{"status":"ok","count":2,"services":["checkout","web"],"truncated":false,"unreadable":[]}
+```
+
+**Where this list comes from, exactly.** For every stored dashboard with
+`"template": true`, the metrics its own queries name, looked up in the tag index
+for the values of its `service` variable's tag key. It is therefore *"services
+the store still holds one of this template's metrics for"* — **not** "services
+seen in the last day", which nothing in ozymandias can answer: the tag index
+takes no time range, and the metadata database tracks metrics rather than
+services. [ADR-0020](adr/0020-services-come-from-the-tag-index.md) has the
+alternatives and their costs. Two things follow:
+
+- A service that has stopped reporting stays in the list until its last series
+  falls out of retention. Its dashboard draws empty charts, which is what any
+  dashboard of a dead service does.
+- A service that reports none of the template's metrics is **not** in the list.
+  That is deliberate — its instance would be a grid of empty charts with nothing
+  to explain why.
+
+`services` is always an array, sorted, deduplicated across templates, and empty
+rather than `null`. `truncated` says the answer is partial, so a client can tell
+"these are all of them" from "these are the ones it got to". Two things set it:
+the list is capped at **1000 services** (the same limit a query node's series
+selection has), and discovery is capped at **500 tag-index lookups per request**
+across every template.
+
+The lookup cap is what stops this endpoint being an amplifier. A template may
+hold 100 widgets × 10 queries, and nothing bounds how many templates exist —
+anybody who can `POST` a dashboard can mark one — so uncapped, a single `GET`
+could ask the store about tens of thousands of metrics. It counts the **distinct**
+`(series, tag key)` pairs, not the queries: templates are expected to overlap —
+the shape provisioning is built for is several app repos each mounting a
+directory beside the stock one, all drawing `http.request.count` — so the same
+pair asked for by twenty templates is one lookup. It is far above what a real
+deployment reaches: the shipped template names two metrics. Instantiation itself
+needs no lookups, so `/dashboards/service/{name}` still returns every template
+even for a request that hit the cap.
+
+`unreadable` names rows that say `"template": true` and do not validate. Such a
+row cannot be created through the API or by provisioning, so it is a hand-edited
+database — and a template that appears nowhere is the least debuggable outcome
+available, which is the whole reason the rule about declaring `service` exists.
+The reason is logged once per row, with its id. A row that is *not* a template
+and does not parse is not reported here; `GET /api/v1/dashboards` is where a row
+nobody can read belongs.
+
+### `GET /api/v1/dashboards/service/{name}`
+
+Every template, instantiated for one service.
+
+```console
+$ curl -s localhost:9400/api/v1/dashboards/service/checkout
+{"status":"ok","service":"checkout","count":1,"unreadable":[],
+ "dashboards":[
+   {"template_id":2,"template_uid":"service","service":"checkout",
+    "dashboard":{"title":"Service overview: checkout",
+                 "template_vars":[{"name":"service","tag":"service","default":"checkout"},…],
+                 "widgets":[…]}}]}
+```
+
+A **list**, because nothing says a deployment has one template: an app repo
+mounting its own provisioning directory beside the stock one is exactly the case
+provisioning is for. Zero templates and five are then the same shape, and a
+client that wants "the" service dashboard takes the first.
+
+`template_id` and `template_uid` say which stored template an instance came from,
+so that "this chart is wrong" leads to the file to edit.
+
+**Every** template is instantiated, including one whose metrics this service does
+not report. A template is an overview, and a service with no database is a
+legitimate empty widget — not a reason to hide the dashboard that has its
+throughput on it.
+
+**The instance is bound, not rewritten.** Its `service` variable's `default` is
+the service name; the queries still say `$service`, and the evaluator resolves
+it per request as it does for any other variable — so the definition a reader
+sees and the query the server runs are the same string. `template` and `uid` are
+cleared: an instance is not itself instantiable, and nothing stores it, so a
+`uid` would promise a lookup that cannot work. The title gains `": <service>"`,
+capped at 200 bytes with the *title* losing its tail rather than the name.
+
+**Unlike a stored dashboard, an instance is not the author's bytes.** It is this
+build's re-encoding of the definition with one default changed, so the "verbatim"
+guarantee above does not apply to it — key order and unknown fields are not
+preserved. That is also why the definition is **nested** under `dashboard` rather
+than spliced beside the provenance: there is no `id`, `created_at` or
+`provisioned` to splice, and nothing here is byte-for-byte anyone's.
+
+An instance is a definition `POST /api/v1/dashboards` would accept, which is what
+makes "save a copy of this" possible.
+
+`404` if no template's metrics carry that service — a typo in a URL somebody
+pasted into a runbook would otherwise render a grid of empty charts, which reads
+as "the service is down" rather than "the service is misspelt".
+
+This endpoint stops looking the moment the name turns up, so the usual cost is
+one tag-index lookup rather than the whole sweep `/dashboards/services` does. If
+it searched everything and still gave up because a **budget** ran out, the `404`
+says which one — "more than 1000 services" and "more than 500 distinct metrics
+between the templates" are different problems, and the fix for one is not the fix
+for the other.
+
+Both endpoints answer `503` on a server with no metric store wired: there is
+nothing to discover services from, and "no services" would be a lie.
+
 ### Status codes
 
 | Code | Means |
 |---|---|
-| `400` | The definition does not validate (the message names every problem, not just the first), the body is over 1 MiB, or `{id}` is not a positive integer |
-| `404` | No dashboard with that id |
+| `400` | The definition does not validate (the message names every problem, not just the first), the body is over 1 MiB, `{id}` is not a positive integer, or `{name}` is longer than a whole tag (200 bytes) |
+| `404` | No dashboard with that id, or no such service on `/dashboards/service/{name}` |
 | `409` | This dashboard is **provisioned from a file**, so a write would be undone at the next restart. The message says to edit the file instead |
 | `499` | The caller hung up; not logged as an error |
 | `500` | Ours. The body says only that the request could not be completed |
+| `503` | This server has no metric store, so templates cannot be instantiated |
 
 A trailing slash (`/api/v1/dashboards/`) is a `404` from the router rather than
 a `400` from the handler: a Go 1.22 wildcard does not match an empty segment.

@@ -228,6 +228,16 @@ by what it counted. That is why the order is fixed and not an option.
 on one side and not the other is dropped, and a scalar broadcasts over every
 group. Division by zero is null, not an error.
 
+**A selection that matches nothing is no series, not a series of zeros**, and no
+modifier changes that — `.fill(zero)` fills empty buckets *inside* a series that
+exists. Combined with the rule above, this is the one that surprises people:
+`sum:http.request.count{status:5*} / sum:http.request.count{*}` has nothing to
+divide for a service that has had no 5xx, so the whole expression answers with no
+series and a warning naming the side that matched nothing. It is not `0`. A
+widget that shows one number therefore renders an empty square exactly when the
+service is healthy, which is why the shipped service template draws its error
+rate as a chart (see [dashboards.md](dashboards.md#templates)).
+
 In the table below `q` is a query or any expression, `n` a plain number and
 `"…"` a quoted keyword.
 

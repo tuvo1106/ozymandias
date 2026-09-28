@@ -1,0 +1,69 @@
+{
+  "uid": "service",
+  "title": "Service overview",
+  "description": "The HTTP surface of one service: how much it is asked for, how often it fails, and how long it takes. Everything here comes from the http.request.* metrics an ozymandias SDK sends.",
+  "template": true,
+  "template_vars": [
+    {"name": "service", "tag": "service", "default": "*"},
+    {"name": "env", "tag": "env", "default": "*"}
+  ],
+  "widgets": [
+    {
+      "id": "intro",
+      "type": "note",
+      "layout": {"x": 0, "y": 0, "w": 12, "h": 1},
+      "markdown": "Every chart here comes from `http.request.count` and `http.request.duration`, which an app sends through the SDK's HTTP instrumentation. Empty charts mean this service is not sending them — see [the SDK README](https://github.com/tuvo1106/ozymandias/tree/main/sdk) — not that it is down."
+    },
+    {
+      "id": "throughput",
+      "type": "timeseries",
+      "title": "Requests per second, by route",
+      "layout": {"x": 0, "y": 1, "w": 8, "h": 3},
+      "queries": [{"q": "sum:http.request.count{$service,$env} by {route}.as_rate()", "display": "line"}],
+      "yaxis": {"min": 0, "unit": "req/s"}
+    },
+    {
+      "id": "error-rate",
+      "type": "timeseries",
+      "title": "5xx rate (no line means no 5xx)",
+      "layout": {"x": 8, "y": 1, "w": 4, "h": 3},
+      "queries": [{
+        "q": "sum:http.request.count{$service,$env,status:5*}.as_rate() / sum:http.request.count{$service,$env}.as_rate() * 100",
+        "display": "bars"
+      }],
+      "yaxis": {"min": 0, "unit": "%"}
+    },
+    {
+      "id": "latency",
+      "type": "timeseries",
+      "title": "p95 latency, by route",
+      "layout": {"x": 0, "y": 4, "w": 8, "h": 3},
+      "queries": [{"q": "p95:http.request.duration{$service,$env} by {route}", "display": "line"}],
+      "yaxis": {"min": 0, "unit": "ms"}
+    },
+    {
+      "id": "requests",
+      "type": "query_value",
+      "title": "Requests in the window",
+      "layout": {"x": 8, "y": 4, "w": 4, "h": 3},
+      "queries": [{"q": "sum:http.request.count{$service,$env}.as_count()", "reducer": "sum"}],
+      "precision": 0
+    },
+    {
+      "id": "latency-distribution",
+      "type": "heatmap",
+      "title": "Latency distribution",
+      "layout": {"x": 0, "y": 7, "w": 8, "h": 3},
+      "queries": [{"q": "dist:http.request.duration{$service,$env}"}],
+      "yaxis": {"unit": "ms", "scale": "log"}
+    },
+    {
+      "id": "slowest-routes",
+      "type": "toplist",
+      "title": "Slowest routes (p95)",
+      "layout": {"x": 8, "y": 7, "w": 4, "h": 3},
+      "queries": [{"q": "p95:http.request.duration{$service,$env} by {route}", "reducer": "max"}],
+      "limit": 10
+    }
+  ]
+}

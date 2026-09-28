@@ -578,3 +578,41 @@ func TestErrBadQuery_ClassifiesWithoutPrefixingTheMessage(t *testing.T) {
 		t.Error("a store failure classified as a bad query")
 	}
 }
+
+// A selection that matches nothing is *no series*, not a series of zeros — and
+// no modifier changes that, because fill works inside a series that exists.
+//
+// This is here because a dashboard depends on it. The obvious "5xx rate" widget
+// is `narrow / wide * 100`, and for the healthy service the numerator matches
+// nothing: the group is dropped, the widget draws an empty square, and an empty
+// square reads as "broken" rather than as "zero". docs/dashboards.md tells
+// template authors so, and the shipped service template draws its 5xx rate as a
+// chart for this reason — so the claim needs to be a test rather than a
+// sentence. If ozymandias ever grows a way to say "0 when nothing matched",
+// this fails and both of those want rewriting.
+func TestEval_AnEmptySelectionIsNoSeriesRatherThanZero(t *testing.T) {
+	for _, q := range []string{
+		"sum:req.count{route:/nope}",
+		"sum:req.count{route:/nope}.fill(zero)",
+		"sum:req.count{route:/nope} by {route}.fill(zero)",
+		"sum:req.count{route:/nope}.as_rate().fill(zero)",
+	} {
+		if got := lines(run(t, fixture(), q, 0, 59, 10)); len(got) != 0 {
+			t.Errorf("%s drew %q, want nothing at all", q, got)
+		}
+	}
+	// And so the ratio every error-rate widget wants to be is dropped, with a
+	// warning that says which side had no match.
+	res := run(t, fixture(), "sum:req.count{route:/nope} / sum:req.count{*} * 100", 0, 59, 10)
+	if got := lines(res); len(got) != 0 {
+		t.Fatalf("the ratio drew %q, want nothing", got)
+	}
+	if len(res.Warnings) != 1 || !strings.Contains(res.Warnings[0], "no match on the left") {
+		t.Errorf("warnings %q do not say which side matched nothing", res.Warnings)
+	}
+	// The other way round is the same answer, so a template author cannot fix
+	// it by swapping the operands.
+	if got := lines(run(t, fixture(), "sum:req.count{*} / sum:req.count{route:/nope}", 0, 59, 10)); len(got) != 0 {
+		t.Errorf("a missing denominator drew %q, want nothing", got)
+	}
+}

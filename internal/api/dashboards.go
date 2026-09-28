@@ -47,12 +47,42 @@ type Dashboards struct {
 	Clock  clock.Clock  // default clock.Real()
 	Logger *slog.Logger // nil discards
 
-	// mu guards reported, which remembers why each unreadable row was
-	// unreadable so that a broken one is logged once rather than once per
-	// request — see [Dashboards.logUnreadable].
+	// Values discovers the services a template dashboard is instantiated for.
+	// Nil, like Types, means the two template endpoints answer 503 rather than
+	// answering "no services" — see [Dashboards.ready].
+	Values TagValueReader
+	// Types tells a distribution from a gauge, because a distribution's tags
+	// live on its `.count` series and that is where service discovery has to
+	// look for them.
+	Types MetricTypes
+
+	// mu guards reported, which remembers why each unusable row was unusable so
+	// that a broken one is logged once rather than once per request — see
+	// [Dashboards.logOnce].
 	mu       sync.Mutex
-	reported map[int64]string
+	reported map[report]string
 }
+
+// report identifies one complaint about one row: which row, and which condition
+// was found wrong with it.
+//
+// The condition is part of the key because the conditions are independent. A
+// definition that does not parse is still spliceable — the CRUD endpoints serve
+// the stored bytes back without interpreting them — so one row can be perfectly
+// serveable by `GET /api/v1/dashboards` and unusable as a template. Keyed on the
+// id alone, a client polling both would clear one condition's record by
+// succeeding at the other, and the "say it once" this exists for would become
+// "say it every other request".
+type report struct {
+	id   int64
+	what string
+}
+
+// The conditions a [report] can be about.
+const (
+	reportEncode   = "encode"
+	reportTemplate = "template"
+)
 
 // Register mounts the endpoints on mux.
 func (d *Dashboards) Register(mux *http.ServeMux) {
@@ -67,6 +97,12 @@ func (d *Dashboards) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/dashboards/{id}", d.get)
 	mux.HandleFunc("PUT /api/v1/dashboards/{id}", d.update)
 	mux.HandleFunc("DELETE /api/v1/dashboards/{id}", d.delete)
+	// Both of these are literal segments where {id} is a wildcard, so the
+	// router prefers them: Go 1.22 patterns are ordered by specificity, not by
+	// registration. `.../services` would otherwise be a dashboard id of
+	// "services", which is a 400.
+	mux.HandleFunc("GET /api/v1/dashboards/services", d.services)
+	mux.HandleFunc("GET /api/v1/dashboards/service/{name}", d.serviceDashboards)
 }
 
 // storedDashboard is one dashboard on the wire: the database's columns, then
@@ -337,13 +373,24 @@ func (d *Dashboards) writeDashboard(w http.ResponseWriter, code int, row meta.Da
 // kind of broken is still heard, and cleared by [Dashboards.encoded] when a row
 // comes back, so that a row which breaks twice is reported twice.
 func (d *Dashboards) logUnreadable(row meta.DashboardRow, err error, msg string) {
+	d.logOnce(report{row.ID, reportEncode}, row, err, msg)
+}
+
+// logDropped reports a row that could not be used as a template, under the same
+// rule and for the same reasons as [Dashboards.logUnreadable]: the durable
+// signal is `unreadable` in the response, and the log's job is to say why once.
+func (d *Dashboards) logDropped(row meta.DashboardRow, err error, msg string) {
+	d.logOnce(report{row.ID, reportTemplate}, row, err, msg)
+}
+
+func (d *Dashboards) logOnce(key report, row meta.DashboardRow, err error, msg string) {
 	reason := err.Error()
 	d.mu.Lock()
-	last, seen := d.reported[row.ID]
+	last, seen := d.reported[key]
 	if d.reported == nil {
-		d.reported = make(map[int64]string)
+		d.reported = make(map[report]string)
 	}
-	d.reported[row.ID] = reason
+	d.reported[key] = reason
 	d.mu.Unlock()
 	if seen && last == reason {
 		return
@@ -351,13 +398,16 @@ func (d *Dashboards) logUnreadable(row meta.DashboardRow, err error, msg string)
 	d.Logger.Error(msg, "id", row.ID, "uid", row.UID, "err", err)
 }
 
-// encoded forgets a row that marshalled cleanly, so the next failure is logged
-// even when it is the same failure as the last one.
-func (d *Dashboards) encoded(id int64) {
+// forget drops a row's record of one condition, so that a row which breaks,
+// gets fixed and breaks again the same way is reported both times.
+func (d *Dashboards) forget(key report) {
 	d.mu.Lock()
-	delete(d.reported, id)
+	delete(d.reported, key)
 	d.mu.Unlock()
 }
+
+// encoded forgets a row that marshalled cleanly.
+func (d *Dashboards) encoded(id int64) { d.forget(report{id, reportEncode}) }
 
 func (d *Dashboards) create(w http.ResponseWriter, r *http.Request) {
 	data, def, ok := d.readDefinition(w, r)
