@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -452,5 +453,82 @@ func TestDashboards_AnUnusableStoredDefinitionIs500NotAnEmpty200(t *testing.T) {
 	}
 	if rec.Body.Len() == 0 {
 		t.Error("an empty body: a client cannot tell this from success")
+	}
+}
+
+// An object with nothing but whitespace in it is an object with no fields. A
+// length test calls it non-empty and the merge emits a trailing comma — the
+// same mistake as assuming the last byte is '}', which is why this is a table
+// rather than one case.
+func TestDashboards_AnEmptyObjectBodyDoesNotProduceATrailingComma(t *testing.T) {
+	for _, def := range []string{`{}`, `{ }`, "{\n}", "{\n  \n}", "  {}  ", "{}\n"} {
+		t.Run(strconv.Quote(def), func(t *testing.T) {
+			h, db := dashboardsAPI(t)
+			if _, _, err := db.UpsertProvisionedDashboard(context.Background(), meta.DashboardRow{
+				UID: "x", Title: "X", Definition: []byte(def),
+			}, now); err != nil {
+				t.Fatal(err)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/dashboards/1", nil))
+			if rec.Code != 200 {
+				t.Fatalf("%d: %s", rec.Code, rec.Body.String())
+			}
+			var out map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+				t.Fatalf("the response is not JSON: %v\n%s", err, rec.Body.String())
+			}
+			if out["id"] != 1.0 {
+				t.Errorf("%v", out)
+			}
+		})
+	}
+}
+
+// A uid somebody already took is the caller's problem, with their uid in it —
+// not a 500 about a constraint. It is reachable by importing a dashboard twice.
+func TestDashboards_ADuplicateUIDIs409(t *testing.T) {
+	h, _ := dashboardsAPI(t)
+	body := `{"uid":"home","title":"Home","widgets":[{"id":"w","type":"note",` +
+		`"layout":{"x":0,"y":0,"w":1,"h":1},"markdown":"hi"}]}`
+
+	if rec, out := send(t, h, http.MethodPost, "/api/v1/dashboards", body); rec.Code != 201 {
+		t.Fatalf("%d %v", rec.Code, out)
+	}
+	rec, out := send(t, h, http.MethodPost, "/api/v1/dashboards", body)
+	if rec.Code != 409 {
+		t.Fatalf("the second import gave %d %v, want 409", rec.Code, out)
+	}
+	msg := out["error"].(string)
+	if !strings.Contains(msg, "home") {
+		t.Errorf("error %q does not name the uid", msg)
+	}
+	if strings.Contains(msg, "constraint") || strings.Contains(msg, "SQL") {
+		t.Errorf("error %q leaks the constraint", msg)
+	}
+}
+
+// The apology has to be JSON too: it is the status a client is most likely to
+// parse defensively, and docs/api.md says every response is JSON.
+func TestWriteJSON_AMarshalFailureIsStillAJSONResponse(t *testing.T) {
+	rec := httptest.NewRecorder()
+	// A channel cannot be marshalled.
+	writeJSON(rec, http.StatusOK, map[string]any{"bad": make(chan int)})
+
+	if rec.Code != 500 {
+		t.Errorf("status %d, want 500", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type %q, want application/json", ct)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control %q, want no-store", cc)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("the body is not JSON: %q", rec.Body.String())
+	}
+	if out["status"] != "error" {
+		t.Errorf("%v", out)
 	}
 }

@@ -607,3 +607,58 @@ func jsonBlocks(md string) []string {
 		rest = remainder
 	}
 }
+
+// A dashboard that declares `env` and queries `$Env` must either be refused or
+// work. It used to be neither: it validated here and then failed to render.
+func TestValidate_AVariableIsMatchedCaseInsensitively(t *testing.T) {
+	for _, tc := range []struct{ declared, used string }{
+		{"env", "$env"},
+		{"env", "$Env"},
+		{"Env", "$env"},
+		{"ENV", "$eNv"},
+	} {
+		d := good()
+		d.TemplateVars = []TemplateVar{{Name: tc.declared, Tag: "env"}}
+		d.Widgets[0].Queries[0].Q = "sum:http.request.count{" + tc.used + "} by {route}"
+		if err := d.Validate(); err != nil {
+			t.Errorf("declared %q, used %q: %v", tc.declared, tc.used, err)
+		}
+	}
+}
+
+// A note was the one type allowed to carry anything, because its branch
+// returned before the per-type checks. The docs said otherwise.
+func TestValidate_ANoteCannotCarryAnotherTypesFields(t *testing.T) {
+	three := 3
+	d := good()
+	d.Widgets[0] = Widget{
+		ID: "n", Type: TypeNote, Layout: Layout{W: 12, H: 1}, Markdown: "hi",
+		Limit: 999, Precision: &three,
+		YAxis:              &YAxis{Scale: "bogus"},
+		ConditionalFormats: []ConditionalFormat{{Op: "??", Value: 1}},
+	}
+	err := d.Validate()
+	if err == nil {
+		t.Fatal("a note carrying four foreign fields was accepted")
+	}
+	for _, want := range []string{"limit belongs", "precision belongs", "yaxis belongs", "conditional_formats belong"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%q missing from:\n%v", want, err)
+		}
+	}
+	// A plain note is still fine.
+	d.Widgets[0] = Widget{ID: "n", Type: TypeNote, Layout: Layout{W: 12, H: 1}, Markdown: "hi"}
+	if err := d.Validate(); err != nil {
+		t.Errorf("a plain note: %v", err)
+	}
+}
+
+// docs/dashboards.md says display is optional and defaults to a line. It is
+// normative, so the validator has to agree with it.
+func TestValidate_DisplayIsOptionalOnATimeseries(t *testing.T) {
+	d := good()
+	d.Widgets[0].Queries[0].Display = ""
+	if err := d.Validate(); err != nil {
+		t.Errorf("a timeseries query with no display: %v", err)
+	}
+}

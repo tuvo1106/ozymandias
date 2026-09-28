@@ -24,7 +24,11 @@ func TestShippedDashboards(t *testing.T) {
 	}
 	var found int
 	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+		// The same predicate provisioning uses (see jsonFiles), not a
+		// case-sensitive one: a foo.JSON would otherwise be provisioned and
+		// never validated, which is precisely the hole this test exists to
+		// close.
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), ".json") {
 			continue
 		}
 		found++

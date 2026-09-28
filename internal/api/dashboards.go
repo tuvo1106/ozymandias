@@ -110,11 +110,17 @@ func (s storedDashboard) MarshalJSON() ([]byte, error) {
 		return nil, fmt.Errorf("dashboard %d: the stored definition is not a JSON object", s.ID)
 	}
 	// {"id":…,"updated_at":…} + {"title":…} -> {"id":…,"updated_at":…,"title":…}
-	merged := make([]byte, 0, len(head)+len(def))
+	//
+	// The body is trimmed before being tested for emptiness, not measured with
+	// len(def) > 2. `{ }` and `{\n}` are objects with no fields, and a length
+	// test calls them non-empty and emits a trailing comma — which is the same
+	// mistake as the one above, a byte test standing in for a semantic one.
+	body := bytes.TrimSpace(def[1 : len(def)-1])
+	merged := make([]byte, 0, len(head)+len(body)+1)
 	merged = append(merged, head[:len(head)-1]...)
-	if len(def) > 2 { // not "{}"
+	if len(body) > 0 {
 		merged = append(merged, ',')
-		merged = append(merged, def[1:len(def)-1]...)
+		merged = append(merged, body...)
 	}
 	return append(merged, '}'), nil
 }
@@ -270,6 +276,11 @@ func (d *Dashboards) fail(w http.ResponseWriter, r *http.Request, what string, e
 		writeError(w, statusClientClosedRequest, errors.New("the client closed the request"))
 	case errors.Is(err, meta.ErrNoDashboard):
 		writeError(w, http.StatusNotFound, err)
+	case errors.Is(err, meta.ErrDuplicateUID):
+		// 409: the uid is the caller's to choose and somebody already chose it.
+		// This is reachable on the import path docs/api.md advertises, so it
+		// keeps its message — which names the uid.
+		writeError(w, http.StatusConflict, err)
 	case errors.Is(err, meta.ErrProvisioned):
 		// 409 rather than 403: this is not about who the caller is, it is that
 		// the resource's state makes the write meaningless. The message says

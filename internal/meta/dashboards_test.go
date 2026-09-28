@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -264,5 +265,77 @@ func TestDashboards_SurviveAReopen(t *testing.T) {
 	}
 	if got.Title != "persisted" {
 		t.Errorf("%+v", got)
+	}
+}
+
+// A duplicate uid is the caller's mistake, not a constraint violation to
+// apologise for. It is reachable on the path the docs advertise — export from
+// one ozyd, import into another — so it has to be classifiable.
+func TestDashboards_ADuplicateUIDIsItsOwnError(t *testing.T) {
+	ctx := context.Background()
+	d := dashDB(t)
+	first := row("one")
+	first.UID = "shared"
+	if _, err := d.CreateDashboard(ctx, first, t0); err != nil {
+		t.Fatal(err)
+	}
+
+	second := row("two")
+	second.UID = "shared"
+	_, err := d.CreateDashboard(ctx, second, t0)
+	if !errors.Is(err, ErrDuplicateUID) {
+		t.Fatalf("create gave %v, want ErrDuplicateUID", err)
+	}
+	if !strings.Contains(err.Error(), "shared") {
+		t.Errorf("%v does not name the uid", err)
+	}
+
+	// And on update, where the collision is with a different row.
+	third := row("three")
+	stored, err := d.CreateDashboard(ctx, third, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third.UID = "shared"
+	if _, err := d.UpdateDashboard(ctx, stored.ID, third, t0); !errors.Is(err, ErrDuplicateUID) {
+		t.Errorf("update gave %v, want ErrDuplicateUID", err)
+	}
+}
+
+// Provisioning must not take over a uid that belongs to a dashboard somebody
+// made through the API. Overwriting it would flip provisioned to 1 and leave
+// the API answering 409 to every attempt to put it back — the same silent loss
+// this package refuses everywhere else, pointed the other way.
+func TestDashboards_ProvisioningWillNotStealAnAPIDashboardsUID(t *testing.T) {
+	ctx := context.Background()
+	d := dashDB(t)
+	mine := row("mine")
+	mine.UID = "home"
+	stored, err := d.CreateDashboard(ctx, mine, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fromFile := row("theirs")
+	fromFile.UID = "home"
+	_, changed, err := d.UpsertProvisionedDashboard(ctx, fromFile, t0.Add(time.Hour))
+	if !errors.Is(err, ErrDuplicateUID) {
+		t.Fatalf("err = %v, want ErrDuplicateUID", err)
+	}
+	if changed {
+		t.Error("it reported a change")
+	}
+	// Untouched: same title, same definition, still not provisioned.
+	after, err := d.Dashboard(ctx, stored.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Title != "mine" || after.Provisioned || !after.UpdatedAt.Equal(t0) {
+		t.Errorf("the API's dashboard was modified: %+v", after)
+	}
+	// And it is still writable through the API, which the takeover would have
+	// ended.
+	if _, err := d.UpdateDashboard(ctx, stored.ID, mine, t0); err != nil {
+		t.Errorf("it is no longer writable: %v", err)
 	}
 }

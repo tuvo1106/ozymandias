@@ -82,9 +82,15 @@ filter that happens to match everything.
 **Every `$var` a widget's query mentions must be declared here.** This is the
 one rule that cannot be checked by looking at a single widget, and it is the one
 most worth having: without it a dashboard stores cleanly and then shows an error
-in every chart, usually to somebody who did not write it. Case does not matter —
-the lexer lower-cases a variable as it reads one, so declaring `Region`
-satisfies `$region`.
+in every chart, usually to somebody who did not write it.
+
+**Variable names are case-insensitive.** The lexer lower-cases a `$name` as it
+reads one, exactly as it does a tag key, and the API lower-cases the `var.<name>`
+parameters and the `vars` object's keys to match — so declaring `Region` and
+writing `$region` (or the reverse) is one variable at every layer. The
+alternative was unpleasant: with folding in the validator but not the lexer, a
+dashboard declaring `env` and querying `$Env` validates and *then* fails to
+render on every widget, and nothing between the two is positioned to notice.
 
 ## Widgets
 
@@ -108,7 +114,7 @@ widget nobody can see, which stores happily and is then blamed on the browser.
 
 | Type | Draws | Needs |
 |---|---|---|
-| `timeseries` | lines over time | ≥1 query, each with a `display` |
+| `timeseries` | lines over time | ≥1 query; `display` optional, `line` if omitted |
 | `query_value` | one number | ≥1 query with a `reducer` |
 | `toplist` | ranked groups | ≥1 query with a `reducer`, optional `limit` |
 | `table` | groups as rows, queries as columns | ≥1 query with a `reducer` |
@@ -134,7 +140,7 @@ use two widgets.
 |---|---|
 | `q` | [metricql](query-language.md). Stored as text: it is what the author typed, what a diff shows, and what survives a change to the AST |
 | `name` | Labels this query where a widget shows several — a table column header |
-| `display` | `line`, `area`, `bars`, `points`. **timeseries only** |
+| `display` | `line`, `area`, `bars`, `points`. **timeseries only.** Optional — a query without one is drawn as `line` |
 | `reducer` | `last`, `avg`, `sum`, `min`, `max`. Required by the one-number widgets, refused on `timeseries` and `heatmap` |
 
 A `reducer` collapses a line into one number by reducing over **time**, across

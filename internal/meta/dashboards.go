@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"modernc.org/sqlite"
 )
 
 // The dashboards table.
@@ -41,6 +43,14 @@ CREATE INDEX IF NOT EXISTS dashboards_title ON dashboards(title);
 
 // ErrNoDashboard is returned when an id or uid names nothing.
 var ErrNoDashboard = errors.New("no such dashboard")
+
+// ErrDuplicateUID is returned when a uid is already taken.
+//
+// A caller meets this on the path docs/api.md advertises — exporting a
+// dashboard from one ozyd and importing it into another, or copying an app
+// repo's home.json into the UI — so it has to be their error with their uid in
+// it, not a 500 about a constraint.
+var ErrDuplicateUID = errors.New("that uid is already taken")
 
 // ErrProvisioned is returned when a write targets a dashboard that came from a
 // file.
@@ -81,6 +91,9 @@ func (d *DB) CreateDashboard(ctx context.Context, row DashboardRow, now time.Tim
 		nullIfEmpty(row.UID), row.Title, row.Description, string(row.Definition), row.Provisioned,
 		row.CreatedAt.Unix(), row.UpdatedAt.Unix())
 	if err != nil {
+		if isUniqueViolation(err) {
+			return DashboardRow{}, fmt.Errorf("%w: %q", ErrDuplicateUID, row.UID)
+		}
 		return DashboardRow{}, fmt.Errorf("meta: creating dashboard %q: %w", row.Title, err)
 	}
 	id, err := res.LastInsertId()
@@ -110,6 +123,9 @@ func (d *DB) UpdateDashboard(ctx context.Context, id int64, row DashboardRow, no
 		`UPDATE dashboards SET uid = ?, title = ?, description = ?, definition = ?, updated_at = ?
 		 WHERE id = ?`,
 		nullIfEmpty(row.UID), row.Title, row.Description, string(row.Definition), updated.Unix(), id); err != nil {
+		if isUniqueViolation(err) {
+			return DashboardRow{}, fmt.Errorf("%w: %q", ErrDuplicateUID, row.UID)
+		}
 		return DashboardRow{}, fmt.Errorf("meta: updating dashboard %d: %w", id, err)
 	}
 	row.ID = id
@@ -139,10 +155,21 @@ func (d *DB) UpsertProvisionedDashboard(ctx context.Context, row DashboardRow, n
 	case err != nil:
 		return DashboardRow{}, false, err
 	}
+	// A uid that belongs to a dashboard somebody made through the API is not
+	// ours to take. Overwriting it would flip provisioned to 1, replace their
+	// definition, and leave the API answering 409 to every attempt to put it
+	// back — the exact silent-loss this package refuses everywhere else, only
+	// pointed the other way. Refusing makes it one skipped file with a logged
+	// reason, which is a collision somebody can actually resolve.
+	if !existing.Provisioned {
+		return DashboardRow{}, false, fmt.Errorf(
+			"%w: dashboard %d (%s) was created through the API, so provisioning will not overwrite it — rename the uid in the file, or delete the dashboard",
+			ErrDuplicateUID, existing.ID, existing.Title)
+	}
 	// A restart with an unedited file is the common case, so it is the one
 	// that must not churn the row.
 	if existing.Title == row.Title && existing.Description == row.Description &&
-		string(existing.Definition) == string(row.Definition) && existing.Provisioned {
+		string(existing.Definition) == string(row.Definition) {
 		return existing, false, nil
 	}
 	updated := time.Unix(now.Unix(), 0)
@@ -235,6 +262,22 @@ func (d *DB) Dashboards(ctx context.Context) ([]DashboardRow, error) {
 		return nil, fmt.Errorf("meta: listing dashboards: %w", err)
 	}
 	return out, nil
+}
+
+// isUniqueViolation reports whether err is SQLite refusing a duplicate key.
+//
+// By code, not by message: modernc.org/sqlite returns an error whose Code() is
+// the extended result code, and matching on "UNIQUE constraint failed" would be
+// the same string-matching classification this repo removed from the query API
+// for breaking the first time somebody rewords a message.
+func isUniqueViolation(err error) bool {
+	var serr *sqlite.Error
+	if !errors.As(err, &serr) {
+		return false
+	}
+	// SQLITE_CONSTRAINT_UNIQUE (2067) and SQLITE_CONSTRAINT_PRIMARYKEY (1555)
+	// share the low byte SQLITE_CONSTRAINT (19).
+	return serr.Code()&0xff == 19
 }
 
 // nullIfEmpty keeps the uid column's UNIQUE constraint useful: SQLite treats

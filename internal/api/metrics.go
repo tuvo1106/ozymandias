@@ -147,9 +147,13 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	if err != nil {
 		// Nothing useful can be said about our own encoder to a caller, but a
 		// 500 is at least honest, and callers can tell it from an empty 200.
-		http.Error(w, `{"status":"error","error":"the response could not be encoded"}`,
-			http.StatusInternalServerError)
-		return
+		//
+		// Written by hand rather than with http.Error, which would set
+		// text/plain around a JSON body and skip Cache-Control — on the one
+		// status a client is most likely to parse defensively. Every response
+		// from this API is JSON, including the ones apologising.
+		body, code = []byte(`{"status":"error","error":"the response could not be encoded"}`),
+			http.StatusInternalServerError
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

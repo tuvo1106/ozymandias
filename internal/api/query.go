@@ -90,6 +90,7 @@ func (m *Metrics) readQueryRequest(w http.ResponseWriter, r *http.Request) (quer
 		if err := readBody(w, r, &q); err != nil {
 			return q, err
 		}
+		q.Vars = foldVarNames(q.Vars)
 		return q, nil
 	}
 
@@ -129,7 +130,9 @@ func (m *Metrics) readQueryRequest(w http.ResponseWriter, r *http.Request) (quer
 		if q.Vars == nil {
 			q.Vars = map[string][]string{}
 		}
-		q.Vars[after] = slices.DeleteFunc(values, func(s string) bool {
+		// Lower-cased to match the lexer, which lower-cases a `$name` as it
+		// reads one. `var.Env=` has to bind the `$env` a query writes.
+		q.Vars[strings.ToLower(after)] = slices.DeleteFunc(values, func(s string) bool {
 			return strings.TrimSpace(s) == ""
 		})
 	}
@@ -137,6 +140,19 @@ func (m *Metrics) readQueryRequest(w http.ResponseWriter, r *http.Request) (quer
 }
 
 func ptr[T any](v T) *T { return &v }
+
+// foldVarNames lower-cases the keys of a JSON `vars` object, so that both verbs
+// agree with the lexer about which variable a name refers to.
+func foldVarNames(vars map[string][]string) map[string][]string {
+	if vars == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(vars))
+	for name, values := range vars {
+		out[strings.ToLower(name)] = values
+	}
+	return out
+}
 
 // window resolves From and To, defaulting to the last hour. It is the one
 // place the defaults live, so both verbs get the same ones.

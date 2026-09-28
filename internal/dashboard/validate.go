@@ -168,7 +168,12 @@ func (w *Widget) validate(where string, declared map[string]bool) []error {
 		if len(w.Queries) > 0 {
 			errs = append(errs, invalidf("%s: a note has no queries", where))
 		}
-		return errs
+		// Returning here without this would exempt a note from the rule every
+		// other type obeys, so a note carrying a limit, a precision, a yaxis
+		// and conditional formats would validate — while the docs say a field
+		// belonging to another type is an error. The exemption was an accident
+		// of where the early return sat.
+		return append(errs, w.foreignFields(where, "a note")...)
 	}
 	if w.Markdown != "" {
 		errs = append(errs, invalidf("%s: markdown belongs to a note, not a %s", where, w.Type))
@@ -208,6 +213,27 @@ func (w *Widget) validate(where string, declared map[string]bool) []error {
 	}
 	if w.YAxis != nil {
 		errs = append(errs, w.YAxis.validate(where, w.Type)...)
+	}
+	return errs
+}
+
+// foreignFields reports the widget-specific fields that do not belong to a
+// type which has none of them. It exists for the note branch, which returns
+// before the per-type checks below and would otherwise be the one type allowed
+// to carry anything.
+func (w *Widget) foreignFields(where, what string) []error {
+	var errs []error
+	if w.Limit != 0 {
+		errs = append(errs, invalidf("%s: limit belongs to a toplist, not %s", where, what))
+	}
+	if w.Precision != nil {
+		errs = append(errs, invalidf("%s: precision belongs to a query_value or a table, not %s", where, what))
+	}
+	if w.YAxis != nil {
+		errs = append(errs, invalidf("%s: yaxis belongs to a timeseries or a heatmap, not %s", where, what))
+	}
+	if len(w.ConditionalFormats) > 0 {
+		errs = append(errs, invalidf("%s: conditional_formats belong to a query_value or a table, not %s", where, what))
 	}
 	return errs
 }

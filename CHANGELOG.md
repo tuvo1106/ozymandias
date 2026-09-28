@@ -96,6 +96,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   image: ingest rate, refusals, store and head size, per-agent throughput.
   Per-service health cards arrive in M6 when there are monitors to colour them
   by.
+- **A template variable's name is now case-insensitive end to end.** The lexer
+  lower-cases a `$name` as it reads one, exactly as it does a tag key, and the
+  query API lower-cases both the `var.<name>` parameters and a JSON `vars`
+  object's keys. Previously the lexer kept the case while the dashboard
+  validator folded it, so a dashboard declaring `env` and querying `$Env`
+  validated and *then* failed to render on every widget with "$Env is not
+  bound" — and nothing between the two was positioned to notice.
 - **`metricql.Walk` and `metricql.Variables`** are exported, so more than one
   caller can ask a question of a whole expression. The evaluator's private
   traversal is gone in favour of the shared one; `Variables` is what lets a
@@ -223,6 +230,24 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fuzzer had hit.
 
 ### Fixed
+
+- **A JSON response could be an empty `200`.** `writeJSON` encoded straight to
+  the `ResponseWriter`, so the status line was already sent when the encoder
+  failed — and the error was discarded. A success the client cannot parse and
+  the server never mentions. It now marshals into a buffer first, which makes
+  that a `500` with a body, in JSON like every other response. Every endpoint in
+  `internal/api` had the failure mode; a provisioned dashboard is what surfaced
+  it, because a definition read from a file ends in a newline and the response
+  builder assumed its last byte was `}`.
+- **A duplicate dashboard `uid` was a `500`.** It is now a `409` naming the uid,
+  classified by SQLite's constraint *code* rather than by matching on an error
+  message. It is reachable on the import path the docs advertise — export from
+  one ozyd, import into another — so it had to be the caller's error.
+- **Provisioning could silently take over an API-created dashboard** that
+  happened to share a `uid`: it overwrote the definition, flipped `provisioned`
+  to 1, and left the API answering `409` to every attempt to restore it. It now
+  refuses that file and says which dashboard is in the way — the same reasoning
+  that makes a provisioned dashboard read-only, pointed the other way.
 
 - **Eight storage defects from a whole-tree review** (issues #4–#11), all in the
   M2 engine:

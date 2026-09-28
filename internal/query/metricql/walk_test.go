@@ -64,3 +64,32 @@ func TestVariables(t *testing.T) {
 		})
 	}
 }
+
+// A variable's name folds, like a tag key's.
+//
+// This is the bug a review found in the first version of this file: Variables
+// lower-cased while the lexer did not, so a dashboard declaring `env` and
+// querying `$Env` validated and then failed to render on every widget with
+// "$Env is not bound". Nothing between the validator and the browser was
+// positioned to notice, which is what made it worth a rule rather than a
+// comment.
+func TestParse_AVariableNameIsLowerCased(t *testing.T) {
+	for _, written := range []string{"$env", "$Env", "$ENV", "$eNv"} {
+		expr, err := Parse("sum:x{" + written + "}")
+		if err != nil {
+			t.Fatalf("%s: %v", written, err)
+		}
+		q := expr.(*Query)
+		if got := q.Filter[0].Var; got != "env" {
+			t.Errorf("%s lexed to Var = %q, want %q", written, got, "env")
+		}
+		// And the canonical spelling folds too, so two dashboards that differ
+		// only in the case of a variable compare equal as text.
+		if got := expr.String(); got != "sum:x{$env}" {
+			t.Errorf("%s printed as %q", written, got)
+		}
+		if got := Variables(expr); len(got) != 1 || got[0] != "env" {
+			t.Errorf("%s: Variables = %v", written, got)
+		}
+	}
+}
