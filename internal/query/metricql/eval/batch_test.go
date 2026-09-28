@@ -402,3 +402,37 @@ func BenchmarkBatch_Separate(b *testing.B) {
 		}
 	}
 }
+
+// The "share of total" pattern: one selector, two groupings, in one expression.
+// It is why [Evaluator.Eval] passes a cache too, and the pair of benchmarks is
+// the evidence for that — a review asked whether the cache earned its retention
+// on the single-query path, and arguing about it would have been guessing.
+func ratioQuery(b *testing.B) (*Evaluator, Request) {
+	b.Helper()
+	e, _ := dashboard(1000)
+	n, err := metricql.Parse("sum:req.count{service:api} by {route} / sum:req.count{service:api}")
+	if err != nil {
+		b.Fatal(err)
+	}
+	return e, Request{Expr: n, From: 0, To: 1200, Interval: 10}
+}
+
+func BenchmarkSingleQuery_WithCache(b *testing.B) {
+	e, req := ratioQuery(b)
+	ctx := context.Background()
+	for b.Loop() {
+		if _, err := e.evalWith(ctx, req, &selections{budget: SelectionCacheBytes}); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkSingleQuery_NoCache(b *testing.B) {
+	e, req := ratioQuery(b)
+	ctx := context.Background()
+	for b.Loop() {
+		if _, err := e.evalWith(ctx, req, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

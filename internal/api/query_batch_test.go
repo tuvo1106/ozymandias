@@ -81,9 +81,18 @@ func TestQueryBatch_AnswersEachQuery(t *testing.T) {
 	if q, _ := results[2]["query"].(string); !strings.Contains(q, "queue.depth") {
 		t.Errorf("the M1 parameters were not translated: %q", q)
 	}
-	// The window belongs to the batch, so it is reported once.
-	if out["from"] != 1789999980.0 || out["to"] != 1790000000.0 || out["interval"] != 20.0 {
-		t.Errorf("window %v/%v/%v", out["from"], out["to"], out["interval"])
+	// The window belongs to the batch, so it is reported once — and the
+	// interval does not, because a rollup can put one query on its own grid.
+	if out["from"] != 1789999980.0 || out["to"] != 1790000000.0 {
+		t.Errorf("window %v/%v", out["from"], out["to"])
+	}
+	if _, ok := out["interval"]; ok {
+		t.Errorf("the batch reports one interval for every result: %v", out["interval"])
+	}
+	for i, r := range results {
+		if r["interval"] != 20.0 {
+			t.Errorf("result %d: interval %v, want 20", i, r["interval"])
+		}
 	}
 }
 
@@ -138,9 +147,11 @@ func TestQueryBatch_AllQueriesBadIsStill200(t *testing.T) {
 			t.Errorf("result %d: %v", i, r)
 		}
 	}
-	// No grid was planned, and inventing one would be a lie.
-	if out["interval"] != 0.0 {
-		t.Errorf("interval %v, want 0 when nothing was evaluated", out["interval"])
+	// No grid was planned for either, and inventing one would be a lie.
+	for i, r := range resultsOf(t, out) {
+		if r["interval"] != 0.0 {
+			t.Errorf("result %d: interval %v, want 0 — it was never evaluated", i, r["interval"])
+		}
 	}
 }
 
@@ -280,14 +291,14 @@ func TestQueryBatch_ResponseShape(t *testing.T) {
 	rec := postRaw(t, h, "/api/v1/query/batch",
 		`{"queries":[{"q":"sum:http.request.count{*} by {route}"},{"q":"sum:{"}],`+batchWindow+`}`)
 	var body struct {
-		Status   string `json:"status"`
-		From     int64  `json:"from"`
-		To       int64  `json:"to"`
-		Interval int64  `json:"interval"`
-		Results  []struct {
+		Status  string `json:"status"`
+		From    int64  `json:"from"`
+		To      int64  `json:"to"`
+		Results []struct {
 			Index    int      `json:"index"`
 			Status   string   `json:"status"`
 			Query    string   `json:"query"`
+			Interval int64    `json:"interval"`
 			Warnings []string `json:"warnings"`
 			Code     int      `json:"code"`
 			Error    string   `json:"error"`
@@ -441,5 +452,126 @@ func TestQueryBatch_AQueryThisServerCannotAnswerIs503InItsOwnResult(t *testing.T
 	}
 	if msg, _ := bad["error"].(string); !strings.Contains(msg, "sketch store") {
 		t.Errorf("error %q does not name what is missing", msg)
+	}
+}
+
+// A `.rollup(method, seconds)` sets the grid of the query it is written on
+// (ADR-0016), so two queries in one batch can be evaluated on different bucket
+// widths. The endpoint reported a single interval for the whole batch, which
+// meant the response stated a width some of its own results did not have and
+// gave no way to find the real one — a review caught it, and this is the case.
+//
+// Such a query shares no work with its neighbours, which is a reason not to
+// write one, not a reason for the answer to be wrong.
+func TestQueryBatch_AQueryWithItsOwnRollupReportsItsOwnInterval(t *testing.T) {
+	h, _ := metricsAPI(t)
+	code, out := post(t, h, "/api/v1/query/batch", `{"queries":[
+		{"q":"sum:http.request.count{*}"},
+		{"q":"sum:http.request.count{*}.rollup(sum, 600)"}
+	],"from":1789999980,"to":1790000000}`)
+	if code != 200 {
+		t.Fatalf("%d %v", code, out)
+	}
+	results := resultsOf(t, out)
+	for i, r := range results {
+		if r["status"] != "ok" {
+			t.Fatalf("result %d: %v", i, r)
+		}
+	}
+	plain, rolled := results[0]["interval"], results[1]["interval"]
+	if rolled != 600.0 {
+		t.Errorf("the rolled-up query reports interval %v, want 600", rolled)
+	}
+	if plain == rolled {
+		t.Errorf("both results report %v; the rollup did not set its own grid", plain)
+	}
+	// And each result's points are on the grid it claims.
+	for i, r := range results {
+		series := r["series"].([]any)
+		if len(series) == 0 {
+			t.Fatalf("result %d has no series", i)
+		}
+		points := series[0].(map[string]any)["points"].([]any)
+		if len(points) < 2 {
+			continue
+		}
+		first := points[0].([]any)[0].(float64)
+		second := points[1].([]any)[0].(float64)
+		if gap := (second - first) / 1000; gap != r["interval"] {
+			t.Errorf("result %d: points are %gs apart but it claims %v", i, gap, r["interval"])
+		}
+	}
+}
+
+// A window belongs to the request, so a bad one is answered once. Before, every
+// query failed with the same sentence inside a 200 — fifty copies of it for a
+// dashboard, which is how a client learns to stop reading them.
+func TestQueryBatch_ABadWindowIsOneRequestLevelError(t *testing.T) {
+	h, _ := metricsAPI(t)
+	for _, tc := range []struct{ name, window, want string }{
+		{"backwards", `"from":1790000000,"to":1789999980`, "must be after"},
+		{"a negative interval", `"from":1789999980,"to":1790000000,"interval":-5`, "must be positive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, out := post(t, h, "/api/v1/query/batch",
+				`{"queries":[{"q":"sum:http.request.count{*}"},{"q":"avg:http.request.count{*}"}],`+tc.window+`}`)
+			if code != 400 {
+				t.Fatalf("%d %v, want 400 — the window is the request's, not each query's", code, out)
+			}
+			if msg, _ := out["error"].(string); !strings.Contains(msg, tc.want) {
+				t.Errorf("error %q, want it to mention %q", msg, tc.want)
+			}
+			if _, ok := out["results"]; ok {
+				t.Error("a request-level refusal carries per-query results")
+			}
+		})
+	}
+}
+
+// A client that hangs up gets 499 — but only when a query actually died of it.
+//
+// The two halves are tested apart from HTTP because the case that distinguishes
+// them — the client disconnecting after the last query answered — is a race that
+// cannot be provoked through the handler. The first version of this check tested
+// the request context alone and would have thrown away a complete batch; the
+// first version of *this test* accepted either answer, which pinned nothing.
+func TestAbandoned(t *testing.T) {
+	ok := eval.Outcome{}
+	cancelled := eval.Outcome{Err: fmt.Errorf("selecting: %w", context.Canceled)}
+	failed := eval.Outcome{Err: errors.New("disk is on fire")}
+
+	for _, tc := range []struct {
+		name       string
+		requestErr error
+		out        []eval.Outcome
+		want       bool
+	}{
+		{"the client left and a query died of it", context.Canceled, []eval.Outcome{ok, cancelled}, true},
+		{"the client left after every query answered", context.Canceled, []eval.Outcome{ok, ok}, false},
+		{"a store cancelled its own work", nil, []eval.Outcome{cancelled}, false},
+		{"nothing is wrong", nil, []eval.Outcome{ok}, false},
+		{"the client left and a query failed for its own reasons", context.Canceled, []eval.Outcome{failed}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := abandoned(tc.requestErr, tc.out); got != tc.want {
+				t.Errorf("abandoned = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// End to end on the case that is reachable: the client is already gone when the
+// batch starts, so the query is cancelled and 499 is the answer.
+func TestQueryBatch_AnAbandonedBatchIs499(t *testing.T) {
+	h, _ := metricsAPI(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/query/batch",
+		strings.NewReader(`{"queries":[{"q":"sum:http.request.count{*}"}],`+batchWindow+`}`))
+	h.ServeHTTP(rec, req.WithContext(ctx))
+	if rec.Code != statusClientClosedRequest {
+		t.Errorf("%d, want %d — a departed client is not a server error",
+			rec.Code, statusClientClosedRequest)
 	}
 }

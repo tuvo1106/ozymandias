@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/tuvo1106/ozymandias/internal/query/metricql"
 	"github.com/tuvo1106/ozymandias/internal/query/metricql/eval"
@@ -63,6 +64,22 @@ type batchResult struct {
 	// been lost.
 	Query string `json:"query"`
 
+	// Interval is the bucket width this query was evaluated on.
+	//
+	// Per result rather than per batch, which is not what this endpoint first
+	// did. The batch supplies one interval and almost always every query shares
+	// it — but `.rollup(method, seconds)` sets the grid of the query it is
+	// written on (ADR-0016), so `sum:x{*}` and `sum:x{*}.rollup(sum, 600)` in
+	// one batch are evaluated on 10s and 600s buckets. Reporting one interval
+	// for the batch meant the response stated a bucket width that some of its
+	// own results did not have, and there was nowhere to find the real one. A
+	// query that does this shares no work with the others, which is a reason to
+	// avoid writing it, not a reason for the answer to be wrong.
+	//
+	// Zero on a failure: there is no grid, and inventing one would be worse
+	// than saying nothing.
+	Interval int64 `json:"interval"`
+
 	// Series and Warnings are always present, empty rather than absent or
 	// null, on a failure as much as on a success: "this widget has nothing to
 	// draw" and "this field does not exist in your version" are different
@@ -120,6 +137,13 @@ func (m *Metrics) queryBatch(w http.ResponseWriter, r *http.Request) {
 
 	window := queryRequest{From: body.From, To: body.To}
 	from, to := window.window(m.Clock.Now().Unix())
+	// Once, here, rather than once per query. A window belongs to the request,
+	// so a bad one is the request's failure — and the alternative is a 200
+	// carrying fifty identical copies of the same sentence.
+	if err := eval.ValidateWindow(from, to, body.Interval); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	vars := foldVarNames(body.Vars)
 
 	// Parsed up front, all of them, before anything is evaluated. A query that
@@ -156,10 +180,6 @@ func (m *Metrics) queryBatch(w http.ResponseWriter, r *http.Request) {
 	// Every query was malformed, so there is nothing to evaluate. Still a 200:
 	// the answers are per query, and a client that sent twelve queries and got
 	// twelve errors is better served by twelve messages than by one.
-	// Zero until a query answers. The interval reported is the grid the batch
-	// was actually evaluated on, so echoing the requested one when nothing ran
-	// would be describing a plan that was never made.
-	var interval int64
 	if len(reqs) > 0 {
 		out, err := m.eval.Batch(r.Context(), reqs)
 		if err != nil {
@@ -169,9 +189,8 @@ func (m *Metrics) queryBatch(w http.ResponseWriter, r *http.Request) {
 			writeError(w, statusFor(err), err)
 			return
 		}
-		if errors.Is(r.Context().Err(), context.Canceled) {
-			// The caller hung up: a time-range change, a closed tab. Nobody is
-			// reading the twelve answers, and logging this at ERROR would bury
+		if abandoned(r.Context().Err(), out) {
+			// Debug, not Error: logging somebody closing a tab at ERROR buries
 			// the failures that matter.
 			m.Logger.Debug("batch abandoned by the client", "queries", len(reqs))
 			writeError(w, statusClientClosedRequest, errors.New("the client closed the request"))
@@ -180,28 +199,39 @@ func (m *Metrics) queryBatch(w http.ResponseWriter, r *http.Request) {
 		for j, o := range out {
 			results[at[j]] = m.batchOutcome(results[at[j]], o)
 		}
-		// The grid belongs to the batch, so any answered query knows it. Taken
-		// from the first that answered rather than from the request, because a
-		// requested interval of 0 means "the planner chooses" and the caller
-		// needs to be told what it chose.
-		for _, o := range out {
-			if o.Err == nil {
-				interval = o.Result.Interval
-				break
-			}
-		}
 	}
 
+	// The window is the batch's and is reported once. The interval is not: it
+	// belongs to each result, because a `.rollup()` can put one query on its own
+	// grid — see [batchResult.Interval].
 	writeJSON(w, http.StatusOK, struct {
-		Status string `json:"status"`
-		From   int64  `json:"from"`
-		To     int64  `json:"to"`
-		// Interval is the bucket width every result shares. Zero only when
-		// nothing was evaluated — there is no grid to report then, and claiming
-		// one would be inventing it.
-		Interval int64         `json:"interval"`
-		Results  []batchResult `json:"results"`
-	}{"ok", from, to, interval, results})
+		Status  string        `json:"status"`
+		From    int64         `json:"from"`
+		To      int64         `json:"to"`
+		Results []batchResult `json:"results"`
+	}{"ok", from, to, results})
+}
+
+// abandoned reports whether the caller hung up on this batch: a time-range
+// change, a closed tab.
+//
+// Both halves matter, as they do on /api/v1/query. A request context that is
+// done is not enough — a client that disconnects in the window between the last
+// query answering and this check would have a fully computed batch thrown away.
+// A cancelled query is not enough either — a store that cancelled its own work
+// while the request is still live has *failed*, and reporting that as the
+// client's departure would hide it.
+//
+// A function rather than two clauses inline, because the interesting case is the
+// one that cannot be reached through HTTP without a race, and a condition nobody
+// can test is a condition nobody can check I got right.
+func abandoned(requestErr error, out []eval.Outcome) bool {
+	if requestErr == nil {
+		return false
+	}
+	return slices.ContainsFunc(out, func(o eval.Outcome) bool {
+		return errors.Is(o.Err, context.Canceled)
+	})
 }
 
 // batchOutcome fills in one query's answer, keeping the index and canonical text
@@ -215,6 +245,7 @@ func (m *Metrics) queryBatch(w http.ResponseWriter, r *http.Request) {
 func (m *Metrics) batchOutcome(into batchResult, o eval.Outcome) batchResult {
 	if o.Err == nil {
 		into.Status = "ok"
+		into.Interval = o.Result.Interval
 		into.Series = o.Result.Series
 		if into.Series == nil {
 			into.Series = []eval.Series{}

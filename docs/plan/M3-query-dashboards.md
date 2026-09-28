@@ -106,7 +106,7 @@ Metadata tables: `dashboards(id, title, description, definition_json, created_at
   dashboard has one time picker (ADR-0016, ADR-0018). The response is one result
   per query, each with its own status and error, so one broken widget does not
   blank the other eleven (ADR-0017). Sharing is a per-request cache of
-  select-and-bucketize, capped at 64 MiB and measured in ADR-0018;
+  select-and-bucketize, capped at 16 MiB and measured in ADR-0018;
   the batch also shares one 30-second deadline, because fifty queries of thirty
   seconds each is not a timeout.
 - **Dashboard templates:** a definition with `"template": true` and a required

@@ -31,10 +31,10 @@ unreadable row made `GET /api/v1/dashboards` a 500 for every dashboard.
 exist.**
 
 ```json
-{"status":"ok","from":…,"to":…,"interval":…,
+{"status":"ok","from":…,"to":…,
  "results":[
-   {"index":0,"status":"ok","query":"sum:…","series":[…],"warnings":[]},
-   {"index":1,"status":"error","query":"p95:temp{*}","series":[],"warnings":[],
+   {"index":0,"status":"ok","query":"sum:…","interval":20,"series":[…],"warnings":[]},
+   {"index":1,"status":"error","query":"p95:temp{*}","interval":0,"series":[],"warnings":[],
     "code":400,"error":"temp is a gauge, so p95 is not a number it has: …"}]}
 ```
 
@@ -46,11 +46,15 @@ exist.**
   A 500's message is replaced and the real one logged, exactly as on
   `/api/v1/query`; the 200 around it changes nothing about that.
 - `series` and `warnings` are always present, empty rather than absent.
-- The window and the interval belong to the batch, reported once.
+- The window belongs to the batch and is reported once. The **interval does
+  not**: `.rollup(method, seconds)` sets the grid of the query it is written on
+  (ADR-0016), so one batch can hold results on different bucket widths, and a
+  single batch-level interval stated a width some results did not have.
 
 The HTTP status describes the *request*: 400 for a body that is not a batch, no
-queries, or more than `eval.MaxQueriesPerBatch` of them. Otherwise 200, even when
-every query in it failed.
+queries, more than `eval.MaxQueriesPerBatch` of them, or a window that cannot be
+planned — a window belongs to the request, so a bad one is answered once rather
+than repeated in every result. Otherwise 200, even when every query failed.
 
 `expr_index` is dropped rather than added to each series: `results[i]` already
 answers "which query produced this", and one fact in two places is one fact that

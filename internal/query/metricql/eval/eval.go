@@ -218,10 +218,17 @@ func (e *Evaluator) Eval(ctx context.Context, req Request) (Result, error) {
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	// A cache of its own, which nothing will hit: one query cannot share a
-	// selection with itself, and giving it one anyway keeps Eval and
-	// [Evaluator.Batch] on the same path instead of on two that can disagree
-	// about what a query means.
+	// A cache of its own, which *does* get hit — this comment used to say
+	// nothing would, and a review found that false. One expression can contain
+	// two query nodes over one selection, which is what a "share of total"
+	// widget is: `sum:x{s} by {route} / sum:x{s}` selects the same series twice
+	// and groups them differently. Measured on 1000 series, that query is 1.4x
+	// faster with the cache and allocates half as much (7.0 MB against 13.6 MB),
+	// because the second node stops re-decoding what the first already reduced.
+	//
+	// The cost is retention rather than churn: the bucketized values stay live
+	// until the request ends, where before they were garbage as soon as the
+	// accumulator had folded them in. [SelectionCacheBytes] is what bounds that.
 	return e.evalWith(ctx, req, &selections{budget: SelectionCacheBytes})
 }
 

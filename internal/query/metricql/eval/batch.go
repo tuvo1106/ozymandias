@@ -18,17 +18,26 @@ import (
 // and one series budget for the whole call, both below.
 const MaxQueriesPerBatch = 50
 
-// SelectionCacheBytes is roughly how much a batch may spend remembering
-// selections so that later queries can reuse them.
+// SelectionCacheBytes is how much one request may spend remembering selections
+// so that later queries can reuse them.
 //
 // A cap rather than a count, because the thing being remembered varies by three
-// orders of magnitude: one series of ten buckets is 80 bytes and a thousand
-// series of fifteen hundred buckets is twelve megabytes, and "twenty entries" is
-// a memory budget of anywhere between two kilobytes and 240 megabytes. When the
-// budget runs out the batch stops caching and keeps answering — a slow dashboard
-// is better than a failed one, and the queries that already shared a selection
-// keep their saving.
-const SelectionCacheBytes = 64 << 20
+// orders of magnitude: one series of ten buckets is 80 bytes, and the largest a
+// single node can produce is [MaxSeriesPerNode] x [MaxBuckets] x 8 = 12 MB. So
+// "twenty entries" is a budget of anywhere between two kilobytes and 240
+// megabytes, and a byte count is the only honest way to bound it.
+//
+// Sixteen megabytes: a little over one maximal selection, and room for dozens of
+// realistic ones — a thousand series over a two-hour window at ten seconds is
+// under a megabyte. It matters more than it looks, because this is *retained*
+// memory, live until the request ends, and it is now paid by every query rather
+// than only by a batch. Sixteen bounds a handful of concurrent requests at
+// something a single-node ozyd can hold; sixty-four did not.
+//
+// When the budget runs out the request stops caching and keeps answering — a
+// slow dashboard is better than a failed one, and the queries that already
+// shared a selection keep their saving.
+const SelectionCacheBytes = 16 << 20
 
 // Outcome is one query's answer within a batch: a result, or the error that
 // query failed with.

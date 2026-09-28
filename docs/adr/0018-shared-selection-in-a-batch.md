@@ -48,7 +48,7 @@ Two consequences fall out and are deliberate:
   twenty-five minutes. A batch that runs out reports what it has and fails the
   rest with the deadline, per query (ADR-0017).
 
-Memory is capped by `SelectionCacheBytes` (64 MiB), counted as the bucketized
+Memory is capped by `SelectionCacheBytes` (16 MiB), counted as the bucketized
 values actually held. When the budget is gone the batch stops caching and keeps
 answering: a slower dashboard is better than a failed one, and the queries that
 already shared a selection keep the saving.
@@ -71,9 +71,17 @@ Measured on 1000 series × 6 dashboard-shaped queries: **4.9 ms shared versus
 
 - A dashboard of related queries costs roughly one selection instead of N.
   A dashboard of unrelated ones costs what it did before, plus a map lookup.
-- `Evaluator.Eval` and `Evaluator.Batch` run the same code path — `Eval` passes a
-  cache of its own that nothing hits — so a single query cannot drift from a
-  query in a batch.
+- `Evaluator.Eval` and `Evaluator.Batch` run the same code path, so a single
+  query cannot drift from a query in a batch. `Eval` passes a cache of its own,
+  and it *is* hit: one expression can contain two query nodes over one selection,
+  which is what a "share of total" widget is — `sum:x{s} by {route} / sum:x{s}`.
+  Measured on 1000 series, that query is 1.4x faster with the cache and allocates
+  half as much (7.0 MB against 13.6 MB).
+- The cost is retention rather than churn, and it is now paid by *every* query
+  rather than only by a batch: bucketized values stay live until the request
+  ends, where before they were garbage as soon as the accumulator had folded
+  them in. That is what the budget bounds, and why it is 16 MiB rather than the
+  64 MiB this ADR was first written with.
 - Nothing in the cached half may be mutated by the grouping half. `accumulator`
   reads the values and keeps its own totals; a future modifier that writes in
   place would show up as another widget's numbers changing, which is why the

@@ -243,12 +243,12 @@ $ curl -s localhost:9400/api/v1/query/batch -d '{
     ],
     "from": 1790000000, "to": 1790003600,
     "vars": {"env": ["env:prod"]}}'
-{"status":"ok","from":1790000000,"to":1790003600,"interval":20,"results":[
+{"status":"ok","from":1790000000,"to":1790003600,"results":[
   {"index":0,"status":"ok","query":"sum:http.request.count{service:api,$env} by {route}",
-   "series":[…],"warnings":[]},
+   "interval":20,"series":[…],"warnings":[]},
   {"index":1,"status":"ok","query":"avg:http.request.count{service:api,$env}",
-   "series":[…],"warnings":[]},
-  {"index":2,"status":"error","query":"max:queue.depth{*}","series":[],"warnings":[],
+   "interval":20,"series":[…],"warnings":[]},
+  {"index":2,"status":"error","query":"max:queue.depth{*}","interval":0,"series":[],"warnings":[],
    "code":400,"error":"queue.depth selects more than 1000 series; narrow the filter, …"}]}
 ```
 
@@ -268,12 +268,23 @@ not answerable by this server, `500` ours, with the message replaced and the
 real one logged — so a client has one rule for both endpoints.
 
 The HTTP status describes the *request*, not the queries in it: `400` for a body
-that is not a batch, no queries, or more than 50 of them; `200` otherwise, even
+that is not a batch, no queries, more than 50 of them, or a window that cannot
+be planned; `200` otherwise, even
 when every query failed. One typo in one widget must not blank a dashboard
 (ADR-0017).
 
-`interval` is the grid every result shares, echoed once. It is `0` only when
-nothing was evaluated — there is no grid to report then.
+`interval` is **per result**, not per batch. Almost always every result shares
+the batch's, but `.rollup(method, seconds)` sets the grid of the query it is
+written on (ADR-0016), so `sum:x{*}` and `sum:x{*}.rollup(sum, 600)` in one
+batch are evaluated on 10s and 600s buckets and each says so. It is `0` on a
+failure: there is no grid, and inventing one would be worse than saying nothing.
+A query with its own rollup shares no work with its neighbours, which is a
+reason not to write one rather than a reason for the answer to be wrong.
+
+A **bad window is one request-level `400`**, not a per-query error repeated
+fifty times: `to` must be after `from`, both within `[0, 2^40)`, and `interval`
+must not be negative. The bucket count is not checked up front, because it
+depends on the interval the planner settles on.
 
 **One deadline for the batch,** not one per query: fifty queries of thirty
 seconds each is twenty-five minutes. A batch that runs out of time reports the
@@ -285,7 +296,7 @@ Queries with the same selector, post-filter, grid and rollup are selected and
 bucketized **once** for the whole batch, which is the reason to send them
 together rather than in parallel requests. The saving is real — 2.2× on six
 dashboard-shaped queries over a thousand series — and bounded: the cache is
-capped at 64 MiB per request, after which the batch keeps answering without
+capped at 16 MiB per request, after which the batch keeps answering without
 sharing.
 
 ## Dashboards

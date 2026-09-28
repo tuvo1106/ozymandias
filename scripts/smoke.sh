@@ -301,9 +301,12 @@ check "every result has the same shape"    test "$(batch_field \
 # selection must not change.
 check "a batch agrees with a single query" test "$(batch_field \
   'int(sum(p[1] for p in d["results"][0]["series"][0]["points"] if p[1] is not None))')" = "100"
-# The grid belongs to the batch and is reported once, so a client can draw a
-# shared crosshair without asking each widget what it was drawn on.
-check "the batch reports one grid"         test "$(batch_field 'd["interval"] > 0')" = "True"
+# Each result says which grid it was drawn on. Per result rather than per batch,
+# because a `.rollup()` sets the grid of the query it is written on — so a client
+# drawing a shared crosshair has to read it from the widget, not from the batch.
+check "each result reports its grid"       test "$(batch_field \
+  'all(r["interval"] > 0 for r in d["results"] if r["status"] == "ok")')" = "True"
+check "the batch does not claim one grid"  test "$(batch_field '"interval" in d')" = "False"
 
 # --- M3: dashboards ------------------------------------------------------------
 # Provisioning happens at startup, inside the container, from a directory baked
