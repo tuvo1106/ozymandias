@@ -73,13 +73,20 @@ export interface HeatCells {
  * linear, and a latency heatmap ruined by a single zero is a worse answer than
  * one that draws the positive values and says what it left out.
  */
-export function valueExtent(buckets: readonly SketchBucket[], positiveOnly = false): { lo: number; hi: number } | undefined {
+export function valueExtent(
+  buckets: readonly SketchBucket[],
+  positiveOnly = false,
+): { lo: number; hi: number } | undefined {
   let lo = Infinity;
   let hi = -Infinity;
   for (const bucket of buckets) {
     for (const [lower, upper, count] of bucket.bins) {
       if (!(count > 0)) continue;
       if (positiveOnly && lower <= 0) continue;
+      // No guard for a bound the server could not write as a number: it
+      // arrives as NaN, and every comparison with NaN is false, so both tests
+      // below reject it without being asked to. [[unboundedCount]] is where
+      // that bin is counted.
       if (lower < lo) lo = lower;
       if (upper > hi) hi = upper;
     }
@@ -96,7 +103,11 @@ export function valueExtent(buckets: readonly SketchBucket[], positiveOnly = fal
  * value. Widened multiplicatively rather than by a constant, since the same
  * function serves a metric in seconds and one in bytes.
  */
-export function axisRange(buckets: readonly SketchBucket[], yaxis: YAxis | undefined, log = false): { lo: number; hi: number } | undefined {
+export function axisRange(
+  buckets: readonly SketchBucket[],
+  yaxis: YAxis | undefined,
+  log = false,
+): { lo: number; hi: number } | undefined {
   const extent = valueExtent(buckets, log);
   const lo = yaxis?.min ?? extent?.lo;
   const hi = yaxis?.max ?? extent?.hi;
@@ -164,7 +175,10 @@ export function cellsFor(
       // y, so `top` walks up the canvas as the loop runs — which is why the
       // merge below grows the open cell upwards.
       const top = Math.round(Math.min(a, b));
-      const bottom = Math.max(Math.round(Math.max(a, b)), top + MIN_CELL_HEIGHT);
+      const bottom = Math.max(
+        Math.round(Math.max(a, b)),
+        top + MIN_CELL_HEIGHT,
+      );
       // `bottom > open.y`, strictly: two bins that merely touch — which every
       // pair of neighbouring bins does, one's upper bound being the next one's
       // lower — do not overlap, and merging them would be merging everything.
@@ -192,7 +206,10 @@ export function cellsFor(
  * mean React state written from inside a draw. Zero for a linear axis, which
  * can show every value a sketch holds.
  */
-export function offAxisCount(buckets: readonly SketchBucket[], log: boolean): number {
+export function offAxisCount(
+  buckets: readonly SketchBucket[],
+  log: boolean,
+): number {
   if (!log) return 0;
   let total = 0;
   for (const bucket of buckets) {
@@ -201,7 +218,31 @@ export function offAxisCount(buckets: readonly SketchBucket[], log: boolean): nu
       // of its edges has no log, and it is the lower edge that reaches zero
       // first. Testing `upper` instead would agree with [[cellsFor]] on the
       // zero bin and disagree on a first positive bin whose lower bound is 0.
+      //
+      // A bound that is NaN is not counted here — it is [[unboundedCount]]'s,
+      // because it is off *any* axis and for a different reason worth saying.
       if (count > 0 && lower <= 0) total += count;
+    }
+  }
+  return total;
+}
+
+/**
+ * How many observations sit in a bin whose bounds the server could not write
+ * as numbers — "past what a float64 can say", which a bucket index near the
+ * wire format's limit produces.
+ *
+ * Separate from [[offAxisCount]] because it is a different thing to tell the
+ * reader: a zero on a log axis is a shape the axis cannot hold, and this is a
+ * number the format cannot hold. It is off a *linear* axis too, which is why
+ * it does not take the scale.
+ */
+export function unboundedCount(buckets: readonly SketchBucket[]): number {
+  let total = 0;
+  for (const bucket of buckets) {
+    for (const [lower, upper, count] of bucket.bins) {
+      if (count > 0 && (!Number.isFinite(lower) || !Number.isFinite(upper)))
+        total += count;
     }
   }
   return total;
@@ -244,7 +285,10 @@ export function heatColor(count: number, max: number): string {
   // no guard for it here: the check would be dead code, and a dead check reads
   // as though the case were possible.
   const span = Math.log1p(Math.max(max, 1));
-  const fraction = Math.min(Math.max(Math.log1p(Math.max(count, 0)) / span, 0), 1);
+  const fraction = Math.min(
+    Math.max(Math.log1p(Math.max(count, 0)) / span, 0),
+    1,
+  );
   const pos = fraction * (RAMP.length - 1);
   const i = Math.min(Math.floor(pos), RAMP.length - 2);
   const t = pos - i;
@@ -280,6 +324,9 @@ export function relativeAccuracy(buckets: readonly SketchBucket[]): number {
  * legal and still returns several groups, so the extras are counted and the
  * widget says how many rather than pretending the first is the whole answer.
  */
-export function primarySeries(series: readonly SketchSeries[]): { series: SketchSeries | undefined; others: number } {
+export function primarySeries(series: readonly SketchSeries[]): {
+  series: SketchSeries | undefined;
+  others: number;
+} {
   return { series: series[0], others: Math.max(series.length - 1, 0) };
 }

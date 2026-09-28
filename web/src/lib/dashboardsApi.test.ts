@@ -204,6 +204,25 @@ describe("fetchSketch", () => {
     await expect(fetchSketch("dist:http.request.count{*}", range, {}, f)).rejects.toThrow("is not a distribution");
   });
 
+  // The server writes a bound it cannot express as a float64 as null, and says
+  // so in its own comment: a bucket index near the wire format's limit
+  // overflows gamma^k. Refusing the bin would lose the whole distribution over
+  // one bound nobody can plot anyway.
+  it("reads a null bound as NaN rather than refusing the response", async () => {
+    const bins = [[null, 1e308, 3], [1, 2, 4]];
+    const { f } = fakeFetch({ ...body, series: [{ ...body.series[0], buckets: [{ t: 1, gamma: 1.02, bins }] }] });
+    const res = await fetchSketch("dist:lat{*}", range, {}, f);
+    const decoded = res.series[0]?.buckets[0]?.bins[0];
+    expect(decoded?.[0]).toBeNaN();
+    expect(decoded?.[2]).toBe(3);
+  });
+
+  it("still refuses a bin with no count, which says nothing at all", async () => {
+    const bins = [[1, 2, null]];
+    const { f } = fakeFetch({ ...body, series: [{ ...body.series[0], buckets: [{ t: 1, gamma: 1.02, bins }] }] });
+    await expect(fetchSketch("dist:lat{*}", range, {}, f)).rejects.toBeInstanceOf(ApiError);
+  });
+
   it("refuses a bin that is not three numbers", async () => {
     const bad = { ...body, series: [{ ...body.series[0], buckets: [{ t: 1, gamma: 1.02, bins: [[1, 2]] }] }] };
     const { f } = fakeFetch(bad);

@@ -49,9 +49,32 @@ export interface WidgetProps {
  * messages in it are read as neither. A widget whose queries all failed the
  * same way says it once.
  */
-function firstError(results: readonly (BatchResult | undefined)[]): string | undefined {
-  for (const r of results) if (r?.status === "error") return r.error ?? "this query was refused";
+function firstError(
+  results: readonly (BatchResult | undefined)[],
+): string | undefined {
+  for (const r of results)
+    if (r?.status === "error") return r.error ?? "this query was refused";
   return undefined;
+}
+
+/**
+ * Whether this widget has heard back.
+ *
+ * The distinction the frame needs: "No data" before anything has arrived tells
+ * the reader their service is silent, and a dashboard saying that by accident
+ * during a slow first load is worse than saying nothing for a moment.
+ *
+ * A widget whose queries were all blank is *answered* even though nothing came
+ * back for it, because nothing was ever sent — the batch skips a blank query
+ * rather than letting the server refuse it — so no answer is coming and "No
+ * data" is the true statement rather than a wait that never ends.
+ */
+function answered(
+  widget: Widget,
+  results: readonly (BatchResult | undefined)[],
+): boolean {
+  if (results.some((r) => r !== undefined)) return true;
+  return !(widget.queries ?? []).some((q) => q.q.trim() !== "");
 }
 
 /** Every warning across a widget's queries, deduplicated. */
@@ -74,27 +97,51 @@ interface Line {
  * ungrouped series is better labelled by the author's `name` than by
  * `metric{*}`, which is what the reader already knows.
  */
-function linesOf(widget: Widget, results: readonly (BatchResult | undefined)[]): Line[] {
+function linesOf(
+  widget: Widget,
+  results: readonly (BatchResult | undefined)[],
+): Line[] {
   const lines: Line[] = [];
   (widget.queries ?? []).forEach((query, i) => {
     const result = results[i];
     if (!result || result.status !== "ok") return;
-    const single = result.series.length === 1 && Object.keys(result.series[0]?.tags ?? {}).length === 0;
+    const single =
+      result.series.length === 1 &&
+      Object.keys(result.series[0]?.tags ?? {}).length === 0;
     for (const series of result.series) {
-      lines.push({ label: single && query.name ? query.name : seriesLabel(series), series, query });
+      lines.push({
+        label: single && query.name ? query.name : seriesLabel(series),
+        series,
+        query,
+      });
     }
   });
   return lines;
 }
 
 /** A line chart of every series the widget's queries returned. */
-export function TimeseriesWidget({ widget, results, xRange, syncKey }: WidgetProps) {
+export function TimeseriesWidget({
+  widget,
+  results,
+  xRange,
+  syncKey,
+}: WidgetProps) {
   const lines = useMemo(() => linesOf(widget, results), [widget, results]);
   const data = useMemo(() => alignSeries(lines.map((l) => l.series)), [lines]);
   const error = firstError(results);
   return (
-    <WidgetFrame title={widget.title} error={error} warnings={allWarnings(results)} empty={!error && lines.length === 0}>
-      <TimeseriesChart data={data} labels={lines.map((l) => l.label)} xRange={xRange} syncKey={syncKey} />
+    <WidgetFrame
+      title={widget.title}
+      error={error}
+      warnings={allWarnings(results)}
+      empty={answered(widget, results) && lines.length === 0}
+    >
+      <TimeseriesChart
+        data={data}
+        labels={lines.map((l) => l.label)}
+        xRange={xRange}
+        syncKey={syncKey}
+      />
     </WidgetFrame>
   );
 }
@@ -117,7 +164,10 @@ const FORMAT_COLORS: Record<string, string> = {
  * formatter the charts use — which is what makes a query_value and the chart
  * beside it agree about what 1234.5 looks like.
  */
-export function formatWidgetValue(value: number | null, precision: number | undefined): string {
+export function formatWidgetValue(
+  value: number | null,
+  precision: number | undefined,
+): string {
   if (value === null) return "—";
   if (precision === undefined) return formatValue(value);
   return value.toFixed(precision);
@@ -126,19 +176,42 @@ export function formatWidgetValue(value: number | null, precision: number | unde
 /** One number, reduced from one query's line. */
 export function QueryValueWidget({ widget, results }: WidgetProps) {
   const error = firstError(results);
-  const query = widget.queries?.[0];
   const lines = linesOf(widget, results);
   // A query_value shows one number, so a query that grouped has more answers
   // than the widget has room for. Showing the first would be a lie by
   // omission; the reducer is applied to the first line and the count is shown.
-  const value = lines[0] && query?.reducer ? reduceSeries(lines[0].series.points.map((p) => p[1]), query.reducer) : null;
+  //
+  // The reducer comes from the line's *own* query, not from `queries[0]`: when
+  // the first query errors or selects nothing, the first line belongs to the
+  // second query, and reducing it by the first query's rule would answer a
+  // question nobody asked.
+  const first = lines[0];
+  const value = first?.query.reducer
+    ? reduceSeries(
+        first.series.points.map((p) => p[1]),
+        first.query.reducer,
+      )
+    : null;
   const format = matchConditionalFormat(value, widget.conditional_formats);
-  const color = format ? (FORMAT_COLORS[format.color] ?? "text-zinc-900 dark:text-zinc-100") : "text-zinc-900 dark:text-zinc-100";
+  const color = format
+    ? (FORMAT_COLORS[format.color] ?? "text-zinc-900 dark:text-zinc-100")
+    : "text-zinc-900 dark:text-zinc-100";
   return (
-    <WidgetFrame title={widget.title} error={error} warnings={allWarnings(results)} empty={!error && lines.length === 0}>
+    <WidgetFrame
+      title={widget.title}
+      error={error}
+      warnings={allWarnings(results)}
+      empty={answered(widget, results) && lines.length === 0}
+    >
       <div className="flex h-full flex-col items-center justify-center">
-        <span className={`text-4xl font-semibold tabular-nums ${color}`}>{formatWidgetValue(value, widget.precision)}</span>
-        {lines.length > 1 ? <span className="mt-1 text-xs text-zinc-500">of {lines.length} series</span> : null}
+        <span className={`text-4xl font-semibold tabular-nums ${color}`}>
+          {formatWidgetValue(value, widget.precision)}
+        </span>
+        {lines.length > 1 ? (
+          <span className="mt-1 text-xs text-zinc-500">
+            of {lines.length} series
+          </span>
+        ) : null}
       </div>
     </WidgetFrame>
   );
@@ -147,21 +220,49 @@ export function QueryValueWidget({ widget, results }: WidgetProps) {
 /** Rows ranked by their reduced value, biggest first. */
 export function ToplistWidget({ widget, results }: WidgetProps) {
   const error = firstError(results);
-  const reducer = widget.queries?.[0]?.reducer ?? "last";
+  // Each line by its own query's reducer. A toplist may carry several queries
+  // and each carries its own rule, so one taken from `queries[0]` and applied
+  // to all of them ranks the rows by two different questions.
   const rows = linesOf(widget, results)
-    .map((l) => ({ label: l.label, value: reduceSeries(l.series.points.map((p) => p[1]), reducer) }))
-    .filter((r): r is { label: string; value: number } => r.value !== null)
+    .map((l, i) => ({
+      key: `${i}:${l.label}`,
+      label: l.label,
+      value: reduceSeries(
+        l.series.points.map((p) => p[1]),
+        l.query.reducer ?? "last",
+      ),
+    }))
+    .filter(
+      (r): r is { key: string; label: string; value: number } =>
+        r.value !== null,
+    )
     .sort((a, b) => b.value - a.value)
     .slice(0, widget.limit && widget.limit > 0 ? widget.limit : 10);
   return (
-    <WidgetFrame title={widget.title} error={error} warnings={allWarnings(results)} empty={!error && rows.length === 0}>
+    <WidgetFrame
+      title={widget.title}
+      error={error}
+      warnings={allWarnings(results)}
+      empty={answered(widget, results) && rows.length === 0}
+    >
       <ol className="h-full overflow-auto text-sm">
         {rows.map((row) => (
-          <li key={row.label} className="flex items-baseline justify-between gap-2 border-b border-zinc-100 py-1 last:border-0 dark:border-zinc-800">
-            <span className="truncate text-zinc-600 dark:text-zinc-300" title={row.label}>
+          // Keyed by position as well as label: two queries on one toplist can
+          // legitimately return the same group, and a duplicate key makes
+          // React reuse the wrong row.
+          <li
+            key={row.key}
+            className="flex items-baseline justify-between gap-2 border-b border-zinc-100 py-1 last:border-0 dark:border-zinc-800"
+          >
+            <span
+              className="truncate text-zinc-600 dark:text-zinc-300"
+              title={row.label}
+            >
               {row.label}
             </span>
-            <span className="shrink-0 tabular-nums">{formatWidgetValue(row.value, widget.precision)}</span>
+            <span className="shrink-0 tabular-nums">
+              {formatWidgetValue(row.value, widget.precision)}
+            </span>
           </li>
         ))}
       </ol>
@@ -190,11 +291,19 @@ export function TableWidget({ widget, results }: WidgetProps) {
         row = queries.map(() => null);
         rows.set(label, row);
       }
-      row[i] = reduceSeries(series.points.map((p) => p[1]), query.reducer ?? "last");
+      row[i] = reduceSeries(
+        series.points.map((p) => p[1]),
+        query.reducer ?? "last",
+      );
     }
   });
   return (
-    <WidgetFrame title={widget.title} error={error} warnings={allWarnings(results)} empty={!error && rows.size === 0}>
+    <WidgetFrame
+      title={widget.title}
+      error={error}
+      warnings={allWarnings(results)}
+      empty={answered(widget, results) && rows.size === 0}
+    >
       <div className="h-full overflow-auto">
         <table className="w-full text-left text-sm">
           <thead className="text-xs text-zinc-500">
@@ -203,7 +312,11 @@ export function TableWidget({ widget, results }: WidgetProps) {
                 Group
               </th>
               {queries.map((q, i) => (
-                <th key={i} scope="col" className="py-1 pl-2 text-right font-medium">
+                <th
+                  key={i}
+                  scope="col"
+                  className="py-1 pl-2 text-right font-medium"
+                >
                   {q.name ?? q.q}
                 </th>
               ))}
@@ -211,8 +324,15 @@ export function TableWidget({ widget, results }: WidgetProps) {
           </thead>
           <tbody>
             {[...rows].map(([label, cells]) => (
-              <tr key={label} className="border-t border-zinc-100 dark:border-zinc-800">
-                <th scope="row" className="max-w-0 truncate py-1 pr-2 font-normal text-zinc-600 dark:text-zinc-300" title={label}>
+              <tr
+                key={label}
+                className="border-t border-zinc-100 dark:border-zinc-800"
+              >
+                <th
+                  scope="row"
+                  className="max-w-0 truncate py-1 pr-2 font-normal text-zinc-600 dark:text-zinc-300"
+                  title={label}
+                >
                   {label}
                 </th>
                 {cells.map((cell, i) => (
@@ -241,7 +361,9 @@ export function TableWidget({ widget, results }: WidgetProps) {
 export function NoteWidget({ widget }: WidgetProps) {
   return (
     <WidgetFrame title={widget.title}>
-      <div className="h-full overflow-auto whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">{widget.markdown}</div>
+      <div className="h-full overflow-auto whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">
+        {widget.markdown}
+      </div>
     </WidgetFrame>
   );
 }

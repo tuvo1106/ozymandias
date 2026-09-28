@@ -79,6 +79,17 @@ describe("DashboardsIndex", () => {
     expect(await screen.findByText(/2 stored dashboard\(s\) could not be read \(ids 4, 9\)/)).toBeInTheDocument();
   });
 
+  // A template is filtered out of the list, so a deployment provisioning only
+  // templates has rows and draws none of them — and a panel that is blank
+  // without saying why is what the message is for.
+  it("says None yet when every stored dashboard is a template", async () => {
+    renderIndex({
+      "/api/v1/dashboards": { body: { dashboards: [row(2, "Service overview", { template: true })], unreadable: [] } },
+      "/api/v1/dashboards/services": { body: { services: ["api"], truncated: false } },
+    });
+    expect(await screen.findByText(/None yet/)).toBeInTheDocument();
+  });
+
   it("says a partial service list is partial", async () => {
     renderIndex({
       "/api/v1/dashboards": { body: { dashboards: [], unreadable: [] } },

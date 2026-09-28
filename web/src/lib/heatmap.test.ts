@@ -8,6 +8,7 @@ import {
   offAxisCount,
   primarySeries,
   relativeAccuracy,
+  unboundedCount,
   valueExtent,
 } from "./heatmap";
 import type { SketchBin, SketchBucket, SketchSeries } from "./dashboardsApi";
@@ -185,6 +186,37 @@ describe("offAxisCount", () => {
   it("is zero on a linear axis, which has a position for every value", () => {
     expect(offAxisCount(buckets, false)).toBe(0);
     expect(cellsFor(buckets, 60_000, toX, linearY).offAxis).toBe(0);
+  });
+});
+
+describe("a bin whose bounds are past what a number can hold", () => {
+  // The server writes such a bound as null and the client reads it as NaN,
+  // which is reachable: a bucket index near the wire format's limit overflows
+  // gamma^k. Refusing the bin would have thrown away the whole distribution.
+  // Either bound, not just the lower one — and the upper is the realistic
+  // case, since gamma^k overflows at the top of the index range first.
+  const buckets = [bucket(0, [[1, 10, 4], [1e307, NaN, 3], [NaN, NaN, 2]])];
+
+  it("cannot widen the axis, on either scale", () => {
+    expect(valueExtent(buckets)).toEqual({ lo: 1, hi: 10 });
+    expect(valueExtent(buckets, true)).toEqual({ lo: 1, hi: 10 });
+  });
+
+  it("is counted out rather than drawn somewhere wrong", () => {
+    expect(unboundedCount(buckets)).toBe(5);
+    expect(cellsFor(buckets, 60_000, toX, linearY).offAxis).toBe(5);
+    expect(cellsFor(buckets, 60_000, toX, linearY).cells).toHaveLength(1);
+  });
+
+  it("is not confused with a zero a log axis cannot show", () => {
+    // Different reasons, different sentences: one is a shape the axis cannot
+    // hold, the other a number the format cannot hold.
+    expect(offAxisCount(buckets, true)).toBe(0);
+    expect(unboundedCount([bucket(0, [[0, 0, 9]])])).toBe(0);
+  });
+
+  it("is ignored when nothing landed in it", () => {
+    expect(unboundedCount([bucket(0, [[NaN, NaN, 0]])])).toBe(0);
   });
 });
 

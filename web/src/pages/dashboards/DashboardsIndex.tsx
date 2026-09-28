@@ -10,7 +10,13 @@
 import { Link } from "react-router";
 import { useDashboardList, useServices } from "../../lib/useDashboards";
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+function Panel({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <section aria-label={title} className="flex flex-col gap-2">
       <h2 className="text-lg font-medium">{title}</h2>
@@ -23,61 +29,72 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 export function DashboardsIndex() {
   const list = useDashboardList();
   const services = useServices();
+  // A template is not shown as itself — it has no data of its own, only the
+  // services below. So the empty state counts the rows that are *drawn*: a
+  // deployment provisioning nothing but templates has rows and an empty list,
+  // and a panel that is blank without saying why is the thing this message is
+  // for.
+  const saved = list.data?.dashboards.filter((d) => !d.template);
 
   return (
     <div className="flex flex-col gap-8">
       <h1 className="text-2xl font-semibold">Dashboards</h1>
 
       <Panel title="Saved">
-        {list.isPending ? <p className="text-sm text-zinc-500">Loading…</p> : null}
+        {list.isPending ? (
+          <p className="text-sm text-zinc-500">Loading…</p>
+        ) : null}
         {list.error ? (
           <p role="alert" className="text-sm text-red-700 dark:text-red-400">
             {list.error.message}
           </p>
         ) : null}
-        {list.data?.dashboards.length === 0 ? (
+        {saved?.length === 0 ? (
           <p className="text-sm text-zinc-500">
-            None yet. Dashboards provisioned from <code>provisioning.paths</code> appear here at startup.
+            None yet. Dashboards provisioned from{" "}
+            <code>provisioning.paths</code> appear here at startup.
           </p>
         ) : null}
         <ul className="flex flex-col gap-1">
-          {list.data?.dashboards
-            // A template is not shown as itself — it has no data of its own,
-            // only the services below.
-            .filter((d) => !d.template)
-            .map((d) => (
-              <li key={d.id}>
-                <Link
-                  to={`/dashboards/${d.id}`}
-                  className="flex items-baseline gap-2 rounded-md px-2 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-                >
-                  <span className="font-medium">{d.title}</span>
-                  {d.provisioned ? (
-                    <span
-                      title="Provisioned from a file; edits through the UI would be undone at the next restart."
-                      className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800"
-                    >
-                      from file
-                    </span>
-                  ) : null}
-                  {d.description ? <span className="truncate text-sm text-zinc-500">{d.description}</span> : null}
-                </Link>
-              </li>
-            ))}
+          {saved?.map((d) => (
+            <li key={d.id}>
+              <Link
+                to={`/dashboards/${d.id}`}
+                className="flex items-baseline gap-2 rounded-md px-2 py-1.5 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              >
+                <span className="font-medium">{d.title}</span>
+                {d.provisioned ? (
+                  <span
+                    title="Provisioned from a file; edits through the UI would be undone at the next restart."
+                    className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-500 dark:bg-zinc-800"
+                  >
+                    from file
+                  </span>
+                ) : null}
+                {d.description ? (
+                  <span className="truncate text-sm text-zinc-500">
+                    {d.description}
+                  </span>
+                ) : null}
+              </Link>
+            </li>
+          ))}
         </ul>
         {/* A row that exists and cannot be rendered is worth naming: the
             response tells us it is there, and silence would make it look
             deleted. */}
         {list.data?.unreadable.length ? (
           <p className="text-xs text-amber-700 dark:text-amber-500">
-            {list.data.unreadable.length} stored dashboard(s) could not be read (ids {list.data.unreadable.join(", ")}); ozyd's log says why.
+            {list.data.unreadable.length} stored dashboard(s) could not be read
+            (ids {list.data.unreadable.join(", ")}); ozyd's log says why.
           </p>
         ) : null}
       </Panel>
 
       <Panel title="Services">
         <p className="text-sm text-zinc-500">
-          Every service a template dashboard covers, discovered from the metrics the templates query.
+          Every service a template dashboard covers, discovered from the metrics
+          the templates query.
         </p>
         {services.error ? (
           <p role="alert" className="text-sm text-red-700 dark:text-red-400">

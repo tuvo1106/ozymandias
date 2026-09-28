@@ -117,7 +117,9 @@ which one it is:
 
 - **an error** — the query was refused and the message says why. Per widget on
   purpose ([ADR-0017](adr/0017-batch-queries-report-per-query.md)): one typo must
-  not blank the other eleven.
+  not blank the other eleven. And per *query* within a widget: a chart with two
+  queries, one of which has a typo, draws the line that answered and puts the
+  message above it.
 - **warnings** — it answered, and something about the answer is worth knowing: a
   variable that resolved to nothing, a series cap hit, a heatmap's error bar.
   Shown beside the data, never instead of it.
@@ -125,6 +127,14 @@ which one it is:
   of a service that is not reporting, and saying so is the difference between it
   and a widget that failed silently. Nothing at all, rather than "No data",
   means the answer has not arrived yet.
+
+A widget whose `type` this build does not know says so in its own frame rather
+than taking the page down with it — which is what an older UI and a newer
+`ozyd` look like, and is worth seeing as one broken square instead of one
+broken application.
+
+Changing the time range or a variable **keeps the last answer on screen** until
+the new one lands, so the page dims rather than empties.
 
 A `note`'s markdown is rendered as **text, not HTML**. Anyone who can `POST` a
 dashboard can write one, and turning stored text into markup is how a monitoring

@@ -10,7 +10,11 @@
  * chunk is its own cache entry, so a dashboard that grows past a chunk
  * boundary does not invalidate the chunks before it.
  */
-import { keepPreviousData, useQueries, useQuery, type UseQueryResult } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useQuery,
+  type UseQueryResult,
+} from "@tanstack/react-query";
 import type { Dashboard, StoredDashboard } from "./dashboard";
 import {
   mergeWidgetResults,
@@ -34,15 +38,24 @@ import {
 } from "./dashboardsApi";
 import { resolveTimeRange } from "./timeRange";
 import { fetchTagValues } from "./metricsApi";
-import { rangeKey, REFRESH_INTERVAL_MS, SUGGESTION_LIMIT } from "./useMetricsApi";
+import {
+  rangeKey,
+  REFRESH_INTERVAL_MS,
+  SUGGESTION_LIMIT,
+} from "./useMetricsApi";
 
 /** Every stored dashboard, for the picker. */
 export function useDashboardList(): UseQueryResult<DashboardList> {
-  return useQuery({ queryKey: ["dashboards", "list"], queryFn: ({ signal }) => fetchDashboards(fetch, signal) });
+  return useQuery({
+    queryKey: ["dashboards", "list"],
+    queryFn: ({ signal }) => fetchDashboards(fetch, signal),
+  });
 }
 
 /** One stored dashboard by id. */
-export function useDashboard(id: number | undefined): UseQueryResult<StoredDashboard> {
+export function useDashboard(
+  id: number | undefined,
+): UseQueryResult<StoredDashboard> {
   return useQuery({
     queryKey: ["dashboards", "one", id],
     queryFn: ({ signal }) => fetchDashboard(id as number, fetch, signal),
@@ -52,11 +65,16 @@ export function useDashboard(id: number | undefined): UseQueryResult<StoredDashb
 
 /** The services any template covers. */
 export function useServices(): UseQueryResult<ServiceList> {
-  return useQuery({ queryKey: ["dashboards", "services"], queryFn: ({ signal }) => fetchServices(fetch, signal) });
+  return useQuery({
+    queryKey: ["dashboards", "services"],
+    queryFn: ({ signal }) => fetchServices(fetch, signal),
+  });
 }
 
 /** Every template instantiated for one service. */
-export function useServiceDashboards(service: string): UseQueryResult<ServiceDashboard[]> {
+export function useServiceDashboards(
+  service: string,
+): UseQueryResult<ServiceDashboard[]> {
   return useQuery({
     queryKey: ["dashboards", "service", service],
     queryFn: ({ signal }) => fetchServiceDashboards(service, fetch, signal),
@@ -83,7 +101,7 @@ export interface DashboardData {
   sketches: Map<string, SketchState>;
   /** True while nothing has arrived yet; a refetch keeps the old answer. */
   isPending: boolean;
-  /** Set when a whole chunk failed — a widget-level failure is in its result. */
+  /** Set when a request failed — a widget-level failure is in its result. */
   error: Error | null;
   /** The window the server actually evaluated, for the charts' x-axis. */
   range: { from: number; to: number } | undefined;
@@ -92,10 +110,26 @@ export interface DashboardData {
 /**
  * Runs a dashboard's queries and hands each widget its own answers.
  *
- * Whether a query *failed* is not this hook's business: `/api/v1/query/batch`
- * answers 200 with a per-query status, and a widget renders its own error
- * (ADR-0017). `error` here means the request failed — the server is down, or
- * the window was rejected — which is the case where no widget can draw.
+ * **One cache entry for the whole dashboard, not one per chunk.** The chunks
+ * only exist because a batch carries at most 50 queries; they were never
+ * independently cacheable, since every chunk's key already contains
+ * [[requestsKey]] — every query on the page — so editing one query invalidated
+ * all of them anyway. Issuing them as one `useQuery` costs nothing and buys
+ * the thing `useQueries` does not give: measured against 5.103.1,
+ * `placeholderData: keepPreviousData` keeps data across a key change for
+ * `useQuery` and **not** for `useQueries`, where the result comes back pending
+ * with no data and `isPlaceholderData` false. Without it every widget on the
+ * page blanks the moment the time range or a variable changes — the flicker
+ * the option was there to prevent, quietly not happening.
+ *
+ * The chunks still run in parallel, and one that fails does not take the
+ * others with it: `allSettled`, not `all`, for the same reason a batch reports
+ * per query (ADR-0017). Only a dashboard whose every chunk failed has nothing
+ * to draw, and that is the case that throws.
+ *
+ * Whether a *query* failed is not this hook's business: `/api/v1/query/batch`
+ * answers 200 with a per-query status and a widget renders its own error.
+ * `error` here is about the request.
  */
 export function useDashboardData(
   requests: DashboardRequests,
@@ -106,23 +140,51 @@ export function useDashboardData(
   const key = requestsKey(requests);
   const bound = bindVars(vars, state);
   const live = state.live && state.range.kind === "relative";
-  const results = useQueries({
-    queries: requests.chunks.map((chunk, i) => ({
-      queryKey: ["dashboards", "batch", key, i, rangeKey(state.range), JSON.stringify(bound)],
-      queryFn: ({ signal }: { signal: AbortSignal }) =>
-        fetchBatch(chunk.map((s) => s.q), resolveTimeRange(state.range, now()), bound, fetch, signal),
-      refetchInterval: live ? REFRESH_INTERVAL_MS : (false as const),
-      placeholderData: keepPreviousData,
-    })),
+  const chunks = requests.chunks;
+  const batch = useQuery({
+    queryKey: [
+      "dashboards",
+      "batch",
+      key,
+      rangeKey(state.range),
+      JSON.stringify(bound),
+    ],
+    queryFn: async ({ signal }) => {
+      const range = resolveTimeRange(state.range, now());
+      const settled = await Promise.allSettled(
+        // The slots travel *with* the answer, so the pairing below never uses
+        // the chunk a later render happens to hold. A kept answer outlives the
+        // request that asked for it, and pairing it against a definition that
+        // has since lost a widget would attribute result n to whichever widget
+        // now sits at slot n — one widget showing another's numbers, which is
+        // the worst failure a dashboard has.
+        chunks.map(async (chunk) => ({
+          slots: chunk,
+          answer: await fetchBatch(
+            chunk.map((s) => s.q),
+            range,
+            bound,
+            fetch,
+            signal,
+          ),
+        })),
+      );
+      const ok = settled.flatMap((r) =>
+        r.status === "fulfilled" ? [r.value] : [],
+      );
+      const failed = settled.find((r) => r.status === "rejected");
+      if (ok.length === 0 && failed) throw failed.reason;
+      return { ok, error: failed ? (failed.reason as Error) : null };
+    },
+    enabled: chunks.length > 0,
+    refetchInterval: live ? REFRESH_INTERVAL_MS : (false as const),
+    placeholderData: keepPreviousData,
   });
-  const byWidget = mergeWidgetResults(
-    results.map((r, i) =>
-      r.data ? pairResults(requests.chunks[i] ?? [], r.data.results) : new Map<string, Map<number, BatchResult>>(),
-    ),
-  );
   const sketches = useDashboardSketches(requests.heatmaps, state, vars, now);
-  const answered = results.find((r) => r.data);
-  const range = answered?.data ? { from: answered.data.from, to: answered.data.to } : undefined;
+  const byWidget = mergeWidgetResults(
+    (batch.data?.ok ?? []).map((a) => pairResults(a.slots, a.answer.results)),
+  );
+  const answered = batch.data?.ok[0]?.answer;
   // A dashboard of nothing but heatmaps has no batch to take the window from,
   // so it comes from the first sketch that answered. Without this the x-axis
   // would sit on the requested window forever, which is right to within a
@@ -132,24 +194,32 @@ export function useDashboardData(
   return {
     byWidget,
     sketches,
-    isPending: results.length > 0 && results.every((r) => r.isPending),
-    error: (results.find((r) => r.error)?.error as Error | undefined) ?? null,
-    range: range ?? (fromSketch ? { from: fromSketch.from, to: fromSketch.to } : undefined),
+    isPending: chunks.length > 0 && batch.isPending,
+    error: (batch.error as Error | undefined) ?? batch.data?.error ?? null,
+    range: answered
+      ? { from: answered.from, to: answered.to }
+      : fromSketch
+        ? { from: fromSketch.from, to: fromSketch.to }
+        : undefined,
   };
 }
 
 /**
- * Runs each heatmap's `dist:` query.
+ * Runs every heatmap's `dist:` query.
  *
  * One request per heatmap, because the endpoint answers one query — there is
  * no batch for distributions, and there should not be: two of them are a
  * hundred times the payload of two lines, so the saving a batch exists for
- * (one selection shared, ADR-0018) is dwarfed by what it would carry.
+ * (one selection shared, ADR-0018) is dwarfed by what it would carry. They are
+ * gathered under one `useQuery` for the reason the batch is: that is where
+ * `keepPreviousData` works, so a heatmap does not blank on every change of
+ * window.
  *
  * A failure is kept per widget rather than raised, because a `dist:` on a
  * metric that is not a distribution is a 400 about *that widget* and must not
- * blank the eleven beside it (ADR-0017). The batch gets this for free from its
- * per-query status; here it has to be caught.
+ * blank the eleven beside it (ADR-0017) — which is what `allSettled` is for.
+ * Unlike the batch, one heatmap's failure *is* a whole request failing, so
+ * there is no per-query status to read it out of.
  */
 export function useDashboardSketches(
   heatmaps: DashboardRequests["heatmaps"],
@@ -159,25 +229,45 @@ export function useDashboardSketches(
 ): Map<string, SketchState> {
   const bound = bindVars(vars, state);
   const live = state.live && state.range.kind === "relative";
-  const results = useQueries({
-    queries: heatmaps.map((h) => ({
-      queryKey: ["dashboards", "sketch", h.q, rangeKey(state.range), JSON.stringify(bound)],
-      queryFn: ({ signal }: { signal: AbortSignal }) => fetchSketch(h.q, resolveTimeRange(state.range, now()), bound, fetch, signal),
-      refetchInterval: live ? REFRESH_INTERVAL_MS : (false as const),
-      placeholderData: keepPreviousData,
-    })),
+  const key = JSON.stringify(heatmaps.map((h) => h.q));
+  const query = useQuery({
+    queryKey: [
+      "dashboards",
+      "sketches",
+      key,
+      rangeKey(state.range),
+      JSON.stringify(bound),
+    ],
+    queryFn: async ({ signal }) => {
+      const range = resolveTimeRange(state.range, now());
+      const settled = await Promise.allSettled(
+        heatmaps.map((h) => fetchSketch(h.q, range, bound, fetch, signal)),
+      );
+      // Keyed by widget so the grid can look one up without scanning. Last one
+      // wins where two heatmaps share a widget id, which the server's own
+      // validation makes impossible.
+      const out = new Map<string, SketchState>();
+      heatmaps.forEach((h, i) => {
+        const r = settled[i];
+        if (!r) return;
+        out.set(
+          h.widgetId,
+          r.status === "fulfilled"
+            ? { data: r.value }
+            : { error: (r.reason as Error).message },
+        );
+      });
+      return out;
+    },
+    enabled: heatmaps.length > 0,
+    refetchInterval: live ? REFRESH_INTERVAL_MS : (false as const),
+    placeholderData: keepPreviousData,
   });
-  const out = new Map<string, SketchState>();
-  heatmaps.forEach((h, i) => {
-    const r = results[i];
-    if (!r) return;
-    // Last one wins where two heatmaps share a widget id, which the server's
-    // validation makes impossible — the map is keyed by widget so the grid can
-    // look one up without scanning.
-    out.set(h.widgetId, { data: r.data, error: r.error ? (r.error as Error).message : undefined });
-  });
-  return out;
+  return query.data ?? EMPTY_SKETCHES;
 }
+
+/** What a dashboard with no heatmaps, or one still waiting, hands the grid. */
+const EMPTY_SKETCHES: Map<string, SketchState> = new Map();
 
 /**
  * The values a template variable's tag takes, for one selector.
@@ -192,12 +282,14 @@ export function useDashboardSketches(
 export function useVariableValues(metric: string, tag: string): string[] {
   const direct = useQuery({
     queryKey: ["metrics", "tagValues", metric, tag],
-    queryFn: ({ signal }) => fetchTagValues(metric, tag, SUGGESTION_LIMIT, fetch, signal),
+    queryFn: ({ signal }) =>
+      fetchTagValues(metric, tag, SUGGESTION_LIMIT, fetch, signal),
     enabled: metric !== "" && tag !== "",
   });
   const viaCount = useQuery({
     queryKey: ["metrics", "tagValues", `${metric}.count`, tag],
-    queryFn: ({ signal }) => fetchTagValues(`${metric}.count`, tag, SUGGESTION_LIMIT, fetch, signal),
+    queryFn: ({ signal }) =>
+      fetchTagValues(`${metric}.count`, tag, SUGGESTION_LIMIT, fetch, signal),
     enabled: metric !== "" && tag !== "" && direct.data?.length === 0,
   });
   return direct.data?.length ? direct.data : (viaCount.data ?? []);

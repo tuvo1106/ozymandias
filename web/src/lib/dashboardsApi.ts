@@ -24,7 +24,12 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 function isPoint(v: unknown): v is [number, number | null] {
-  return Array.isArray(v) && v.length === 2 && typeof v[0] === "number" && (typeof v[1] === "number" || v[1] === null);
+  return (
+    Array.isArray(v) &&
+    v.length === 2 &&
+    typeof v[0] === "number" &&
+    (typeof v[1] === "number" || v[1] === null)
+  );
 }
 
 function isSeries(v: unknown): v is Series {
@@ -53,12 +58,23 @@ function isDashboardish(v: unknown): v is Dashboard {
     isRecord(v) &&
     typeof v.title === "string" &&
     Array.isArray(v.widgets) &&
-    v.widgets.every((w) => isRecord(w) && typeof w.id === "string" && typeof w.type === "string" && isRecord(w.layout))
+    v.widgets.every(
+      (w) =>
+        isRecord(w) &&
+        typeof w.id === "string" &&
+        typeof w.type === "string" &&
+        isRecord(w.layout),
+    )
   );
 }
 
 function isStoredDashboard(v: unknown): v is StoredDashboard {
-  return isDashboardish(v) && isRecord(v) && typeof v.id === "number" && typeof v.provisioned === "boolean";
+  return (
+    isDashboardish(v) &&
+    isRecord(v) &&
+    typeof v.id === "number" &&
+    typeof v.provisioned === "boolean"
+  );
 }
 
 /** The dashboard list, with the rows whose definitions could not be read. */
@@ -69,19 +85,35 @@ export interface DashboardList {
 }
 
 /** Lists every stored dashboard, definitions included. */
-export async function fetchDashboards(fetchImpl: FetchLike = fetch, signal?: AbortSignal): Promise<DashboardList> {
+export async function fetchDashboards(
+  fetchImpl: FetchLike = fetch,
+  signal?: AbortSignal,
+): Promise<DashboardList> {
   const body = await getJSON("/api/v1/dashboards", fetchImpl, signal);
-  if (!isRecord(body) || !Array.isArray(body.dashboards) || !body.dashboards.every(isStoredDashboard)) {
+  if (
+    !isRecord(body) ||
+    !Array.isArray(body.dashboards) ||
+    !body.dashboards.every(isStoredDashboard)
+  ) {
     throw new ApiError("ozyd sent an unexpected /api/v1/dashboards response");
   }
-  const unreadable = Array.isArray(body.unreadable) ? body.unreadable.filter((x): x is number => typeof x === "number") : [];
+  const unreadable = Array.isArray(body.unreadable)
+    ? body.unreadable.filter((x): x is number => typeof x === "number")
+    : [];
   return { dashboards: body.dashboards, unreadable };
 }
 
 /** Fetches one stored dashboard by id. */
-export async function fetchDashboard(id: number, fetchImpl: FetchLike = fetch, signal?: AbortSignal): Promise<StoredDashboard> {
+export async function fetchDashboard(
+  id: number,
+  fetchImpl: FetchLike = fetch,
+  signal?: AbortSignal,
+): Promise<StoredDashboard> {
   const body = await getJSON(`/api/v1/dashboards/${id}`, fetchImpl, signal);
-  if (!isStoredDashboard(body)) throw new ApiError(`ozyd sent an unexpected /api/v1/dashboards/${id} response`);
+  if (!isStoredDashboard(body))
+    throw new ApiError(
+      `ozyd sent an unexpected /api/v1/dashboards/${id} response`,
+    );
   return body;
 }
 
@@ -93,12 +125,24 @@ export interface ServiceList {
 }
 
 /** Lists the services any template dashboard covers. */
-export async function fetchServices(fetchImpl: FetchLike = fetch, signal?: AbortSignal): Promise<ServiceList> {
+export async function fetchServices(
+  fetchImpl: FetchLike = fetch,
+  signal?: AbortSignal,
+): Promise<ServiceList> {
   const body = await getJSON("/api/v1/dashboards/services", fetchImpl, signal);
-  if (!isRecord(body) || !Array.isArray(body.services) || !body.services.every((s) => typeof s === "string")) {
-    throw new ApiError("ozyd sent an unexpected /api/v1/dashboards/services response");
+  if (
+    !isRecord(body) ||
+    !Array.isArray(body.services) ||
+    !body.services.every((s) => typeof s === "string")
+  ) {
+    throw new ApiError(
+      "ozyd sent an unexpected /api/v1/dashboards/services response",
+    );
   }
-  return { services: body.services as string[], truncated: body.truncated === true };
+  return {
+    services: body.services as string[],
+    truncated: body.truncated === true,
+  };
 }
 
 /** One template instantiated for one service. */
@@ -121,18 +165,31 @@ export async function fetchServiceDashboards(
   fetchImpl: FetchLike = fetch,
   signal?: AbortSignal,
 ): Promise<ServiceDashboard[]> {
-  const body = await getJSON(`/api/v1/dashboards/service/${encodeURIComponent(service)}`, fetchImpl, signal);
+  const body = await getJSON(
+    `/api/v1/dashboards/service/${encodeURIComponent(service)}`,
+    fetchImpl,
+    signal,
+  );
   if (!isRecord(body) || !Array.isArray(body.dashboards)) {
-    throw new ApiError("ozyd sent an unexpected /api/v1/dashboards/service response");
+    throw new ApiError(
+      "ozyd sent an unexpected /api/v1/dashboards/service response",
+    );
   }
   const out: ServiceDashboard[] = [];
   for (const entry of body.dashboards) {
-    if (!isRecord(entry) || typeof entry.template_id !== "number" || !isDashboardish(entry.dashboard)) {
-      throw new ApiError("ozyd sent an unexpected /api/v1/dashboards/service response");
+    if (
+      !isRecord(entry) ||
+      typeof entry.template_id !== "number" ||
+      !isDashboardish(entry.dashboard)
+    ) {
+      throw new ApiError(
+        "ozyd sent an unexpected /api/v1/dashboards/service response",
+      );
     }
     out.push({
       template_id: entry.template_id,
-      template_uid: typeof entry.template_uid === "string" ? entry.template_uid : undefined,
+      template_uid:
+        typeof entry.template_uid === "string" ? entry.template_uid : undefined,
       service,
       dashboard: entry.dashboard,
     });
@@ -193,9 +250,20 @@ export async function fetchBatch(
   fetchImpl: FetchLike = fetch,
   signal?: AbortSignal,
 ): Promise<BatchResponse> {
-  const body = { queries: queries.map((q) => ({ q })), from: range.from, to: range.to, vars };
+  const body = {
+    queries: queries.map((q) => ({ q })),
+    from: range.from,
+    to: range.to,
+    vars,
+  };
   const parsed = await postJSON("/api/v1/query/batch", body, fetchImpl, signal);
-  if (!isRecord(parsed) || typeof parsed.from !== "number" || typeof parsed.to !== "number" || !Array.isArray(parsed.results) || !parsed.results.every(isBatchResult)) {
+  if (
+    !isRecord(parsed) ||
+    typeof parsed.from !== "number" ||
+    typeof parsed.to !== "number" ||
+    !Array.isArray(parsed.results) ||
+    !parsed.results.every(isBatchResult)
+  ) {
     throw new ApiError("ozyd sent an unexpected /api/v1/query/batch response");
   }
   return { from: parsed.from, to: parsed.to, results: parsed.results };
@@ -211,6 +279,21 @@ export async function fetchBatch(
  * times is most of the payload.
  */
 export type SketchBin = [lower: number, upper: number, count: number];
+
+/**
+ * A bound the server could not write as a number arrives as `null` and is read
+ * as `NaN` — the same translation the server's own decoder makes, and for the
+ * same reason: a value that left as null has to come back as something a
+ * client can test rather than as a silent zero.
+ *
+ * It means "past what a float64 can say", which is reachable — γ^k overflows
+ * above bucket index ≈35490 at the default accuracy, and the wire format
+ * accepts any index inside ±2^31. Refusing the bin would have thrown away the
+ * whole distribution over one bound nobody can plot anyway.
+ */
+function binBound(v: unknown): number {
+  return typeof v === "number" ? v : NaN;
+}
 
 /** One time bucket's distribution. */
 export interface SketchBucket {
@@ -252,8 +335,15 @@ export interface SketchResponse {
   warnings: string[];
 }
 
-function isSketchBin(v: unknown): v is SketchBin {
-  return Array.isArray(v) && v.length === 3 && v.every((x) => typeof x === "number");
+function isSketchBin(v: unknown): v is [unknown, unknown, number] {
+  // The bounds may be null (see [[binBound]]); the count may not — a bin
+  // without one says nothing at all.
+  return (
+    Array.isArray(v) &&
+    v.length === 3 &&
+    typeof v[2] === "number" &&
+    v.every((x) => typeof x === "number" || x === null)
+  );
 }
 
 /**
@@ -267,7 +357,13 @@ function nullableNumber(v: unknown): number | null {
 }
 
 function isSketchBucket(v: unknown): v is SketchBucket {
-  return isRecord(v) && typeof v.t === "number" && typeof v.gamma === "number" && Array.isArray(v.bins) && v.bins.every(isSketchBin);
+  return (
+    isRecord(v) &&
+    typeof v.t === "number" &&
+    typeof v.gamma === "number" &&
+    Array.isArray(v.bins) &&
+    v.bins.every(isSketchBin)
+  );
 }
 
 function isSketchSeries(v: unknown): v is SketchSeries {
@@ -296,7 +392,12 @@ export async function fetchSketch(
   fetchImpl: FetchLike = fetch,
   signal?: AbortSignal,
 ): Promise<SketchResponse> {
-  const parsed = await postJSON("/api/v1/query/sketch", { q, from: range.from, to: range.to, vars }, fetchImpl, signal);
+  const parsed = await postJSON(
+    "/api/v1/query/sketch",
+    { q, from: range.from, to: range.to, vars },
+    fetchImpl,
+    signal,
+  );
   if (
     !isRecord(parsed) ||
     typeof parsed.from !== "number" ||
@@ -323,9 +424,14 @@ export async function fetchSketch(
         sum: nullableNumber(b.sum),
         min: nullableNumber(b.min),
         max: nullableNumber(b.max),
-        bins: b.bins,
+        bins: b.bins.map(
+          ([lower, upper, count]) =>
+            [binBound(lower), binBound(upper), count] as SketchBin,
+        ),
       })),
     })),
-    warnings: Array.isArray(parsed.warnings) ? parsed.warnings.filter((w): w is string => typeof w === "string") : [],
+    warnings: Array.isArray(parsed.warnings)
+      ? parsed.warnings.filter((w): w is string => typeof w === "string")
+      : [],
   };
 }

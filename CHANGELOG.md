@@ -75,9 +75,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the URL so a link shows the other person what you were looking at. Charts
   share a crosshair, the heatmap included. A page is **one** batch request for
   its line charts plus one per heatmap, and a refused query draws inside its own
-  widget rather than blanking the page (ADR-0017). A `note`'s markdown is
-  rendered as text, not HTML: anybody who can POST a dashboard can write one.
-  Read the pages in `docs/ui.md`.
+  widget — beside whatever else that widget had to show — rather than blanking
+  the page (ADR-0017). A widget type this build does not know says so in its own
+  frame instead of taking the application down, which is what an older UI and a
+  newer `ozyd` look like. A `note`'s markdown is rendered as text, not HTML:
+  anybody who can POST a dashboard can write one. Read the pages in
+  `docs/ui.md`.
 - **The heatmap widget draws the sketch itself**, not a percentile taken from
   it: a column per bucket, a band per bin, brightness logarithmic in how many
   observations fell there, and a real gap where nothing was recorded. Set
