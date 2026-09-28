@@ -208,6 +208,9 @@ func (w *Widget) validate(where string, declared map[string]bool) []error {
 			errs = append(errs, invalidf("%s: precision %d is outside 0…10", where, *w.Precision))
 		}
 	}
+	if len(w.ConditionalFormats) > 0 && w.Type != TypeQueryValue && w.Type != TypeTable {
+		errs = append(errs, invalidf("%s: conditional_formats belong to a query_value or a table, not a %s", where, w.Type))
+	}
 	for i, cf := range w.ConditionalFormats {
 		errs = append(errs, cf.validate(fmt.Sprintf("%s conditional_formats[%d]", where, i))...)
 	}

@@ -110,6 +110,12 @@ func TestValidate_FieldsBelongToTheirType(t *testing.T) {
 		{"limit on a chart", func(w *Widget) { w.Limit = 5 }, "limit belongs to a toplist"},
 		{"precision on a chart", func(w *Widget) { w.Precision = &three }, "precision belongs to a query_value"},
 		{"a reducer on a chart", func(w *Widget) { w.Queries[0].Reducer = ReducerLast }, "draws every bucket"},
+		// Refused only on a note until the editor mirrored these rules and the
+		// timeseries case turned out to be accepted — and then drawn by
+		// nothing, which is the "setting nobody can find the effect of" above.
+		{"conditional formats on a chart", func(w *Widget) {
+			w.ConditionalFormats = []ConditionalFormat{{Op: OpGT, Value: 1, Color: "red"}}
+		}, "conditional_formats belong to a query_value or a table"},
 		{"display on a toplist", func(w *Widget) {
 			w.Type = TypeToplist
 			w.Queries[0].Reducer = ReducerAvg
