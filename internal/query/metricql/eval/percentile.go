@@ -27,21 +27,45 @@ import (
 // docs/adr/0015-sketch-storage-and-identity.md.
 func (e *Evaluator) percentile(ctx context.Context, q *metricql.Query, g grid, st *state, kind wire.Kind) (frame, error) {
 	quantile, _ := q.Agg.Quantile()
+	groups, err := e.sketchGroups(ctx, q, g, st, kind)
+	if err != nil {
+		return frame{}, err
+	}
+	f := frame{metric: q.Metric, groups: make([]*group, 0, len(groups))}
+	for _, sg := range groups {
+		grp := &group{tags: sg.tags, values: make([]float64, g.n)}
+		for i := range grp.values {
+			grp.values[i] = sg.quantile(i, quantile)
+		}
+		f.groups = append(f.groups, grp)
+	}
+	return applyModifiers(f, q, g, kind, st)
+}
+
+// sketchGroups selects the series a query names and merges their sketches into
+// one sketch per group per output bucket.
+//
+// Shared by [Evaluator.percentile] and [Evaluator.Distribution], because the
+// expensive and subtle half — selecting against `<metric>.count`, filing the
+// sketches under the metric itself, merging rather than averaging, refusing two
+// relative accuracies — is identical for both. What differs is only what is
+// asked of the merged sketch at the end: one number, or its bins.
+func (e *Evaluator) sketchGroups(ctx context.Context, q *metricql.Query, g grid, st *state, kind wire.Kind) ([]*sketchGroup, error) {
 	if kind != "" && kind != wire.KindDistribution {
-		return frame{}, badf("%s is a %s, not a distribution, so it has no percentiles", q.Metric, kind)
+		return nil, badf("%s is a %s, not a distribution, so it has no %s", q.Metric, kind, q.Agg)
 	}
 	if e.Sketches == nil {
-		return frame{}, fmt.Errorf("%s: %w", q.Agg, ErrNoSketchStore)
+		return nil, fmt.Errorf("%s: %w", q.Agg, ErrNoSketchStore)
 	}
 	sel, post, err := e.selector(q, st)
 	if err != nil {
-		return frame{}, err
+		return nil, err
 	}
 	sel.Metric = q.Metric + wire.SuffixCount
 
 	set, err := e.Store.Select(ctx, sel, g.first*1000, g.endMs()-1)
 	if err != nil {
-		return frame{}, err
+		return nil, err
 	}
 	defer set.Close()
 
@@ -54,7 +78,7 @@ func (e *Evaluator) percentile(ctx context.Context, q *metricql.Query, g grid, s
 			continue
 		}
 		if selected++; selected > MaxSeriesPerNode {
-			return frame{}, tooManySeries(q)
+			return nil, tooManySeries(q)
 		}
 		// The selected series is <metric>.count; the sketches are filed under
 		// the metric itself, with the same tags.
@@ -81,10 +105,10 @@ func (e *Evaluator) percentile(ctx context.Context, q *metricql.Query, g grid, s
 			// Not a badf: see ErrSketchesDisagree. The caller cannot rewrite
 			// their way out of this one, and the metric named here is what an
 			// operator needs to go looking with.
-			return frame{}, fmt.Errorf("%w: %s: %w", ErrSketchesDisagree, q.Metric, err)
+			return nil, fmt.Errorf("%w: %s: %w", ErrSketchesDisagree, q.Metric, err)
 		}
 		if err != nil {
-			return frame{}, err
+			return nil, err
 		}
 		// A group appears only once something has landed in it, so a series
 		// with no sketches in the window does not draw an empty line.
@@ -94,19 +118,13 @@ func (e *Evaluator) percentile(ctx context.Context, q *metricql.Query, g grid, s
 		}
 	}
 	if err := set.Err(); err != nil {
-		return frame{}, err
+		return nil, err
 	}
-
-	f := frame{metric: q.Metric, groups: make([]*group, 0, len(order))}
+	out := make([]*sketchGroup, 0, len(order))
 	for _, key := range order {
-		sg := groups[key]
-		grp := &group{tags: sg.tags, values: make([]float64, g.n)}
-		for i := range grp.values {
-			grp.values[i] = sg.quantile(i, quantile)
-		}
-		f.groups = append(f.groups, grp)
+		out = append(out, groups[key])
 	}
-	return applyModifiers(f, q, g, kind, st)
+	return out, nil
 }
 
 // sketchGroup holds one group's merged sketch per output bucket.

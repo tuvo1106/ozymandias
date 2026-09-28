@@ -58,6 +58,8 @@ func (m *Metrics) Register(mux *http.ServeMux) {
 	// query outgrows a URL long before it outgrows metricql's 8 KiB limit.
 	mux.HandleFunc("GET /api/v1/query", m.query)
 	mux.HandleFunc("POST /api/v1/query", m.query)
+	mux.HandleFunc("GET /api/v1/query/sketch", m.querySketch)
+	mux.HandleFunc("POST /api/v1/query/sketch", m.querySketch)
 	mux.HandleFunc("POST /api/v1/query/batch", m.queryBatch)
 	mux.HandleFunc("POST /api/v1/query/validate", m.validate)
 	mux.HandleFunc("GET /api/v1/metrics", m.metrics)

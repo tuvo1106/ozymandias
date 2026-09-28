@@ -12,6 +12,15 @@ import (
 // query evaluates one `agg:metric{filter} by {keys}.modifiers` node.
 func (e *Evaluator) query(ctx context.Context, q *metricql.Query, g grid, st *state) (frame, error) {
 	kind := e.metricKind(q.Metric)
+	// `dist:` selects a distribution rather than a number, so there is nothing
+	// for this path to put in a bucket. Refused here rather than rendered as
+	// NaN, because a chart of nulls is a worse answer than a sentence saying
+	// where the question does belong.
+	if q.Agg == metricql.Dist {
+		return frame{}, badf(
+			"%s asks for a distribution, which is not a number: send it to /api/v1/query/sketch, or ask for a percentile (p50, p75, p90, p95, p99) here",
+			q)
+	}
 	if _, isPercentile := q.Agg.Quantile(); isPercentile {
 		return e.percentile(ctx, q, g, st, kind)
 	}

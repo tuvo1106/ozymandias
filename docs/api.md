@@ -299,6 +299,59 @@ dashboard-shaped queries over a thousand series — and bounded: the cache is
 capped at 16 MiB per request, after which the batch keeps answering without
 sharing.
 
+### `GET /api/v1/query/sketch`, `POST /api/v1/query/sketch`
+
+The distribution behind a metric, per bucket, rather than a number taken from
+it — the heatmap widget's endpoint. Takes a `dist:` query, the same filter,
+`by`, template variables and window rules as `/api/v1/query`, on either verb.
+
+```console
+$ curl -s 'localhost:9400/api/v1/query/sketch?q=dist:http.request.latency%7Bservice:api%7D&from=1790000000&to=1790003600'
+{"status":"ok","query":"dist:http.request.latency{service:api}",
+ "from":1790000000,"to":1790003600,"interval":20,"gamma":1.02020202020202,"bins":418,
+ "series":[{"metric":"http.request.latency","tags":{},"scope":"*",
+   "buckets":[{"t":1790000000000,"count":51,"sum":6.13,"min":0.004,"max":1.9,
+               "bins":[[0.0039,0.004],[0.0972,0.0991,7],[1.86,1.9,1]]}]}],
+ "warnings":[]}
+```
+
+Each bin is `[lower, upper, count]`: the half-open value range `(lower, upper]`
+and how many observations fell in it. **Resolved bounds, not the sketch's bucket
+index** — the index is meaningless without γ and the convention that γ^k is the
+bucket's *upper* bound, and a negative value's index is of its absolute value,
+so ascending index would be descending value. Bins arrive in **value order**,
+negatives first, and zero is its own bin `[0, 0, n]` because log γ 0 is
+undefined. `gamma` is reported because α = (γ-1)/(γ+1) is the error bar on every
+bin here.
+
+`count`, `sum`, `min` and `max` are **exact**: a sketch carries them beside its
+bins rather than estimating them, so a tooltip can show the real mean and the
+real maximum next to an approximate shape.
+
+A bucket nothing landed in is **absent**, not empty: a heatmap wants a gap
+where there was no traffic, every bucket carries its own `t`, and 1500 empty
+objects saying "nothing happened" would be most of the response on a quiet
+metric.
+
+`bins` at the top level is the total across every series, so a caller can see
+how close it came to the limit. A response is refused past **200000 bins** with
+`400` — a sketch's bin count grows with the *ratio* between its largest and
+smallest value, not with how many observations there were, so a wide metric over
+many buckets is an enormous answer nobody asked for. The message names the dials:
+a coarser interval, a narrower filter, or fewer groups.
+
+Refusals worth knowing:
+
+- a query that is not `dist:` → `400`, naming `/api/v1/query`;
+- `dist:` on `/api/v1/query` → `400`, naming this endpoint and the percentiles;
+- an expression rather than one query (`dist:a{*} / dist:b{*}`) → `400`: merging
+  is the only operation two distributions support;
+- a metric that is not a distribution → `400`;
+- no sketch store configured → `503`. Every query here needs one, where on
+  `/api/v1/query` only a percentile does.
+
+See [ADR-0019](adr/0019-the-dist-aggregator.md) for why `dist` is an aggregator.
+
 ## Dashboards
 
 A dashboard is a stored JSON definition — what to draw, not what was drawn. The

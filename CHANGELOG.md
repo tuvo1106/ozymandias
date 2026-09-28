@@ -66,6 +66,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The distribution behind a metric, not just a number from it.**
+  `GET|POST /api/v1/query/sketch` answers a new `dist:` aggregator —
+  `dist:http.request.latency{service:api} by {route}` — with the merged sketch
+  per bucket, as bins, which is what a heatmap draws. Each bin is
+  `[lower, upper, count]`: resolved value bounds rather than the sketch's bucket
+  index, in value order, with zero in a bin of its own and negatives reversed so
+  the axis is not mirrored. `count`, `sum`, `min` and `max` come along exactly,
+  beside the approximate shape, and `gamma` reports the error bar on every bin.
+  A bucket nothing landed in is absent, so a quiet metric does not spend its
+  response on 1500 ways of saying nothing happened; a response is refused past
+  200000 bins, because a sketch's bin count grows with the ratio between its
+  largest and smallest value and nothing about the query shows that.
+  `dist:` is an aggregator because merging *is* how a distribution's series
+  combine, but its answer is not a number: it has no value on `/api/v1/query`
+  and cannot take part in arithmetic, and both refusals name the endpoint that
+  does answer it (ADR-0019).
+
 - **A whole dashboard in one request.** `POST /api/v1/query/batch` takes a list
   of queries and one window, interval and set of template variables, and answers
   with one result per query — each with its own `status`, `interval`, `series`,
