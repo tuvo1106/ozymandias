@@ -94,6 +94,18 @@ export async function postJSON(url: string, body: unknown, fetchImpl: FetchLike 
   );
 }
 
+/**
+ * PUTs a JSON document and reads the JSON answer. Same failure reporting as
+ * [[postJSON]]: the server's own sentence when it sent one.
+ */
+export async function putJSON(url: string, body: unknown, fetchImpl: FetchLike = fetch, signal?: AbortSignal): Promise<unknown> {
+  return requestJSON(
+    url,
+    { method: "PUT", signal, headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body) },
+    fetchImpl,
+  );
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }

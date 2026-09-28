@@ -217,7 +217,7 @@ export function readNumber(
   const t = text.trim();
   if (t === "") return { kind: "absent" };
   const v = Number(t);
-  if (!Number.isFinite(v)) return { kind: "invalid", reason: "not a number" };
+  if (!Number.isFinite(v)) return { kind: "invalid", reason: "a number" };
   if (opts.integer && !Number.isInteger(v))
     return { kind: "invalid", reason: "a whole number" };
   if (opts.min !== undefined && v < opts.min)
