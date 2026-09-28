@@ -64,6 +64,14 @@ between a line chart and a heatmap should not mean rewriting the filter.
   each names the endpoint that does answer.
 - The heatmap widget's query is an ordinary metricql query, so the query editor,
   autocomplete and template variables work on it with no special case.
+- **A heatmap's query must now be `dist:`, and no other widget's may be.**
+  `docs/dashboards.md` previously showed `p95:http.request.duration{$env}` for a
+  heatmap, which was a placeholder from before this aggregator existed: it cannot
+  be drawn, because `/api/v1/query/sketch` refuses it and `/api/v1/query` returns
+  one number per bucket rather than bins. The validator refuses both mismatches
+  when the dashboard is saved, rather than letting every draw be a 400 that the
+  reader blames on the browser. Nothing shipped used a heatmap, so no stored
+  definition changes meaning.
 - A later milestone wanting arithmetic on distributions (a difference of two
   latency shapes, say) has somewhere to put it, and will need its own decision
   about what that even means.

@@ -275,6 +275,29 @@ func (q *Query) validate(where string, typ Type, declared map[string]bool) []err
 				"%s: $%s is not declared in template_vars, so nothing would resolve it", where, v))
 		}
 	}
+	// A heatmap is drawn from /api/v1/query/sketch and every other widget from
+	// /api/v1/query, and those two endpoints refuse each other's queries. Before
+	// `dist:` existed neither mistake was expressible; now both are, and this is
+	// the one place that can catch them — otherwise the definition stores
+	// happily and every draw is a 400, which the reader blames on the browser.
+	if leaf, ok := expr.(*metricql.Query); ok {
+		switch {
+		case typ == TypeHeatmap && leaf.Agg != metricql.Dist:
+			errs = append(errs, invalidf(
+				"%s: a heatmap draws a distribution, so its query needs the dist aggregator: dist:%s{…}",
+				where, leaf.Metric))
+		case typ != TypeHeatmap && leaf.Agg == metricql.Dist:
+			errs = append(errs, invalidf(
+				"%s: dist: answers a distribution, which a %s cannot draw — use a percentile (p50…p99) here, or make this widget a heatmap",
+				where, typ))
+		}
+	} else if typ == TypeHeatmap {
+		// An expression rather than one query: /api/v1/query/sketch answers one
+		// `dist:` query and nothing else, because merging is the only operation
+		// two distributions support.
+		errs = append(errs, invalidf(
+			"%s: a heatmap draws one dist: query, and %s is an expression", where, q.Q))
+	}
 	if q.Display != "" {
 		if typ != TypeTimeseries {
 			errs = append(errs, invalidf("%s: display belongs to a timeseries, not a %s", where, typ))

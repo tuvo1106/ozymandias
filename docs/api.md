@@ -308,10 +308,11 @@ it — the heatmap widget's endpoint. Takes a `dist:` query, the same filter,
 ```console
 $ curl -s 'localhost:9400/api/v1/query/sketch?q=dist:http.request.latency%7Bservice:api%7D&from=1790000000&to=1790003600'
 {"status":"ok","query":"dist:http.request.latency{service:api}",
- "from":1790000000,"to":1790003600,"interval":20,"gamma":1.02020202020202,"bins":418,
+ "from":1790000000,"to":1790003600,"interval":20,"bins":418,
  "series":[{"metric":"http.request.latency","tags":{},"scope":"*",
-   "buckets":[{"t":1790000000000,"count":51,"sum":6.13,"min":0.004,"max":1.9,
-               "bins":[[0.0039,0.004],[0.0972,0.0991,7],[1.86,1.9,1]]}]}],
+   "buckets":[{"t":1790000000000,"gamma":1.02020202020202,
+               "count":51,"sum":6.13,"min":0.004,"max":1.9,
+               "bins":[[0.0039,0.004,43],[0.0972,0.0991,7],[1.86,1.9,1]]}]}],
  "warnings":[]}
 ```
 
@@ -321,8 +322,14 @@ index** — the index is meaningless without γ and the convention that γ^k is 
 bucket's *upper* bound, and a negative value's index is of its absolute value,
 so ascending index would be descending value. Bins arrive in **value order**,
 negatives first, and zero is its own bin `[0, 0, n]` because log γ 0 is
-undefined. `gamma` is reported because α = (γ-1)/(γ+1) is the error bar on every
-bin here.
+undefined.
+
+`gamma` is **per bucket**, and is the error bar on that bucket's bins:
+α = (γ-1)/(γ+1). Per bucket rather than per response because every sketch merging
+into one bucket agrees on γ — a group whose sketches disagree is refused with
+`503` — but two buckets need not, and neither need two groups: reconfigure one
+host's relative accuracy and `dist:lat{*} by {host}` legitimately returns both.
+A client that wants one error bar for the axis should take the largest.
 
 `count`, `sum`, `min` and `max` are **exact**: a sketch carries them beside its
 bins rather than estimating them, so a tooltip can show the real mean and the

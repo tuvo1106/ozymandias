@@ -73,7 +73,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `[lower, upper, count]`: resolved value bounds rather than the sketch's bucket
   index, in value order, with zero in a bin of its own and negatives reversed so
   the axis is not mirrored. `count`, `sum`, `min` and `max` come along exactly,
-  beside the approximate shape, and `gamma` reports the error bar on every bin.
+  beside the approximate shape, and each bucket reports its own `gamma` — the
+  error bar on its bins — because two groups can legitimately carry different
+  relative accuracies and one number for the response would describe the first
+  and be applied to the rest.
   A bucket nothing landed in is absent, so a quiet metric does not spend its
   response on 1500 ways of saying nothing happened; a response is refused past
   200000 bins, because a sketch's bin count grows with the ratio between its
@@ -82,6 +85,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   combine, but its answer is not a number: it has no value on `/api/v1/query`
   and cannot take part in arithmetic, and both refusals name the endpoint that
   does answer it (ADR-0019).
+  A **heatmap widget's query must now be `dist:`**, and no other widget's may be:
+  `docs/dashboards.md` previously showed a percentile there, which cannot be
+  drawn — the endpoint refuses it, and `/api/v1/query` returns one number per
+  bucket rather than bins. The validator catches both mismatches when the
+  dashboard is saved rather than on every draw. No shipped dashboard used a
+  heatmap, so nothing stored changes meaning.
 
 - **A whole dashboard in one request.** `POST /api/v1/query/batch` takes a list
   of queries and one window, interval and set of template variables, and answers

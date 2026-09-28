@@ -336,7 +336,12 @@ check "its bins ascend by value"           test "$(sketch_field \
 # The aggregates are carried, not estimated: every observation is in some bin.
 check "its bins hold every observation"    test "$(sketch_field \
   'all(abs(sum(b[2] for b in k["bins"]) - k["count"]) < 1e-9 for s in d["series"] for k in s["buckets"])')" = "True"
-check "it reports its error bar"           test "$(sketch_field 'd["gamma"] > 1')" = "True"
+# Per bucket, not per response: two groups can carry different relative
+# accuracies, so one number for the whole answer described the first and was
+# applied to the rest.
+check "each bucket reports its error bar"  test "$(sketch_field \
+  'all(k["gamma"] > 1 for s in d["series"] for k in s["buckets"])')" = "True"
+check "the response claims no one gamma"   test "$(sketch_field '"gamma" in d')" = "False"
 # The two endpoints know where the other one is — a 400 either way, with the
 # other endpoint named, rather than an empty 200.
 sketch_err() { # <query> <endpoint> — the error message

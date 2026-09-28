@@ -79,12 +79,20 @@ func (m *Metrics) querySketch(w http.ResponseWriter, r *http.Request) {
 		// matched" is a legitimate one.
 		res.Series = []eval.DistSeries{}
 	}
-	writeJSON(w, http.StatusOK, struct {
+	// writeJSONErr, not writeJSON: this response is built from stored sketches,
+	// and a value one of them carries that will not encode is a row somebody has
+	// to go and find. The first version used writeJSON, so the one bug this
+	// endpoint shipped with — an empty sketch's +Inf min failing the whole
+	// marshal — reached the client as a bare 500 and reached the log as nothing
+	// at all.
+	if err := writeJSONErr(w, http.StatusOK, struct {
 		Status string `json:"status"`
 		// Query is the canonical text of what was evaluated, as on
 		// /api/v1/query — which is what an editor's "format" produces and what
 		// a dashboard stores.
 		Query string `json:"query"`
 		eval.Distribution
-	}{"ok", expr.String(), res})
+	}{"ok", expr.String(), res}); err != nil {
+		m.Logger.Error("a distribution could not be encoded", "query", text, "err", err)
+	}
 }

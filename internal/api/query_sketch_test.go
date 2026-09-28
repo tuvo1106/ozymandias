@@ -94,19 +94,19 @@ func sketchAPI(t *testing.T) http.Handler {
 // sketchResponse is the documented shape, decoded strictly: a client that
 // implements this struct must be able to read what the endpoint sends.
 type sketchResponse struct {
-	Status   string  `json:"status"`
-	Query    string  `json:"query"`
-	From     int64   `json:"from"`
-	To       int64   `json:"to"`
-	Interval int64   `json:"interval"`
-	Gamma    float64 `json:"gamma"`
-	Bins     int     `json:"bins"`
+	Status   string `json:"status"`
+	Query    string `json:"query"`
+	From     int64  `json:"from"`
+	To       int64  `json:"to"`
+	Interval int64  `json:"interval"`
+	Bins     int    `json:"bins"`
 	Series   []struct {
 		Metric  string            `json:"metric"`
 		Tags    map[string]string `json:"tags"`
 		Scope   string            `json:"scope"`
 		Buckets []struct {
 			T     int64       `json:"t"`
+			Gamma float64     `json:"gamma"`
 			Count float64     `json:"count"`
 			Sum   float64     `json:"sum"`
 			Min   float64     `json:"min"`
@@ -180,8 +180,10 @@ func TestQuerySketch_AnswersADistribution(t *testing.T) {
 	if total != first.Count {
 		t.Errorf("bins hold %g of %g observations", total, first.Count)
 	}
-	if out.Gamma <= 1 || out.Bins == 0 {
-		t.Errorf("gamma = %v, bins = %d", out.Gamma, out.Bins)
+	// Gamma is per bucket: two groups can carry different accuracies, and one
+	// number for the response described the first and was applied to the rest.
+	if first.Gamma <= 1 || out.Bins == 0 {
+		t.Errorf("gamma = %v, bins = %d", first.Gamma, out.Bins)
 	}
 	if out.Warnings == nil {
 		t.Error("warnings is absent rather than empty")
@@ -307,5 +309,56 @@ func TestQuerySketch_ANonDistributionIs400(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "not a distribution") {
 		t.Errorf("%s", rec.Body.String())
+	}
+}
+
+// The M1 structured parameters reach this endpoint too. They did not: `dist` was
+// missing from the `agg=` allowlist, so `?metric=lat&agg=dist` was refused with
+// "want one of avg, sum, …" while the handler's own doc comment and docs/api.md
+// both promised the same spelling as every other query endpoint.
+func TestQuerySketch_TheStructuredSpellingWorksHereToo(t *testing.T) {
+	h := sketchAPI(t)
+	code, out := getSketch(t, h, "/api/v1/query/sketch?metric=lat&agg=dist"+window)
+	if code != 200 {
+		t.Fatalf("%d — the structured form is unreachable", code)
+	}
+	if out.Query != "dist:lat{*}" {
+		t.Errorf("query = %q, want the translation", out.Query)
+	}
+	if len(out.Series) == 0 {
+		t.Error("it found nothing that the q= spelling finds")
+	}
+	// And omitting agg still defaults to avg, which this endpoint refuses —
+	// the default is not silently changed for one endpoint.
+	if code, _ := getSketch(t, h, "/api/v1/query/sketch?metric=lat"+window); code != 400 {
+		t.Errorf("a defaulted agg gave %d, want 400", code)
+	}
+}
+
+// An empty window is an empty list, not a missing field.
+//
+// This replaced a test called "an unencodable answer is logged" that asserted
+// nothing of the kind — it had a dead sink and a type check that could not fail.
+// The marshal failure it was aiming at is now unreachable through this handler
+// by construction (count-0 buckets are skipped and every aggregate leaves as
+// null if it is not finite), and it is asserted where it can be: at the
+// evaluator, in TestDistribution_ACountZeroBucketIsNotAnUnservableResponse. The
+// handler marshals through writeJSONErr so that if one ever does get through, an
+// operator hears about it — which is a property of the code, not something a test
+// can reach.
+func TestQuerySketch_AnEmptyWindowIsAnEmptyList(t *testing.T) {
+	h := sketchAPI(t)
+	code, out := getSketch(t, h, "/api/v1/query/sketch?q="+urlEncode("dist:lat{*}")+"&from=1&to=2")
+	if code != 200 {
+		t.Fatalf("%d for a window with no data, want 200", code)
+	}
+	if out.Series == nil {
+		t.Error("series is absent rather than empty")
+	}
+	if len(out.Series) != 0 {
+		t.Errorf("series = %v, want empty", out.Series)
+	}
+	if out.Warnings == nil {
+		t.Error("warnings is absent rather than empty")
 	}
 }

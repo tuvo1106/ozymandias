@@ -181,8 +181,8 @@ func TestValidate_AHeatmapDrawsOneDistribution(t *testing.T) {
 	w := &d.Widgets[0]
 	w.Type = TypeHeatmap
 	w.Queries = []Query{
-		{Q: "p95:http.request.duration{$env}"},
-		{Q: "p99:http.request.duration{$env}"},
+		{Q: "dist:http.request.duration{$env}"},
+		{Q: "dist:http.request.duration{$env} by {route}"},
 	}
 	if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "draws one distribution") {
 		t.Errorf("got %v, want a refusal", err)
@@ -660,5 +660,50 @@ func TestValidate_DisplayIsOptionalOnATimeseries(t *testing.T) {
 	d.Widgets[0].Queries[0].Display = ""
 	if err := d.Validate(); err != nil {
 		t.Errorf("a timeseries query with no display: %v", err)
+	}
+}
+
+// A widget's aggregator has to match the endpoint that draws it. A heatmap comes
+// from /api/v1/query/sketch, which answers `dist:` and nothing else; every other
+// widget comes from /api/v1/query, which has no value for `dist:`. Before the
+// aggregator existed neither mistake could be written down; now both can, and a
+// definition that stores happily and then 400s on every draw gets blamed on the
+// browser.
+func TestValidate_TheAggregatorHasToMatchTheWidget(t *testing.T) {
+	for _, tc := range []struct {
+		name, query string
+		typ         Type
+		want        string
+	}{
+		{"a heatmap of a percentile", "p95:http.request.duration{$env}", TypeHeatmap, "needs the dist aggregator"},
+		{"a heatmap of a count", "sum:http.request.count{$env}", TypeHeatmap, "needs the dist aggregator"},
+		{"a timeseries of a distribution", "dist:http.request.duration{$env}", TypeTimeseries, "cannot draw"},
+		{"a heatmap of an expression", "dist:http.request.duration{$env} / 2", TypeHeatmap, "is an expression"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := good()
+			w := &d.Widgets[0]
+			w.Type = tc.typ
+			w.Queries = []Query{{Q: tc.query}}
+			if tc.typ == TypeHeatmap {
+				w.Queries[0].Display = ""
+			}
+			err := d.Validate()
+			if err == nil {
+				t.Fatalf("%s was accepted, and every draw of it is a 400", tc.query)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("%v does not mention %q", err, tc.want)
+			}
+		})
+	}
+
+	// And the spellings that can be drawn are accepted.
+	d := good()
+	w := &d.Widgets[0]
+	w.Type = TypeHeatmap
+	w.Queries = []Query{{Q: "dist:http.request.duration{$env}"}}
+	if err := d.Validate(); err != nil {
+		t.Errorf("a heatmap of a distribution was refused: %v", err)
 	}
 }

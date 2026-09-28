@@ -342,7 +342,11 @@ func (q *querySpec) expression() (string, []string, error) {
 // below: anything not on this list must not reach the query string, or an
 // `agg` of `x{*}} + sum:secrets{*` would be a query of the caller's choosing
 // rather than the one the parameters describe.
-var aggs = []string{"avg", "sum", "min", "max", "count", "p50", "p75", "p90", "p95", "p99"}
+// aggs is the allowlist for the M1 structured `agg=` parameter. It carries
+// `dist` because /api/v1/query/sketch accepts the same structured spelling as
+// every other query endpoint — leaving it out made `?metric=lat&agg=dist`
+// unreachable there while the docs promised it worked.
+var aggs = []string{"avg", "sum", "min", "max", "count", "dist", "p50", "p75", "p90", "p95", "p99"}
 
 // structuredExpression writes the M1 parameters as a query.
 //

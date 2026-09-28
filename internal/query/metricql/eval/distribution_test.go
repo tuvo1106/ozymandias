@@ -1,7 +1,9 @@
 package eval
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"strings"
@@ -61,8 +63,8 @@ func TestDistribution_BinsSpanTheValues(t *testing.T) {
 		}
 		total += b.Count
 	}
-	if total != first.Count {
-		t.Errorf("bins hold %g observations, the bucket counts %g", total, first.Count)
+	if total != float64(first.Count) {
+		t.Errorf("bins hold %g observations, the bucket counts %g", total, float64(first.Count))
 	}
 	for _, v := range []float64{1, 2, 4, 8} {
 		found := false
@@ -75,9 +77,10 @@ func TestDistribution_BinsSpanTheValues(t *testing.T) {
 			t.Errorf("%g falls in no bin: %v", v, first.Bins)
 		}
 	}
-	// Gamma describes the stored sketches, and is the error bar on every bin.
-	if res.Gamma <= 1 {
-		t.Errorf("gamma = %v", res.Gamma)
+	// Gamma describes the sketches that merged into *this bucket*, and is the
+	// error bar on its bins.
+	if first.Gamma <= 1 {
+		t.Errorf("gamma = %v", first.Gamma)
 	}
 	if res.Bins != 5 {
 		t.Errorf("total bins = %d, want 5", res.Bins)
@@ -307,5 +310,159 @@ func TestBin_RoundTrips(t *testing.T) {
 	}
 	if got := string(raw); got != "[null,null,1]" {
 		t.Errorf("%s, want nulls", got)
+	}
+}
+
+// An empty sketch reports its sentinels — min +Inf, max -Inf — and the intake
+// stores count-0 buckets deliberately. encoding/json refuses a non-finite float,
+// so one of them anywhere in the window used to make marshalling the *whole*
+// response fail: the reader got a 500 where a heatmap should have been, and the
+// same data answered `p95:` fine.
+//
+// Two things are asserted, because either alone would let it back: the bucket is
+// skipped, and the response marshals.
+func TestDistribution_ACountZeroBucketIsNotAnUnservableResponse(t *testing.T) {
+	e := sketchEnv(t, map[string]map[int64]*sketch.Sketch{
+		"host:a": {0: sketch.NewDefault(), 10: sketchOf(t, 1, 2)},
+	})
+	res, err := dist(t, e, "dist:lat{*}", 0, 20, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Series) != 1 {
+		t.Fatalf("%d series", len(res.Series))
+	}
+	buckets := res.Series[0].Buckets
+	if len(buckets) != 1 {
+		t.Fatalf("%d buckets, want only the one with observations: %+v", len(buckets), buckets)
+	}
+	if buckets[0].Count != 2 {
+		t.Errorf("the surviving bucket is %+v", buckets[0])
+	}
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("the response does not marshal, so nobody can read it: %v", err)
+	}
+	if bytes.Contains(raw, []byte("Inf")) {
+		t.Errorf("a sentinel reached the wire: %s", raw)
+	}
+
+	// And the guard behind the skip: a non-finite aggregate leaves as null
+	// rather than as a body that is not JSON.
+	b, err := json.Marshal(DistBucket{T: 1, Min: jsonFloat(math.Inf(1)), Max: jsonFloat(math.Inf(-1))})
+	if err != nil {
+		t.Fatalf("a bucket with sentinels does not marshal: %v", err)
+	}
+	if !bytes.Contains(b, []byte(`"min":null`)) || !bytes.Contains(b, []byte(`"max":null`)) {
+		t.Errorf("%s, want nulls", b)
+	}
+}
+
+// γ is a property of the sketches that merged into one bucket, not of the
+// response. Two groups can carry different accuracies — reconfigure one host —
+// and a single top-level γ described the first and was applied to the rest.
+func TestDistribution_GammaIsPerBucket(t *testing.T) {
+	coarse, err := sketch.NewWithGamma(1.1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coarse.Add(5); err != nil {
+		t.Fatal(err)
+	}
+	e := sketchEnv(t, map[string]map[int64]*sketch.Sketch{
+		"host:a": {0: sketchOf(t, 1, 2)},
+		"host:b": {0: coarse},
+	})
+	res, err := dist(t, e, "dist:lat{*} by {host}", 0, 10, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Series) != 2 {
+		t.Fatalf("%d series", len(res.Series))
+	}
+	seen := map[float64]bool{}
+	for _, s := range res.Series {
+		for _, b := range s.Buckets {
+			if b.Gamma <= 1 {
+				t.Errorf("%s: gamma %v", s.Scope, b.Gamma)
+			}
+			seen[b.Gamma] = true
+		}
+	}
+	if len(seen) != 2 {
+		t.Errorf("both groups report gamma %v; one accuracy was applied to the other", seen)
+	}
+}
+
+// A modifier describes something done to a line, and a distribution has none.
+// Refused rather than ignored: accepting `.as_rate()` and doing nothing about it
+// is the silent half-answer modifier.go's own doc comment argues against.
+func TestDistribution_ModifiersAreRefusedNotIgnored(t *testing.T) {
+	e := sketchEnv(t, map[string]map[int64]*sketch.Sketch{"host:a": {0: sketchOf(t, 1, 2)}})
+	for _, q := range []string{
+		"dist:lat{*}.as_rate()",
+		"dist:lat{*}.as_count()",
+		"dist:lat{*}.fill(zero)",
+		"dist:lat{*}.rollup(max, 60)",
+	} {
+		t.Run(q, func(t *testing.T) {
+			_, err := dist(t, e, q, 0, 120, 0)
+			if err == nil {
+				t.Fatalf("%s was accepted, and the modifier does nothing", q)
+			}
+			if !errors.Is(err, ErrBadQuery) {
+				t.Errorf("%v is not the caller's fault", err)
+			}
+			// The message says what to do instead, because the bucket width is
+			// the one thing somebody might really have meant.
+			if !strings.Contains(err.Error(), "interval") {
+				t.Errorf("%v does not point at the interval parameter", err)
+			}
+		})
+	}
+	// Without a modifier the same query is fine, so the refusal is about the
+	// modifier and not about the query.
+	if _, err := dist(t, e, "dist:lat{*}", 0, 120, 0); err != nil {
+		t.Errorf("the plain query was refused: %v", err)
+	}
+}
+
+// A bin whose bound is past what a float64 can say leaves as null, and the
+// shipped decoder has to accept what the encoder emits. It did not: the bounds
+// were called unreachable, they are not, and the round trip failed on them.
+func TestBin_AnUnrepresentableBoundRoundTrips(t *testing.T) {
+	// A bin index large enough that γ^k overflows. Reachable: sketch.Add clamps
+	// to ±2^31 and the wire format accepts anything inside that.
+	s := sketch.NewDefault()
+	if err := s.AddBin(sketch.Bin{Index: 40000, Count: 1}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAggregates(1, 1, 1, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	bins := binsOf(s)
+	if len(bins) != 1 {
+		t.Fatalf("%d bins", len(bins))
+	}
+	if !math.IsInf(bins[0].Upper, 1) {
+		t.Fatalf("the bound did not overflow, so this test proves nothing: %+v", bins[0])
+	}
+
+	raw, err := bins[0].MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Bin
+	if err := back.UnmarshalJSON(raw); err != nil {
+		t.Fatalf("the encoder emitted %s and the decoder refuses it: %v", raw, err)
+	}
+	if !math.IsInf(back.Upper, 1) || back.Count != 1 {
+		t.Errorf("%s decoded to %+v", raw, back)
+	}
+
+	// A null *count* is still refused: a bin whose count is unknown is not a
+	// bin, and accepting one puts a NaN into whatever the client sums.
+	if err := back.UnmarshalJSON([]byte(`[1,2,null]`)); err == nil {
+		t.Error("a null count was accepted")
 	}
 }

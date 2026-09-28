@@ -54,9 +54,14 @@ func (b Bin) MarshalJSON() ([]byte, error) {
 			out = append(out, ',')
 		}
 		if math.IsNaN(v) || math.IsInf(v, 0) {
-			// Unreachable from a stored sketch — the bounds are powers of γ and
-			// the count is finite — but a null is a better answer than a body
-			// that is not JSON, which is what a bare NaN would produce.
+			// A null bound means "past what a float64 can say", and it is
+			// reachable: γ^k overflows above index ≈35490 at the default
+			// accuracy, and a bin index is only bounded by ±2^31 — sketch.Add
+			// clamps to that, and the wire format accepts anything inside it, so
+			// a client POSTing a large index produces one. The previous version
+			// of this comment called it unreachable, which was wrong twice over:
+			// it is reachable, and [Bin.UnmarshalJSON] then refused the bin this
+			// method had just emitted.
 			out = append(out, "null"...)
 			continue
 		}
@@ -66,17 +71,27 @@ func (b Bin) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON reads [lower, upper, count].
+//
+// A null *bound* is accepted and means unbounded on that side — which is what
+// [Bin.MarshalJSON] emits when γ^k overflows a float64. A null *count* is not:
+// a bin whose count is unknown is not a bin, and accepting one would put a NaN
+// into whatever the client sums.
 func (b *Bin) UnmarshalJSON(data []byte) error {
 	var triple [3]*float64
 	if err := json.Unmarshal(data, &triple); err != nil {
 		return fmt.Errorf("bin: want [lower, upper, count]: %s", data)
 	}
-	for i, v := range triple {
-		if v == nil {
-			return fmt.Errorf("bin: element %d is null: %s", i, data)
-		}
+	if triple[2] == nil {
+		return fmt.Errorf("bin: the count is null: %s", data)
 	}
-	b.Lower, b.Upper, b.Count = *triple[0], *triple[1], *triple[2]
+	b.Lower, b.Upper = math.Inf(-1), math.Inf(1)
+	if triple[0] != nil {
+		b.Lower = *triple[0]
+	}
+	if triple[1] != nil {
+		b.Upper = *triple[1]
+	}
+	b.Count = *triple[2]
 	return nil
 }
 
@@ -88,12 +103,61 @@ func (b *Bin) UnmarshalJSON(data []byte) error {
 // the bins are accurate to the store's relative accuracy and these four are
 // not approximate at all.
 type DistBucket struct {
-	T     int64   `json:"t"`
-	Count float64 `json:"count"`
-	Sum   float64 `json:"sum"`
-	Min   float64 `json:"min"`
-	Max   float64 `json:"max"`
-	Bins  []Bin   `json:"bins"`
+	T int64 `json:"t"`
+	// Gamma is the ratio between this bucket's bin bounds, which is what the
+	// relative accuracy of the sketches that merged into it comes to:
+	// α = (γ-1)/(γ+1).
+	//
+	// Per bucket, not per response. Every sketch merging into *one* bucket
+	// agrees on γ — sketchGroups refuses a group whose sketches do not — but two
+	// buckets need not, and neither need two groups: reconfigure one host's
+	// accuracy and `dist:lat{*} by {host}` legitimately returns several. A single
+	// top-level γ was therefore a number that described the first bucket and was
+	// quietly applied to the rest. A client wanting one error bar for the axis
+	// can take the largest.
+	Gamma float64   `json:"gamma"`
+	Count jsonFloat `json:"count"`
+	Sum   jsonFloat `json:"sum"`
+	Min   jsonFloat `json:"min"`
+	Max   jsonFloat `json:"max"`
+	Bins  []Bin     `json:"bins"`
+}
+
+// jsonFloat is a float64 that leaves as null when it is not finite.
+//
+// It exists because of a bug this endpoint shipped with for exactly one review
+// cycle: an empty sketch reports min as +Inf and max as -Inf — its sentinels —
+// and the intake stores count-0 buckets deliberately. encoding/json refuses a
+// non-finite float, so one such bucket anywhere in the window made json.Marshal
+// of the *whole* response fail, and the reader got a 500 instead of a heatmap.
+//
+// A count-0 bucket is now skipped, which is the real fix; this is the guard
+// behind it. "It cannot happen because of what is upstream" is what the previous
+// comment on [Bin.MarshalJSON] said, and it was wrong too.
+type jsonFloat float64
+
+// MarshalJSON writes the number, or null when it is not finite.
+func (f jsonFloat) MarshalJSON() ([]byte, error) {
+	v := float64(f)
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return []byte("null"), nil
+	}
+	return strconv.AppendFloat(nil, v, 'g', -1, 64), nil
+}
+
+// UnmarshalJSON reads a number, or null as NaN — so a value that left as null
+// comes back as something a client can test rather than as a silent zero.
+func (f *jsonFloat) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*f = jsonFloat(math.NaN())
+		return nil
+	}
+	var v float64
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*f = jsonFloat(v)
+	return nil
 }
 
 // DistSeries is one group's distribution over time.
@@ -110,15 +174,10 @@ type DistSeries struct {
 
 // Distribution is the answer to a `dist:` query.
 type Distribution struct {
-	From     int64 `json:"from"`
-	To       int64 `json:"to"`
-	Interval int64 `json:"interval"`
-	// Gamma is the ratio between a bin's bounds, which is what the store's
-	// relative accuracy comes to: α = (γ-1)/(γ+1). Reported because it is the
-	// error bar on every bin in this response, and a client drawing a
-	// distribution should be able to say how precise it is.
-	Gamma  float64      `json:"gamma"`
-	Series []DistSeries `json:"series"`
+	From     int64        `json:"from"`
+	To       int64        `json:"to"`
+	Interval int64        `json:"interval"`
+	Series   []DistSeries `json:"series"`
 	// Bins is the total across every series, so a caller can see how close it
 	// came to [MaxBinsPerRequest] before being refused.
 	Bins     int      `json:"bins"`
@@ -183,7 +242,12 @@ func (e *Evaluator) Distribution(ctx context.Context, req Request) (Distribution
 			Buckets: make([]DistBucket, 0, g.n),
 		}
 		for i, sk := range sg.buckets {
-			if sk == nil {
+			// A bucket with no observations is an empty bucket, whatever the
+			// reason it exists: the store keeps count-0 sketches, and one of
+			// them here used to make the whole response a 500 because an empty
+			// sketch's min is +Inf and encoding/json refuses that. There is
+			// nothing to draw either way — see [DistSeries.Buckets].
+			if sk == nil || sk.Count() == 0 {
 				continue
 			}
 			bins := binsOf(sk)
@@ -195,24 +259,13 @@ func (e *Evaluator) Distribution(ctx context.Context, req Request) (Distribution
 			}
 			s.Buckets = append(s.Buckets, DistBucket{
 				T:     g.at(i),
-				Count: sk.Count(),
-				Sum:   sk.Sum(),
-				Min:   sk.Min(),
-				Max:   sk.Max(),
+				Gamma: sk.Gamma(),
+				Count: jsonFloat(sk.Count()),
+				Sum:   jsonFloat(sk.Sum()),
+				Min:   jsonFloat(sk.Min()),
+				Max:   jsonFloat(sk.Max()),
 				Bins:  bins,
 			})
-		}
-		// Gamma is a property of the stored sketches, not of the request, and
-		// every sketch that merged agrees on it — sketchGroups refuses a group
-		// whose sketches do not. Taken from the first bucket that exists, so it
-		// describes the data rather than this build's default.
-		if out.Gamma == 0 && len(s.Buckets) > 0 {
-			for _, sk := range sg.buckets {
-				if sk != nil {
-					out.Gamma = sk.Gamma()
-					break
-				}
-			}
 		}
 		out.Series = append(out.Series, s)
 	}
@@ -227,6 +280,24 @@ func distQuery(n metricql.Node) (*metricql.Query, error) {
 	}
 	if q.Agg != metricql.Dist {
 		return nil, badf("%s asks for a number, not a distribution: write `dist:%s{…}` here, or send this query to /api/v1/query", q, q.Metric)
+	}
+	// Modifiers are refused rather than ignored.
+	//
+	// Every one of them describes something done to a *line*: `.as_rate()`
+	// divides by the interval, `.fill()` invents the buckets nothing reported,
+	// `.rollup()` names how samples reduce into a bucket. A distribution has no
+	// line to do any of that to — merging is the only reduction it has — so this
+	// path would have applied none of them. It did exactly that for one review
+	// cycle: `dist:lat{*}.as_rate()` was accepted, ignored, and not even
+	// warned about, which is the thing internal/query/metricql/eval/modifier.go
+	// argues against in its own first paragraph.
+	//
+	// The bucket width is the one thing somebody might really have meant, and it
+	// has a spelling that works: the `interval` parameter.
+	if len(q.Modifiers) > 0 {
+		return nil, badf(
+			"%s: a distribution has no line to modify, so `.%s` would be ignored — merging is its only reduction, and the bucket width is the `interval` parameter",
+			q, q.Modifiers[0].Kind)
 	}
 	return q, nil
 }

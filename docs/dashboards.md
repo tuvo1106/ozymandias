@@ -38,7 +38,7 @@ dashboard for different environments at the same time.
 
     {"id": "latency", "type": "heatmap", "title": "latency distribution",
      "layout": {"x": 6, "y": 3, "w": 6, "h": 3},
-     "queries": [{"q": "p95:http.request.duration{$env}"}]},
+     "queries": [{"q": "dist:http.request.duration{$env}"}]},
 
     {"id": "runbook", "type": "note",
      "layout": {"x": 0, "y": 6, "w": 12, "h": 1},
@@ -118,7 +118,7 @@ widget nobody can see, which stores happily and is then blamed on the browser.
 | `query_value` | one number | ≥1 query with a `reducer` |
 | `toplist` | ranked groups | ≥1 query with a `reducer`, optional `limit` |
 | `table` | groups as rows, queries as columns | ≥1 query with a `reducer` |
-| `heatmap` | a distribution's sketch bins over time | exactly 1 query |
+| `heatmap` | a distribution's sketch bins over time | exactly 1 `dist:` query |
 | `note` | markdown | `markdown`, and **no** queries |
 
 A field that belongs to another type is an error rather than ignored: a
@@ -126,9 +126,17 @@ A field that belongs to another type is an error rather than ignored: a
 on a chart. Ignoring it silently is how a dashboard ends up with a setting
 nobody can find the effect of.
 
-`heatmap` takes exactly one query. Two distributions drawn over each other are
-not readable by anybody, so it refuses rather than draw something misleading —
-use two widgets.
+`heatmap` takes exactly one query, and its aggregator must be **`dist:`** — the
+widget is drawn from [`/api/v1/query/sketch`](api.md#get-apiv1querysketch-post-apiv1querysketch),
+which answers one `dist:` query and nothing else. A percentile there would be a
+single number per bucket, which is a line and not a distribution, so it is
+refused when the dashboard is saved rather than on every draw. The reverse is
+refused too: `dist:` on any other widget type, since those are drawn from
+`/api/v1/query`, which has no value for it.
+
+Two distributions drawn over each other are not readable by anybody, so a
+heatmap refuses a second query rather than draw something misleading — use two
+widgets.
 
 ### Queries
 
