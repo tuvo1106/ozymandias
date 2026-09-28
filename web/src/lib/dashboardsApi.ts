@@ -282,14 +282,18 @@ export type SketchBin = [lower: number, upper: number, count: number];
 
 /**
  * A bound the server could not write as a number arrives as `null` and is read
- * as `NaN` — the same translation the server's own decoder makes, and for the
- * same reason: a value that left as null has to come back as something a
- * client can test rather than as a silent zero.
+ * here as `NaN`. It means "past what a float64 can say", which is reachable —
+ * γ^k overflows above bucket index ≈35490 at the default accuracy, and the
+ * wire format accepts any index inside ±2^31 — so refusing the bin would throw
+ * away the whole distribution over one bound nobody can plot anyway.
  *
- * It means "past what a float64 can say", which is reachable — γ^k overflows
- * above bucket index ≈35490 at the default accuracy, and the wire format
- * accepts any index inside ±2^31. Refusing the bin would have thrown away the
- * whole distribution over one bound nobody can plot anyway.
+ * NaN, and *not* the ±Inf the server's own `Bin.UnmarshalJSON` reads the same
+ * null as, because the two sides want opposite things from it. The server is
+ * putting a bound back into a sketch, where "unbounded on that side" is the
+ * true meaning. This side is placing it on an axis, and ±Inf would drag
+ * [[valueExtent]] out to infinity and take the whole chart with it — whereas
+ * every comparison against NaN is false, so the bin simply declines to be
+ * plotted and [[unboundedCount]] says so.
  */
 function binBound(v: unknown): number {
   return typeof v === "number" ? v : NaN;

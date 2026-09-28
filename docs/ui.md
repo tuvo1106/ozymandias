@@ -133,8 +133,11 @@ than taking the page down with it — which is what an older UI and a newer
 `ozyd` look like, and is worth seeing as one broken square instead of one
 broken application.
 
-Changing the time range or a variable **keeps the last answer on screen** until
-the new one lands, so the page dims rather than empties.
+Changing the time range or a variable **keeps the last answer on screen** and
+dims it until the new one lands, so the page fades rather than empties. A
+background auto-refresh does not dim: it is asking the same question again, and
+a page that blinked every ten seconds would be worse than one that said
+nothing.
 
 A `note`'s markdown is rendered as **text, not HTML**. Anyone who can `POST` a
 dashboard can write one, and turning stored text into markup is how a monitoring

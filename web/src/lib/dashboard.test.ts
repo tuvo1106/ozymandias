@@ -6,6 +6,7 @@ import {
   matchConditionalFormat,
   reduceSeries,
   widgetsInReadingOrder,
+  type Reducer,
   type Widget,
 } from "./dashboard";
 
@@ -95,6 +96,18 @@ describe("reduceSeries", () => {
   it("ignores values that are not finite", () => {
     expect(reduceSeries([1, NaN, 3], "sum")).toBe(4);
     expect(reduceSeries([Infinity], "max")).toBeNull();
+  });
+});
+
+// `Reducer` is this bundle's idea of the set and a stored definition is served
+// back without being re-validated, so a hand-edited row or a newer ozyd
+// delivers one this build has never heard of. Falling off the end of the
+// switch returns undefined, which the signature says is impossible and the
+// first `.toFixed` on it turns into a blank application.
+describe("reduceSeries with a reducer this build does not know", () => {
+  it("is null, not undefined", () => {
+    const unknown = "median" as Reducer;
+    expect(reduceSeries([1, 2, 3], unknown)).toBeNull();
   });
 });
 

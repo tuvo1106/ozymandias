@@ -4,7 +4,8 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DashboardRequests, QuerySlot } from "./dashboardQueries";
 import { DEFAULT_VIEW_STATE } from "./dashboardState";
-import { useDashboardData } from "./useDashboards";
+import { createQueryClient } from "./queryClient";
+import { useDashboardData, useDashboardSketches } from "./useDashboards";
 
 function wrapper({ children }: { children: ReactNode }) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -42,7 +43,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe("useDashboardData", () => {
   it("hands each widget the result whose index asked for it", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => answer([11, 22])));
-    const { result } = renderHook(() => useDashboardData(requests(slot("a", "qa"), slot("b", "qb")), DEFAULT_VIEW_STATE, []), {
+    const { result } = renderHook(() => useDashboardData(requests(slot("a", "qa"), slot("b", "qb")), DEFAULT_VIEW_STATE, [], "d1"), {
       wrapper,
     });
     await waitFor(() => expect(result.current.byWidget.size).toBe(2));
@@ -58,7 +59,7 @@ describe("useDashboardData", () => {
   it("never attributes a kept answer to a widget that moved into its slot", async () => {
     const fetchMock = vi.fn(async () => answer([11, 22]));
     vi.stubGlobal("fetch", fetchMock);
-    const { result, rerender } = renderHook(({ r }: { r: DashboardRequests }) => useDashboardData(r, DEFAULT_VIEW_STATE, []), {
+    const { result, rerender } = renderHook(({ r }: { r: DashboardRequests }) => useDashboardData(r, DEFAULT_VIEW_STATE, [], "d1"), {
       wrapper,
       initialProps: { r: requests(slot("a", "qa"), slot("b", "qb")) },
     });
@@ -80,7 +81,7 @@ describe("useDashboardData", () => {
     const fetchMock = vi.fn(async () => answer([11]));
     vi.stubGlobal("fetch", fetchMock);
     const r = requests(slot("a", "qa"));
-    const { result, rerender } = renderHook(({ state }: { state: typeof DEFAULT_VIEW_STATE }) => useDashboardData(r, state, []), {
+    const { result, rerender } = renderHook(({ state }: { state: typeof DEFAULT_VIEW_STATE }) => useDashboardData(r, state, [], "d1"), {
       wrapper,
       initialProps: { state: DEFAULT_VIEW_STATE },
     });
@@ -104,22 +105,60 @@ describe("useDashboardData", () => {
       }),
     );
     const two: DashboardRequests = { chunks: [[slot("a", "qa")], [slot("b", "qb")]], heatmaps: [] };
-    const { result } = renderHook(() => useDashboardData(two, DEFAULT_VIEW_STATE, []), { wrapper });
+    const { result } = renderHook(() => useDashboardData(two, DEFAULT_VIEW_STATE, [], "d1"), { wrapper });
     await waitFor(() => expect(valueFor(result.current, "a")).toBe(11));
     expect(result.current.error?.message).toBe("a batch takes at most 50 queries");
     expect(result.current.byWidget.has("b")).toBe(false);
   });
 
+  // The cached value is keyed by widget id, so two dashboards holding the same
+  // queries in the same order under different ids must not share an entry —
+  // a saved copy of another dashboard, which this build invites by making a
+  // template instance storable. Sharing files the answer under the first
+  // one's ids and every widget on the second draws nothing at all, with
+  // nothing to correct it: fresh for five seconds, and no interval on an
+  // absolute range.
+  it("does not hand one dashboard's answer to another with the same queries", async () => {
+    // The app's own client, not a bare one: its `staleTime` is what makes a
+    // shared entry stick instead of being refetched on the second mount, so a
+    // test without it would pass whether the key is right or wrong.
+    const client = createQueryClient();
+    const shared = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    vi.stubGlobal("fetch", vi.fn(async () => answer([11])));
+
+    const a = renderHook(() => useDashboardData(requests(slot("a-widget", "qa")), DEFAULT_VIEW_STATE, [], "dashboard-1"), { wrapper: shared });
+    await waitFor(() => expect(valueFor(a.result.current, "a-widget")).toBe(11));
+
+    const b = renderHook(() => useDashboardData(requests(slot("b-widget", "qa")), DEFAULT_VIEW_STATE, [], "dashboard-2"), { wrapper: shared });
+    await waitFor(() => expect(valueFor(b.result.current, "b-widget")).toBe(11));
+  });
+
+  it("does not hand one dashboard's sketch to another with the same query", async () => {
+    const client = createQueryClient();
+    const shared = ({ children }: { children: ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ from: 1, to: 2, interval: 60, bins: 0, series: [], warnings: [] }))),
+    );
+    const heatmap = (widgetId: string) => [{ widgetId, q: "dist:lat{*}" }];
+
+    const a = renderHook(() => useDashboardSketches(heatmap("a-widget"), DEFAULT_VIEW_STATE, [], "dashboard-1"), { wrapper: shared });
+    await waitFor(() => expect(a.result.current.get("a-widget")?.data).toBeDefined());
+
+    const b = renderHook(() => useDashboardSketches(heatmap("b-widget"), DEFAULT_VIEW_STATE, [], "dashboard-2"), { wrapper: shared });
+    await waitFor(() => expect(b.result.current.get("b-widget")?.data).toBeDefined());
+  });
+
   it("reports a failed request rather than pretending the widgets are empty", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "a batch takes at most 50 queries" }), { status: 400 })));
-    const { result } = renderHook(() => useDashboardData(requests(slot("a", "qa")), DEFAULT_VIEW_STATE, []), { wrapper });
+    const { result } = renderHook(() => useDashboardData(requests(slot("a", "qa")), DEFAULT_VIEW_STATE, [], "d1"), { wrapper });
     await waitFor(() => expect(result.current.error?.message).toBe("a batch takes at most 50 queries"));
     expect(result.current.byWidget.size).toBe(0);
   });
 
   it("takes the x-axis window from the server's answer, not from the request", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => answer([1])));
-    const { result } = renderHook(() => useDashboardData(requests(slot("a", "qa")), DEFAULT_VIEW_STATE, []), { wrapper });
+    const { result } = renderHook(() => useDashboardData(requests(slot("a", "qa")), DEFAULT_VIEW_STATE, [], "d1"), { wrapper });
     await waitFor(() => expect(result.current.range).toEqual({ from: 1_790_000_000, to: 1_790_003_600 }));
   });
 });

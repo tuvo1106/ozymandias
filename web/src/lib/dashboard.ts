@@ -16,7 +16,13 @@
 export const COLUMNS = 12;
 
 /** Widget kinds this build draws. */
-export type WidgetType = "timeseries" | "query_value" | "toplist" | "table" | "heatmap" | "note";
+export type WidgetType =
+  | "timeseries"
+  | "query_value"
+  | "toplist"
+  | "table"
+  | "heatmap"
+  | "note";
 
 /** How a timeseries draws a line. */
 export type Display = "line" | "area" | "bars" | "points";
@@ -114,7 +120,12 @@ export interface StoredDashboard extends Dashboard {
  * happened to be in.
  */
 export function widgetsInReadingOrder(widgets: readonly Widget[]): Widget[] {
-  return [...widgets].sort((a, b) => a.layout.y - b.layout.y || a.layout.x - b.layout.x || a.id.localeCompare(b.id));
+  return [...widgets].sort(
+    (a, b) =>
+      a.layout.y - b.layout.y ||
+      a.layout.x - b.layout.x ||
+      a.id.localeCompare(b.id),
+  );
 }
 
 /**
@@ -127,17 +138,27 @@ export function widgetsInReadingOrder(widgets: readonly Widget[]): Widget[] {
  * widget drawn half off-screen is easier to fix than one that broke the grid
  * for everything after it.
  */
-export function gridArea(layout: Layout): { gridColumn: string; gridRow: string } {
+export function gridArea(layout: Layout): {
+  gridColumn: string;
+  gridRow: string;
+} {
   const w = Math.min(Math.max(layout.w, 1), COLUMNS);
   const x = Math.min(Math.max(layout.x, 0), COLUMNS - w);
   const h = Math.max(layout.h, 1);
   const y = Math.max(layout.y, 0);
-  return { gridColumn: `${x + 1} / span ${w}`, gridRow: `${y + 1} / span ${h}` };
+  return {
+    gridColumn: `${x + 1} / span ${w}`,
+    gridRow: `${y + 1} / span ${h}`,
+  };
 }
 
 /** How many rows the grid needs to hold every widget. */
 export function gridRows(widgets: readonly Widget[]): number {
-  return widgets.reduce((rows, w) => Math.max(rows, Math.max(w.layout.y, 0) + Math.max(w.layout.h, 1)), 0);
+  return widgets.reduce(
+    (rows, w) =>
+      Math.max(rows, Math.max(w.layout.y, 0) + Math.max(w.layout.h, 1)),
+    0,
+  );
 }
 
 /**
@@ -150,7 +171,10 @@ export function gridRows(widgets: readonly Widget[]): number {
  * least likely to notice. A line that is *entirely* null reduces to null, not
  * to 0, for the same reason.
  */
-export function reduceSeries(points: readonly (number | null)[], reducer: Reducer): number | null {
+export function reduceSeries(
+  points: readonly (number | null)[],
+  reducer: Reducer,
+): number | null {
   const values: number[] = [];
   for (const p of points) if (p !== null && Number.isFinite(p)) values.push(p);
   if (values.length === 0) return null;
@@ -165,6 +189,14 @@ export function reduceSeries(points: readonly (number | null)[], reducer: Reduce
       return Math.min(...values);
     case "max":
       return Math.max(...values);
+    default:
+      // `Reducer` is this bundle's idea of the set, and a definition is served
+      // back from the store without being re-validated — so a hand-edited row,
+      // or an `ozyd` that has learnt a sixth reducer, delivers one this switch
+      // has never heard of. Falling off the end of a switch returns undefined,
+      // which is not `number | null` however firmly the signature says it is,
+      // and the first `.toFixed` on it takes the page down.
+      return null;
   }
 }
 

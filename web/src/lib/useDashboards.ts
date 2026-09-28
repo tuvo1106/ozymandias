@@ -15,6 +15,7 @@ import {
   useQuery,
   type UseQueryResult,
 } from "@tanstack/react-query";
+import { useMemo } from "react";
 import type { Dashboard, StoredDashboard } from "./dashboard";
 import {
   mergeWidgetResults,
@@ -101,6 +102,13 @@ export interface DashboardData {
   sketches: Map<string, SketchState>;
   /** True while nothing has arrived yet; a refetch keeps the old answer. */
   isPending: boolean;
+
+  /**
+   * True while the answer on screen belongs to a *previous* window or variable
+   * binding. Not set by a background auto-refresh, which asks the same
+   * question again and whose answer nobody is waiting for.
+   */
+  isRefreshing: boolean;
   /** Set when a request failed — a widget-level failure is in its result. */
   error: Error | null;
   /** The window the server actually evaluated, for the charts' x-axis. */
@@ -135,6 +143,7 @@ export function useDashboardData(
   requests: DashboardRequests,
   state: DashboardViewState,
   vars: Dashboard["template_vars"],
+  id: string,
   now: () => number = Date.now,
 ): DashboardData {
   const key = requestsKey(requests);
@@ -142,9 +151,18 @@ export function useDashboardData(
   const live = state.live && state.range.kind === "relative";
   const chunks = requests.chunks;
   const batch = useQuery({
+    // `id` is in the key because the cached *value* is keyed by widget id. Two
+    // dashboards can hold the same queries in the same order under different
+    // widget ids — a saved copy of another one, which this build invites by
+    // making a template instance storable — and without this they share an
+    // entry, `pairResults` files the answer under the first one's ids, and
+    // every widget on the second draws nothing at all. Nothing corrects it
+    // either: the entry is fresh for five seconds, and an absolute range has no
+    // refetch interval to come back with the right answer.
     queryKey: [
       "dashboards",
       "batch",
+      id,
       key,
       rangeKey(state.range),
       JSON.stringify(bound),
@@ -180,9 +198,24 @@ export function useDashboardData(
     refetchInterval: live ? REFRESH_INTERVAL_MS : (false as const),
     placeholderData: keepPreviousData,
   });
-  const sketches = useDashboardSketches(requests.heatmaps, state, vars, now);
-  const byWidget = mergeWidgetResults(
-    (batch.data?.ok ?? []).map((a) => pairResults(a.slots, a.answer.results)),
+  const sketches = useDashboardSketches(
+    requests.heatmaps,
+    state,
+    vars,
+    id,
+    now,
+  );
+  // Memoized so the widgets' own memos can hit. An unmemoized Map here is a new
+  // object every render, and every `useMemo` keyed on it — down to the
+  // `setData` that redraws each chart — fires with it.
+  const byWidget = useMemo(
+    () =>
+      mergeWidgetResults(
+        (batch.data?.ok ?? []).map((a) =>
+          pairResults(a.slots, a.answer.results),
+        ),
+      ),
+    [batch.data],
   );
   const answered = batch.data?.ok[0]?.answer;
   // A dashboard of nothing but heatmaps has no batch to take the window from,
@@ -195,6 +228,7 @@ export function useDashboardData(
     byWidget,
     sketches,
     isPending: chunks.length > 0 && batch.isPending,
+    isRefreshing: batch.isPlaceholderData,
     error: (batch.error as Error | undefined) ?? batch.data?.error ?? null,
     range: answered
       ? { from: answered.from, to: answered.to }
@@ -225,15 +259,18 @@ export function useDashboardSketches(
   heatmaps: DashboardRequests["heatmaps"],
   state: DashboardViewState,
   vars: Dashboard["template_vars"],
+  id: string,
   now: () => number = Date.now,
 ): Map<string, SketchState> {
   const bound = bindVars(vars, state);
   const live = state.live && state.range.kind === "relative";
   const key = JSON.stringify(heatmaps.map((h) => h.q));
   const query = useQuery({
+    // `id` for the same reason as the batch: the value is keyed by widget id.
     queryKey: [
       "dashboards",
       "sketches",
+      id,
       key,
       rangeKey(state.range),
       JSON.stringify(bound),

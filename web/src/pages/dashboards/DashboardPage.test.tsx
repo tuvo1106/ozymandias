@@ -156,10 +156,14 @@ const defaultApi: Api = (url) => {
   }
 };
 
+/** A reply of `HANG` never resolves, which is what "still in flight" is. */
+const HANG = Symbol("hang");
+
 function mockApi(api: Api = defaultApi) {
   const f = vi.fn(async (input: string, init?: RequestInit) => {
-    const { status = 200, body } = api(new URL(input, "http://localhost"), init);
-    return new Response(JSON.stringify(body), { status });
+    const reply = api(new URL(input, "http://localhost"), init);
+    if (reply.body === HANG) return new Promise<Response>(() => {});
+    return new Response(JSON.stringify(reply.body), { status: reply.status ?? 200 });
   });
   vi.stubGlobal("fetch", f);
   return f;
@@ -278,6 +282,25 @@ describe("a stored dashboard", () => {
     await waitFor(() => expect(bodies(f, "/api/v1/query/sketch")).toHaveLength(2));
     expect(bodies(f, "/api/v1/query/sketch")[1]?.vars).toEqual({ env: ["env:dev"] });
     expect(bodies(f, "/api/v1/query/batch")[1]?.vars).toEqual({ env: ["env:dev"] });
+  });
+
+  // The page keeps the previous answer rather than emptying, and dims it to say
+  // that is what you are looking at. Not on an auto-refresh, which asks the
+  // same question again and would otherwise blink every ten seconds.
+  it("dims what is on screen while it answers a new window", async () => {
+    let hang = false;
+    mockApi((url, init) => (hang && url.pathname.startsWith("/api/v1/query") ? { body: HANG } : defaultApi(url, init)));
+    const user = userEvent.setup();
+    renderAt("/dashboards/2");
+    await screen.findByTestId("chart");
+    const body = () => screen.getByTestId("dashboard-grid").parentElement;
+    expect(body()).not.toHaveClass("opacity-50");
+
+    hang = true;
+    await user.selectOptions(screen.getByRole("combobox", { name: "Time range" }), "4h");
+    await waitFor(() => expect(body()).toHaveClass("opacity-50"));
+    // And the previous answer is still there to look at.
+    expect(screen.getByTestId("chart")).toBeInTheDocument();
   });
 
   it("explains a dashboard id that is not one, without asking the server", async () => {

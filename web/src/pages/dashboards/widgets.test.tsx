@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { Widget } from "../../lib/dashboard";
+import type { DashboardQuery, Widget } from "../../lib/dashboard";
 import type { BatchResult } from "../../lib/dashboardsApi";
 import { DashboardGrid } from "./DashboardGrid";
 import { QueryValueWidget, TableWidget, TimeseriesWidget, ToplistWidget } from "./widgets";
@@ -139,6 +139,33 @@ describe("reducers", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
     expect(complain.mock.calls.flat().join(" ")).not.toMatch(/same key/i);
     complain.mockRestore();
+  });
+});
+
+describe("a reducer this build does not know", () => {
+  // Same route as the unknown widget type below, one level down: a definition
+  // is served back from the store without being re-validated, so `reducer` is
+  // whatever is in the row.
+  it("draws a dash rather than taking the page down", () => {
+    const w = widget({
+      type: "query_value",
+      queries: [{ q: "sum:x{*}", reducer: "median" as DashboardQuery["reducer"] }],
+      precision: 2,
+    });
+    render(<QueryValueWidget widget={w} results={[ok(0, [line({}, [1, 2, 3])])]} />);
+    expect(screen.getByText("—")).toBeInTheDocument();
+  });
+
+  it("drops the row from a toplist rather than ranking by undefined", () => {
+    const w = widget({
+      type: "toplist",
+      queries: [
+        { q: "sum:a{*} by {r}", reducer: "median" as DashboardQuery["reducer"] },
+        { q: "sum:b{*} by {r}", reducer: "sum" },
+      ],
+    });
+    render(<ToplistWidget widget={w} results={[ok(0, [line({ r: "a" }, [5])]), ok(1, [line({ r: "b" }, [1, 2])])]} />);
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual(["x{r:b}3"]);
   });
 });
 
