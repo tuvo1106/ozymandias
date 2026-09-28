@@ -418,6 +418,15 @@ check "and is then gone"                    test "$(curl -s -o /dev/null -w '%{h
 check "a broken definition is refused"      test "$(curl -s -o /dev/null -w '%{http_code}' \
   -X POST "$OZY_URL/api/v1/dashboards" \
   -d '{"title":"bad","widgets":[{"id":"w","type":"timeseries","layout":{"x":0,"y":0,"w":1,"h":1},"queries":[{"q":"sum:x{a:b by {k}","display":"line"}]}]}')" = "400"
+# A field on a type that does not draw it is refused, not ignored: the editor
+# lists such fields as "not used by this type" on the strength of this.
+check "a chart's conditional format is refused" test "$(curl -s -o /dev/null -w '%{http_code}' \
+  -X POST "$OZY_URL/api/v1/dashboards" \
+  -d '{"title":"bad","widgets":[{"id":"w","type":"timeseries","layout":{"x":0,"y":0,"w":1,"h":1},"queries":[{"q":"sum:x{*}"}],"conditional_formats":[{"op":">","value":1,"color":"red"}]}]}')" = "400"
+# The editor's query box asks this on every pause in typing.
+check "validate names the column of a parse error" test "$(curl -fsS --max-time 5 \
+  -X POST "$OZY_URL/api/v1/query/validate" -d '{"q":"sum:x{a:b by {k}"}' |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["col"])')" = "14"
 
 # --- M3: dashboard templates ---------------------------------------------------
 # A template is the one dashboard nobody writes: it is provisioned once and
