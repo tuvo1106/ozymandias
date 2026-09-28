@@ -287,8 +287,13 @@ func TestTemplates_TheListIsCappedAndSaysSo(t *testing.T) {
 	if rec.Code != 404 {
 		t.Fatalf("%d %v", rec.Code, out)
 	}
-	if msg, _ := out["error"].(string); !strings.Contains(msg, "truncated") {
-		t.Errorf("error %q does not admit that the list it looked in was truncated", msg)
+	// The 404 says which budget ran out, and this one is the service cap.
+	msg, _ := out["error"].(string)
+	if !strings.Contains(msg, fmt.Sprint(maxServices)) || !strings.Contains(msg, "services") {
+		t.Errorf("error %q does not say the search stopped at the service cap", msg)
+	}
+	if strings.Contains(msg, fmt.Sprint(maxLookups)) {
+		t.Errorf("error %q blames the lookup budget, which is not what ran out", msg)
 	}
 }
 
@@ -665,12 +670,18 @@ func TestTemplates_DiscoveryStopsOnceTheServiceCapIsReached(t *testing.T) {
 // Fifty ordinary dashboards of a thousand queries each is 50,000 query parses
 // for a request that wanted none of them.
 //
-// Measured on an M-series laptop, 50 such dashboards, none of them templates:
+// Measured on an M-series laptop, 50 such dashboards, none of them templates,
+// -benchtime 5x, three runs each with nothing else running:
 //
-//	Parse first (what this was):   73ms/op
-//	claimsTemplate first:        10.3ms/op
+//	Parse first (what this was):  25.0ms/op
+//	claimsTemplate first:          5.5ms/op
 //
-// The remaining 10ms is reading 50 definitions out of SQLite and scanning them
+// Take the conditions seriously. The first numbers recorded here were 73ms and
+// 10.3ms, measured while a container image was building alongside: both sides
+// inflated by roughly the same factor, so the ratio survived and the absolute
+// figures were fiction.
+//
+// The remaining 5.5ms is reading 50 definitions out of SQLite and scanning them
 // for one field, which is the floor for "is any of these a template" without a
 // column to index. If these endpoints ever get hot enough to care, that column —
 // or a cache — is the next step, and this benchmark is how to tell.
@@ -700,8 +711,91 @@ func BenchmarkDiscover(b *testing.B) {
 		Clock: testutil.NewFakeClock(now), Logger: slog.New(slog.DiscardHandler)}
 	b.ResetTimer()
 	for range b.N {
-		if _, err := d.discover(context.Background()); err != nil {
+		if _, err := d.discover(context.Background(), ""); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// Templates overlap by design — several app repos each mounting a provisioning
+// directory beside the stock one, all drawing http.request.count — so a
+// (series, key) pair is asked about once, not once per template. Without this,
+// the lookup budget is spent on repeats and the answer comes back truncated
+// with real services missing from it.
+func TestTemplates_ALookupIsNotRepeatedPerTemplate(t *testing.T) {
+	vals := &tagValues{values: map[string][]string{
+		"http.request.count/service":          {"checkout"},
+		"http.request.duration.count/service": {"checkout"},
+	}}
+	defs := make([]string, 25)
+	for i := range defs {
+		defs[i] = strings.Replace(serviceTemplate, `"uid":"svc"`, fmt.Sprintf(`"uid":"svc%d"`, i), 1)
+	}
+	h, _, _ := templatesAPI(t, vals, types{"http.request.duration": wire.KindDistribution}, defs...)
+
+	rec, out := send(t, h, http.MethodGet, "/api/v1/dashboards/services", "")
+	if rec.Code != 200 {
+		t.Fatalf("%d %v", rec.Code, out)
+	}
+	// Two distinct pairs across twenty-five templates.
+	if len(vals.asked) != 2 {
+		t.Errorf("made %d lookups for 25 templates naming the same two metrics: %v", len(vals.asked), vals.asked)
+	}
+	if out["truncated"] != false {
+		t.Errorf("truncated = %v; repeats were spending the budget", out["truncated"])
+	}
+	if got := stringsOf(t, out["services"], "services"); !slices.Equal(got, []string{"checkout"}) {
+		t.Errorf("services = %v", got)
+	}
+}
+
+// Asking about one service stops as soon as it turns up. That is not only
+// cheaper: the budget is spent in template order, so a deployment with more
+// templates than it covers would otherwise 404 a service that does report the
+// metrics, for a reason that has nothing to do with that service.
+func TestTemplates_OneServiceIsLookedUpAndThenTheSearchStops(t *testing.T) {
+	vals := &tagValues{values: map[string][]string{"m0000/service": {"checkout"}}}
+	// 60 metrics, one of which answers; the rest must not be asked about.
+	h, _, _ := templatesAPI(t, vals, types{}, bigTemplate(t, 60))
+
+	rec, out := send(t, h, http.MethodGet, "/api/v1/dashboards/service/checkout", "")
+	if rec.Code != 200 {
+		t.Fatalf("%d %v", rec.Code, out)
+	}
+	if len(vals.asked) != 1 {
+		t.Errorf("asked %d metrics after the first one answered: %v", len(vals.asked), vals.asked)
+	}
+	// The list endpoint still covers everything, because it is answering a
+	// different question.
+	vals.asked = nil
+	if rec, out = send(t, h, http.MethodGet, "/api/v1/dashboards/services", ""); rec.Code != 200 {
+		t.Fatalf("%d %v", rec.Code, out)
+	}
+	if len(vals.asked) != 60 {
+		t.Errorf("the list endpoint asked %d of 60 metrics", len(vals.asked))
+	}
+}
+
+// When the lookup budget is what ran out, the 404 says so rather than claiming
+// the server has more than a thousand services.
+func TestTemplates_The404NamesTheBudgetThatRanOut(t *testing.T) {
+	vals := &tagValues{values: map[string][]string{"m0000/service": {"checkout"}}}
+	big := bigTemplate(t, 1000)
+	defs := make([]string, 4)
+	for i := range defs {
+		defs[i] = strings.Replace(big, `"uid":"big"`, fmt.Sprintf(`"uid":"big%d"`, i), 1)
+	}
+	h, _, _ := templatesAPI(t, vals, types{}, defs...)
+
+	rec, out := send(t, h, http.MethodGet, "/api/v1/dashboards/service/nope", "")
+	if rec.Code != 404 {
+		t.Fatalf("%d %v", rec.Code, out)
+	}
+	msg, _ := out["error"].(string)
+	if !strings.Contains(msg, fmt.Sprint(maxLookups)) || !strings.Contains(msg, "distinct metrics") {
+		t.Errorf("error %q does not say the lookup budget ran out", msg)
+	}
+	if strings.Contains(msg, fmt.Sprint(maxServices)+" services") {
+		t.Errorf("error %q blames a service count this server does not have", msg)
 	}
 }

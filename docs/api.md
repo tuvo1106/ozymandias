@@ -489,10 +489,14 @@ across every template.
 The lookup cap is what stops this endpoint being an amplifier. A template may
 hold 100 widgets × 10 queries, and nothing bounds how many templates exist —
 anybody who can `POST` a dashboard can mark one — so uncapped, a single `GET`
-could ask the store about tens of thousands of metrics. It is far above what a
-real deployment reaches: the shipped template names two metrics. Instantiation
-itself needs no lookups, so `/dashboards/service/{name}` still returns every
-template even for a request that hit the cap.
+could ask the store about tens of thousands of metrics. It counts the **distinct**
+`(series, tag key)` pairs, not the queries: templates are expected to overlap —
+the shape provisioning is built for is several app repos each mounting a
+directory beside the stock one, all drawing `http.request.count` — so the same
+pair asked for by twenty templates is one lookup. It is far above what a real
+deployment reaches: the shipped template names two metrics. Instantiation itself
+needs no lookups, so `/dashboards/service/{name}` still returns every template
+even for a request that hit the cap.
 
 `unreadable` names rows that say `"template": true` and do not validate. Such a
 row cannot be created through the API or by provisioning, so it is a hand-edited
@@ -547,11 +551,16 @@ than spliced beside the provenance: there is no `id`, `created_at` or
 An instance is a definition `POST /api/v1/dashboards` would accept, which is what
 makes "save a copy of this" possible.
 
-`404` if `{name}` is not in `/api/v1/dashboards/services` — a typo in a URL
-somebody pasted into a runbook would otherwise render a grid of empty charts,
-which reads as "the service is down" rather than "the service is misspelt". If
-the service list was truncated, the message says so, because then the `404` might
-be wrong.
+`404` if no template's metrics carry that service — a typo in a URL somebody
+pasted into a runbook would otherwise render a grid of empty charts, which reads
+as "the service is down" rather than "the service is misspelt".
+
+This endpoint stops looking the moment the name turns up, so the usual cost is
+one tag-index lookup rather than the whole sweep `/dashboards/services` does. If
+it searched everything and still gave up because a **budget** ran out, the `404`
+says which one — "more than 1000 services" and "more than 500 distinct metrics
+between the templates" are different problems, and the fix for one is not the fix
+for the other.
 
 Both endpoints answer `503` on a server with no metric store wired: there is
 nothing to discover services from, and "no services" would be a lie.

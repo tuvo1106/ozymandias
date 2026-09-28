@@ -1,7 +1,7 @@
 {
   "uid": "service",
   "title": "Service overview",
-  "description": "The HTTP surface of one service, from the metrics every ozymandias SDK sends. This is a template: it is not shown as itself but instantiated for each service the store has http.request data for, at /dashboards/service/<name>.",
+  "description": "The HTTP surface of one service: how much it is asked for, how often it fails, and how long it takes. Everything here comes from the http.request.* metrics an ozymandias SDK sends.",
   "template": true,
   "template_vars": [
     {"name": "service", "tag": "service", "default": "*"},

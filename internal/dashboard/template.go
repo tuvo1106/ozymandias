@@ -83,6 +83,16 @@ func (d *Dashboard) ServiceTag() string {
 //   - the title gains the service name, because a picker showing four
 //     identically titled dashboards is not a picker.
 //
+// The description is *not* touched, which is a decision and not an omission: it
+// describes what the dashboard shows, and that is the same for every instance.
+// It does mean a template's description is read by somebody looking at one
+// service, so it should describe the content rather than the templating — a
+// description that says "this is a template, instantiated at
+// /dashboards/service/<name>" tells the reader of an instance that they are
+// looking at a template, on the very URL it points them to. That was true of
+// the shipped template until it was reworded; docs/dashboards.md now warns
+// template authors.
+//
 // The result is a definition that passes [Dashboard.Validate] — which is worth
 // more than it sounds: it is what lets the UI offer "save a copy of this" and
 // have the copy store, and it is why the title is length-capped below rather
@@ -146,7 +156,16 @@ func instanceTitle(title, service string) string {
 
 // truncate cuts s to at most n bytes without splitting a rune. A title is
 // bounded in bytes, and half a multi-byte character is not a title.
+//
+// A negative n is "nothing fits", not a panic. Both callers already keep n at or
+// above zero, so this guards nothing today — but `len(s) <= n` does not catch a
+// negative n, `s[:n]` would panic on one, and this package's rule is no panics
+// outside main and tests. A helper that holds on its own is worth more than one
+// that holds because of what its callers happen to do.
 func truncate(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
 	if len(s) <= n {
 		return s
 	}

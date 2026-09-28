@@ -343,3 +343,36 @@ func TestInstanceTitle_StaysWithinTheLimitAndKeepsTheName(t *testing.T) {
 		}
 	}
 }
+
+// The description is inherited verbatim, which is a decision: it says what the
+// dashboard shows and that is the same for every instance. The consequence is
+// that a template's description is read by somebody looking at one service, so
+// it must not talk about templating — a rule the shipped template broke until a
+// review caught it, and which only a test keeps true.
+func TestInstantiate_TheDescriptionIsInheritedAndIsAboutTheContent(t *testing.T) {
+	d := template()
+	d.Description = "what this shows"
+	inst, err := d.Instantiate("checkout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.Description != "what this shows" {
+		t.Errorf("description %q, want the template's", inst.Description)
+	}
+}
+
+// A negative n is "nothing fits", not a panic: `len(s) <= n` does not catch one
+// and `s[:n]` would take the whole package down. No caller passes one today,
+// which is exactly when a helper stops holding on its own.
+func TestTruncate_ANegativeLengthIsNotAPanic(t *testing.T) {
+	for _, tc := range []struct {
+		s string
+		n int
+	}{
+		{"abc", -1}, {"", -1}, {"héllo", -99}, {"abc", 0}, {"", 0},
+	} {
+		if got := truncate(tc.s, tc.n); got != "" {
+			t.Errorf("truncate(%q, %d) = %q, want the empty string", tc.s, tc.n, got)
+		}
+	}
+}

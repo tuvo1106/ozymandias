@@ -87,10 +87,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   series fall out of retention, and a service that reports none of a template's
   metrics is not listed at all — its instance would be a grid of empty charts.
   An unknown name is a `404` rather than that grid, because a typo in a runbook's
-  URL reads as "the service is down". Discovery is capped at 500 tag-index
-  lookups and 1000 services per request, and says `"truncated": true` when it
-  hits either — uncapped, one `GET` could ask the store about every metric of
-  every template, and nothing bounds how many templates exist.
+  URL reads as "the service is down". Discovery is capped at 500 *distinct*
+  tag-index lookups and 1000 services per request, and says `"truncated": true`
+  when it hits either — uncapped, one `GET` could ask the store about every
+  metric of every template, and nothing bounds how many templates exist.
+  Lookups are memoized across templates, which are expected to overlap, and a
+  request for one service stops as soon as that service turns up.
 - **The distribution behind a metric, not just a number from it.**
   `GET|POST /api/v1/query/sketch` answers a new `dist:` aggregator —
   `dist:http.request.latency{service:api} by {route}` — with the merged sketch

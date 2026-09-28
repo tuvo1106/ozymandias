@@ -66,6 +66,17 @@ func TestShippedDashboards(t *testing.T) {
 			if err := inst.Validate(); err != nil {
 				t.Errorf("its instance does not validate: %v", err)
 			}
+			// The description is inherited verbatim, so a template whose
+			// description explains templating tells the reader of an *instance*
+			// that they are looking at a template — on the URL it points them
+			// to. The shipped template said exactly that until a review caught
+			// it, which is why this is a test and not a note.
+			for _, word := range []string{"template", "instantiat", "/dashboards/service/"} {
+				if strings.Contains(strings.ToLower(inst.Description), word) {
+					t.Errorf("its description mentions %q, and an instance inherits it verbatim: %q",
+						word, inst.Description)
+				}
+			}
 			if _, err := d.Metrics(); err != nil {
 				t.Errorf("its metrics cannot be read, so it discovers no services: %v", err)
 			}

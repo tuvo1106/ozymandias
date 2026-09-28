@@ -73,9 +73,15 @@ because there is nothing further to learn from asking.
   number of dashboards: a row is checked for `"template": true` with a shallow
   decode before it is validated, because validating means parsing every query in
   a definition and most rows are somebody's ordinary dashboard. Fifty
-  thousand-query dashboards, none of them templates, went from 73ms a request to
-  10.3ms (`BenchmarkDiscover`).
-- Cost per request is also one tag-index lookup per distinct metric per template, and
+  thousand-query dashboards, none of them templates, went from 25.0ms a request
+  to 5.5ms (`BenchmarkDiscover`).
+- Cost per request is also one tag-index lookup per distinct `(series, tag key)`
+  pair — memoized, because templates are expected to overlap: the deployment
+  shape provisioning is built for is several app repos each mounting a directory
+  beside the stock one, and they all draw `http.request.count`. Asking once per
+  template instead would spend the budget below on repeats and answer
+  `truncated` with real services missing. `/dashboards/service/{name}` stops as
+  soon as the name it was given turns up, so the common read is one lookup. And
   the number of templates is bounded by nothing — anybody who can `POST` a
   dashboard can mark one — so the lookups are capped at **500 per request** and a
   request that hits the cap answers `"truncated": true`. A count rather than a

@@ -210,6 +210,13 @@ for `$env`. So the definition a reader sees and the query the server runs are th
 same string, and there is no substitution pass in the package that promises not
 to interpret data.
 
+**The description is inherited word for word**, because it says what the
+dashboard shows and that is the same for every instance. So write it about the
+*content*, not about the templating: a description explaining that this is a
+template, instantiated at `/dashboards/service/<name>`, tells the reader of an
+instance that they are looking at a template — on the URL it just sent them to.
+The shipped template said exactly that until a review caught it.
+
 What else an instance differs by: `template` and `uid` are cleared — it is not
 itself instantiable, and nothing stores it — and its title gains `": <service>"`,
 so a picker showing four of them is a picker. An instance is a definition the API

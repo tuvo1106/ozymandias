@@ -68,7 +68,7 @@ type templateRow struct {
 // discovery is what both template endpoints have to learn from the store before
 // they can answer: which templates exist, and which services they cover.
 //
-// One type because the two endpoints need exactly the same thing — the list
+// One type because the two endpoints need nearly the same thing — the list
 // endpoint answers `services` and the instantiation endpoint uses it to tell an
 // unknown service from a real one — and two functions that each did half of it
 // would drift.
@@ -76,14 +76,30 @@ type discovery struct {
 	// templates are the ones that can be instantiated: a row that says it is a
 	// template and does not validate is not here, it is in unreadable.
 	templates []templateRow
+	// services is the complete set only when [Dashboards.discover] was asked
+	// for no particular name. Given one, it stops as soon as that name turns
+	// up, so this holds however much of the set it took to find it — enough to
+	// answer "is this a service?" and not something to serve as a list.
 	services  []string
 	truncated bool
+	// stopped names the budget that ran out, because the two mean different
+	// things to whoever reads the 404 that follows: "" for neither,
+	// stoppedServices for more services than the cap, stoppedLookups for more
+	// distinct metrics to ask about than the cap. Saying the wrong one sends an
+	// operator after a problem they do not have.
+	stopped string
 	// unreadable names the rows that were dropped, so the response can say a
 	// template exists and could not be used — the same bargain
 	// [Dashboards.list] strikes, for the same reason: a hand-edited row should
 	// cost its own entry, not everybody's dashboards.
 	unreadable []int64
 }
+
+// The budgets [Dashboards.discover] can run out of.
+const (
+	stoppedServices = "services"
+	stoppedLookups  = "lookups"
+)
 
 // discover reads the templates and the services they cover.
 //
@@ -121,21 +137,43 @@ type discovery struct {
 // instantiation endpoint answered it with a 500. An unreachable branch here is
 // unreachable because something upstream excludes it, and that is worth writing
 // down rather than asserting.
-func (d *Dashboards) discover(ctx context.Context) (discovery, error) {
+//
+// # want
+//
+// A non-empty want means "I only need to know whether this one service exists",
+// and discovery stops the moment it turns up. That is what
+// `/dashboards/service/{name}` asks, and it matters for more than speed: the
+// lookup budget below is spent in template order, so without the early stop a
+// deployment with more templates than the budget covers would 404 a service
+// that really does report the metrics — the list it was looked up in having run
+// out before reaching it. Stopping early also means services is partial, which
+// is why only the list endpoint (want == "") serves it.
+func (d *Dashboards) discover(ctx context.Context, want string) (discovery, error) {
 	rows, err := d.Store.Dashboards(ctx)
 	if err != nil {
 		return discovery{}, err
 	}
 	out := discovery{unreadable: []int64{}}
 	seen := map[string]bool{}
+	// asked memoizes the lookups, because templates overlap by design: the
+	// deployment shape docs/dashboards.md describes is several app repos each
+	// mounting a provisioning directory beside the stock one, and they all draw
+	// http.request.count. Without this, one (series, key) pair is re-queried
+	// once per template *and* each copy spends the budget, so twenty-five
+	// templates naming twenty metrics each exhaust 500 lookups to learn what
+	// twenty would have told us — and then answer truncated, which makes real
+	// services 404.
+	asked := map[string][]string{}
 	lookups := 0
+	found := func() bool { return want != "" && seen[want] }
 	for _, row := range rows {
 		// The cheap question first. Most rows are somebody's ordinary
 		// dashboard, and all this needs from one is a single boolean —
 		// while [dashboard.Parse] answers it by validating the whole
 		// definition, which runs the metricql parser over every query in it.
-		// Fifty ordinary dashboards of a thousand queries each measured 73ms a
-		// request in BenchmarkDiscover, for rows the answer then discards.
+		// Fifty ordinary dashboards of a thousand queries each measured 25ms a
+		// request in BenchmarkDiscover, against 5.5ms for this check, for rows
+		// the answer then discards.
 		if !claimsTemplate(row.Definition) {
 			continue
 		}
@@ -157,26 +195,38 @@ func (d *Dashboards) discover(ctx context.Context) (discovery, error) {
 		}
 		key := def.ServiceTag()
 		for _, m := range metrics {
-			// Two budgets. Spending the lookup one makes the answer partial, so
-			// it is declared; reaching the service cap does not, because the
-			// truncation below declares it either way — and either way there is
-			// nothing left to learn from asking again.
-			if lookups >= maxLookups {
-				out.truncated = true
+			if found() {
 				break
 			}
-			if len(seen) > maxServices {
-				break
+			series := m
+			if d.isDistribution(m) {
+				series += wire.SuffixCount
 			}
-			lookups++
-			// One lookup past the cap, so that a single metric with more values
-			// than the cap is caught by the check below rather than looking
-			// exactly full.
-			vals, err := d.Values.TagValues(ctx, d.seriesOf(m), key, maxServices+1)
-			if err != nil {
-				return discovery{}, fmt.Errorf("the values of %s on %s: %w", key, m, err)
+			cached, ok := asked[series+"\x00"+key]
+			if !ok {
+				// Two budgets, and only a lookup that is actually made spends
+				// one. Running out of the first makes the answer partial, so it
+				// is declared; reaching the service cap does not, because the
+				// truncation below declares it either way — and either way
+				// there is nothing left to learn from asking again.
+				if lookups >= maxLookups {
+					out.stopped, out.truncated = stoppedLookups, true
+					break
+				}
+				if len(seen) > maxServices {
+					break
+				}
+				lookups++
+				// One lookup past the cap, so that a single metric with more
+				// values than the cap is caught by the check below rather than
+				// looking exactly full.
+				cached, err = d.Values.TagValues(ctx, series, key, maxServices+1)
+				if err != nil {
+					return discovery{}, fmt.Errorf("the values of %s on %s: %w", key, series, err)
+				}
+				asked[series+"\x00"+key] = cached
 			}
-			for _, v := range vals {
+			for _, v := range cached {
 				// A series carrying the bare tag `service`, or one whose value
 				// is a space, has no service to name — and an instance titled
 				// ": " is not one. Trimmed rather than compared to "": a tag
@@ -207,7 +257,7 @@ func (d *Dashboards) discover(ctx context.Context) (discovery, error) {
 	// comfortably under its own limit.
 	if len(out.services) > maxServices {
 		out.services = out.services[:maxServices]
-		out.truncated = true
+		out.stopped, out.truncated = stoppedServices, true
 	}
 	return out, nil
 }
@@ -237,20 +287,18 @@ func claimsTemplate(def []byte) bool {
 	return json.Unmarshal(def, &head) == nil && head.Template
 }
 
-// seriesOf is the series a metric's tags are on: itself, unless it is a
-// distribution, whose tags live on its `.count` (wire protocol §D). The same
-// mapping the percentile path makes, for the same reason — a distribution's own
-// name addresses sketches, which carry no tag index of their own.
+// isDistribution reports whether a metric's tags live on its `.count` rather
+// than on its own name (wire protocol §D). The same question the percentile path
+// asks, for the same reason — a distribution's own name addresses sketches,
+// which carry no tag index of their own.
 //
-// A metric the metadata database has never seen is left alone. It is a
-// dashboard written before the service shipped, and guessing a suffix for it
-// would turn a metric that does not exist into a different metric that does not
-// exist.
-func (d *Dashboards) seriesOf(metric string) string {
-	if m, ok := d.Types.Metric(metric); ok && m.Type == wire.KindDistribution {
-		return metric + wire.SuffixCount
-	}
-	return metric
+// A metric the metadata database has never seen is not a distribution as far as
+// this is concerned. It is a dashboard written before the service shipped, and
+// guessing a suffix for it would turn a metric that does not exist into a
+// different metric that does not exist.
+func (d *Dashboards) isDistribution(metric string) bool {
+	m, ok := d.Types.Metric(metric)
+	return ok && m.Type == wire.KindDistribution
 }
 
 // ready reports whether this build can instantiate templates at all, answering
@@ -275,7 +323,7 @@ func (d *Dashboards) services(w http.ResponseWriter, r *http.Request) {
 	if !d.ready(w) {
 		return
 	}
-	disc, err := d.discover(r.Context())
+	disc, err := d.discover(r.Context(), "")
 	if err != nil {
 		d.fail(w, r, "discovering the services templates cover", err)
 		return
@@ -331,7 +379,7 @@ func (d *Dashboards) serviceDashboards(w http.ResponseWriter, r *http.Request) {
 			"a service name is at most %d bytes, the limit on a whole tag; this one is %d", wire.MaxTagLen, len(name)))
 		return
 	}
-	disc, err := d.discover(r.Context())
+	disc, err := d.discover(r.Context(), name)
 	if err != nil {
 		d.fail(w, r, "discovering the services templates cover", err)
 		return
@@ -342,9 +390,17 @@ func (d *Dashboards) serviceDashboards(w http.ResponseWriter, r *http.Request) {
 	if !slices.Contains(disc.services, name) {
 		msg := fmt.Errorf(
 			"no service named %q reports a metric any template dashboard queries", name)
-		if disc.truncated {
-			msg = fmt.Errorf("%w — and this server has more than %d services, so the list it was looked up in is truncated",
+		// A 404 that might be wrong says which budget ran out before it gave
+		// up. The two are different problems and the fix for one is not the fix
+		// for the other, so naming the wrong one sends an operator after
+		// something that is not happening.
+		switch disc.stopped {
+		case stoppedServices:
+			msg = fmt.Errorf("%w — and this server has more than %d services, so the search stopped before covering them all",
 				msg, maxServices)
+		case stoppedLookups:
+			msg = fmt.Errorf("%w — and the templates here name more than %d distinct metrics between them, so the search stopped before asking about them all",
+				msg, maxLookups)
 		}
 		writeError(w, http.StatusNotFound, msg)
 		return
