@@ -29,7 +29,7 @@ arg       = expr | number | string ;
 
 query     = space_agg ":" metric "{" filter "}"
             [ "by" "{" key { "," key } "}" ] { "." modifier } ;
-space_agg = "avg" | "sum" | "min" | "max" | "count"
+space_agg = "avg" | "sum" | "min" | "max" | "count" | "dist"
           | "p50" | "p75" | "p90" | "p95" | "p99" ;
 
 filter    = "*" | matcher { "," matcher } ;
@@ -134,6 +134,23 @@ ignoring nulls; a bucket where every series is null stays null.
 `p50`…`p99` merge the bucket's **sketches** and then take the quantile — they
 are not an average of per-series percentiles, which is not a percentile of
 anything. They are refused on a metric that is not a distribution.
+
+`dist` merges the same sketches and stops there: the answer is the
+distribution itself rather than a number taken from it. It is an aggregator
+because merging *is* how the series of a group combine for a distribution —
+there is no avg-or-sum choice to make — but what it produces is a shape, not a
+number, so:
+
+- it is answered only by [`GET|POST /api/v1/query/sketch`](api.md#get-apiv1querysketch-post-apiv1querysketch),
+  which returns bins per bucket for a heatmap;
+- it has no value on `/api/v1/query` and cannot take part in arithmetic. Both
+  are refused with a message naming the other endpoint.
+
+```
+dist:http.request.latency{service:api} by {route}
+```
+
+See [ADR-0019](adr/0019-the-dist-aggregator.md).
 
 ### 5. Modify
 

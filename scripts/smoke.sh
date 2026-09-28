@@ -308,6 +308,49 @@ check "each result reports its grid"       test "$(batch_field \
   'all(r["interval"] > 0 for r in d["results"] if r["status"] == "ok")')" = "True"
 check "the batch does not claim one grid"  test "$(batch_field '"interval" in d')" = "False"
 
+# --- M3: the distribution endpoint ---------------------------------------------
+# The heatmap's data. Three things no unit test covers: the real sketch store
+# behind it (a sketch is filed under the bare metric while selection runs against
+# `<metric>.count` — get that wrong and you get an empty answer, not an error),
+# the real agent's sketches rather than a fixture's, and the shape a client
+# decodes.
+sketch_field() { # <python expression over the decoded response, as `d`>
+  curl -fsS --max-time 10 \
+    "$OZY_URL/api/v1/query/sketch?q=dist:smoke.latency%7B*%7D&from=$((M1_T0 - 10))&to=$(date +%s)" |
+    python3 -c "import json,sys
+d = json.load(sys.stdin)
+print($1)"
+}
+check "a distribution has a shape"         test "$(sketch_field 'len(d["series"]) > 0')" = "True"
+# Non-vacuity, first: every check below is an `all(...)` over the bins, and
+# `all()` of nothing is True. Without this line an empty response would pass the
+# whole section.
+check "it has bins to draw"                test "$(sketch_field 'd["bins"] > 0')" = "True"
+check "its bins are [lower, upper, count]" test "$(sketch_field \
+  'all(len(b) == 3 for s in d["series"] for k in s["buckets"] for b in k["bins"])')" = "True"
+# Ascending, and each bin's own bounds the right way round. A mirrored axis
+# draws a plausible histogram, which is the failure worth catching.
+check "its bins ascend by value"           test "$(sketch_field \
+  'all(b[0] <= b[1] for s in d["series"] for k in s["buckets"] for b in k["bins"])
+   and all(k["bins"] == sorted(k["bins"]) for s in d["series"] for k in s["buckets"])')" = "True"
+# The aggregates are carried, not estimated: every observation is in some bin.
+check "its bins hold every observation"    test "$(sketch_field \
+  'all(abs(sum(b[2] for b in k["bins"]) - k["count"]) < 1e-9 for s in d["series"] for k in s["buckets"])')" = "True"
+# Per bucket, not per response: two groups can carry different relative
+# accuracies, so one number for the whole answer described the first and was
+# applied to the rest.
+check "each bucket reports its error bar"  test "$(sketch_field \
+  'all(k["gamma"] > 1 for s in d["series"] for k in s["buckets"])')" = "True"
+check "the response claims no one gamma"   test "$(sketch_field '"gamma" in d')" = "False"
+# The two endpoints know where the other one is — a 400 either way, with the
+# other endpoint named, rather than an empty 200.
+sketch_err() { # <query> <endpoint> — the error message
+  curl -sS --max-time 5 "$OZY_URL/api/v1/$2?q=$1&from=$((M1_T0 - 10))&to=$(date +%s)" |
+    python3 -c 'import json,sys; print(json.load(sys.stdin).get("error", ""))'
+}
+check "a number is sent to /query"         test -n "$(sketch_err 'p95:smoke.latency%7B*%7D' 'query/sketch' | grep 'api/v1/query')"
+check "a distribution is sent to /sketch"  test -n "$(sketch_err 'dist:smoke.latency%7B*%7D' 'query' | grep 'api/v1/query/sketch')"
+
 # --- M3: dashboards ------------------------------------------------------------
 # Provisioning happens at startup, inside the container, from a directory baked
 # into the image. That is three things the unit tests cannot check: that the

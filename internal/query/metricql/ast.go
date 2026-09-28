@@ -88,13 +88,28 @@ const (
 	P90   Agg = "p90"
 	P95   Agg = "p95"
 	P99   Agg = "p99"
+
+	// Dist is the distribution itself rather than a number taken from it: the
+	// merge of every selected series' sketches, per bucket.
+	//
+	// It is an aggregator because merging *is* the space aggregation for a
+	// distribution — there is no choice of avg-or-sum to make, the sketches
+	// merge exactly and that is the only thing they do. Writing `dist:lat{*}`
+	// therefore says the same kind of thing as `sum:req.count{*}`: how the
+	// series of a group are combined.
+	//
+	// What makes it different is that the result is not a number, so it has no
+	// answer on /api/v1/query and cannot take part in arithmetic. The evaluator
+	// refuses it there and says where to send it instead. See
+	// docs/adr/0019-the-dist-aggregator.md.
+	Dist Agg = "dist"
 )
 
 // aggs is every aggregator the grammar accepts, and for a percentile, the
 // quantile it means.
 var aggs = map[Agg]float64{
 	Avg: math.NaN(), Sum: math.NaN(), Min: math.NaN(),
-	Max: math.NaN(), Count: math.NaN(),
+	Max: math.NaN(), Count: math.NaN(), Dist: math.NaN(),
 	P50: 0.50, P75: 0.75, P90: 0.90, P95: 0.95, P99: 0.99,
 }
 

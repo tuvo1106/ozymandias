@@ -212,7 +212,7 @@ func (p *parser) identifier() (Node, error) {
 func (p *parser) query(agg token) (Node, error) {
 	a := Agg(strings.ToLower(agg.text))
 	if _, ok := aggs[a]; !ok {
-		return nil, errAt(agg.pos, "unknown aggregator %q (want avg, sum, min, max, count, or p50/p75/p90/p95/p99)", agg.text)
+		return nil, errAt(agg.pos, "unknown aggregator %q (want avg, sum, min, max, count, dist, or p50/p75/p90/p95/p99)", agg.text)
 	}
 	q := &Query{Agg: a}
 	if err := p.advance(); err != nil {
