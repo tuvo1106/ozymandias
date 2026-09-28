@@ -10,9 +10,8 @@ The definition a dashboard *is* — the JSON, field by field — is
 [dashboards.md](dashboards.md). The endpoints behind every page are
 [api.md](api.md). This document is the reader's side.
 
-> Screenshots are not in the repo yet. They are part of M3's docs deliverable
-> and will land with the dashboard editor; the pages below are described so the
-> text stands on its own without them.
+> Screenshots are not in the repo yet. They are part of M3's docs deliverable;
+> the pages below are described so the text stands on its own without them.
 
 ## 1. The URL is the state
 
@@ -64,7 +63,7 @@ Two lists, because they are two different kinds of thing:
 
 - **Saved** — the stored dashboards. One marked *from file* was provisioned from
   `provisioning.paths` at startup; editing it through the UI would be undone at
-  the next restart, so edit the file. A row the server could not read is named
+  the next restart, so edit the file — or save a copy and edit that. A row the server could not read is named
   rather than hidden, because a dashboard that has silently vanished from a list
   looks deleted.
 - **Services** — every service a *template* dashboard covers. A template is not
@@ -75,6 +74,8 @@ Two lists, because they are two different kinds of thing:
   not "seen in the last day", and not every service that ever reported
   anything. If it says the list is partial, the server stopped before covering
   everything and the reason is in its log.
+
+**New dashboard** opens the editor on a blank definition.
 
 ### One dashboard (`/dashboards/{id}`, `/dashboards/service/{name}`)
 
@@ -145,6 +146,17 @@ background auto-refresh does not dim: it is asking the same question again, and
 a page that blinked every ten seconds would be worse than one that said
 nothing.
 
+A warning that **every widget carries** — a template's `$env` resolving to no
+filter is the usual one — is said once above the grid instead of in each
+widget. Only once every widget has answered: until then nobody knows it is
+shared, and a line that appeared and then moved back into the widgets would be
+the page changing its mind in front of you. A widget whose every query was
+refused is left out of the comparison, because a refusal carries no warnings
+to agree or disagree with.
+
+A `table` colours its cells by the widget's `conditional_formats`, cell by
+cell, exactly as a `query_value` colours its number.
+
 A `note`'s markdown is rendered as **text, not HTML**. Anyone who can `POST` a
 dashboard can write one, and turning stored text into markup is how a monitoring
 page becomes a way to run script in an operator's browser. Paragraphs and line
@@ -169,11 +181,64 @@ Three things the widget tells you in words, because the picture cannot:
 - **"n observations at or below zero, which a log axis cannot show"** — see the
   axis note in [dashboards.md](dashboards.md#yaxis).
 
-## 4. Not built yet
+## 4. Editing a dashboard (`/dashboards/{id}/edit`, `/dashboards/new`)
 
-Named here so the gap is visible rather than surprising: the 12-column
-drag/resize editor, the widget editor, the query editor with autocomplete and
-inline parse errors, JSON import/export, "save to dashboard" from the explorer,
-the Metric Summary (cardinality) page, drag-to-zoom on a chart, and the Home
-overview dashboard. Sections beyond Metrics and Dashboards belong to later
-milestones — [PLAN.md](../PLAN.md) has the map.
+**Edit** on a stored dashboard opens it in the editor; **Save a copy** on a
+provisioned dashboard or a service's template instance opens a copy of it
+(without its `uid`, which belongs to the original). `/dashboards/new?copy={id}`
+and `/dashboards/new?service={name}&template={template_id}` are those links —
+the source is in the URL, so a reload still knows what it was copying.
+
+The page is the dashboard, live, with a panel beside it:
+
+- **The grid.** Drag a widget by the bar at its top, resize it from its
+  bottom-right corner. Both handles also take the arrow keys. Dropping a widget
+  on another pushes the other one down (never sideways, never up), and a
+  widget can never leave the twelve columns.
+- **The preview is real.** It is drawn by the same widgets from the same batch
+  as the dashboard page, so what you see is what the saved dashboard shows. It
+  asks once typing pauses; a widget whose queries have changed since then is
+  dimmed and says *Updating preview…*, and an answer is only ever drawn under
+  the query text it answers.
+- **The widget panel** offers exactly the fields its type uses, per
+  [dashboards.md](dashboards.md). What it *carries* besides is listed too: a
+  field the type does not use (left behind by a type change, say) is shown with
+  the reason the server will refuse it and a *Remove* button; a key this build
+  does not read is listed as kept; a value this build does not know — a
+  reducer from a newer `ozyd` — is shown as itself, not as the first option of
+  the list. Nothing is dropped or defaulted for you, including a new toplist's
+  reducer: which number it ranks by is the question the widget answers.
+- **The query box** completes aggregators, functions and modifiers from the
+  parser's own vocabulary ([ADR-0021](adr/0021-the-query-editors-vocabulary-is-generated.md)),
+  metrics and tag keys and values from the store, and `$variables` from the
+  dashboard; Ctrl+Space opens the list where it would not open itself. Under
+  it, ozyd's verdict on exactly the text in the box: *Parses* (with a
+  *Format* button when the canonical spelling differs), the parse error with
+  the offending character underlined, *Checking…* while that text has not been
+  answered, or *Could not check* when ozyd could not be asked — which is never
+  shown as either a pass or a fail.
+- **A number field** that holds something that is not a number yet (`-`,
+  `1.5` where a whole number is needed) says so and what the dashboard still
+  holds meanwhile; blank means the field is absent, which for precision is
+  "automatic" and not zero.
+- **JSON** exports the definition alone — without the database's `id`,
+  `provisioned` and timestamps, which the API refuses on the way in — and
+  imports pasted text or a file. An import shows what it found (not JSON, not
+  a dashboard and why, or what it will leave out) before it replaces anything.
+
+**Saving** says which of these happened: saved; refused, with every problem
+the server named; a conflict in the server's own words (the dashboard is
+provisioned, or its `uid` is taken); the dashboard was deleted meanwhile (the
+draft is kept, and can be saved as new); or no answer at all — which does not
+mean nothing was written, since an answer can be lost after the write, so the
+page says to check the list before creating again. A save the server accepted
+but whose answer could not be read is reported as saved, and *Create* is then
+disabled, because pressing it again would make a second dashboard.
+
+## 5. Not built yet
+
+Named here so the gap is visible rather than surprising: "save to dashboard"
+and the text query editor in the Metrics Explorer, the Metric Summary
+(cardinality) page, drag-to-zoom on a chart, the Home overview dashboard, and a
+Playwright run of the editor in CI. Sections beyond Metrics and Dashboards
+belong to later milestones — [PLAN.md](../PLAN.md) has the map.

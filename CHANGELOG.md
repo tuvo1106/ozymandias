@@ -9,6 +9,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`conditional_formats` is refused outside `query_value` and `table`.** A
+  timeseries, toplist or heatmap accepted them and drew nothing; the rule in
+  docs/dashboards.md ("a field that belongs to another type is an error") now
+  holds for them too. A stored definition that carried one keeps loading, but
+  saving it again needs the field removed — the editor lists it for removal.
 - **The M1 query parameters are translated, not reimplemented.**
   `metric`/`filter`/`by`/`agg` are now written out as a metricql query and run
   through the one evaluator; `internal/query/simple` is gone. The response's
@@ -65,6 +70,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Python; a first publish would use PyPI `ozy` and npm `@tuvo1106/ozy`.
 
 ### Added
+
+- **The dashboard editor** (`/dashboards/{id}/edit`, `/dashboards/new`): a
+  12-column grid with drag and keyboard move/resize, a widget panel offering
+  exactly the fields each type uses, a live preview drawn by the real widgets,
+  JSON import/export, and *Save a copy* for provisioned dashboards and service
+  template instances. Fields a type does not use, keys this build does not
+  read and values it does not know are shown, never silently dropped or
+  replaced; save failures are reported by kind. See docs/ui.md §4.
+- **A query editor with completion and inline parse errors**: aggregators,
+  functions and modifiers from the parser's own vocabulary (generated from
+  `internal/query/metricql`, ADR-0021), metrics and tag keys/values from the
+  store, `$variables` from the dashboard; the character
+  `POST /api/v1/query/validate` names is underlined.
+- A warning every widget on a dashboard carries is said once above the grid.
+- A `table` colours its cells by its `conditional_formats`.
 
 - **Dashboards are on screen.** `/dashboards` lists what is stored and every
   service a template covers; `/dashboards/{id}` and

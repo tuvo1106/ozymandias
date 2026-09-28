@@ -202,7 +202,8 @@ the reader would have no way to tell.
 [{"op": ">", "value": 1, "color": "red"}]
 ```
 
-In order; the first match wins. `op` is one of `>`, `>=`, `<`, `<=`, `=`, `!=`.
+`query_value` and `table` only — a table colours each cell by them. In order;
+the first match wins. `op` is one of `>`, `>=`, `<`, `<=`, `=`, `!=`.
 `color` is a palette *name*, not CSS — a definition in git should not encode this
 build's hex codes, and a palette that has to change for contrast should not
 require editing every dashboard.
