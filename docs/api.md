@@ -243,12 +243,18 @@ a dashboard for a service that has not shipped yet is a legitimate dashboard,
 and saving one should not depend on the data being there.
 
 "Verbatim" means the definition is **stored** exactly as sent — byte for byte,
-including formatting — and served back from those bytes rather than from a
-re-encoding, so a dashboard exported from one ozyd and imported into another
-does not pick up a diff from this build's JSON encoder. The response splices the
-metadata in beside the definition's fields, so the outer braces and any
-surrounding whitespace are the response's own; everything between them is the
-author's.
+formatting included — and served back from those bytes rather than from a
+re-encoding. Be precise about what that preserves, because a response is not the
+stored bytes. Preserved: the definition's **key order**, every **number exactly as
+written** (a decode-and-re-encode would make `12345678901234567890` into
+`1.2345678901234567e+19`), and any field this build does not know about. Not
+preserved: whitespace and HTML escaping — Go's JSON encoder compacts a response
+and escapes `<`, `>` and `&` inside strings, so a pretty-printed definition comes
+back minified with `a <b>` as `a \u003cb\u003e`. That is the response's encoding,
+not the database's; the stored row is untouched, and `GET` of a definition stored
+from a file returns the same fields, order and values it went in with. The
+response splices the metadata in beside the definition's fields, so the outer
+braces are the response's own; everything between them is the author's.
 
 ### `GET /api/v1/dashboards`
 
@@ -257,21 +263,41 @@ Every dashboard, by title, definitions included.
 ```console
 $ curl -s localhost:9400/api/v1/dashboards
 {"status":"ok","count":1,"dashboards":[
-  {"id":1,"provisioned":true,"created_at":"...","updated_at":"...",
-   "uid":"home","title":"Home","widgets":[…]}]}
+  {"uid":"home","title":"Home","widgets":[…],
+   "id":1,"provisioned":true,"created_at":"...","updated_at":"..."}],
+ "unreadable":[]}
 ```
 
 `dashboards` is always an array, empty rather than `null`. Each entry is the
 database's columns (`id`, `provisioned`, `created_at`, `updated_at`) with the
 definition's fields spliced in beside them, not nested — a client that just
-fetched a dashboard wants to render it, not unwrap it. The metadata is written
-first, so a definition that somehow contained an `id` could not claim it (and
-in fact could not be stored at all: `id` is not a field of a definition, and
-unknown fields are refused).
+fetched a dashboard wants to render it, not unwrap it.
+
+`count` is the length of `dashboards` — the rows this response could encode, not
+the number of rows in the database. `count: 2` alongside `unreadable: [5]` means
+three rows exist.
+
+**The database's metadata is the database's.** `id`, `provisioned`, `created_at`
+and `updated_at` come from the columns, and a stored definition containing any of
+those four keys is **refused**: it is named in `unreadable` (or answered with a
+`500` on a single-dashboard `GET`) and the reason is logged with its id. Refused
+rather than overridden, because a response carrying the same key twice means
+whatever the reader's parser does with it — most keep the last, and some, Go's own
+`encoding/json/v2` among them, reject the document outright. Nothing can put those
+keys in a definition in the first place (they are not fields of one, and unknown
+fields are refused on both the API and the provisioning path), so such a row is a
+hand-edited database; the useful answer to one is to say which row and why.
 
 The list carries every definition rather than a summary. Twenty dashboards is a
 few tens of kilobytes, and the alternative — a list plus a fetch per row — is
 what makes a dashboard picker feel slow.
+
+`unreadable` names any rows whose stored definition could not be spliced into a
+response, and is always present. Each row is encoded separately so that one
+unusable definition costs its own entry rather than the whole list: the picker is
+built on this endpoint, so a single hand-edited row must not become "nobody can
+open anything". The reason is logged with the id; the response says only that the
+row exists and cannot be rendered.
 
 ### `POST /api/v1/dashboards`
 
@@ -281,7 +307,7 @@ have known it.
 
 ```console
 $ curl -s -X POST localhost:9400/api/v1/dashboards -d @checkout.json
-{"id":2,"provisioned":false,"created_at":"...","updated_at":"...","title":"Checkout",…}
+{"title":"Checkout",…,"id":2,"provisioned":false,"created_at":"...","updated_at":"..."}
 ```
 
 ### `GET /api/v1/dashboards/{id}`

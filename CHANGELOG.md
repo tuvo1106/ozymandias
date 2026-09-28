@@ -74,8 +74,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   conditional formats.
   A definition is **validated on the way in and stored verbatim** — byte for
   byte, formatting included — and served back from those bytes rather than from
-  a re-encoding, so a dashboard exported from one ozyd and imported into another
-  does not acquire a diff from this build's JSON encoder.
+  a re-encoding, so its key order, every number as written, and any field this
+  build does not know about all survive an export from one ozyd and an import
+  into another. Whitespace and `<`/`>`/`&` escaping do not: a response is
+  compacted and escaped by Go's JSON encoder whatever the stored row looks like.
+  The list response carries `count` (the number of rows it could encode, not the
+  number in the database) and an always-present `unreadable` array naming any
+  row whose stored definition could not be spliced. A definition containing
+  `id`, `provisioned`, `created_at` or `updated_at` is refused rather than
+  served, because those are the database's and a response cannot carry a key
+  twice and still mean one thing to every parser.
   Validation refuses what is certain to fail later: a query that does not parse,
   an unknown widget type, a layout off the grid, a field belonging to another
   type, and — the one that cannot be checked one widget at a time — a `$var` no
@@ -230,6 +238,33 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   fuzzer had hit.
 
 ### Fixed
+
+- **One unusable dashboard row no longer sinks the whole list.** `GET
+  /api/v1/dashboards` encoded every row in one call, so a single definition that
+  could not be spliced made the endpoint a `500` — and the list is what a
+  dashboard picker is built on, so the blast radius of one hand-edited row was
+  "nobody can open anything". Rows are encoded one at a time now; a row that
+  cannot be rendered is named in a new always-present `unreadable` array and the
+  reason is logged with its id, rather than vanishing or taking the others with
+  it.
+
+- **A dashboard's stored definition could have overridden its own metadata.**
+  The response splices the definition's fields beside the database's `id`,
+  `provisioned` and timestamps, and wrote the metadata *first* — with a comment
+  claiming that this stopped a definition containing an `id` from overwriting the
+  database's. It is the opposite: in JSON the last of two duplicate keys wins, so
+  metadata-first meant the definition won. The metadata is written last now, and
+  a definition that claims one of those four keys is refused outright — ordering
+  alone only works for parsers that keep the last duplicate, which is what the
+  ones we have do and not something JSON promises (`encoding/json/v2` rejects
+  duplicate object names), and a response whose meaning depends on the reader's
+  parser is not an answer. Nothing could reach it — those are not fields of a
+  definition and unknown fields are refused on both write paths — so this was an
+  imaginary defence rather than a live bug, which is its own kind of problem.
+  The row's id and the reason now reach an operator once per row rather than
+  once per request: `GET /api/v1/dashboards` is what a dashboard picker polls,
+  and an `Error` record per poll for a row that stays broken until somebody
+  edits the database buries the rest of the log.
 
 - **A JSON response could be an empty `200`.** `writeJSON` encoded straight to
   the `ResponseWriter`, so the status line was already sent when the encoder
