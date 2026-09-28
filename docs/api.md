@@ -480,9 +480,19 @@ alternatives and their costs. Two things follow:
   to explain why.
 
 `services` is always an array, sorted, deduplicated across templates, and empty
-rather than `null`. `truncated` says the list was capped at 1000 (the same limit
-a query node's series selection has), so a client can tell "these are all of
-them" from "these are the first thousand".
+rather than `null`. `truncated` says the answer is partial, so a client can tell
+"these are all of them" from "these are the ones it got to". Two things set it:
+the list is capped at **1000 services** (the same limit a query node's series
+selection has), and discovery is capped at **500 tag-index lookups per request**
+across every template.
+
+The lookup cap is what stops this endpoint being an amplifier. A template may
+hold 100 widgets × 10 queries, and nothing bounds how many templates exist —
+anybody who can `POST` a dashboard can mark one — so uncapped, a single `GET`
+could ask the store about tens of thousands of metrics. It is far above what a
+real deployment reaches: the shipped template names two metrics. Instantiation
+itself needs no lookups, so `/dashboards/service/{name}` still returns every
+template even for a request that hit the cap.
 
 `unreadable` names rows that say `"template": true` and do not validate. Such a
 row cannot be created through the API or by provisioning, so it is a hand-edited

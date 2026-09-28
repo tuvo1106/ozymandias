@@ -81,7 +81,7 @@ func templatesAPI(t *testing.T, vals *tagValues, kinds types, defs ...string) (h
 	return mux, db, &logs
 }
 
-func strings0f(t *testing.T, v any, where string) []string {
+func stringsOf(t *testing.T, v any, where string) []string {
 	t.Helper()
 	items, ok := v.([]any)
 	if !ok {
@@ -113,7 +113,7 @@ func TestTemplates_ServicesAreTheTagValuesOfTheTemplatesOwnMetrics(t *testing.T)
 	if rec.Code != 200 {
 		t.Fatalf("%d %v", rec.Code, out)
 	}
-	got := strings0f(t, out["services"], "services")
+	got := stringsOf(t, out["services"], "services")
 	want := []string{"billing", "checkout", "web"}
 	if !slices.Equal(got, want) {
 		t.Errorf("services = %v, want %v (the union, sorted and deduplicated)", got, want)
@@ -146,7 +146,7 @@ func TestTemplates_ANonTemplateIsNotADiscoverySource(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("%d %v", rec.Code, out)
 	}
-	if got := strings0f(t, out["services"], "services"); len(got) != 0 {
+	if got := stringsOf(t, out["services"], "services"); len(got) != 0 {
 		t.Errorf("services = %v for a deployment with no templates", got)
 	}
 	if len(vals.asked) != 0 {
@@ -274,7 +274,7 @@ func TestTemplates_TheListIsCappedAndSaysSo(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("%d %v", rec.Code, out)
 	}
-	got := strings0f(t, out["services"], "services")
+	got := stringsOf(t, out["services"], "services")
 	if len(got) != maxServices {
 		t.Errorf("returned %d services, want the cap of %d", len(got), maxServices)
 	}
@@ -314,7 +314,7 @@ func TestTemplates_TheCapIsOnTheUnion(t *testing.T) {
 		t.Errorf("truncated = %v for %d services found in two lookups of %d and %d",
 			out["truncated"], len(first)+len(second), len(first), len(second))
 	}
-	if got := strings0f(t, out["services"], "services"); len(got) != maxServices {
+	if got := stringsOf(t, out["services"], "services"); len(got) != maxServices {
 		t.Errorf("returned %d services, want %d", len(got), maxServices)
 	}
 }
@@ -326,7 +326,7 @@ func TestTemplates_AnEmptyTagValueIsNotAService(t *testing.T) {
 	h, _, _ := templatesAPI(t, vals, types{}, serviceTemplate)
 
 	_, out := send(t, h, http.MethodGet, "/api/v1/dashboards/services", "")
-	if got := strings0f(t, out["services"], "services"); !slices.Equal(got, []string{"checkout"}) {
+	if got := stringsOf(t, out["services"], "services"); !slices.Equal(got, []string{"checkout"}) {
 		t.Errorf("services = %q", got)
 	}
 }
@@ -378,7 +378,7 @@ func TestTemplates_AnInvalidTemplateRowIsNamedAndLoggedOnce(t *testing.T) {
 	if rec.Code != 200 {
 		t.Fatalf("%d %v: one broken row must not cost the whole answer", rec.Code, out)
 	}
-	if got := strings0f(t, out["services"], "services"); !slices.Equal(got, []string{"checkout"}) {
+	if got := stringsOf(t, out["services"], "services"); !slices.Equal(got, []string{"checkout"}) {
 		t.Errorf("services = %v; the working template still answers", got)
 	}
 	ids, ok := out["unreadable"].([]any)
@@ -559,12 +559,100 @@ func TestTemplates_ABlankTagValueIsNotAService(t *testing.T) {
 	h, _, _ := templatesAPI(t, vals, types{}, serviceTemplate)
 
 	_, out := send(t, h, http.MethodGet, "/api/v1/dashboards/services", "")
-	if got := strings0f(t, out["services"], "services"); !slices.Equal(got, []string{"checkout"}) {
+	if got := stringsOf(t, out["services"], "services"); !slices.Equal(got, []string{"checkout"}) {
 		t.Errorf("services = %q", got)
 	}
 	// And the name it would have produced is a 404 rather than a 500.
 	rec, _ := send(t, h, http.MethodGet, "/api/v1/dashboards/service/%20", "")
 	if rec.Code != 404 {
 		t.Errorf("a blank service name gave %d, want 404", rec.Code)
+	}
+}
+
+// bigTemplate is a template naming one distinct metric per query, up to the
+// limits a definition may hold: 100 widgets x 10 queries.
+func bigTemplate(t *testing.T, metrics int) string {
+	t.Helper()
+	d := map[string]any{
+		"uid": "big", "title": "Big", "template": true,
+		"template_vars": []any{map[string]any{"name": "service", "tag": "service", "default": "*"}},
+	}
+	var widgets []any
+	for i := 0; len(widgets) < (metrics+9)/10; i++ {
+		var queries []any
+		for j := 0; j < 10 && i*10+j < metrics; j++ {
+			queries = append(queries, map[string]any{
+				"q": fmt.Sprintf("sum:m%04d{$service}", i*10+j), "display": "line",
+			})
+		}
+		widgets = append(widgets, map[string]any{
+			"id": fmt.Sprintf("w%d", i), "type": "timeseries",
+			"layout":  map[string]any{"x": 6 * (i % 2), "y": 3 * (i / 2), "w": 6, "h": 3},
+			"queries": queries,
+		})
+	}
+	d["widgets"] = widgets
+	body, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dashboard.Parse(body); err != nil {
+		t.Fatalf("the fixture is supposed to be a valid template: %v", err)
+	}
+	return string(body)
+}
+
+// The amplification bound. A template may name a thousand metrics and nothing
+// bounds how many templates exist, so without a cap one unauthenticated GET can
+// ask the store about tens of thousands of metrics.
+func TestTemplates_TheLookupsPerRequestAreBounded(t *testing.T) {
+	vals := &tagValues{values: map[string][]string{"m0000/service": {"checkout"}}}
+	// Four maximal templates: 4000 metrics named, 500 lookups allowed.
+	big := bigTemplate(t, 1000)
+	h, _, _ := templatesAPI(t, vals, types{}, big,
+		strings.Replace(big, `"uid":"big"`, `"uid":"big2"`, 1),
+		strings.Replace(big, `"uid":"big"`, `"uid":"big3"`, 1),
+		strings.Replace(big, `"uid":"big"`, `"uid":"big4"`, 1))
+
+	rec, out := send(t, h, http.MethodGet, "/api/v1/dashboards/services", "")
+	if rec.Code != 200 {
+		t.Fatalf("%d %v", rec.Code, out)
+	}
+	if len(vals.asked) > maxLookups {
+		t.Errorf("one request caused %d tag lookups; the cap is %d", len(vals.asked), maxLookups)
+	}
+	if out["truncated"] != true {
+		t.Errorf("truncated = %v after spending the whole lookup budget", out["truncated"])
+	}
+	// What it did look up, it still answers from.
+	if got := stringsOf(t, out["services"], "services"); !slices.Equal(got, []string{"checkout"}) {
+		t.Errorf("services = %v", got)
+	}
+	// And every template is still instantiable, because that costs no lookups.
+	_, out = send(t, h, http.MethodGet, "/api/v1/dashboards/service/checkout", "")
+	if out["count"] != float64(4) {
+		t.Errorf("count = %v, want all four templates", out["count"])
+	}
+}
+
+// Once the service cap is reached there is nothing left to learn, so the
+// remaining metrics are not asked about.
+func TestTemplates_DiscoveryStopsOnceTheServiceCapIsReached(t *testing.T) {
+	many := make([]string, maxServices+1)
+	for i := range many {
+		many[i] = fmt.Sprintf("svc-%05d", i)
+	}
+	vals := &tagValues{values: map[string][]string{"m0000/service": many}}
+	h, _, _ := templatesAPI(t, vals, types{}, bigTemplate(t, 40))
+
+	rec, out := send(t, h, http.MethodGet, "/api/v1/dashboards/services", "")
+	if rec.Code != 200 {
+		t.Fatalf("%d %v", rec.Code, out)
+	}
+	if out["truncated"] != true {
+		t.Errorf("truncated = %v", out["truncated"])
+	}
+	if len(vals.asked) != 1 {
+		t.Errorf("asked %d metrics after the first one filled the cap: %v", len(vals.asked), vals.asked)
 	}
 }

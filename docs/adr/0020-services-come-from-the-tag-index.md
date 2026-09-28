@@ -50,7 +50,8 @@ Two consequences are accepted rather than worked around:
 The union is capped at 1000 services — the same number as
 `eval.MaxSeriesPerNode`, past which the template's own queries would be refused
 for selecting too many series — and a capped response says `"truncated": true`
-rather than looking complete.
+rather than looking complete. Discovery stops early once that cap is reached,
+because there is nothing further to learn from asking.
 
 ## Alternatives considered
 
@@ -68,10 +69,15 @@ rather than looking complete.
   `Types MetricTypes`). They are optional fields: without them the two template
   endpoints answer `503` with a reason, and dashboard CRUD is unaffected — which
   keeps CRUD tests free of a metric store.
-- Cost per request is one tag-index lookup per distinct metric per template,
-  bounded by `MaxWidgets` × `MaxQueriesPerWidget`. There is no cache. If a
-  picker polling this shows up in a profile, a short-TTL cache is the next step
-  and nothing above changes.
+- Cost per request is one tag-index lookup per distinct metric per template, and
+  the number of templates is bounded by nothing — anybody who can `POST` a
+  dashboard can mark one — so the lookups are capped at **500 per request** and a
+  request that hits the cap answers `"truncated": true`. A count rather than a
+  deadline: a 30-second budget like the query path's would make the list depend
+  on how busy the machine is, and a service list that changes under load is not
+  something a picker can be built on. There is no cache; if a polling picker
+  shows up in a profile, a short-TTL cache is the next step and nothing above
+  changes.
 - `internal/dashboard` gains `Metrics()`, `ServiceTag()` and `Instantiate()`.
   Instantiation **binds** the service variable's default rather than rewriting
   `$service` in the query text, so the definition a reader sees and the query

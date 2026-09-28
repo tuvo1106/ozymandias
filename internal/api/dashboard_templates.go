@@ -24,6 +24,26 @@ import (
 // truncated list. A response that is truncated says so.
 const maxServices = 1000
 
+// maxLookups bounds the tag-index lookups one request may cause, across every
+// template.
+//
+// Without it this endpoint is an amplifier. A template may hold
+// [dashboard.MaxWidgets] x [dashboard.MaxQueriesPerWidget] queries, each naming
+// at least one metric, and the number of *templates* is bounded by nothing at
+// all — anybody who can POST a dashboard can mark it as one. So a single
+// unauthenticated GET could ask the store for the values of a tag on tens of
+// thousands of metrics, which on the naive engine is that many SQL queries. The
+// cap is deliberately far above what a real deployment needs (the shipped
+// template names two metrics; ten rich ones would name a few hundred), and a
+// request that hits it says `truncated` rather than presenting a partial list as
+// the whole one.
+//
+// A count, not a deadline. A 30-second budget like the query path's would bound
+// the wall clock and make the answer depend on how busy the machine is, and a
+// list of services that changes under load is not something a picker can be
+// built on.
+const maxLookups = 500
+
 // TagValueReader is what template instantiation needs from the metric store:
 // the values a tag key takes on a metric.
 //
@@ -107,6 +127,7 @@ func (d *Dashboards) discover(ctx context.Context) (discovery, error) {
 	}
 	out := discovery{unreadable: []int64{}}
 	seen := map[string]bool{}
+	lookups := 0
 	for _, row := range rows {
 		def, err := dashboard.Parse(row.Definition)
 		if err != nil {
@@ -130,6 +151,18 @@ func (d *Dashboards) discover(ctx context.Context) (discovery, error) {
 		}
 		key := def.ServiceTag()
 		for _, m := range metrics {
+			// Two budgets. Spending the lookup one makes the answer partial, so
+			// it is declared; reaching the service cap does not, because the
+			// truncation below declares it either way — and either way there is
+			// nothing left to learn from asking again.
+			if lookups >= maxLookups {
+				out.truncated = true
+				break
+			}
+			if len(seen) > maxServices {
+				break
+			}
+			lookups++
 			// One lookup past the cap, so that a single metric with more values
 			// than the cap is caught by the check below rather than looking
 			// exactly full.
@@ -150,6 +183,10 @@ func (d *Dashboards) discover(ctx context.Context) (discovery, error) {
 				}
 			}
 		}
+		// Appended even if the loop above spent its budget without asking
+		// anything: instantiating a template needs no lookups, so a request for
+		// a service that *was* discovered still gets every template's view of
+		// it.
 		out.templates = append(out.templates, templateRow{row: row, def: def})
 	}
 	// Sorted, so that the picker's order does not depend on which metric was
