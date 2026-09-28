@@ -134,11 +134,31 @@ func intParam(s string, def int64, name string, errs *[]error) int64 {
 	return v
 }
 
+// writeJSON sends v.
+//
+// It marshals into a buffer *before* writing the status line, because the
+// status cannot be taken back afterwards. Encoding straight to the
+// ResponseWriter turns a marshalling bug into "HTTP 200, zero bytes" — a
+// success the client cannot parse and the server never mentions. That is not
+// hypothetical: it is how a dashboard whose stored JSON ended in a newline
+// presented itself, and it cost an afternoon.
 func writeJSON(w http.ResponseWriter, code int, v any) {
+	body, err := json.Marshal(v)
+	if err != nil {
+		// Nothing useful can be said about our own encoder to a caller, but a
+		// 500 is at least honest, and callers can tell it from an empty 200.
+		//
+		// Written by hand rather than with http.Error, which would set
+		// text/plain around a JSON body and skip Cache-Control — on the one
+		// status a client is most likely to parse defensively. Every response
+		// from this API is JSON, including the ones apologising.
+		body, code = []byte(`{"status":"error","error":"the response could not be encoded"}`),
+			http.StatusInternalServerError
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(append(body, '\n'))
 }
 
 func writeError(w http.ResponseWriter, code int, err error) {

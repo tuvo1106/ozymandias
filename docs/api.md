@@ -229,6 +229,118 @@ editor already knows where it put the caret. On success, `query` is the
 canonical spelling, which is what an editor's "format" produces and what a
 dashboard stores.
 
+## Dashboards
+
+A dashboard is a stored JSON definition — what to draw, not what was drawn. The
+definition's own schema is normative in [dashboards.md](dashboards.md); this
+section is the HTTP around it.
+
+Definitions are **validated on the way in and returned verbatim on the way
+out**. Validation refuses anything certain to fail later: a query that does not
+parse, a `$var` no `template_vars` entry declares, an unknown widget type, a
+layout off the twelve-column grid. It deliberately does *not* run the queries —
+a dashboard for a service that has not shipped yet is a legitimate dashboard,
+and saving one should not depend on the data being there.
+
+"Verbatim" means the definition is **stored** exactly as sent — byte for byte,
+including formatting — and served back from those bytes rather than from a
+re-encoding, so a dashboard exported from one ozyd and imported into another
+does not pick up a diff from this build's JSON encoder. The response splices the
+metadata in beside the definition's fields, so the outer braces and any
+surrounding whitespace are the response's own; everything between them is the
+author's.
+
+### `GET /api/v1/dashboards`
+
+Every dashboard, by title, definitions included.
+
+```console
+$ curl -s localhost:9400/api/v1/dashboards
+{"status":"ok","count":1,"dashboards":[
+  {"id":1,"provisioned":true,"created_at":"...","updated_at":"...",
+   "uid":"home","title":"Home","widgets":[…]}]}
+```
+
+`dashboards` is always an array, empty rather than `null`. Each entry is the
+database's columns (`id`, `provisioned`, `created_at`, `updated_at`) with the
+definition's fields spliced in beside them, not nested — a client that just
+fetched a dashboard wants to render it, not unwrap it. The metadata is written
+first, so a definition that somehow contained an `id` could not claim it (and
+in fact could not be stored at all: `id` is not a field of a definition, and
+unknown fields are refused).
+
+The list carries every definition rather than a summary. Twenty dashboards is a
+few tens of kilobytes, and the alternative — a list plus a fetch per row — is
+what makes a dashboard picker feel slow.
+
+### `POST /api/v1/dashboards`
+
+Creates one. The body is a definition. Answers `201` with the stored object and
+a `Location` header, because the `id` is assigned here and the caller could not
+have known it.
+
+```console
+$ curl -s -X POST localhost:9400/api/v1/dashboards -d @checkout.json
+{"id":2,"provisioned":false,"created_at":"...","updated_at":"...","title":"Checkout",…}
+```
+
+### `GET /api/v1/dashboards/{id}`
+
+One dashboard. `404` if there is none.
+
+### `PUT /api/v1/dashboards/{id}`
+
+Replaces the definition. `created_at` does not move — an edit is not a new
+dashboard — and `updated_at` does.
+
+### `DELETE /api/v1/dashboards/{id}`
+
+`204`, with no body: there is nothing left to describe, and a body saying so is
+a body every client has to decide whether to parse.
+
+### Status codes
+
+| Code | Means |
+|---|---|
+| `400` | The definition does not validate (the message names every problem, not just the first), the body is over 1 MiB, or `{id}` is not a positive integer |
+| `404` | No dashboard with that id |
+| `409` | This dashboard is **provisioned from a file**, so a write would be undone at the next restart. The message says to edit the file instead |
+| `499` | The caller hung up; not logged as an error |
+| `500` | Ours. The body says only that the request could not be completed |
+
+A trailing slash (`/api/v1/dashboards/`) is a `404` from the router rather than
+a `400` from the handler: a Go 1.22 wildcard does not match an empty segment.
+
+### Provisioning
+
+Directories listed in `provisioning.paths` are read at startup and upserted by
+the definition's `uid`. That is why a provisioned dashboard is read-only over
+HTTP: provisioning runs again at every restart, so an edit made through the API
+would silently vanish, and the person to tell is the one making the edit.
+
+Rules worth knowing:
+
+- Only `*.json` directly in each directory. **Subdirectories are not scanned**,
+  so a fixture or a work-in-progress can sit next to the real ones.
+- A `uid` is **required** and is never guessed from the filename — renaming a
+  file would otherwise create a second dashboard and orphan the first.
+- Files are applied in sorted order within a directory, and directories in the
+  order configured, so two files claiming one `uid` resolve the same way on
+  every startup. A later directory wins, which is how an app's own directory
+  deliberately overrides a stock dashboard.
+- **One bad file does not stop the others, or startup.** The directories come
+  from config and an app repo mounts its own, so a file this ozyd has never
+  seen can appear because somebody deployed a different service. Refusing to
+  start would make one team's typo an outage for everybody's monitoring, at the
+  moment monitoring is most wanted. Each failure is logged with its path and
+  reason, and counted in the `provisioned dashboards` line.
+- A directory that does not exist is skipped and logged at INFO, not counted as
+  a failure: `provisioning.paths` naming a directory an app has not mounted yet
+  is a configuration that will become correct.
+- An unchanged file is **not a write**, so `updated_at` keeps meaning "when did
+  this dashboard last change" across restarts.
+
+
 ### `GET /api/v1/metrics`
 
 Metric names, sorted. `?prefix=` filters by prefix (literal), `?limit=`

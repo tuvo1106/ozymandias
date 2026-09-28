@@ -525,3 +525,35 @@ func TestQuery_APercentileWithNoSketchStoreIs503(t *testing.T) {
 		t.Errorf("error %q, want it to name what is missing", msg)
 	}
 }
+
+// The lexer folds a `$Name`, so the request's binding has to fold too or the
+// two never meet. Both verbs, because they read the variables from different
+// places.
+func TestQuery_VariableNamesAreCaseInsensitive(t *testing.T) {
+	h, _ := metricsAPI(t)
+	q := urlEncode("sum:http.request.count{$Env} by {route}")
+
+	// GET: the parameter is capitalised, the query is not, and vice versa.
+	for _, param := range []string{"&var.Env=env:dev", "&var.env=env:dev", "&var.ENV=env:dev"} {
+		code, out := get(t, h, "/api/v1/query?q="+q+window+param)
+		if code != 200 {
+			t.Fatalf("%s: %d %v", param, code, out)
+		}
+		if n := len(seriesOf(t, out)); n != 2 {
+			t.Errorf("%s: got %d lines, want 2 — the binding did not reach the query", param, n)
+		}
+	}
+
+	// POST: the JSON object's keys fold the same way.
+	code, out := post(t, h, "/api/v1/query", `{
+		"q": "sum:http.request.count{$env} by {route}",
+		"from": 1789999980, "to": 1790000000, "interval": 20,
+		"vars": {"ENV": ["env:dev"]}
+	}`)
+	if code != 200 {
+		t.Fatalf("%d %v", code, out)
+	}
+	if n := len(seriesOf(t, out)); n != 2 {
+		t.Errorf("POST: got %d lines, want 2", n)
+	}
+}

@@ -1,0 +1,69 @@
+{
+  "uid": "home",
+  "title": "Home",
+  "description": "Is ozymandias itself healthy, and is anything arriving? A first version: per-service health cards land in M6, when there are monitors to colour them by.",
+  "widgets": [
+    {
+      "id": "intro",
+      "type": "note",
+      "layout": {"x": 0, "y": 0, "w": 12, "h": 1},
+      "markdown": "### Ingest health\n\nEverything here is ozymandias watching itself, through the same intake path an agent's series take. If this dashboard is empty, the pipeline is down — not the dashboard.\n\nMetric names and units are in [the metrics catalogue](https://github.com/tuvo1106/ozymandias/blob/main/docs/metrics-catalog.md)."
+    },
+    {
+      "id": "points",
+      "type": "timeseries",
+      "title": "Points stored",
+      "layout": {"x": 0, "y": 1, "w": 6, "h": 3},
+      "queries": [{"q": "sum:ozy.intake.points_accepted{*}.as_rate()", "display": "area"}],
+      "yaxis": {"min": 0, "unit": "points/s"}
+    },
+    {
+      "id": "rejected",
+      "type": "timeseries",
+      "title": "Series refused",
+      "layout": {"x": 6, "y": 1, "w": 6, "h": 3},
+      "queries": [{"q": "sum:ozy.intake.series_rejected{*}.as_rate()", "display": "bars"}],
+      "yaxis": {"min": 0, "unit": "series/s"}
+    },
+    {
+      "id": "series",
+      "type": "query_value",
+      "title": "Series in the store",
+      "layout": {"x": 0, "y": 4, "w": 4, "h": 2},
+      "queries": [{"q": "max:ozy.store.series{*}", "reducer": "last"}],
+      "precision": 0
+    },
+    {
+      "id": "head",
+      "type": "query_value",
+      "title": "Series in the head",
+      "layout": {"x": 4, "y": 4, "w": 4, "h": 2},
+      "queries": [{"q": "max:ozy.tsdb.head.series{*}", "reducer": "last"}],
+      "precision": 0
+    },
+    {
+      "id": "disk",
+      "type": "query_value",
+      "title": "Store on disk (bytes)",
+      "layout": {"x": 8, "y": 4, "w": 4, "h": 2},
+      "queries": [{"q": "max:ozy.tsdb.disk_bytes{*}", "reducer": "last"}],
+      "precision": 0
+    },
+    {
+      "id": "per-agent",
+      "type": "toplist",
+      "title": "Series sent, by agent",
+      "layout": {"x": 0, "y": 6, "w": 6, "h": 3},
+      "queries": [{"q": "sum:ozy.agent.forwarder.series_sent{*} by {host}.as_rate()", "reducer": "avg"}],
+      "limit": 10
+    },
+    {
+      "id": "sketches",
+      "type": "timeseries",
+      "title": "Sketches stored",
+      "layout": {"x": 6, "y": 6, "w": 6, "h": 3},
+      "queries": [{"q": "sum:ozy.intake.sketch_points_accepted{*}.as_rate()", "display": "line"}],
+      "yaxis": {"min": 0, "unit": "sketches/s"}
+    }
+  ]
+}

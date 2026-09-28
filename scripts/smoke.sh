@@ -263,6 +263,50 @@ check "a broken query reports its column"  test "$broken_col" = "False 14"
 check "a cleared variable means all"       test "$(query_expr \
   'sum:smoke.latency.count{$scope}' --data-urlencode 'var.scope=')" = "100"
 
+# --- M3: dashboards ------------------------------------------------------------
+# Provisioning happens at startup, inside the container, from a directory baked
+# into the image. That is three things the unit tests cannot check: that the
+# directory is actually in the image, that OZY_PROVISIONING_PATHS points at it,
+# and that a definition written by hand passes the validator running in the
+# binary that shipped.
+
+# json_field <url> <python expression over `d`> — one value, as text.
+json_field() {
+  curl -fsS --max-time 5 "$1" | python3 -c "import json,sys
+d = json.load(sys.stdin)
+print($2)"
+}
+
+check "the home dashboard was provisioned" \
+  test "$(json_field "$OZY_URL/api/v1/dashboards" \
+    '[x["uid"] for x in d["dashboards"] if x.get("uid")=="home"][0]')" = "home"
+# Provisioned means read-only over HTTP: the next restart would undo an edit.
+check "a provisioned dashboard refuses a write" \
+  test "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE \
+    "$OZY_URL/api/v1/dashboards/$(json_field "$OZY_URL/api/v1/dashboards" \
+      '[x["id"] for x in d["dashboards"] if x.get("uid")=="home"][0]')")" = "409"
+# The definition comes back with its widgets, not as an opaque blob.
+check "it comes back with its widgets" \
+  test "$(json_field "$OZY_URL/api/v1/dashboards" \
+    'len([x for x in d["dashboards"] if x.get("uid")=="home"][0]["widgets"]) > 3')" = "True"
+
+# CRUD, over the wire, against the real database.
+dash_body='{"title":"smoke","widgets":[{"id":"w1","type":"timeseries","layout":{"x":0,"y":0,"w":6,"h":3},"queries":[{"q":"sum:smoke.test{*}","display":"line"}]}]}'
+created=$(curl -fsS --max-time 5 -X POST "$OZY_URL/api/v1/dashboards" -d "$dash_body" |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+check "a dashboard can be created"          test -n "$created"
+check "and read back"                       test "$(json_field \
+  "$OZY_URL/api/v1/dashboards/$created" 'd["title"]')" = "smoke"
+check "and deleted"                         test "$(curl -s -o /dev/null -w '%{http_code}' \
+  -X DELETE "$OZY_URL/api/v1/dashboards/$created")" = "204"
+check "and is then gone"                    test "$(curl -s -o /dev/null -w '%{http_code}' \
+  "$OZY_URL/api/v1/dashboards/$created")" = "404"
+# A definition whose query does not parse must not be storable: the validator
+# has to be the one in the shipped binary, not just the one in the tests.
+check "a broken definition is refused"      test "$(curl -s -o /dev/null -w '%{http_code}' \
+  -X POST "$OZY_URL/api/v1/dashboards" \
+  -d '{"title":"bad","widgets":[{"id":"w","type":"timeseries","layout":{"x":0,"y":0,"w":1,"h":1},"queries":[{"q":"sum:x{a:b by {k}","display":"line"}]}]}')" = "400"
+
 # The durability claim, end to end. The SIGTERM cycle near the top of this
 # script happened before any of this data existed, so repeating a query after
 # it proved nothing — which is what this check used to do. Kill ozyd

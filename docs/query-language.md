@@ -56,7 +56,10 @@ seconds   = ? a whole number from 1 to 2678400 ? ;
 Case: `by` and `IN` are keywords and are accepted in any case. An aggregator
 is accepted in any case. **A tag key is lower-cased as it is read**, because
 the intake lower-cases every key it stores, so a filter typed in capitals
-would otherwise match nothing and say nothing about why. A metric name and a
+would otherwise match nothing and say nothing about why. **A template
+variable's name is lower-cased too**, so `$Env` and `$env` are one variable and
+whatever binds either binds both — a name that did not fold would let a query
+parse against a declaration it can never be matched to. A metric name and a
 tag value are taken exactly as written — the store distinguishes them.
 
 Whitespace between tokens is insignificant, and a query may span lines. A value

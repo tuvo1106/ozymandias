@@ -247,7 +247,13 @@ func (l *lexer) variable(start int) (token, error) {
 	if l.pos == from {
 		return token{}, errAt(start, "expected a variable name after '$'")
 	}
-	return token{kind: tokVar, text: l.src[from:l.pos], pos: start}, nil
+	// Lower-cased for the same reason a tag key is, one screen up: a name the
+	// author capitalised has to reach the same variable as the declaration that
+	// binds it. Without this, `{$Env}` parses to the variable "Env", a
+	// dashboard declaring "env" validates, and every widget then fails to
+	// render with "$Env is not bound" — a mismatch nothing between here and the
+	// browser is positioned to notice.
+	return token{kind: tokVar, text: strings.ToLower(l.src[from:l.pos]), pos: start}, nil
 }
 
 // quoted scans a double-quoted string with \\ and \" escapes. It is the one
