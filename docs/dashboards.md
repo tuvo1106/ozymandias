@@ -121,6 +121,14 @@ widget nobody can see, which stores happily and is then blamed on the browser.
 | `heatmap` | a distribution's sketch bins over time | exactly 1 `dist:` query |
 | `note` | markdown | `markdown`, and **no** queries |
 
+**A note's text is rendered as text, not as HTML.** Anyone who can `POST` a
+dashboard can write one, and turning stored text into markup is how a
+monitoring page becomes a way to run script in an operator's browser. Line
+breaks survive; link syntax does not become a link, it stays the characters
+you typed — so write a URL plainly, as `deploy/dashboards/service.json` does.
+The field is named `markdown` because that is what it will be once a sanitizer
+has been chosen on purpose.
+
 A field that belongs to another type is an error rather than ignored: a
 `markdown` on a timeseries, a `limit` on anything but a toplist, a `precision`
 on a chart. Ignoring it silently is how a dashboard ends up with a setting
@@ -172,6 +180,21 @@ must be below `max`. `unit` is a label, not a conversion. `scale` is `linear`
 (default) or `log`, and a `log` axis may not start at or below zero: a chart
 whose axis silently clips its data is worse than one that refuses to be
 configured.
+
+**On a heatmap, set `"scale": "log"` unless you know you want otherwise.** A
+sketch's bins are *geometric* — each is a fixed ratio wider than the one below
+it — so a latency distribution from 4 ms to 2 s has hundreds of them, and on a
+linear axis all but the slowest land in the bottom fraction of a percent of the
+chart. The default stays `linear` because it is the default for every axis and a
+widget that quietly ignored `scale` would be worse; the shipped
+`deploy/dashboards/service.json` asks for `log`.
+
+What a `log` axis does with the values it cannot place: a distribution's zero
+bin is real (log γ 0 is undefined, so zero is stored as its own bin) and
+negative observations are legal. Those are **left off the axis and counted**,
+and the widget says how many. It does *not* fall back to a linear axis — one
+zero-valued observation would then flatten a three-decade chart, silently, and
+the reader would have no way to tell.
 
 ### `conditional_formats`
 

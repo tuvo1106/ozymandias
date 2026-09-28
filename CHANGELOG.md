@@ -66,6 +66,28 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Dashboards are on screen.** `/dashboards` lists what is stored and every
+  service a template covers; `/dashboards/{id}` and
+  `/dashboards/service/{name}` draw one on the twelve-column grid the definition
+  describes, with all six widget types — `timeseries`, `query_value`,
+  `toplist`, `table`, `note` and `heatmap`. One selector per template variable,
+  one time picker and one auto-refresh toggle for the whole page, all of it in
+  the URL so a link shows the other person what you were looking at. Charts
+  share a crosshair, the heatmap included. A page is **one** batch request for
+  its line charts plus one per heatmap, and a refused query draws inside its own
+  widget rather than blanking the page (ADR-0017). A `note`'s markdown is
+  rendered as text, not HTML: anybody who can POST a dashboard can write one.
+  Read the pages in `docs/ui.md`.
+- **The heatmap widget draws the sketch itself**, not a percentile taken from
+  it: a column per bucket, a band per bin, brightness logarithmic in how many
+  observations fell there, and a real gap where nothing was recorded. Set
+  `"yaxis": {"scale": "log"}` on one — a sketch's bins are geometric, so on a
+  linear axis a latency distribution from 4 ms to 2 s lands in the bottom
+  fraction of a percent of the chart. A log axis has no position for the zero
+  bin or for a negative observation, so those are counted out and named in
+  words instead of quietly turning the axis linear. The widget also says how
+  accurate the bands are (α = (γ-1)/(γ+1), worst bucket) and how many groups a
+  `by` matched that it is not the place to draw.
 - **A dashboard per service, without anybody writing JSON for it.** A definition
   with `"template": true` is served instantiated rather than as itself:
   `GET /api/v1/dashboards/service/{name}` binds its `service` variable to one
