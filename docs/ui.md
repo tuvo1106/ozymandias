@@ -48,14 +48,38 @@ milestones build — a section whose milestone has not landed says so rather tha
 
 ### Metrics Explorer (`/metrics/explorer`)
 
-Pick a metric, filter by tags, group by a tag key, chart it. The metric name and
-the tag keys and values all autocomplete from what the store actually holds
-(`/api/v1/metrics`, `/api/v1/tags`, `/api/v1/tags/values`), so the pickers offer
-what exists rather than what you remember. Everything you choose goes in the
-URL.
+Write a [metricql](query-language.md) query, run it, chart it. The box is the
+dashboard editor's query box (§4): it completes aggregators, functions and
+modifiers, and metrics and tag keys and values from what the store actually
+holds, and it underlines a parse error as you type.
 
-The text query editor and "save to dashboard" are not built yet; until then the
-explorer builds its query from the pickers.
+**Run** — or Ctrl+Enter (⌘+Enter on a Mac) — is what charts it. The URL holds
+the query that was *run* (`?q=`), not what is in the box, so a link is always a
+query and the chart that answers it, and back steps through queries rather
+than keystrokes ([ADR-0022](adr/0022-the-explorer-runs-a-query-and-saves-through-the-editor.md)).
+While the box holds an edit that has not been run, the page says so and the
+chart is still the URL's query. Plain Enter is a newline: a query can span
+lines.
+
+Below the chart, a table of every line with its last, average, min and max over
+the window — a dash for a line that had no value at all, which is not zero.
+The chart area says which kind of nothing it is showing: no query yet;
+running; **refused** (the query's fault — the server's message says why, and
+running it again will not change it); **not answered** (out of time, ozyd
+down — running it again might); answered with no series; or, while a new
+query runs, the previous query's chart, dimmed and named. A refresh that fails
+keeps the last answer on screen with the time it is from.
+
+A link from M1 (`?metric=…&filter=…&by=…&agg=…`) still works: it is read as
+the query the server would have run for it, shown in the box, and rewritten as
+`?q=` on the first change.
+
+**Save to dashboard** picks a stored dashboard (or a new one) and opens it in
+the editor with a timeseries widget for the charted query added and selected,
+*not yet saved* — you see where it lands, and save it like any edit. It saves
+the query that is charted, not an unrun edit in the box, and says so when the
+two differ. A provisioned dashboard is listed but cannot be chosen: an edit to
+it would be undone at the next restart.
 
 ### Dashboards (`/dashboards`)
 
@@ -192,6 +216,14 @@ provisioned dashboard or a service's template instance opens a copy of it
 and `/dashboards/new?service={name}&template={template_id}` are those links —
 the source is in the URL, so a reload still knows what it was copying.
 
+Either route also takes `?add={query}`, which is what the Metrics Explorer's
+*Save to dashboard* links to: the editor opens with a timeseries widget for
+that query added below everything, selected and unsaved. On a stored
+dashboard's editor the parameter is removed once read, so a reload after
+saving does not add the widget twice (a reload *before* saving drops it, and
+the page asks before unloading, as for any unsaved edit). On `/dashboards/new`
+it stays, since there it is the seed.
+
 The page is the dashboard, live, with a panel beside it:
 
 - **The grid.** Drag a widget by the bar at its top, resize it from its
@@ -240,8 +272,9 @@ disabled, because pressing it again would make a second dashboard.
 
 ## 5. Not built yet
 
-Named here so the gap is visible rather than surprising: "save to dashboard"
-and the text query editor in the Metrics Explorer, the Metric Summary
+Named here so the gap is visible rather than surprising: a heatmap for a
+`dist:` query in the Metrics Explorer (it says to use `/api/v1/query/sketch`
+instead), the Metric Summary
 (cardinality) page, drag-to-zoom on a chart, the Home overview dashboard, and a
 Playwright run of the editor in CI. Sections beyond Metrics and Dashboards
 belong to later milestones — [PLAN.md](../PLAN.md) has the map.
