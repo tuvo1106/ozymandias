@@ -335,6 +335,27 @@ func (s *Store) strings(ctx context.Context, q string, args ...any) ([]string, e
 	return query(ctx, s.db, func(r *sql.Rows) (v string, err error) { return v, r.Scan(&v) }, q, args...)
 }
 
+// SeriesCounts returns every metric starting with prefix with its series
+// count, sorted by metric. A series row is unique by key, so COUNT(*) is
+// already a count of distinct series.
+func (s *Store) SeriesCounts(ctx context.Context, prefix string) ([]tsdb.MetricSeriesCount, error) {
+	return query(ctx, s.db, func(r *sql.Rows) (c tsdb.MetricSeriesCount, err error) {
+		return c, r.Scan(&c.Metric, &c.Series)
+	}, `SELECT metric, COUNT(*) FROM series WHERE substr(metric, 1, ?) = ? GROUP BY metric ORDER BY metric`,
+		len(prefix), prefix)
+}
+
+// TagCardinality returns each tag key of metric's series, sorted, with the
+// series that carry it and its distinct non-empty values. DISTINCT on the
+// series id because a series may carry one key twice (`env:a,env:b`).
+func (s *Store) TagCardinality(ctx context.Context, metric string) ([]tsdb.TagKeyCardinality, error) {
+	return query(ctx, s.db, func(r *sql.Rows) (c tsdb.TagKeyCardinality, err error) {
+		return c, r.Scan(&c.Key, &c.Series, &c.Values)
+	}, `SELECT t.key, COUNT(DISTINCT t.series_id), COUNT(DISTINCT NULLIF(t.value, ''))
+		FROM series_tags t JOIN series s ON s.id = t.series_id
+		WHERE s.metric = ? GROUP BY t.key ORDER BY t.key`, metric)
+}
+
 // Stats counts series and samples. It runs COUNT(*) queries — fine for a
 // store this size, and the reason it isn't the store the real system uses.
 func (s *Store) Stats() tsdb.StoreStats {

@@ -697,3 +697,27 @@ func TestBlock_ReadersNestAndOnlyTheLastOneCloses(t *testing.T) {
 		t.Error("the file outlived its last reader")
 	}
 }
+
+// SeriesOf is the index-only half of the cardinality counts: identities,
+// without touching the chunks.
+func TestBlock_SeriesOf(t *testing.T) {
+	_, b, _ := writeFixture(t, 3)
+	refs, err := b.SeriesOf("db.query.count")
+	if err != nil || len(refs) != 4 {
+		t.Fatalf("SeriesOf = %d refs, %v; want 4", len(refs), err)
+	}
+	for _, r := range refs {
+		if r.Metric != "db.query.count" {
+			t.Errorf("a %s series among db.query.count's", r.Metric)
+		}
+	}
+	if refs, err := b.SeriesOf("missing"); err != nil || len(refs) != 0 {
+		t.Errorf("SeriesOf(missing) = %v, %v", refs, err)
+	}
+	// A posting past the series table is corruption, refused as Select
+	// refuses it rather than read out of range.
+	b.ix.series = b.ix.series[:1]
+	if _, err := b.SeriesOf("http.request.duration"); err == nil {
+		t.Error("SeriesOf over a truncated series table did not fail")
+	}
+}

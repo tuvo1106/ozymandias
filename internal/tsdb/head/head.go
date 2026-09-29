@@ -522,6 +522,22 @@ func (h *Head) Series(id uint64) (tsdb.SeriesRef, bool) {
 	return ms.ref, true
 }
 
+// SeriesOf returns the identity of every series of one metric the head
+// holds, from the index alone — no samples are read. For the cardinality
+// counts, which must dedupe the head against the blocks by key.
+func (h *Head) SeriesOf(metric string) []tsdb.SeriesRef {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	ids := h.postings.Postings(index.MetricName, metric)
+	out := make([]tsdb.SeriesRef, 0, len(ids))
+	for _, id := range ids {
+		if ms := h.byID[id]; ms != nil {
+			out = append(out, ms.ref)
+		}
+	}
+	return out
+}
+
 // Lookup returns a read view of the head's index that takes the head's lock on
 // every call, for callers outside the head — the metadata queries.
 //

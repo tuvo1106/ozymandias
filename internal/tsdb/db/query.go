@@ -199,3 +199,109 @@ func (db *DB) metadata(ctx context.Context, limit int, ask func(index.Lookup) []
 	}
 	return out, nil
 }
+
+// SeriesCounts implements [tsdb.MetricStore].
+//
+// A count of distinct series, which is not the sum of the sources' postings:
+// a series still being written after a block cut is in the block *and* the
+// head, and one that has been compacted is briefly in a merged block beside
+// its sources. Summing lengths would count it once per place — the same
+// overcount [DB.Stats] makes, and here it would be the number the page exists
+// to show. So each metric's series are gathered by key ([DB.metricSeries]).
+//
+// The work is the index: every series of every matching metric, resolved to
+// its identity once per source that holds it, and no sample read. One
+// metric's keys are held at a time.
+func (db *DB) SeriesCounts(ctx context.Context, prefix string) ([]tsdb.MetricSeriesCount, error) {
+	names, err := db.MetricNames(ctx, prefix, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tsdb.MetricSeriesCount, 0, len(names))
+	for _, name := range names {
+		series, err := db.metricSeries(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		if len(series) > 0 {
+			out = append(out, tsdb.MetricSeriesCount{Metric: name, Series: len(series)})
+		}
+	}
+	return out, nil
+}
+
+// TagCardinality implements [tsdb.MetricStore], over the same deduplicated
+// series as [DB.SeriesCounts].
+func (db *DB) TagCardinality(ctx context.Context, metric string) ([]tsdb.TagKeyCardinality, error) {
+	series, err := db.metricSeries(ctx, metric)
+	if err != nil {
+		return nil, err
+	}
+	type acc struct {
+		series int
+		values map[string]struct{}
+	}
+	byKey := map[string]*acc{}
+	for _, ref := range series {
+		counted := map[string]bool{} // a series may carry one key twice
+		for _, t := range ref.Tags {
+			a := byKey[t.Key]
+			if a == nil {
+				a = &acc{values: map[string]struct{}{}}
+				byKey[t.Key] = a
+			}
+			if !counted[t.Key] {
+				a.series++
+				counted[t.Key] = true
+			}
+			if t.Value != "" {
+				a.values[t.Value] = struct{}{}
+			}
+		}
+	}
+	out := make([]tsdb.TagKeyCardinality, 0, len(byKey))
+	for k, a := range byKey {
+		out = append(out, tsdb.TagKeyCardinality{Key: k, Series: a.series, Values: len(a.values)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
+}
+
+// metricSeries returns one metric's series, by key, from the head and every
+// block. The head is read before the block list is taken, for the reason
+// [DB.Select] gives: a block cut publishes the block before it drops the
+// series from the head, so this order sees a moving series at least once, and
+// the map makes "more than once" harmless. Blocks are acquired as Select does,
+// so compaction cannot close one mid-read.
+func (db *DB) metricSeries(ctx context.Context, metric string) (map[string]tsdb.SeriesRef, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out := map[string]tsdb.SeriesRef{}
+	for _, ref := range db.head.SeriesOf(metric) {
+		out[ref.Key()] = ref
+	}
+	db.mu.RLock()
+	blocks := make([]*block.Block, 0, len(db.blocks))
+	for _, b := range db.blocks {
+		if b.Acquire() {
+			blocks = append(blocks, b)
+		}
+	}
+	db.mu.RUnlock()
+	defer func() {
+		for _, b := range blocks {
+			b.Release()
+		}
+	}()
+	for _, b := range blocks {
+		refs, err := b.SeriesOf(metric)
+		if err != nil {
+			return nil, err
+		}
+		for _, ref := range refs {
+			out[ref.Key()] = ref
+		}
+	}
+	return out, nil
+}

@@ -279,6 +279,32 @@ func TestStore_MetadataLookups(t *testing.T) {
 	}
 }
 
+// Distinct series per metric, and per key the series that carry it and its
+// values: one key twice on a series counts the series once, and a bare tag
+// adds a series and no value. The TSDB is held to these same answers by the
+// differential test; this is the statement of what they are.
+func TestStore_Cardinality(t *testing.T) {
+	s, _ := open(t)
+	mustAppend(t, s,
+		ss("m", []string{"env:prod"}, sm(1, 1)),
+		ss("m", []string{"env:dev"}, sm(1, 1)),
+		ss("m", []string{"env:a", "env:b", "canary"}, sm(1, 1)),
+		ss("mx", nil, sm(1, 1)),
+		ss("other", nil, sm(1, 1)),
+	)
+	counts, err := s.SeriesCounts(ctx, "m")
+	if got := fmt.Sprintf("%+v", counts); err != nil || got != "[{Metric:m Series:3} {Metric:mx Series:1}]" {
+		t.Errorf("SeriesCounts(m) = %s, %v", got, err)
+	}
+	card, err := s.TagCardinality(ctx, "m")
+	if got := fmt.Sprintf("%+v", card); err != nil || got != "[{Key:canary Series:1 Values:0} {Key:env Series:3 Values:4}]" {
+		t.Errorf("TagCardinality(m) = %s, %v", got, err)
+	}
+	if card, err := s.TagCardinality(ctx, "none"); err != nil || len(card) != 0 {
+		t.Errorf("unknown metric = %v, %v", card, err)
+	}
+}
+
 func TestStore_ReopenKeepsDataAndIdentities(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "m.db")
 	s, err := Open(path)
@@ -352,6 +378,12 @@ func TestStore_ClosedStoreErrors(t *testing.T) {
 	}
 	if _, err := s.MetricNames(ctx, "", 0); err == nil {
 		t.Error("MetricNames on a closed store")
+	}
+	if _, err := s.SeriesCounts(ctx, ""); err == nil {
+		t.Error("SeriesCounts on a closed store")
+	}
+	if _, err := s.TagCardinality(ctx, "m"); err == nil {
+		t.Error("TagCardinality on a closed store")
 	}
 	if st := s.Stats(); st != (tsdb.StoreStats{}) {
 		t.Error("Stats on a closed store")

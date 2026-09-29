@@ -230,6 +230,22 @@ type StoreStats struct {
 	Samples int64
 }
 
+// MetricSeriesCount is how many distinct series one metric has in a store.
+type MetricSeriesCount struct {
+	Metric string
+	Series int
+}
+
+// TagKeyCardinality describes one tag key across one metric's series: how
+// many of them carry it, and how many distinct values it takes. A bare tag
+// (`k`, no value) counts toward Series and not toward Values, as
+// [MetricStore.TagValues] leaves the empty value out.
+type TagKeyCardinality struct {
+	Key    string
+	Series int
+	Values int
+}
+
 // MetricStore is the storage contract every metric store implements. The
 // naive SQLite store (M1) and the real TSDB (M2) sit behind it; everything
 // above — intake, query, monitors — only knows this interface.
@@ -243,12 +259,23 @@ type StoreStats struct {
 //   - Select returns series in Key order, samples in T order, both bounds
 //     inclusive, and only series with at least one sample in range.
 //   - MetricNames, TagKeys and TagValues are sorted ascending.
+//   - SeriesCounts and TagCardinality count distinct series — a series is
+//     one, however many places a store keeps it in (ADR-0023) — sorted by
+//     metric and by key. They read the index, never samples, and like the
+//     three above take no time range: a series counts until retention drops
+//     it.
 type MetricStore interface {
 	Append(ctx context.Context, batch []SeriesSamples) (AppendResult, error)
 	Select(ctx context.Context, sel Selector, fromMs, toMs int64) (SeriesSet, error)
 	MetricNames(ctx context.Context, prefix string, limit int) ([]string, error)
 	TagKeys(ctx context.Context, metric string) ([]string, error)
 	TagValues(ctx context.Context, metric, key string, limit int) ([]string, error)
+	// SeriesCounts returns every metric whose name starts with prefix, with
+	// its number of series.
+	SeriesCounts(ctx context.Context, prefix string) ([]MetricSeriesCount, error)
+	// TagCardinality returns each tag key of metric's series with how many
+	// series carry it and how many values it takes; empty for an unknown metric.
+	TagCardinality(ctx context.Context, metric string) ([]TagKeyCardinality, error)
 	Stats() StoreStats
 	Close() error
 }
