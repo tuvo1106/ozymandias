@@ -7,8 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tuvo1106/ozymandias/internal/clock"
-	"github.com/tuvo1106/ozymandias/internal/testutil"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 )
 
@@ -35,13 +33,7 @@ func TestDB_ThreeSimulatedDays(t *testing.T) {
 		days       = 3
 		series     = 4
 	)
-	// Not open's clock: Advance on that one also fires the maintenance
-	// goroutine's ticker, which then cuts and compacts concurrently with the
-	// calls below. That is not a hypothetical — it made the count of cuts
-	// vary from run to run and fail the ~35 check under load.
-	fake := testutil.NewFakeClock(epoch)
-	db, _, _ := open(t, Options{
-		Clock:      handDriven{FakeClock: fake, idle: testutil.NewFakeClock(epoch)},
+	db, fake, _ := open(t, Options{
 		BlockRange: blockRange,
 		Retention:  retention,
 		// Default (54h) would let a level-3 block outlive the window it was
@@ -187,15 +179,3 @@ func TestDB_ThreeSimulatedDays(t *testing.T) {
 	t.Logf("3 days: %d cuts, %d compactions (deepest level %d), %d blocks deleted, %d left",
 		cuts, compactions, maxLevel, deletions, len(db.Blocks()))
 }
-
-// handDriven is a fake clock whose tickers never fire: Now and timers come
-// from FakeClock, tickers from idle, which nothing advances. It leaves the
-// DB's background goroutines running, and so closed by Close as usual, but
-// asleep, so a test that calls CutBlock, Compact and ApplyRetention itself
-// is the only thing doing maintenance.
-type handDriven struct {
-	*testutil.FakeClock
-	idle *testutil.FakeClock
-}
-
-func (c handDriven) NewTicker(d time.Duration) clock.Ticker { return c.idle.NewTicker(d) }
