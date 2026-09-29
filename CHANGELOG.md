@@ -77,6 +77,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The Metric Summary page** (`/metrics/summary`): every metric by series
+  count, highest first, and for one metric the tag keys that make its series,
+  most values first. Backed by `GET /api/v1/metrics/cardinality` and
+  `GET /api/v1/tags/cardinality`, and by two new `MetricStore` methods,
+  `SeriesCounts` and `TagCardinality`, which count distinct series from the
+  index — once however many places the TSDB keeps a series in. See
+  ADR-0023, docs/api.md and docs/ui.md §2.
 - **The Metrics Explorer takes a query.** A metricql box with the dashboard
   editor's completion and inline parse errors replaces M1's pickers; Run (or
   Ctrl/⌘+Enter) charts it, and the URL holds the query that was run

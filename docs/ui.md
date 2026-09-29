@@ -83,6 +83,32 @@ the query that is charted, not an unrun edit in the box, and says so when the
 two differ. A provisioned dashboard is listed but cannot be chosen: an edit to
 it would be undone at the next restart.
 
+### Metric Summary (`/metrics/summary`)
+
+Every metric by how many series it has, highest first — the page for "why is
+this slow, and why is the disk filling". A series is one distinct set of tags,
+and each costs storage and query time, so a metric tagged with something
+unbounded (a user id, a full URL, a timestamp) shows up here long before it
+shows up as an outage.
+
+Choose a metric to see its tag keys, most values first, each with how many of
+the metric's series carry it. The key at the top is almost always the reason:
+`route` with 40 values is a route template; `path` with 40,000 is a URL that
+should have been one. **Chart it** opens the metric in the Explorer.
+
+Counts are of what the store holds, until retention drops it — not of the last
+hour — so a metric that was fixed yesterday still shows yesterday's number for
+a while ([ADR-0023](adr/0023-series-counts-come-from-the-index.md)). `?prefix=`
+filters the list and `?metric=` is the chosen one, so a link shows both. The
+list is the 200 highest; when there are more, it says how many, and a prefix
+narrows it.
+
+Each part says which kind of nothing it has: counting; the counts could not be
+read; an empty store; no metric under this prefix; a metric whose series carry
+no tags; and a metric the store does not have, which is a different answer
+from the one before it. While a new prefix is counted, the previous list stays,
+dimmed, and says which prefix it is for.
+
 ### Dashboards (`/dashboards`)
 
 Two lists, because they are two different kinds of thing:
@@ -276,7 +302,7 @@ disabled, because pressing it again would make a second dashboard.
 
 Named here so the gap is visible rather than surprising: a heatmap for a
 `dist:` query in the Metrics Explorer (it says to use `/api/v1/query/sketch`
-instead), the Metric Summary
-(cardinality) page, drag-to-zoom on a chart, the Home overview dashboard, and a
+instead), series counts over time ("top growing") on the Metric Summary,
+drag-to-zoom on a chart, the Home overview dashboard, and a
 Playwright run of the editor in CI. Sections beyond Metrics and Dashboards
 belong to later milestones — [PLAN.md](../PLAN.md) has the map.

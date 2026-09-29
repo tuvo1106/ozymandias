@@ -628,3 +628,48 @@ The tag keys used by any series of `?metric=` (required), sorted:
 
 The non-empty values of `?key=` across `?metric=`'s series (both required),
 sorted, at most `?limit=` (1–1000, default 100): `{"values":["/api/comics","/api/users"]}`.
+
+### `GET /api/v1/metrics/cardinality`
+
+Metrics by number of series, highest first — the cardinality view
+([ADR-0023](adr/0023-series-counts-come-from-the-index.md)). `?prefix=`
+filters (literal); `?limit=` (1–1000, default 100) bounds the response, but
+**every** matching metric is counted, because "the highest" is a question
+about all of them. `total` is how many matched and `truncated` says the list
+stopped short of it. Ties are in name order.
+
+```console
+$ curl -s 'localhost:9400/api/v1/metrics/cardinality?prefix=http.&limit=2'
+{"metrics":[{"name":"http.request.count","type":"count","series":120},
+            {"name":"http.request.duration.count","type":"count","series":40}],
+ "total":5,"truncated":true}
+```
+
+- A series is a distinct set of tags, counted once however many places the
+  store keeps it in — the in-memory head and any number of blocks.
+- Counts read the index, never samples, and have **no time range**: a series
+  counts until retention drops it. A metric that stopped exploding yesterday
+  still shows yesterday's number.
+- `type` is the kind the metric was first seen with, or `null` when ozyd has
+  no record of one. Null is not a kind, and is not written as `""`.
+- A distribution's sketches are not counted here; its series are its
+  `.count`, `.sum`, `.min` and `.max` metrics.
+
+### `GET /api/v1/tags/cardinality`
+
+One metric's tag keys (`?metric=`, required), each with the number of the
+metric's series that carry it and the number of distinct values it takes,
+most values first — the key with the most values is usually why a metric is
+high. `series` is the metric's own count, so an empty `keys` means either
+"its series carry no tags" (`series > 0`) or "no such metric" (`series: 0`).
+A bare tag (`canary`, no value) counts toward a key's `series`, not its
+`values`.
+
+```console
+$ curl -s 'localhost:9400/api/v1/tags/cardinality?metric=http.request.count'
+{"metric":"http.request.count","type":"count","series":120,
+ "keys":[{"key":"route","series":120,"values":40},{"key":"env","series":100,"values":2}]}
+```
+
+Both endpoints answer a store failure with `500 the series counts could not
+be read`; the store's own error goes to the log.
