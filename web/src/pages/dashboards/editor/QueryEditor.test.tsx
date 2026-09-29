@@ -219,14 +219,13 @@ describe("QueryEditor text set from outside", () => {
     let set: ((q: string) => void) | undefined;
     const box = renderEditor({ outside: (s) => (set = s) });
     await userEvent.type(box, "avg:x");
-    // Two things put the caret at the new end: React's onSelect, when the
-    // browser reports the selection moving, and the box's own reset, for when
-    // it does not. jsdom reports it, so this pins the behaviour, not which of
-    // the two provides it — removing either alone leaves it passing (checked).
+    // Back/forward while the box is not focused: React reports selection
+    // changes only for the focused element, so nothing re-reads the caret…
+    act(() => box.blur());
     act(() => set?.("sum:m{env:"));
     expect(box.value).toBe("sum:m{env:");
-    // Ctrl+Space as a bare keydown: its key-up would re-read the caret too.
-    fireEvent.keyDown(box, { key: " ", ctrlKey: true });
+    // …and focus coming back opens the list before any key-up or click would.
+    fireEvent.focusIn(box);
     expect(await screen.findByRole("option", { name: /^prod/ })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /^mmm/ })).not.toBeInTheDocument();
   });

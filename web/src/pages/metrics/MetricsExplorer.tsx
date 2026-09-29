@@ -44,21 +44,36 @@ export function MetricsExplorer() {
 
   // An M1 link, translated: from here on it is an ordinary `q` link. Replace,
   // not push — back should not return to parameters that mean the same.
-  const translated = legacy.data?.query ?? "";
+  //
+  // Its answer seeds the chart, unless the cache already holds one at least
+  // as new: reopening a link whose translation is cached would otherwise
+  // write that old answer over the chart's own, stamped as if just fetched.
+  // `updatedAt` records the seed's true age too, though as the cache is
+  // pruned today a seed is only ever written the moment it arrives.
+  const translation = legacy.data?.query ? legacy.data : undefined;
+  const translatedAt = legacy.dataUpdatedAt;
   useEffect(() => {
-    if (state.q || !state.legacy || !legacy.data || !translated) return;
-    client.setQueryData<ExplorerAnswer>(explorerKey(translated, state.range), { asked: translated, result: legacy.data });
-    setParams(serializeExplorerState({ ...state, q: translated, legacy: "" }), { replace: true });
-  }, [state, legacy.data, translated, client, setParams]);
+    if (state.q || !state.legacy || !translation) return;
+    const key = explorerKey(translation.query, state.range);
+    if ((client.getQueryState(key)?.dataUpdatedAt ?? 0) < translatedAt)
+      client.setQueryData<ExplorerAnswer>(key, { asked: translation.query, result: translation }, { updatedAt: translatedAt });
+    setParams(serializeExplorerState({ ...state, q: translation.query, legacy: "" }), { replace: true });
+  }, [state, translation, translatedAt, client, setParams]);
 
   // The draft follows the URL when the URL changes under it — back/forward,
   // a pasted link — and otherwise is the author's. Adjusted during render,
   // not by remounting the box, which would drop the focus on every run.
+  //
+  // One change is not the URL moving: an M1 link's translation landing is
+  // the page catching up with what was already asked, and the author may
+  // have typed while it was on its way. What they typed stays theirs; the
+  // box then reads as an edit of the translated query, and says so.
   const [draft, setDraft] = useState(state.q);
-  const [synced, setSynced] = useState(state.q);
-  if (synced !== state.q) {
-    setSynced(state.q);
-    setDraft(state.q);
+  const [synced, setSynced] = useState({ q: state.q, legacy: state.legacy });
+  if (synced.q !== state.q || synced.legacy !== state.legacy) {
+    const translationLanded = synced.q === "" && synced.legacy !== "" && state.q !== "" && state.legacy === "";
+    setSynced({ q: state.q, legacy: state.legacy });
+    if (!(translationLanded && draft.trim() !== "")) setDraft(state.q);
   }
   const edited = draft.trim() !== state.q;
   // One guard for the button and the key. A blank box runs nothing: there
@@ -211,7 +226,10 @@ function ChartArea({ q, query }: ChartAreaProps) {
 function LegacyArea({ legacy, translation }: { legacy: string; translation: ReturnType<typeof useLegacyTranslation> }) {
   const shown = [...new URLSearchParams(legacy)].map(([k, v]) => `${k}=${v}`).join("&");
   const params = <code className="font-mono">{shown}</code>;
-  if (translation.error) return <Failure error={translation.error} what={<>this link's M1 parameters, {params}</>} />;
+  // Not "run it again": the box is empty, and nothing on this page asks
+  // again without a reload.
+  if (translation.error)
+    return <Failure error={translation.error} what={<>this link's M1 parameters, {params}</>} retry="Reload the page to ask again." />;
   if (translation.data && !translation.data.query)
     return (
       <p role="alert" className="text-sm text-red-700 dark:text-red-400">
@@ -225,7 +243,16 @@ function LegacyArea({ legacy, translation }: { legacy: string; translation: Retu
   );
 }
 
-function Failure({ error, what = "this query" }: { error: Error; what?: ReactNode }) {
+function Failure({
+  error,
+  what = "this query",
+  retry = "Run it again to retry.",
+}: {
+  error: Error;
+  what?: ReactNode;
+  /** How to ask again on this page, said only when asking again might help. */
+  retry?: string;
+}) {
   // 400 is the query's fault: asking again will get the same answer. Anything
   // else — 503 out of time, 500, no answer at all — might not.
   const refused = error instanceof ApiError && error.status === 400;
@@ -236,7 +263,7 @@ function Failure({ error, what = "this query" }: { error: Error; what?: ReactNod
         {what}:
       </p>
       <p className="whitespace-pre-wrap font-mono text-xs">{error.message}</p>
-      {refused ? null : <p className="mt-1 text-xs text-zinc-500">Reload or run it again to retry.</p>}
+      {refused ? null : <p className="mt-1 text-xs text-zinc-500">{retry}</p>}
     </div>
   );
 }

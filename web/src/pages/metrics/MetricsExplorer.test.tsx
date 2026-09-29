@@ -209,6 +209,73 @@ describe("MetricsExplorer", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  // The box is empty and Run is off: "run it again" would be false here.
+  it("tells an unanswered M1 link to reload, not to run", async () => {
+    mockApi(over((u) => (u.searchParams.get("metric") ? { status: 503, body: { error: "out of time" } } : undefined)));
+    renderAt("/metrics/explorer?metric=m");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("ozyd did not answer this link's M1 parameters, metric=m:out of time");
+    expect(alert).toHaveTextContent("Reload the page to ask again.");
+    expect(alert).not.toHaveTextContent(/Run it again/);
+  });
+
+  // Typed while the translation was on its way: the author's, not the page's.
+  it("keeps what was typed while an M1 link was being translated", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    mockApi(over((u) => (u.searchParams.get("metric") ? gate.then(() => ({ body: queryBody("avg:m{*}") })) : undefined)));
+    const user = userEvent.setup();
+    const router = renderAt("/metrics/explorer?metric=m");
+    await user.click(await screen.findByRole("combobox", { name: "Query" }));
+    await user.paste("sum:other{*}");
+    release();
+    await waitFor(() => expect(params(router).get("q")).toBe("avg:m{*}"));
+    expect(box()).toHaveValue("sum:other{*}");
+    expect(screen.getByText(/Edited, not run/)).toBeInTheDocument();
+  });
+
+  describe("the translation's answer, seeding the chart", () => {
+    const posts = (f: ReturnType<typeof mockApi>) => queryCalls(f).filter((u) => u.searchParams.has("q"));
+    const M1 = "/metrics/explorer?metric=m&live=0";
+    afterEach(() => vi.useRealTimers());
+
+    // Reopened minutes later, the link's chart is asked again, not taken as
+    // fresh from a cached translation.
+    it("refetches when the same link is reopened minutes later", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_790_000_000_000);
+      const f = mockApi();
+      const router = renderAt(M1);
+      await waitFor(() => expect(params(router).get("q")).toBe("avg:m{*}"));
+      await screen.findByTestId("chart");
+      expect(posts(f)).toHaveLength(0);
+      await router.navigate("/metrics/explorer?live=0");
+      vi.setSystemTime(1_790_000_060_000);
+      await router.navigate(M1);
+      await waitFor(() => expect(posts(f)).toHaveLength(1));
+    });
+
+    // A fresher answer to the same query is not replaced by an older one.
+    it("leaves a newer answer in the cache alone", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_790_000_000_000);
+      const f = mockApi();
+      const user = userEvent.setup();
+      const router = renderAt(M1);
+      await waitFor(() => expect(params(router).get("q")).toBe("avg:m{*}"));
+      await screen.findByTestId("chart");
+      vi.setSystemTime(1_790_000_060_000);
+      await user.click(screen.getByRole("button", { name: "Run" }));
+      await waitFor(() => expect(posts(f)).toHaveLength(1));
+      await router.navigate("/metrics/explorer?live=0");
+      vi.setSystemTime(1_790_000_061_000);
+      await router.navigate(M1);
+      await waitFor(() => expect(params(router).get("q")).toBe("avg:m{*}"));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(posts(f)).toHaveLength(1);
+    });
+  });
+
   it("says so when ozyd answers an M1 link without saying what it ran", async () => {
     mockApi(over((u) => (u.searchParams.get("metric") ? { body: queryBody("") } : undefined)));
     const router = renderAt("/metrics/explorer?metric=m");
@@ -330,7 +397,7 @@ describe("MetricsExplorer", () => {
     expect(refused).not.toHaveTextContent(/retry/);
     await router.navigate(at("sum:big{*}"));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("ozyd did not answer this query:the query ran out of time"));
-    expect(screen.getByRole("alert")).toHaveTextContent("Reload or run it again to retry.");
+    expect(screen.getByRole("alert")).toHaveTextContent("Run it again to retry.");
   });
 
   // A previous query's lines under a failing query's text would read as its answer.

@@ -52,6 +52,11 @@ export function explorerKey(q: string, range: TimeRange): readonly unknown[] {
   return ["metrics", "query", q, rangeKey(range)];
 }
 
+/** The cache key of the server's translation of an M1 link over `range`. */
+export function legacyKey(legacy: string, range: TimeRange): readonly unknown[] {
+  return ["metrics", "legacy", legacy, rangeKey(range)];
+}
+
 /**
  * The explorer's chart query. Idle without a query; refetches every
  * REFRESH_INTERVAL_MS while shouldAutoRefresh holds — and TanStack Query
@@ -92,7 +97,7 @@ export function useLegacyTranslation(
   now: () => number = Date.now,
 ): UseQueryResult<QueryResult> {
   return useQuery({
-    queryKey: ["metrics", "legacy", state.legacy, rangeKey(state.range)],
+    queryKey: legacyKey(state.legacy, state.range),
     queryFn: ({ signal }) => fetchLegacyQuery(state.legacy, resolveTimeRange(state.range, now()), fetch, signal),
     enabled: state.q === "" && state.legacy !== "",
     retry: false,
