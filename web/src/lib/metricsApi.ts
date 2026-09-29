@@ -153,14 +153,13 @@ export async function fetchTagValues(
 }
 
 /**
- * Builds the `/api/v1/query` search string for a query and a resolved
- * window. `interval` is left to the server (range/300 rounded to 10 s)
- * unless given.
+ * The `POST /api/v1/query` body for a query and a resolved window.
+ * `interval` is left to the server (range/300 rounded to 10 s) unless given.
+ * POST, as [[postJSON]] says why: the query is free text the author typed,
+ * possibly over several lines, and does not belong in a URL.
  */
-export function buildQueryParams(q: string, range: ResolvedRange, interval?: number): URLSearchParams {
-  const p = new URLSearchParams({ q, from: String(range.from), to: String(range.to) });
-  if (interval !== undefined) p.set("interval", String(interval));
-  return p;
+export function queryBody(q: string, range: ResolvedRange, interval?: number): Record<string, unknown> {
+  return { q, from: range.from, to: range.to, ...(interval !== undefined ? { interval } : {}) };
 }
 
 function isPoint(v: unknown): v is [number, number | null] {
@@ -202,7 +201,7 @@ export async function fetchQuery(
   fetchImpl: FetchLike = fetch,
   signal?: AbortSignal,
 ): Promise<QueryResult> {
-  const body = await getJSON(`/api/v1/query?${buildQueryParams(q, range)}`, fetchImpl, signal);
+  const body = await postJSON("/api/v1/query", queryBody(q, range), fetchImpl, signal);
   if (!isQueryResult(body)) throw new ApiError("ozyd sent an unexpected /api/v1/query response");
   return body;
 }

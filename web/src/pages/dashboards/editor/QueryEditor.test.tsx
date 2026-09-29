@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryEditor } from "./QueryEditor";
 
@@ -32,8 +32,20 @@ const validator: Handler = (path, _p, body) => {
     : { body: { ok: true, query: q.trim().toLowerCase() } };
 };
 
-function Harness({ initial = "", variables = [] as string[], onSubmit }: { initial?: string; variables?: string[]; onSubmit?: () => void }) {
+function Harness({
+  initial = "",
+  variables = [] as string[],
+  onSubmit,
+  outside,
+}: {
+  initial?: string;
+  variables?: string[];
+  onSubmit?: () => void;
+  /** Receives the setter, to set the text from outside as back/forward does. */
+  outside?: (set: (q: string) => void) => void;
+}) {
   const [q, setQ] = useState(initial);
+  useEffect(() => outside?.(setQ), [outside]);
   return <QueryEditor label="Query" value={q} onChange={setQ} variables={variables} onSubmit={onSubmit} />;
 }
 
@@ -191,5 +203,38 @@ describe("QueryEditor submit", () => {
     await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
     expect(onSubmit).toHaveBeenCalledTimes(2);
     expect(box.value).toBe("sum:m{*}\n");
+  });
+});
+
+describe("QueryEditor text set from outside", () => {
+  // The caret recorded for the old text is a position in some other query.
+  it("completes at the end of the new text, not at the old caret", async () => {
+    mockApi((path) =>
+      path === "/api/v1/metrics"
+        ? { body: { metrics: ["mmm"] } }
+        : path === "/api/v1/tags/values"
+          ? { body: { values: ["prod"] } }
+          : validator(path, new URLSearchParams(), { q: "" }),
+    );
+    let set: ((q: string) => void) | undefined;
+    const box = renderEditor({ outside: (s) => (set = s) });
+    await userEvent.type(box, "avg:x");
+    // No user event: a click, a key-up or a focus would re-read the caret
+    // and hide the stale one, which is exactly what back/forward lacks.
+    act(() => set?.("sum:m{env:"));
+    expect(box.value).toBe("sum:m{env:");
+    expect(await screen.findByRole("option", { name: /^prod/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /^mmm/ })).not.toBeInTheDocument();
+  });
+
+  // The example must be one the page would accept.
+  it("puts a variable in the placeholder only where there are variables", () => {
+    mockApi(validator);
+    expect(renderEditor()).toHaveAttribute("placeholder", "sum:http.request.count{*} by {route}.as_rate()");
+  });
+
+  it("uses the dashboard's own variable in the placeholder", () => {
+    mockApi(validator);
+    expect(renderEditor({ variables: ["region"] })).toHaveAttribute("placeholder", "sum:http.request.count{$region} by {route}.as_rate()");
   });
 });

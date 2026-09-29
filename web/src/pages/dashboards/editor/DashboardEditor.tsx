@@ -96,8 +96,8 @@ function opening(base: Dashboard, add: string): Opening {
 }
 
 /** `?add=`, trimmed; "" when absent or blank. */
-function addParam(search: string): string {
-  return (new URLSearchParams(search).get("add") ?? "").trim();
+function addParam(params: URLSearchParams): string {
+  return (params.get("add") ?? "").trim();
 }
 
 /** `/dashboards/{id}/edit`: a stored dashboard, if it can be edited here. */
@@ -108,7 +108,7 @@ export function EditDashboardPage() {
   const query = useDashboard(valid ? numeric : undefined);
   const location = useLocation();
   const justSaved = (location.state as { saved?: boolean } | null)?.saved === true;
-  const add = addParam(location.search);
+  const add = addParam(new URLSearchParams(location.search));
   // What this arrival carried, remembered per id: the effect below clears
   // both before the dashboard has loaded, and they are for when it has. Per
   // id and not once per mount, because the router keeps this page mounted
@@ -158,7 +158,8 @@ export function EditDashboardPage() {
   return (
     <Editor
       key={query.data.id}
-      {...opening(definitionOf(query.data).definition, arrival.add)}
+      base={definitionOf(query.data).definition}
+      add={arrival.add}
       storedId={query.data.id}
       initialSave={arrival.saved ? { kind: "saved", dashboard: query.data } : { kind: "idle" }}
     />
@@ -173,7 +174,7 @@ export function NewDashboardPage() {
   const copyParam = params.get("copy");
   const service = params.get("service") ?? "";
   const template = params.get("template");
-  const add = addParam(params.toString());
+  const add = addParam(params);
   const copyId = copyParam === null ? undefined : Number(copyParam);
   const copyValid = copyId !== undefined && Number.isInteger(copyId) && copyId > 0;
   const stored = useDashboard(copyValid ? copyId : undefined);
@@ -185,7 +186,7 @@ export function NewDashboardPage() {
       if (stored.error) return <Failed message={`Could not load the dashboard to copy: ${(stored.error as Error).message}`} />;
       return <Loading what="the dashboard to copy" />;
     }
-    return <Editor key={`copy-${copyId}-${add}`} {...opening(copyOf(stored.data), add)} initialSave={{ kind: "idle" }} />;
+    return <Editor key={`copy-${copyId}-${add}`} base={copyOf(stored.data)} add={add} initialSave={{ kind: "idle" }} />;
   }
   if (service !== "") {
     if (!instances.data) {
@@ -198,29 +199,37 @@ export function NewDashboardPage() {
     return (
       <Editor
         key={`svc-${service}-${template}-${add}`}
-        {...opening(copyOf(instance.dashboard, service), add)}
+        base={copyOf(instance.dashboard, service)}
+        add={add}
         initialSave={{ kind: "idle" }}
       />
     );
   }
-  return <Editor key={`blank-${add}`} {...opening(BLANK, add)} initialSave={{ kind: "idle" }} />;
+  return <Editor key={`blank-${add}`} base={BLANK} add={add} initialSave={{ kind: "idle" }} />;
 }
 
 type Panel = { kind: "dashboard" } | { kind: "widget"; id: string } | { kind: "json" };
 
 /** Props for Editor. */
-interface EditorProps extends Opening {
+interface EditorProps {
+  /** The definition the draft starts from. */
+  base: Dashboard;
+  /** A query to add a widget for (`?add=`); "" for none. */
+  add: string;
   /** The stored row this edits; undefined for a dashboard not yet saved. */
   storedId?: number;
   initialSave: SaveState;
 }
 
-function Editor({ initial, baseline: initialBaseline, panel: initialPanel, storedId: initialId, initialSave }: EditorProps) {
-  const [draft, dispatch] = useReducer(editDashboard, initial);
-  const [baseline, setBaseline] = useState(initialBaseline);
+function Editor({ base, add, storedId: initialId, initialSave }: EditorProps) {
+  // Read once, at mount, as everything below is: the pages above re-render
+  // on every refetch, and none of that should rebuild a draft.
+  const [start] = useState(() => opening(base, add));
+  const [draft, dispatch] = useReducer(editDashboard, start.initial);
+  const [baseline, setBaseline] = useState(start.baseline);
   const storedId = initialId;
   const [save, setSave] = useState<SaveState>(initialSave);
-  const [panel, setPanel] = useState<Panel>(initialPanel);
+  const [panel, setPanel] = useState<Panel>(start.panel);
   const [notice, setNotice] = useState<string | null>(null);
   const [addType, setAddType] = useState<WidgetType>("timeseries");
   const navigate = useNavigate();

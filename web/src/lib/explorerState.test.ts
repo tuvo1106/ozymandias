@@ -5,19 +5,23 @@ const parse = (qs: string) => parseExplorerState(new URLSearchParams(qs));
 const legacy = (qs: string) => legacyQuery(new URLSearchParams(qs));
 
 describe("legacyQuery", () => {
-  // The same query the server builds from these parameters (api.md), so an
-  // M1 link charts what it always charted.
+  // The server's translation of these parameters (internal/api/query.go,
+  // structuredExpression), so an M1 link charts what it always charted.
   it.each([
     ["metric=m", "avg:m{*}"],
     ["metric=http.request.count&filter=env:dev,!route:/x&by=route,env&agg=max", "max:http.request.count{env:dev,!route:/x} by {route,env}"],
     ["metric=m&filter=route:/api/*,url:http://x:8080", "avg:m{route:/api/*,url:http://x:8080}"],
-    ["metric=m&filter=%20env:dev%20", "avg:m{env:dev}"],
+    ["metric=m&filter=%20env:dev%20,,&by=,a,,b", "avg:m{env:dev} by {a,b}"],
+    // Kept, as the server keeps them: not only avg, sum, min and max.
+    ["metric=lat&agg=p99", "p99:lat{*}"],
+    ["metric=lat&agg=count", "count:lat{*}"],
+    ["metric=lat&agg=dist", "dist:lat{*}"],
+    // "has the bare tag k" has no spelling; the server widens it to k:*.
+    ["metric=m&filter=canary,!canary,env:", "avg:m{canary:*,!canary:*,env:*}"],
+    // Repeats are the server's to keep, and it keeps them.
+    ["metric=m&filter=a:b,a:b&by=k,k", "avg:m{a:b,a:b} by {k,k}"],
   ])("translates %s", (qs, want) => {
     expect(legacy(qs)).toBe(want);
-  });
-
-  it("degrades bad fields one at a time, as M1 did", () => {
-    expect(legacy("metric=m&agg=median&filter=bad,:x,env:,env:dev,,env:dev&by=,a,,a,b")).toBe("avg:m{env:dev} by {a,b}");
   });
 
   it("is nothing without a metric", () => {
@@ -25,10 +29,15 @@ describe("legacyQuery", () => {
     expect(legacy("metric=%20")).toBe("");
   });
 
-  // Dropping the brace would chart a different query from the one the link
-  // names; keeping it lets the query box say why it does not parse.
-  it("keeps what the parser will refuse rather than rewriting it", () => {
-    expect(legacy("metric=m&filter=a:b}")).toBe("avg:m{a:b}}");
+  // The server refuses these; translating them into something it would run
+  // would chart a question the link never asked. Kept, the box shows the
+  // parser refusing them.
+  it.each([
+    ["metric=m&agg=median", "median:m{*}"],
+    ["metric=m&filter=a:b}", "avg:m{a:b}}"],
+    ["metric=m&filter=:dev", "avg:m{:dev}"],
+  ])("keeps what the server would refuse: %s", (qs, want) => {
+    expect(legacy(qs)).toBe(want);
   });
 });
 

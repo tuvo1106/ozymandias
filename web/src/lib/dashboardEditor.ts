@@ -529,12 +529,12 @@ function copyTitle(title: string, service: string | undefined): string {
  * until the author names it, which the editor opens on the widget to invite.
  */
 export function withQueryWidget(d: Dashboard, q: string): { dashboard: Dashboard; id: string } {
-  const rules = TYPE_RULES.timeseries;
+  // Built on newWidget, so a default added there reaches these widgets too.
+  // The title on one line: the box keeps a query's newlines and indentation
+  // on purpose, and a title bar is not the place for them.
   const widget: Widget = {
-    id: nextWidgetId(d.widgets),
-    type: "timeseries",
-    title: withSuffix(q, "", MAX_TITLE_BYTES),
-    layout: newWidgetLayout(d.widgets, rules.size.w, rules.size.h),
+    ...newWidget("timeseries", d.widgets),
+    title: withSuffix(q.replace(/\s+/g, " ").trim(), "", MAX_TITLE_BYTES),
     queries: [{ q }],
   };
   return { dashboard: { ...d, widgets: [...d.widgets, widget] }, id: widget.id };

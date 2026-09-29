@@ -44,6 +44,15 @@ export function QueryEditor({ label, value, onChange, variables, onSubmit }: Que
   const listId = `${id}-list`;
   const ref = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(value.length);
+  // The last text this box handed to onChange. A value that differs from it
+  // was put here from outside — the Explorer's back/forward, a Format click —
+  // and the caret recorded for the old text is a position in some other
+  // query, which would complete the wrong token. It goes to the end instead.
+  const [own, setOwn] = useState(value);
+  if (value !== own) {
+    setOwn(value);
+    setCaret(value.length);
+  }
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
   const ctx = completionContext(value, caret);
@@ -72,6 +81,7 @@ export function QueryEditor({ label, value, onChange, variables, onSubmit }: Que
   const choose = (item: Completion) => {
     if (ctx.kind === "none") return;
     const next = applyCompletion(value, ctx, item);
+    setOwn(next.text);
     onChange(next.text);
     setCaret(next.caret);
     setActive(-1);
@@ -127,6 +137,7 @@ export function QueryEditor({ label, value, onChange, variables, onSubmit }: Que
           rows={Math.min(4, value.split("\n").length)}
           value={value}
           onChange={(e) => {
+            setOwn(e.target.value);
             onChange(e.target.value);
             setCaret(e.target.selectionStart);
             setOpen(true);
@@ -137,7 +148,9 @@ export function QueryEditor({ label, value, onChange, variables, onSubmit }: Que
           onFocus={() => setOpen(true)}
           onBlur={() => setOpen(false)}
           onKeyDown={onKeyDown}
-          placeholder="sum:http.request.count{$env} by {route}.as_rate()"
+          // A variable only where there are variables: the Explorer has none,
+          // and would refuse the example it offered.
+          placeholder={`sum:http.request.count{${variables[0] ? `$${variables[0]}` : "*"}} by {route}.as_rate()`}
           className="w-full resize-y rounded-md border border-zinc-300 bg-white px-2 py-1 font-mono text-xs outline-none focus:border-violet-500 aria-[invalid=true]:border-red-400 dark:border-zinc-700 dark:bg-zinc-900"
         />
         {shown ? <Suggestions id={listId} list={list} active={active} onChoose={choose} /> : null}

@@ -12,8 +12,8 @@
  * the structured parameters instead (`metric`, `filter=k:v,!k2:v2`, `by`,
  * `agg`); a link from then is translated into the same query the server would
  * have run for it, so it still charts what it charted, and the first change
- * rewrites it as `q`. Parsing is forgiving — a hand-edited or stale link
- * degrades to defaults field by field rather than failing — and serializing
+ * rewrites it as `q`. The range and `live` are forgiving — a hand-edited or
+ * stale value degrades to its default rather than failing — and serializing
  * omits defaults so ordinary links stay short.
  */
 import { isRangePreset, type RangePreset, type TimeRange } from "./timeRange";
@@ -36,9 +36,6 @@ export const DEFAULT_EXPLORER_STATE: ExplorerState = {
   live: true,
 };
 
-/** The aggregators M1's `agg` parameter produced. Anything else read as avg then, and still does. */
-const LEGACY_AGGREGATORS = new Set(["avg", "sum", "min", "max"]);
-
 function splitList(s: string | null): string[] {
   if (!s) return [];
   return s
@@ -51,31 +48,35 @@ function splitList(s: string | null): string[] {
  * The query an M1 link (`?metric=…&filter=…&by=…&agg=…`) asked for, or ""
  * when it names no metric.
  *
- * The same translation the server makes for those parameters (api.md, "The
- * M1 structured parameters"), done here so the text lands in the query box
- * where it can be read and edited. A filter term without a key and a value
- * is dropped, as M1's explorer dropped it; anything the parser would refuse
- * — a brace in a value — is kept, so the box shows the parse error rather
- * than the page quietly charting a different query.
+ * The server's own translation of those parameters (`structuredExpression`
+ * in internal/api/query.go, api.md "The M1 structured parameters"), done here
+ * so the text lands in the query box where it can be read and edited:
+ *
+ * - `agg` defaults to `avg` and is otherwise kept as sent — `p99`, `count`
+ *   and `dist` included;
+ * - a bare `k` (or `k:`) filter term is widened to `k:*`, which the query
+ *   language can say and "has the bare tag k" it cannot — the server warns
+ *   about this, and here the widened term is simply in the text;
+ * - terms and keys keep their order and repeats.
+ *
+ * Where the server would *refuse* a piece — an aggregator it does not know, a
+ * term with no key, a brace in a value — the piece is kept, so the query box
+ * shows the parser refusing it rather than the page charting a different
+ * question from the one the link names.
  */
 export function legacyQuery(params: URLSearchParams): string {
   const metric = (params.get("metric") ?? "").trim();
   if (!metric) return "";
-  const agg = params.get("agg") ?? "";
-  const filters: string[] = [];
-  for (const term of splitList(params.get("filter"))) {
+  const agg = (params.get("agg") ?? "").trim() || "avg";
+  const filters = splitList(params.get("filter")).map((term) => {
     const negate = term.startsWith("!");
     const body = negate ? term.slice(1) : term;
     const i = body.indexOf(":");
-    if (i <= 0 || i === body.length - 1) continue;
-    const f = `${negate ? "!" : ""}${body}`;
-    if (!filters.includes(f)) filters.push(f);
-  }
-  const by = [...new Set(splitList(params.get("by")))];
-  return (
-    `${LEGACY_AGGREGATORS.has(agg) ? agg : "avg"}:${metric}{${filters.length ? filters.join(",") : "*"}}` +
-    (by.length ? ` by {${by.join(",")}}` : "")
-  );
+    const widened = i < 0 ? `${body}:*` : i === body.length - 1 ? `${body}*` : body;
+    return `${negate ? "!" : ""}${widened}`;
+  });
+  const by = splitList(params.get("by"));
+  return `${agg}:${metric}{${filters.length ? filters.join(",") : "*"}}` + (by.length ? ` by {${by.join(",")}}` : "");
 }
 
 function parseRange(params: URLSearchParams): TimeRange {

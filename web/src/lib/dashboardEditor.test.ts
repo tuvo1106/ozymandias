@@ -276,6 +276,13 @@ describe("withQueryWidget", () => {
     expect(d.widgets).toHaveLength(2);
   });
 
+  it("titles a query written over lines on one line, and keeps the query as written", () => {
+    const q = "sum:m{a:b,\n    c:d}\n  by {k}";
+    const added = withQueryWidget(d, q).dashboard.widgets[2]!;
+    expect(added.title).toBe("sum:m{a:b, c:d} by {k}");
+    expect(added.queries).toEqual([{ q }]);
+  });
+
   // The title is the query until the author names it, and the server
   // refuses a title over the limit.
   it("cuts a long query to the title limit, in bytes", () => {

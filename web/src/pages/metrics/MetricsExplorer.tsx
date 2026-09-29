@@ -37,7 +37,12 @@ export function MetricsExplorer() {
     setDraft(state.q);
   }
   const edited = draft.trim() !== state.q;
+  // One guard for the button and the key. A blank box runs nothing: there
+  // is nothing to ask — a refetch would send `q=` for a 400 nobody sees —
+  // and "run" must not quietly mean "clear the chart" either.
+  const canRun = draft.trim() !== "";
   const run = () => {
+    if (!canRun) return;
     if (edited) update({ q: draft.trim() });
     else void query.refetch();
   };
@@ -52,7 +57,7 @@ export function MetricsExplorer() {
           <button
             type="button"
             onClick={run}
-            disabled={draft.trim() === "" && state.q === ""}
+            disabled={!canRun}
             className="rounded-md bg-violet-600 px-3 py-1 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-40"
           >
             Run
@@ -170,8 +175,9 @@ function Answer({ answer }: { answer: ExplorerAnswer }) {
     <div className="flex flex-col gap-2">
       {result.warnings.length ? (
         <ul aria-label="Warnings" className="list-disc pl-5 text-xs text-amber-700 dark:text-amber-400">
-          {result.warnings.map((w) => (
-            <li key={w}>{w}</li>
+          {result.warnings.map((w, i) => (
+            // Indexed: nothing promises two warnings differ.
+            <li key={`${i}-${w}`}>{w}</li>
           ))}
         </ul>
       ) : null}

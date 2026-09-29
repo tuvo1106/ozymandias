@@ -1,12 +1,12 @@
 import {
   ApiError,
-  buildQueryParams,
   fetchMetricNames,
   fetchQuery,
   fetchTagKeys,
   fetchTagValues,
   getJSON,
   isQueryResult,
+  queryBody,
 } from "./metricsApi";
 
 type Handler = (url: string) => Promise<Response>;
@@ -108,21 +108,28 @@ describe("autocomplete endpoints", () => {
   });
 });
 
-describe("buildQueryParams", () => {
+describe("queryBody", () => {
   it("sends the query as q, with the window", () => {
-    expect(Object.fromEntries(buildQueryParams(q, { from: 100, to: 200 }, 10))).toEqual({ q, from: "100", to: "200", interval: "10" });
+    expect(queryBody(q, { from: 100, to: 200 }, 10)).toEqual({ q, from: 100, to: 200, interval: 10 });
   });
 
   it("leaves the interval to the server", () => {
-    expect(buildQueryParams("sum:m{*}", { from: 1, to: 2 }).toString()).toBe("q=sum%3Am%7B*%7D&from=1&to=2");
+    expect(queryBody("sum:m{*}", { from: 1, to: 2 })).toEqual({ q: "sum:m{*}", from: 1, to: 2 });
   });
 });
 
 describe("fetchQuery", () => {
-  it("requests the query and returns a valid result", async () => {
-    const { f, calls } = fakeFetch(json(result));
+  // Free text the author typed, possibly over lines: not a URL's business.
+  it("POSTs the query and returns a valid result", async () => {
+    const inits: RequestInit[] = [];
+    const f = (async (url: string, init: RequestInit) => {
+      inits.push(init);
+      expect(url).toBe("/api/v1/query");
+      return new Response(JSON.stringify(result));
+    }) as unknown as typeof fetch;
     await expect(fetchQuery(q, { from: 1, to: 2 }, f)).resolves.toEqual(result);
-    expect(new URL(calls[0]!, "http://h").searchParams.get("q")).toBe(q);
+    expect(inits[0]?.method).toBe("POST");
+    expect(JSON.parse(String(inits[0]?.body))).toEqual({ q, from: 1, to: 2 });
   });
 
   it("rejects a malformed result", async () => {

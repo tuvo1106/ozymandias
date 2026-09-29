@@ -67,9 +67,19 @@ const defaultApi: Api = (url) => {
   }
 };
 
+/**
+ * The request as one URL: a POST's JSON fields are folded into its search
+ * params, so a handler asks `u.searchParams.get("q")` whichever verb was used.
+ */
+function asked(input: string, init?: RequestInit): URL {
+  const url = new URL(input, "http://localhost");
+  if (init?.body) for (const [k, v] of Object.entries(JSON.parse(String(init.body)) as Record<string, unknown>)) url.searchParams.set(k, String(v));
+  return url;
+}
+
 function mockApi(api: Api = defaultApi) {
-  const f = vi.fn(async (input: string) => {
-    const { status = 200, body } = await api(new URL(input, "http://localhost"));
+  const f = vi.fn(async (input: string, init?: RequestInit) => {
+    const { status = 200, body } = await api(asked(input, init));
     return new Response(JSON.stringify(body), { status });
   });
   vi.stubGlobal("fetch", f);
@@ -91,7 +101,7 @@ function renderAt(path: string) {
 const params = (router: ReturnType<typeof renderAt>) => new URLSearchParams(router.state.location.search);
 
 const queryCalls = (f: ReturnType<typeof mockApi>) =>
-  f.mock.calls.map(([u]) => new URL(u, "http://localhost")).filter((u) => u.pathname === "/api/v1/query");
+  f.mock.calls.map(([u, init]) => asked(u, init)).filter((u) => u.pathname === "/api/v1/query");
 
 const box = () => screen.getByRole("combobox", { name: "Query" }) as HTMLTextAreaElement;
 
@@ -168,6 +178,25 @@ describe("MetricsExplorer", () => {
     await waitFor(() => expect(params(router).get("range")).toBe("4h"));
     expect(params(router).get("q")).toBe("sum:http.request.count{env:dev} by {route}");
     expect(params(router).has("metric")).toBe(false);
+  });
+
+  // Nothing to ask, and "run" must not mean "clear the chart".
+  it("runs nothing from a blank box, by button or by key", async () => {
+    const f = mockApi();
+    const user = userEvent.setup();
+    const router = renderAt("/metrics/explorer");
+    await user.click(await screen.findByRole("combobox", { name: "Query" }));
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+
+    await router.navigate(at(Q));
+    await screen.findByTestId("chart");
+    await user.clear(box());
+    expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    expect(params(router).get("q")).toBe(Q);
+    expect(screen.getByTestId("chart")).toBeInTheDocument();
+    expect(queryCalls(f).filter((u) => u.searchParams.get("q") === "")).toHaveLength(0);
   });
 
   it("says an edit has not been run, and keeps charting the URL's query until it is", async () => {
@@ -256,6 +285,16 @@ describe("MetricsExplorer", () => {
     await user.click(screen.getByRole("button", { name: "Run" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/The last refresh failed \(out of time\)\. Showing the answer from/);
     expect(screen.getByTestId("chart")).toBeInTheDocument();
+  });
+
+  it("draws two identical warnings as two", async () => {
+    const complain = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockApi(over((u) => (u.pathname === "/api/v1/query" ? { body: queryBody(Q, { warnings: ["same", "same"] }) } : undefined)));
+    renderAt(at(Q));
+    await screen.findByTestId("chart");
+    expect(within(screen.getByRole("list", { name: "Warnings" })).getAllByRole("listitem")).toHaveLength(2);
+    expect(complain.mock.calls.flat().join(" ")).not.toMatch(/same key/);
+    complain.mockRestore();
   });
 
   it("shows the answer's warnings, and the canonical spelling when it differs", async () => {

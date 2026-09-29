@@ -61,10 +61,10 @@ describe("useExplorerQuery", () => {
       await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
     });
     await waitFor(() => expect(f).toHaveBeenCalledTimes(2));
-    const urls = f.mock.calls.map((c) => new URL((c as unknown as [string])[0], "http://x").searchParams);
-    expect(urls.map((u) => [u.get("from"), u.get("to")])).toEqual([
-      ["999700", "1000000"],
-      ["999710", "1000010"],
+    const bodies = f.mock.calls.map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)) as { from: number; to: number });
+    expect(bodies.map((b) => [b.from, b.to])).toEqual([
+      [999_700, 1_000_000],
+      [999_710, 1_000_010],
     ]);
   });
 
@@ -85,8 +85,8 @@ describe("useExplorerQuery", () => {
     let release: (() => void) | undefined;
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (u: string) => {
-        if (new URL(u, "http://x").searchParams.get("q") === "sum:n{*}") await new Promise<void>((r) => (release = r));
+      vi.fn(async (_u: string, init: RequestInit) => {
+        if ((JSON.parse(String(init.body)) as { q: string }).q === "sum:n{*}") await new Promise<void>((r) => (release = r));
         return ok();
       }),
     );
