@@ -81,16 +81,20 @@ answers).
 - Distributions' sketches live in the sketch store and are not counted here;
   a distribution's series show up as its `<name>.count`, `.sum`, `.min` and
   `.max` series, which have the same tags.
-- The head keeps no empty series. It used to create and index a series
-  before applying its samples, and three paths left one with nothing in it
-  until the next truncation — every sample out of bounds, a failed log write,
-  and replay restoring series whose samples a block had long since taken —
-  where every reader of the head's index (the metadata queries, the
-  per-metric series limit, and these counts) saw a series no query could.
-  Append now refuses out-of-bounds samples before resolving, forgets any
-  series it created and stored nothing in, and replay forgets the restored
-  series it left empty. A series is visible, empty, only for the moment
-  between its creation and its first sample inside one append.
+- The counts skip head series that hold no sample. Two paths leave one: an
+  append that stores nothing, and replay. Append now refuses out-of-bounds
+  samples before resolving a series and forgets any series it created and
+  stored nothing in (a refused log write), so its only empty series is one
+  being created, for the length of that append — including its log write and
+  any fsync. Replay is different: every checkpoint keeps every series record,
+  so a restart restores series whose samples a block took long ago, empty
+  until the next block cut. Replay keeps them, because one that reports again
+  reuses its logged id rather than writing a new record every restart; the
+  counts skip them. Until that cut they are still listed by the metadata
+  queries and counted against the per-metric series limit, as they were
+  before this ADR. The root cause is the checkpoint policy keeping series
+  records for series the head no longer holds; changing it is a WAL decision
+  of its own, not this one.
 - `DB.Stats().Series` still double-counts and feeds `ozy.store.series`. It is
   a size gauge, not a cardinality, and fixing it would put this walk on the
   self-metrics tick; it is left as it is and named here.

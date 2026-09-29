@@ -822,10 +822,11 @@ func TestHead_AFailedLogWriteCreatesNoSeries(t *testing.T) {
 	}
 }
 
-// Every checkpoint keeps the series records, so the log defines series whose
-// samples a block took long ago. After a restart they must not come back as
-// empty series.
-func TestHead_ReplayLeavesNoEmptySeries(t *testing.T) {
+// Every checkpoint keeps the series records, so after a restart the head
+// holds series whose samples a block took long ago. Replay keeps them — one
+// that reports again must reuse its logged id, not write a new record each
+// restart — and the cardinality counts must not see them.
+func TestHead_ReplayedDormantSeriesAreKeptButNotCounted(t *testing.T) {
 	dir := t.TempDir()
 	w, err := wal.Open(wal.Options{Dir: dir})
 	if err != nil {
@@ -850,8 +851,26 @@ func TestHead_ReplayLeavesNoEmptySeries(t *testing.T) {
 	if got := restored.SeriesOf("m"); len(got) != 1 || got[0].Key() != ref("m", "id:new").Key() {
 		t.Errorf("SeriesOf(m) = %v, want only id:new", got)
 	}
-	if st := restored.Stats(); st.Series != 1 {
-		t.Errorf("Stats().Series = %d, want 1", st.Series)
+	ms, isNew, err := restored.getOrCreate(ref("m", "id:old"))
+	if err != nil || isNew || !ms.logged {
+		t.Errorf("returning series: new=%v logged=%v err=%v; want the restored, logged one", isNew, ms != nil && ms.logged, err)
+	}
+}
+
+// Forgetting a series twice must not count its metric down twice, or the
+// per-metric limit would admit more series than it allows.
+func TestHead_ForgetIsIdempotent(t *testing.T) {
+	h := New(Options{BlockRange: 1 << 40})
+	for _, id := range []string{"id:a", "id:b"} {
+		if err := appendOne(h, ref("m", id), 1, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ms, _, _ := h.getOrCreate(ref("m", "id:a"))
+	h.forget(ms.id, ms.ref)
+	h.forget(ms.id, ms.ref)
+	if n := h.perMetric["m"]; n != 1 {
+		t.Errorf("perMetric[m] = %d, want 1", n)
 	}
 }
 
@@ -898,5 +917,13 @@ func TestHead_RejectionsAreInIndexOrder(t *testing.T) {
 	}
 	if st := h.Stats(); st.OOORejected != 2 {
 		t.Errorf("OOORejected = %d, want 2", st.OOORejected)
+	}
+	// A batch-wide failure stays last, after the per-sample rejections.
+	lg := &failingLog{}
+	f := New(Options{WAL: lg, BlockRange: 1 << 40})
+	f.Truncate(5000)
+	_, rejected = f.Append([]tsdb.SeriesRef{ref("m", "id:a"), ref("m", "id:b")}, []Sample{{T: 6000, V: 1}, {T: 4000, V: 1}})
+	if len(rejected) != 2 || rejected[0].Index != 1 || rejected[1].Index != -1 {
+		t.Errorf("rejected = %v, want the out-of-bounds sample then the log failure", rejected)
 	}
 }

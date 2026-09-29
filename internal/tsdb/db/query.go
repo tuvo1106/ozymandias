@@ -232,7 +232,9 @@ func (db *DB) SeriesCounts(ctx context.Context, prefix string) ([]tsdb.MetricSer
 	}
 	out := make([]tsdb.MetricSeriesCount, 0, len(names))
 	for _, name := range names {
-		// Keys only: a count needs the set, not each series' identity.
+		// Only the keys are kept past the visit: a count needs the set. Each
+		// source still builds its refs for the metric first, so this saves
+		// what the set would retain, not the peak.
 		keys := map[string]struct{}{}
 		if err := db.eachSeries(ctx, name, func(key string, _ tsdb.SeriesRef) { keys[key] = struct{}{} }); err != nil {
 			return nil, err

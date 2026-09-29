@@ -1,10 +1,12 @@
 package head
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"hash/maphash"
 	"math"
+	"slices"
 	"sort"
 	"sync"
 
@@ -189,13 +191,14 @@ func (h *Head) Append(refs []tsdb.SeriesRef, samples []Sample) (stored []bool, r
 
 	// A series this call creates and then stores nothing in is forgotten
 	// before the commit ends. Resolving creates and indexes a series before
-	// its samples are applied, so without this a batch that fails — every
-	// sample out of bounds or out of order, or the log write refused — leaves
-	// series with nothing in them: listed by the metadata queries, counted by
-	// the Metric Summary and against the per-metric series limit, invisible
-	// to every query until the next Truncate. Deferred after logMu's unlock,
-	// so it runs first and still under the commit lock, which is what makes
-	// forgetting safe (see Truncate).
+	// its samples are applied; the path that reaches here is a refused log
+	// write (a full disk), and without this each such batch leaves series
+	// with nothing in them — listed by the metadata queries and counted
+	// against the per-metric series limit, so that real series are refused
+	// once the disk recovers. Deferred, not in that branch alone, so that any
+	// later error path between resolving and applying is covered too; it
+	// runs before logMu's unlock, still under the commit lock, which is what
+	// makes forgetting safe (see Truncate).
 	var created []*memSeries
 	defer func() { h.forgetEmpty(created) }()
 
@@ -206,10 +209,14 @@ func (h *Head) Append(refs []tsdb.SeriesRef, samples []Sample) (stored []bool, r
 	minValid := h.MinValidTime()
 	var dropped int64
 	defer func() {
-		// Rejections in index order, whichever loop found them: a caller
+		// Rejections in index order, whichever loop found them, so a caller
 		// reporting the first rejection per series reports the same one it
-		// did before the bound was checked early.
-		sort.SliceStable(rejected, func(i, j int) bool { return rejected[i].Index < rejected[j].Index })
+		// did before the bound was checked early — and a batch-wide failure
+		// (Index -1) last, where it always was. Each loop emits in order, so
+		// this only sorts when both found something.
+		if !slices.IsSortedFunc(rejected, byRejectionIndex) {
+			slices.SortStableFunc(rejected, byRejectionIndex)
+		}
 		if dropped > 0 {
 			h.mu.Lock()
 			h.oooDropped += dropped
@@ -288,6 +295,17 @@ func (h *Head) Append(refs []tsdb.SeriesRef, samples []Sample) (stored []bool, r
 		stored[i] = wrote
 	}
 	return stored, rejected
+}
+
+// byRejectionIndex orders rejections by sample index, batch-wide ones last.
+func byRejectionIndex(a, b Rejection) int {
+	key := func(r Rejection) int {
+		if r.Index < 0 {
+			return math.MaxInt
+		}
+		return r.Index
+	}
+	return cmp.Compare(key(a), key(b))
 }
 
 type seriesRecord struct {
@@ -559,9 +577,16 @@ func (h *Head) Series(id uint64) (tsdb.SeriesRef, bool) {
 	return ms.ref, true
 }
 
-// SeriesOf returns the identity of every series of one metric the head
-// holds, from the index alone — no samples are read. For the cardinality
+// SeriesOf returns the identity of every series of one metric that holds at
+// least one sample in the head — no samples are decoded. For the cardinality
 // counts, which must dedupe the head against the blocks by key.
+//
+// "Holds a sample", not "is in the index", for series replay restores: every
+// checkpoint keeps every series record, so after a restart the head holds
+// series whose samples a block took long ago, empty until the next Truncate.
+// Replay keeps them, because one that reports again reuses its logged id
+// instead of writing a new record; the counts skip them, because no query can
+// see them. (Append leaves no empty series of its own behind.)
 //
 // The lock is held only to copy the ids, as [Head.Select] does: appends that
 // create a series take it for writing, and a large metric's walk must not
@@ -572,7 +597,14 @@ func (h *Head) SeriesOf(metric string) []tsdb.SeriesRef {
 	h.mu.RUnlock()
 	out := make([]tsdb.SeriesRef, 0, len(ids))
 	for _, id := range ids {
-		if ms := h.series(id); ms != nil {
+		ms := h.series(id)
+		if ms == nil {
+			continue
+		}
+		ms.mu.RLock()
+		empty := len(ms.chunks) == 0
+		ms.mu.RUnlock()
+		if !empty {
 			out = append(out, ms.ref)
 		}
 	}
@@ -778,16 +810,21 @@ func (h *Head) Truncate(mint int64) (droppedSeries, droppedChunks int) {
 	return droppedSeries, droppedChunks
 }
 
-// forget removes a series from every index. The caller holds logMu, or is
-// Replay, which runs before anything else can see the head; see Truncate for
-// why that is what makes it safe.
+// forget removes a series from every index. The caller holds logMu; see
+// Truncate for why that is what makes it safe. Forgetting a series twice is a
+// no-op: the second call finds it gone and must not decrement its metric's
+// count again, or the per-metric limit would under-count.
 func (h *Head) forget(id uint64, ref tsdb.SeriesRef) {
+	// Shard lock then head lock, the order getOrCreate takes them in.
 	sh := h.shardFor(ref.Key())
 	sh.mu.Lock()
-	delete(sh.series, ref.Key())
-	sh.mu.Unlock()
-
+	defer sh.mu.Unlock()
 	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.byID[id]; !ok {
+		return
+	}
+	delete(sh.series, ref.Key())
 	delete(h.byID, id)
 	h.postings.Delete(id, ref)
 	if n := h.perMetric[ref.Metric] - 1; n <= 0 {
@@ -795,7 +832,6 @@ func (h *Head) forget(id uint64, ref tsdb.SeriesRef) {
 	} else {
 		h.perMetric[ref.Metric] = n
 	}
-	h.mu.Unlock()
 }
 
 // forgetEmpty forgets each of these series that holds no sample, and reports

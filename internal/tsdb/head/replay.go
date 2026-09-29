@@ -79,20 +79,6 @@ func Replay(h *Head, dir string) (Stats, error) {
 	if err := r.Err(); err != nil {
 		return Stats{}, err
 	}
-	// Series records are kept by every checkpoint, so the log still defines
-	// series whose samples a block — or retention — has long since taken.
-	// Restored, they would sit in the index with nothing in them until the
-	// next cut: counted by the Metric Summary and against the series limit
-	// after every restart. They go now, the way Truncate would take them.
-	restored := make([]*memSeries, 0, len(byLogID))
-	seen := map[*memSeries]bool{}
-	for _, ms := range byLogID {
-		if !seen[ms] {
-			seen[ms] = true
-			restored = append(restored, ms)
-		}
-	}
-	h.forgetEmpty(restored)
 	st := h.Stats()
 	st.Samples = applied
 	st.OOORejected = skipped
