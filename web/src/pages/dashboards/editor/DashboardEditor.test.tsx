@@ -177,8 +177,10 @@ describe("saving", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/dashboards/9/edit"));
     expect(sent(f, "POST")).toHaveLength(1);
     // The router keeps the page mounted across /2/edit → /9/edit, so a flag
-    // read once on mount would miss this arrival.
-    expect(await screen.findByText("Saved.")).toBeInTheDocument();
+    // read once on mount would miss this arrival. #9's editor first: the
+    // banner #2's editor showed can still be mounted, and would pass this.
+    await screen.findByText(/Editing dashboard #9/);
+    expect(screen.getByText("Saved.")).toBeInTheDocument();
     await waitFor(() => expect(router.state.location.state).toBeNull());
   });
 
@@ -224,7 +226,10 @@ describe("where a draft comes from", () => {
     await userEvent.click(screen.getByRole("button", { name: "Create" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/dashboards/7/edit"));
     expect(sent(f, "POST")[0]?.body).not.toHaveProperty("uid");
-    expect(await screen.findByText("Saved.")).toBeInTheDocument();
+    // The stored editor first: the create page shows its own "Saved." until
+    // it unmounts, and findByText can return that one just before it goes.
+    await screen.findByText(/Editing dashboard #7/);
+    expect(screen.getByText("Saved.")).toBeInTheDocument();
   });
 
   it("says a service copy names a template that is not there, rather than opening a blank page", async () => {
@@ -470,7 +475,9 @@ describe("review fixes: what a create may do next", () => {
     );
     const router = renderAt("/dashboards/new");
     await userEvent.click(await screen.findByRole("button", { name: "Create" }));
-    expect(await screen.findByText("Saved.")).toBeInTheDocument();
+    // The stored editor's banner, not the create page's (see above).
+    await screen.findByText(/Editing dashboard #7/);
+    expect(screen.getByText("Saved.")).toBeInTheDocument();
     await waitFor(() => expect(router.state.location.state).toBeNull());
     expect(router.state.location.pathname).toBe("/dashboards/7/edit");
   });

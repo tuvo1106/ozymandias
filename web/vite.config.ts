@@ -36,6 +36,10 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
+    // Above src/test/setup.ts's 5s asyncUtilTimeout, so a test with several
+    // slow findBy calls in a row is not cut off by the test timeout first,
+    // and a failing one reports Testing Library's DOM dump, not a timeout.
+    testTimeout: 15_000,
     coverage: {
       provider: "v8",
       include: ["src/lib/**"],
