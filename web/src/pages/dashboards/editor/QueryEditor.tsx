@@ -29,10 +29,17 @@ export interface QueryEditorProps {
   onChange: (q: string) => void;
   /** The dashboard's template variable names, for `$` completion. */
   variables: readonly string[];
+  /**
+   * Called on Ctrl+Enter (⌘+Enter on a Mac), for a page where the query is
+   * run rather than followed. Plain Enter stays a newline, or a choice when
+   * the list is open: a query can span lines, and a key that sometimes
+   * inserts and sometimes runs would run half-written queries.
+   */
+  onSubmit?: () => void;
 }
 
 /** A metricql text box with completion and inline parse errors. */
-export function QueryEditor({ label, value, onChange, variables }: QueryEditorProps) {
+export function QueryEditor({ label, value, onChange, variables, onSubmit }: QueryEditorProps) {
   const id = useId();
   const listId = `${id}-list`;
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -74,6 +81,12 @@ export function QueryEditor({ label, value, onChange, variables }: QueryEditorPr
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (onSubmit && e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      setOpen(false);
+      onSubmit();
+      return;
+    }
     if (e.key === " " && e.ctrlKey) {
       e.preventDefault();
       setOpen(true);

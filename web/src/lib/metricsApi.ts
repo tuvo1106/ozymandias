@@ -1,6 +1,6 @@
 /**
- * Client for ozyd's metrics query API (M1 spec §3.4): metric-name and
- * tag autocomplete, and the structured `/api/v1/query` endpoint.
+ * Client for ozyd's metrics query API: metric-name and tag autocomplete,
+ * and `/api/v1/query` with a metricql `q`.
  *
  * Every function validates the response shape before returning it. The UI is
  * built against a contract, not against whatever the server happens to send,
@@ -8,7 +8,6 @@
  * `undefined is not a function` deep inside the chart. Like health.ts, the
  * fetch implementation is an argument so tests run without a server.
  */
-import { formatFilters, type ExplorerState } from "./explorerState";
 import type { ResolvedRange } from "./timeRange";
 
 /**
@@ -39,12 +38,16 @@ export interface Series {
 /** The body of a successful `/api/v1/query`. */
 export interface QueryResult {
   status: "ok";
+  /** The canonical spelling of what was evaluated (api.md). */
+  query: string;
   /** Window actually evaluated, unix seconds. */
   from: number;
   to: number;
   /** Bucket width the server chose (or was given), seconds. */
   interval: number;
   series: Series[];
+  /** Sentences for a human about the answer; always present, often empty. */
+  warnings: string[];
 }
 
 type FetchLike = typeof fetch;
@@ -150,19 +153,14 @@ export async function fetchTagValues(
 }
 
 /**
- * Builds the `/api/v1/query` search string for a state and a resolved
- * window. Empty `filter`/`by` are omitted rather than sent blank, and
- * `interval` is left to the server (range/300 rounded to 10 s) unless given.
+ * Builds the `/api/v1/query` search string for a query and a resolved
+ * window. `interval` is left to the server (range/300 rounded to 10 s)
+ * unless given.
  */
-export function buildQueryParams(state: ExplorerState, range: ResolvedRange, interval?: number): URLSearchParams {
-  const q = new URLSearchParams({ metric: state.metric });
-  if (state.filters.length) q.set("filter", formatFilters(state.filters));
-  if (state.by.length) q.set("by", state.by.join(","));
-  q.set("agg", state.agg);
-  q.set("from", String(range.from));
-  q.set("to", String(range.to));
-  if (interval !== undefined) q.set("interval", String(interval));
-  return q;
+export function buildQueryParams(q: string, range: ResolvedRange, interval?: number): URLSearchParams {
+  const p = new URLSearchParams({ q, from: String(range.from), to: String(range.to) });
+  if (interval !== undefined) p.set("interval", String(interval));
+  return p;
 }
 
 function isPoint(v: unknown): v is [number, number | null] {
@@ -187,22 +185,24 @@ export function isQueryResult(v: unknown): v is QueryResult {
   return (
     isRecord(v) &&
     v.status === "ok" &&
+    typeof v.query === "string" &&
     typeof v.from === "number" &&
     typeof v.to === "number" &&
     typeof v.interval === "number" &&
     Array.isArray(v.series) &&
-    v.series.every(isSeries)
+    v.series.every(isSeries) &&
+    isStringArray(v.warnings)
   );
 }
 
 /** Runs a query and validates the result. */
 export async function fetchQuery(
-  state: ExplorerState,
+  q: string,
   range: ResolvedRange,
   fetchImpl: FetchLike = fetch,
   signal?: AbortSignal,
 ): Promise<QueryResult> {
-  const body = await getJSON(`/api/v1/query?${buildQueryParams(state, range)}`, fetchImpl, signal);
+  const body = await getJSON(`/api/v1/query?${buildQueryParams(q, range)}`, fetchImpl, signal);
   if (!isQueryResult(body)) throw new ApiError("ozyd sent an unexpected /api/v1/query response");
   return body;
 }

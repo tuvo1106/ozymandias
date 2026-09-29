@@ -32,9 +32,9 @@ const validator: Handler = (path, _p, body) => {
     : { body: { ok: true, query: q.trim().toLowerCase() } };
 };
 
-function Harness({ initial = "", variables = [] as string[] }) {
+function Harness({ initial = "", variables = [] as string[], onSubmit }: { initial?: string; variables?: string[]; onSubmit?: () => void }) {
   const [q, setQ] = useState(initial);
-  return <QueryEditor label="Query" value={q} onChange={setQ} variables={variables} />;
+  return <QueryEditor label="Query" value={q} onChange={setQ} variables={variables} onSubmit={onSubmit} />;
 }
 
 function renderEditor(props: Parameters<typeof Harness>[0] = {}) {
@@ -175,5 +175,21 @@ describe("QueryEditor completions", () => {
     await userEvent.type(box, "sum:m{{$r");
     await userEvent.keyboard("{ArrowDown}{Enter}");
     expect(box).toHaveValue("sum:m{$region");
+  });
+});
+
+describe("QueryEditor submit", () => {
+  it("runs on Ctrl+Enter or ⌘+Enter, and plain Enter stays a newline", async () => {
+    mockApi(validator);
+    const onSubmit = vi.fn();
+    const box = renderEditor({ initial: "sum:m{*}", onSubmit });
+    await userEvent.click(box);
+    await userEvent.keyboard("{Enter}");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(box.value).toBe("sum:m{*}\n");
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
+    await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    expect(box.value).toBe("sum:m{*}\n");
   });
 });

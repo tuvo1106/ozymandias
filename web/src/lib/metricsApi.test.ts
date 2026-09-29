@@ -1,4 +1,3 @@
-import { DEFAULT_EXPLORER_STATE, type ExplorerState } from "./explorerState";
 import {
   ApiError,
   buildQueryParams,
@@ -25,6 +24,7 @@ const json = (body: unknown, status = 200) => async () => new Response(JSON.stri
 
 const result = {
   status: "ok",
+  query: "sum:http.request.count{env:dev} by {route}",
   from: 1_790_000_000,
   to: 1_790_003_600,
   interval: 20,
@@ -38,18 +38,10 @@ const result = {
       ],
     },
   ],
+  warnings: [],
 };
 
-const state: ExplorerState = {
-  ...DEFAULT_EXPLORER_STATE,
-  metric: "http.request.count",
-  filters: [
-    { key: "env", value: "dev", negate: false },
-    { key: "route", value: "/api/*", negate: true },
-  ],
-  by: ["route", "env"],
-  agg: "sum",
-};
+const q = "sum:http.request.count{env:dev,!route:/api/*} by {route,env}";
 
 describe("getJSON", () => {
   it("returns the parsed body", async () => {
@@ -117,35 +109,25 @@ describe("autocomplete endpoints", () => {
 });
 
 describe("buildQueryParams", () => {
-  it("spells every parameter as the API expects", () => {
-    const q = buildQueryParams(state, { from: 100, to: 200 }, 10);
-    expect(Object.fromEntries(q)).toEqual({
-      metric: "http.request.count",
-      filter: "env:dev,!route:/api/*",
-      by: "route,env",
-      agg: "sum",
-      from: "100",
-      to: "200",
-      interval: "10",
-    });
+  it("sends the query as q, with the window", () => {
+    expect(Object.fromEntries(buildQueryParams(q, { from: 100, to: 200 }, 10))).toEqual({ q, from: "100", to: "200", interval: "10" });
   });
 
-  it("omits empty filter and by, and leaves the interval to the server", () => {
-    const q = buildQueryParams({ ...DEFAULT_EXPLORER_STATE, metric: "m" }, { from: 1, to: 2 });
-    expect(q.toString()).toBe("metric=m&agg=avg&from=1&to=2");
+  it("leaves the interval to the server", () => {
+    expect(buildQueryParams("sum:m{*}", { from: 1, to: 2 }).toString()).toBe("q=sum%3Am%7B*%7D&from=1&to=2");
   });
 });
 
 describe("fetchQuery", () => {
   it("requests the query and returns a valid result", async () => {
     const { f, calls } = fakeFetch(json(result));
-    await expect(fetchQuery(state, { from: 1, to: 2 }, f)).resolves.toEqual(result);
-    expect(calls[0]).toMatch(/^\/api\/v1\/query\?metric=http\.request\.count&filter=/);
+    await expect(fetchQuery(q, { from: 1, to: 2 }, f)).resolves.toEqual(result);
+    expect(new URL(calls[0]!, "http://h").searchParams.get("q")).toBe(q);
   });
 
   it("rejects a malformed result", async () => {
     const { f } = fakeFetch(json({ ...result, series: [{ metric: "m", tags: {}, points: [[1, "x"]] }] }));
-    await expect(fetchQuery(state, { from: 1, to: 2 }, f)).rejects.toThrow("unexpected /api/v1/query response");
+    await expect(fetchQuery(q, { from: 1, to: 2 }, f)).rejects.toThrow("unexpected /api/v1/query response");
   });
 });
 
@@ -158,6 +140,10 @@ describe("isQueryResult", () => {
   it.each([
     ["an error body", { status: "error", error: "x" }],
     ["no interval", { ...result, interval: undefined }],
+    // Both are always sent; a body without them is not the contract, and the
+    // page would otherwise render "no warnings" for "warnings not read".
+    ["no warnings", { ...result, warnings: undefined }],
+    ["no canonical query", { ...result, query: undefined }],
     ["series not an array", { ...result, series: {} }],
     ["numeric tag values", { ...result, series: [{ metric: "m", tags: { a: 1 }, points: [] }] }],
     ["a short point", { ...result, series: [{ metric: "m", tags: {}, points: [[1]] }] }],

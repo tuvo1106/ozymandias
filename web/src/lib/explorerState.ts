@@ -1,46 +1,27 @@
 /**
  * The Metrics Explorer's query state and its URL encoding.
  *
- * The URL is the single source of truth for what the explorer shows
+ * The URL is the single source of truth for what the explorer *charts*
  * (docs/plan/ui.md §1: "all view state is URL-encoded so any view is
- * shareable"). The page never keeps a second copy in React state: it parses
- * the search params on every render and writes a new URL to change anything.
- * That makes reload, back/forward and deep links correct by construction.
+ * shareable"): the query that was last run, the time range, and whether it
+ * refreshes. The query box holds a draft beside it, and running the draft is
+ * what writes it here — so a link is always the question its chart answers,
+ * never half of one that was being typed (ADR-0022).
  *
- * The encoding mirrors the query API's own parameters where it can
- * (`metric`, `filter=k:v,!k2:v2`, `by=k1,k2`, `agg`) so a URL is readable and
- * easy to translate into a curl command. (A consequence of copying the API's
- * comma-joined lists: a filter value cannot contain a comma, here or in the
- * API.) Parsing is forgiving — a hand-edited or stale link degrades to
- * defaults field by field rather than failing — and serializing omits
- * defaults so ordinary links stay short.
+ * `q` is the query language as `/api/v1/query` takes it. M1's explorer wrote
+ * the structured parameters instead (`metric`, `filter=k:v,!k2:v2`, `by`,
+ * `agg`); a link from then is translated into the same query the server would
+ * have run for it, so it still charts what it charted, and the first change
+ * rewrites it as `q`. Parsing is forgiving — a hand-edited or stale link
+ * degrades to defaults field by field rather than failing — and serializing
+ * omits defaults so ordinary links stay short.
  */
 import { isRangePreset, type RangePreset, type TimeRange } from "./timeRange";
 
-/** Cross-series aggregators the query API accepts. */
-export const AGGREGATORS = ["avg", "sum", "min", "max"] as const;
-
-/** One cross-series aggregator. */
-export type Aggregator = (typeof AGGREGATORS)[number];
-
-/**
- * One tag filter. `value` may contain `*` wildcards (the server matches
- * them); `negate` turns `key:value` into `!key:value` (not equal).
- */
-export interface TagFilter {
-  key: string;
-  value: string;
-  negate: boolean;
-}
-
 /** Everything that determines the explorer's view. */
 export interface ExplorerState {
-  /** Metric name; "" means none chosen yet. */
-  metric: string;
-  filters: TagFilter[];
-  /** Tag keys to group by, in the order chosen. */
-  by: string[];
-  agg: Aggregator;
+  /** The metricql query that is charted; "" means none has been run. */
+  q: string;
   range: TimeRange;
   /** Whether a relative range re-queries every 10 s. */
   live: boolean;
@@ -48,39 +29,15 @@ export interface ExplorerState {
 
 const DEFAULT_PRESET: RangePreset = "1h";
 
-/** The state of a fresh explorer: nothing chosen, last hour, avg, live. */
+/** The state of a fresh explorer: no query, last hour, live. */
 export const DEFAULT_EXPLORER_STATE: ExplorerState = {
-  metric: "",
-  filters: [],
-  by: [],
-  agg: "avg",
+  q: "",
   range: { kind: "relative", preset: DEFAULT_PRESET },
   live: true,
 };
 
-/** Formats one filter the way the API and URL spell it: `k:v` or `!k:v`. */
-export function formatFilter(f: TagFilter): string {
-  return `${f.negate ? "!" : ""}${f.key}:${f.value}`;
-}
-
-/**
- * Parses one `k:v` / `!k:v` term. The key ends at the *first* colon, so
- * values may contain colons (`url:http://x`). Returns undefined for a term
- * without a colon or with an empty key or value.
- */
-export function parseFilter(term: string): TagFilter | undefined {
-  const t = term.trim();
-  const negate = t.startsWith("!");
-  const body = negate ? t.slice(1) : t;
-  const i = body.indexOf(":");
-  if (i <= 0 || i === body.length - 1) return undefined;
-  return { key: body.slice(0, i), value: body.slice(i + 1), negate };
-}
-
-/** Formats a filter list as the API's comma-joined `filter` parameter. */
-export function formatFilters(filters: readonly TagFilter[]): string {
-  return filters.map(formatFilter).join(",");
-}
+/** The aggregators M1's `agg` parameter produced. Anything else read as avg then, and still does. */
+const LEGACY_AGGREGATORS = new Set(["avg", "sum", "min", "max"]);
 
 function splitList(s: string | null): string[] {
   if (!s) return [];
@@ -88,6 +45,37 @@ function splitList(s: string | null): string[] {
     .split(",")
     .map((x) => x.trim())
     .filter((x) => x !== "");
+}
+
+/**
+ * The query an M1 link (`?metric=…&filter=…&by=…&agg=…`) asked for, or ""
+ * when it names no metric.
+ *
+ * The same translation the server makes for those parameters (api.md, "The
+ * M1 structured parameters"), done here so the text lands in the query box
+ * where it can be read and edited. A filter term without a key and a value
+ * is dropped, as M1's explorer dropped it; anything the parser would refuse
+ * — a brace in a value — is kept, so the box shows the parse error rather
+ * than the page quietly charting a different query.
+ */
+export function legacyQuery(params: URLSearchParams): string {
+  const metric = (params.get("metric") ?? "").trim();
+  if (!metric) return "";
+  const agg = params.get("agg") ?? "";
+  const filters: string[] = [];
+  for (const term of splitList(params.get("filter"))) {
+    const negate = term.startsWith("!");
+    const body = negate ? term.slice(1) : term;
+    const i = body.indexOf(":");
+    if (i <= 0 || i === body.length - 1) continue;
+    const f = `${negate ? "!" : ""}${body}`;
+    if (!filters.includes(f)) filters.push(f);
+  }
+  const by = [...new Set(splitList(params.get("by")))];
+  return (
+    `${LEGACY_AGGREGATORS.has(agg) ? agg : "avg"}:${metric}{${filters.length ? filters.join(",") : "*"}}` +
+    (by.length ? ` by {${by.join(",")}}` : "")
+  );
 }
 
 function parseRange(params: URLSearchParams): TimeRange {
@@ -107,26 +95,14 @@ function parseRange(params: URLSearchParams): TimeRange {
 }
 
 /**
- * Reads explorer state from URL search params. Unknown or malformed values
- * fall back to the default for that field alone; duplicate filters and
- * group-by keys are dropped.
+ * Reads explorer state from URL search params. `q` wins over M1's
+ * parameters when a link carries both: it is the newer spelling, and the
+ * only one this explorer writes.
  */
 export function parseExplorerState(params: URLSearchParams): ExplorerState {
-  const agg = params.get("agg") ?? "";
-  const filters: TagFilter[] = [];
-  const seen = new Set<string>();
-  for (const term of splitList(params.get("filter"))) {
-    const f = parseFilter(term);
-    if (f && !seen.has(formatFilter(f))) {
-      seen.add(formatFilter(f));
-      filters.push(f);
-    }
-  }
+  const q = (params.get("q") ?? "").trim();
   return {
-    metric: (params.get("metric") ?? "").trim(),
-    filters,
-    by: [...new Set(splitList(params.get("by")))],
-    agg: (AGGREGATORS as readonly string[]).includes(agg) ? (agg as Aggregator) : DEFAULT_EXPLORER_STATE.agg,
+    q: q || legacyQuery(params),
     range: parseRange(params),
     live: params.get("live") !== "0",
   };
@@ -139,10 +115,7 @@ export function parseExplorerState(params: URLSearchParams): ExplorerState {
  */
 export function serializeExplorerState(state: ExplorerState): URLSearchParams {
   const p = new URLSearchParams();
-  if (state.metric) p.set("metric", state.metric);
-  if (state.filters.length) p.set("filter", formatFilters(state.filters));
-  if (state.by.length) p.set("by", state.by.join(","));
-  if (state.agg !== DEFAULT_EXPLORER_STATE.agg) p.set("agg", state.agg);
+  if (state.q) p.set("q", state.q);
   if (state.range.kind === "absolute") {
     p.set("from", String(state.range.from));
     p.set("to", String(state.range.to));

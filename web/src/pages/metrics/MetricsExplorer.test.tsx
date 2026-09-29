@@ -14,8 +14,11 @@ vi.mock("../../charts/TimeseriesChart", () => ({
   ),
 }));
 
-const queryBody = {
+const Q = "sum:http.request.count{*} by {route}";
+
+const queryBody = (q = Q, over: Record<string, unknown> = {}) => ({
   status: "ok",
+  query: q,
   from: 1_790_000_000,
   to: 1_790_003_600,
   interval: 20,
@@ -30,23 +33,35 @@ const queryBody = {
     },
     { metric: "http.request.count", tags: { route: "/api/me" }, points: [[1_790_000_020_000, 1]] },
   ],
-};
+  warnings: [],
+  ...over,
+});
 
-type Api = (url: URL) => { status?: number; body: unknown };
+type Reply = { status?: number; body: unknown } | Promise<{ status?: number; body: unknown }>;
+type Api = (url: URL) => Reply;
+
+const dashboardList = {
+  dashboards: [
+    { id: 4, provisioned: false, created_at: "t", updated_at: "t", title: "Checkout", widgets: [] },
+    { id: 5, provisioned: true, created_at: "t", updated_at: "t", title: "Home", widgets: [] },
+  ],
+  unreadable: [],
+};
 
 const defaultApi: Api = (url) => {
   switch (url.pathname) {
-    case "/api/v1/metrics": {
-      const prefix = url.searchParams.get("prefix") ?? "";
-      const all = ["http.request.count", "http.request.duration", "system.cpu.user"];
-      return { body: { metrics: all.filter((m) => m.startsWith(prefix)) } };
-    }
+    case "/api/v1/metrics":
+      return { body: { metrics: ["http.request.count", "system.cpu.user"] } };
     case "/api/v1/tags":
       return { body: { keys: ["env", "route"] } };
     case "/api/v1/tags/values":
-      return { body: { values: url.searchParams.get("key") === "env" ? ["dev", "prod"] : ["/api/comics", "/api/me"] } };
+      return { body: { values: ["dev", "prod"] } };
+    case "/api/v1/query/validate":
+      return { body: { ok: true, query: "x" } };
     case "/api/v1/query":
-      return { body: queryBody };
+      return { body: queryBody(url.searchParams.get("q") ?? "") };
+    case "/api/v1/dashboards":
+      return { body: dashboardList };
     default:
       return { status: 404, body: { status: "error", error: "not found" } };
   }
@@ -54,12 +69,18 @@ const defaultApi: Api = (url) => {
 
 function mockApi(api: Api = defaultApi) {
   const f = vi.fn(async (input: string) => {
-    const { status = 200, body } = api(new URL(input, "http://localhost"));
+    const { status = 200, body } = await api(new URL(input, "http://localhost"));
     return new Response(JSON.stringify(body), { status });
   });
   vi.stubGlobal("fetch", f);
   return f;
 }
+
+/** An api that overrides some routes and falls through to the default. */
+const over =
+  (f: (url: URL) => Reply | undefined): Api =>
+  (url) =>
+    f(url) ?? defaultApi(url);
 
 function renderAt(path: string) {
   const router = createMemoryRouter(routes, { initialEntries: [path] });
@@ -72,39 +93,38 @@ const params = (router: ReturnType<typeof renderAt>) => new URLSearchParams(rout
 const queryCalls = (f: ReturnType<typeof mockApi>) =>
   f.mock.calls.map(([u]) => new URL(u, "http://localhost")).filter((u) => u.pathname === "/api/v1/query");
 
+const box = () => screen.getByRole("combobox", { name: "Query" }) as HTMLTextAreaElement;
+
+const at = (q: string, rest = "") => `/metrics/explorer?${new URLSearchParams({ q })}${rest}`;
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe("MetricsExplorer", () => {
-  it("is where the Metrics section leads, and starts with an empty state", async () => {
-    mockApi();
+  it("is where the Metrics section leads, and starts by asking for a query", async () => {
+    const f = mockApi();
     const router = renderAt("/metrics");
     expect(await screen.findByRole("heading", { name: "Metrics Explorer" })).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/metrics/explorer");
-    expect(screen.getByText("Choose a metric to chart it.")).toBeInTheDocument();
+    expect(screen.getByText("Write a query and run it (Ctrl+Enter) to chart it.")).toBeInTheDocument();
+    expect(queryCalls(f)).toHaveLength(0);
   });
 
-  it("autocompletes the metric name and writes the choice to the URL", async () => {
+  it("runs the typed query on Ctrl+Enter, writing it to the URL", async () => {
     const f = mockApi();
     const user = userEvent.setup();
     const router = renderAt("/metrics/explorer");
-    await user.type(await screen.findByRole("combobox", { name: "Metric" }), "http.request.d");
-    // Until the debounced prefix settles, the previous (unfiltered) list stays up.
-    await waitFor(() => expect(screen.queryByRole("option", { name: "system.cpu.user" })).not.toBeInTheDocument());
-    const option = screen.getByRole("option", { name: "http.request.duration" });
-    // Debounced: one request for the settled prefix, not one per keystroke.
-    const prefixes = f.mock.calls
-      .map(([u]) => new URL(u, "http://localhost"))
-      .filter((u) => u.pathname === "/api/v1/metrics")
-      .map((u) => u.searchParams.get("prefix"));
-    expect(prefixes.length).toBeLessThan(5);
-    await user.click(option);
-    await waitFor(() => expect(params(router).get("metric")).toBe("http.request.duration"));
+    await user.click(await screen.findByRole("combobox", { name: "Query" }));
+    await user.paste(Q);
+    expect(queryCalls(f)).toHaveLength(0);
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(params(router).get("q")).toBe(Q));
     expect(await screen.findByTestId("chart")).toBeInTheDocument();
+    expect(queryCalls(f)[0]?.searchParams.get("q")).toBe(Q);
   });
 
-  it("charts a deep link, labelling each series by its group tags", async () => {
+  it("charts a link, labelling each series, with a legend of its numbers", async () => {
     const f = mockApi();
-    renderAt("/metrics/explorer?metric=http.request.count&by=route&agg=sum&filter=env:dev&range=15m");
+    renderAt(at(Q, "&range=15m"));
     const chart = await screen.findByTestId("chart");
     expect(chart).toHaveTextContent("http.request.count{route:/api/comics} | http.request.count{route:/api/me}");
     expect(JSON.parse(chart.dataset.points!)).toEqual([
@@ -115,82 +135,163 @@ describe("MetricsExplorer", () => {
     expect(JSON.parse(chart.dataset.xrange!)).toEqual([1_790_000_000, 1_790_003_600]);
     expect(screen.getByText("2 series · 20s buckets")).toBeInTheDocument();
     const [call] = queryCalls(f);
-    expect(Object.fromEntries(call!.searchParams)).toMatchObject({
-      metric: "http.request.count",
-      by: "route",
-      agg: "sum",
-      filter: "env:dev",
-    });
     expect(Number(call!.searchParams.get("to")) - Number(call!.searchParams.get("from"))).toBe(900);
-    expect(screen.getByRole("combobox", { name: "Metric" })).toHaveValue("http.request.count");
-    expect(screen.getByRole("combobox", { name: "Aggregator" })).toHaveValue("sum");
+    expect(box()).toHaveValue(Q);
+
+    const rows = within(screen.getByRole("table", { name: "Series" })).getAllByRole("row");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      "Serieslastavgminmax",
+      "http.request.count{route:/api/comics}4444",
+      "http.request.count{route:/api/me}1111",
+    ]);
   });
 
-  it("adds a filter chip from tag key and value suggestions, then removes it", async () => {
+  // A line with nothing in the window measured nothing; zeros would say it
+  // measured zero.
+  it("shows dashes, not zeros, for a line with no values", async () => {
+    mockApi(over((u) => (u.pathname === "/api/v1/query" ? { body: queryBody(Q, { series: [{ metric: "m", tags: {}, points: [[1, null]] }] }) } : undefined)));
+    renderAt(at(Q));
+    const table = await screen.findByRole("table", { name: "Series" });
+    expect(within(table).getAllByRole("row")[1]).toHaveTextContent("m{*}————");
+  });
+
+  // M1 wrote structured parameters. A link from then still charts what it
+  // charted, now as text the author can read and edit.
+  it("opens an M1 link as the query it asked for, and rewrites it on the first change", async () => {
     const f = mockApi();
     const user = userEvent.setup();
-    const router = renderAt("/metrics/explorer?metric=http.request.count");
+    const router = renderAt("/metrics/explorer?metric=http.request.count&by=route&agg=sum&filter=env:dev");
     await screen.findByTestId("chart");
-
-    await user.click(screen.getByRole("button", { name: "+ Add filter" }));
-    await user.click(await screen.findByRole("option", { name: "env" }));
-    await user.click(await screen.findByRole("option", { name: "prod" }));
-
-    await waitFor(() => expect(params(router).get("filter")).toBe("env:prod"));
-    const filters = screen.getByRole("group", { name: "Filters" });
-    expect(within(filters).getByText("env:prod")).toBeInTheDocument();
-    await waitFor(() => expect(queryCalls(f).at(-1)?.searchParams.get("filter")).toBe("env:prod"));
-
-    await user.click(screen.getByRole("button", { name: "Remove filter env:prod" }));
-    await waitFor(() => expect(params(router).has("filter")).toBe(false));
-  });
-
-  it("makes a negated wildcard filter from typed text", async () => {
-    mockApi();
-    const user = userEvent.setup();
-    const router = renderAt("/metrics/explorer?metric=http.request.count");
-    await user.click(await screen.findByRole("button", { name: "+ Add filter" }));
-    await user.type(await screen.findByRole("combobox", { name: "Tag key" }), "!route{Enter}");
-    expect(screen.getByRole("button", { name: /^Not equal/ })).toBeInTheDocument();
-    await user.type(await screen.findByRole("combobox", { name: "Tag value" }), "/api/*{Enter}");
-    await waitFor(() => expect(params(router).get("filter")).toBe("!route:/api/*"));
-  });
-
-  it("cancels an unfinished filter", async () => {
-    mockApi();
-    const user = userEvent.setup();
-    renderAt("/metrics/explorer?metric=http.request.count");
-    await user.click(await screen.findByRole("button", { name: "+ Add filter" }));
-    await user.click(screen.getByRole("button", { name: "Cancel filter" }));
-    expect(screen.queryByRole("combobox", { name: "Tag key" })).not.toBeInTheDocument();
-  });
-
-  it("groups by tag keys, changes the aggregator and range, all through the URL", async () => {
-    mockApi();
-    const user = userEvent.setup();
-    const router = renderAt("/metrics/explorer?metric=http.request.count");
-    await screen.findByTestId("chart");
-
-    await user.click(screen.getByText("by everything"));
-    await user.click(await screen.findByRole("checkbox", { name: "route" }));
-    await waitFor(() => expect(params(router).get("by")).toBe("route"));
-    await user.click(screen.getByRole("checkbox", { name: "env" }));
-    await waitFor(() => expect(params(router).get("by")).toBe("route,env"));
-
-    await user.selectOptions(screen.getByRole("combobox", { name: "Aggregator" }), "max");
-    await waitFor(() => expect(params(router).get("agg")).toBe("max"));
-
+    expect(box()).toHaveValue("sum:http.request.count{env:dev} by {route}");
+    expect(queryCalls(f)[0]?.searchParams.get("q")).toBe("sum:http.request.count{env:dev} by {route}");
     await user.selectOptions(screen.getByRole("combobox", { name: "Time range" }), "4h");
     await waitFor(() => expect(params(router).get("range")).toBe("4h"));
+    expect(params(router).get("q")).toBe("sum:http.request.count{env:dev} by {route}");
+    expect(params(router).has("metric")).toBe(false);
+  });
 
+  it("says an edit has not been run, and keeps charting the URL's query until it is", async () => {
+    const f = mockApi();
+    const user = userEvent.setup();
+    const router = renderAt(at(Q));
+    await screen.findByTestId("chart");
+    await user.type(box(), "x");
+    expect(screen.getByText(/Edited, not run/)).toBeInTheDocument();
+    expect(params(router).get("q")).toBe(Q);
+    expect(queryCalls(f)).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    await waitFor(() => expect(params(router).get("q")).toBe(`${Q}x`));
+    expect(screen.queryByText(/Edited, not run/)).not.toBeInTheDocument();
+  });
+
+  // Back and forward step through runs; the box has to follow, or it would
+  // show one query over another's chart.
+  it("follows the URL when it changes under the box", async () => {
+    mockApi();
+    const router = renderAt(at(Q));
+    await screen.findByTestId("chart");
+    await router.navigate(at("avg:system.cpu.user{*}"));
+    await waitFor(() => expect(box()).toHaveValue("avg:system.cpu.user{*}"));
+    await router.navigate(-1);
+    await waitFor(() => expect(box()).toHaveValue(Q));
+  });
+
+  it("says whose answer is on screen while the next query runs", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    mockApi(
+      over((u) =>
+        u.pathname === "/api/v1/query" && u.searchParams.get("q") === "avg:slow{*}"
+          ? gate.then(() => ({ body: queryBody("avg:slow{*}", { series: [] }) }))
+          : undefined,
+      ),
+    );
+    const router = renderAt(at(Q));
+    await screen.findByTestId("chart");
+    await router.navigate(at("avg:slow{*}"));
+    const status = await screen.findByText(/the chart below is the previous query's answer/);
+    expect(status).toHaveTextContent(Q);
+    expect(screen.getByTestId("chart").closest(".opacity-40")).not.toBeNull();
+    release();
+    expect(await screen.findByText("No data for this query in the selected time range.")).toBeInTheDocument();
+    expect(screen.queryByTestId("chart")).not.toBeInTheDocument();
+  });
+
+  it("tells a refused query from one that was not answered", async () => {
+    mockApi(
+      over((u) =>
+        u.pathname === "/api/v1/query"
+          ? u.searchParams.get("q") === "bad"
+            ? { status: 400, body: { error: 'unknown aggregator "bad"' } }
+            : { status: 503, body: { error: "the query ran out of time" } }
+          : undefined,
+      ),
+    );
+    const router = renderAt(at("bad"));
+    const refused = await screen.findByRole("alert");
+    expect(refused).toHaveTextContent('ozyd refused this query:unknown aggregator "bad"');
+    expect(refused).not.toHaveTextContent(/retry/);
+    await router.navigate(at("sum:big{*}"));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("ozyd did not answer this query:the query ran out of time"));
+    expect(screen.getByRole("alert")).toHaveTextContent("Run it again to retry.");
+  });
+
+  // A previous query's lines under a failing query's text would read as its answer.
+  it("does not draw the previous answer under a query that failed", async () => {
+    mockApi(over((u) => (u.pathname === "/api/v1/query" && u.searchParams.get("q") === "bad" ? { status: 400, body: { error: "no" } } : undefined)));
+    const router = renderAt(at(Q));
+    await screen.findByTestId("chart");
+    await router.navigate(at("bad"));
+    await screen.findByText(/ozyd refused this query/);
+    expect(screen.queryByTestId("chart")).not.toBeInTheDocument();
+  });
+
+  it("keeps the last answer when a refresh fails, and says when it is from", async () => {
+    let calls = 0;
+    mockApi(over((u) => (u.pathname === "/api/v1/query" && ++calls > 1 ? { status: 503, body: { error: "out of time" } } : undefined)));
+    const user = userEvent.setup();
+    renderAt(at(Q));
+    await screen.findByTestId("chart");
+    // Run on an unedited box asks the same question again.
+    await user.click(screen.getByRole("button", { name: "Run" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/The last refresh failed \(out of time\)\. Showing the answer from/);
+    expect(screen.getByTestId("chart")).toBeInTheDocument();
+  });
+
+  it("shows the answer's warnings, and the canonical spelling when it differs", async () => {
+    mockApi(over((u) => (u.pathname === "/api/v1/query" ? { body: queryBody("sum:x{a:b}", { warnings: ["a group was dropped"] }) } : undefined)));
+    renderAt(at("SUM:x{A:b}"));
+    await screen.findByTestId("chart");
+    expect(within(screen.getByRole("list", { name: "Warnings" })).getByText("a group was dropped")).toBeInTheDocument();
+    expect(screen.getByText("sum:x{a:b}")).toBeInTheDocument();
+  });
+
+  it("shows running, then an empty state when nothing matched", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    mockApi(over((u) => (u.pathname === "/api/v1/query" ? gate.then(() => ({ body: queryBody("avg:nothing{*}", { series: [] }) })) : undefined)));
+    renderAt(at("avg:nothing{*}"));
+    expect(await screen.findByText("Running…")).toBeInTheDocument();
+    release();
+    expect(await screen.findByText("No data for this query in the selected time range.")).toBeInTheDocument();
+  });
+
+  it("changes the range and auto-refresh through the URL", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    const router = renderAt(at(Q));
+    await screen.findByTestId("chart");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Time range" }), "4h");
+    await waitFor(() => expect(params(router).get("range")).toBe("4h"));
     await user.click(screen.getByRole("checkbox", { name: /Auto-refresh/ }));
     await waitFor(() => expect(params(router).get("live")).toBe("0"));
+    expect(params(router).get("q")).toBe(Q);
   });
 
   it("applies a custom absolute range and turns auto-refresh off", async () => {
     mockApi();
     const user = userEvent.setup();
-    const router = renderAt("/metrics/explorer?metric=http.request.count");
+    const router = renderAt(at(Q));
     await screen.findByTestId("chart");
     await user.selectOptions(screen.getByRole("combobox", { name: "Time range" }), "custom");
     const from = screen.getByLabelText("From");
@@ -207,35 +308,52 @@ describe("MetricsExplorer", () => {
     expect(params(router).get("to")).toBe(String(new Date(2026, 8, 19, 11, 30).getTime() / 1000));
     expect(screen.getByRole("checkbox", { name: /Auto-refresh/ })).toBeDisabled();
   });
+});
 
-  it("shows the API's error message", async () => {
-    mockApi((url) =>
-      url.pathname === "/api/v1/query"
-        ? { status: 400, body: { status: "error", error: 'unknown tag key "rout" in by' } }
-        : defaultApi(url),
-    );
-    renderAt("/metrics/explorer?metric=http.request.count&by=rout");
-    expect(await screen.findByRole("alert")).toHaveTextContent('unknown tag key "rout" in by');
-    expect(screen.queryByTestId("chart")).not.toBeInTheDocument();
+describe("Save to dashboard", () => {
+  const link = () => screen.getByRole("link", { name: "Open in the editor" });
+
+  it("opens a new dashboard, or a chosen one, with the charted query to add", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderAt(at(Q));
+    await screen.findByTestId("chart");
+    expect(link()).toHaveAttribute("href", `/dashboards/new?${new URLSearchParams({ add: Q })}`);
+    const select = screen.getByRole("combobox", { name: "Save to dashboard" });
+    await within(select).findByRole("option", { name: "Checkout" });
+    await user.selectOptions(select, "4");
+    expect(link()).toHaveAttribute("href", `/dashboards/4/edit?${new URLSearchParams({ add: Q })}`);
   });
 
-  it("shows loading, then an empty state when nothing matched", async () => {
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: string) => {
-        const url = new URL(input, "http://localhost");
-        if (url.pathname === "/api/v1/query") {
-          await gate;
-          return new Response(JSON.stringify({ ...queryBody, series: [] }));
-        }
-        return new Response(JSON.stringify(defaultApi(url).body));
-      }),
-    );
-    renderAt("/metrics/explorer?metric=nothing.here");
-    expect(await screen.findByRole("status")).toHaveTextContent("Loading nothing.here…");
-    release();
-    expect(await screen.findByText("No data for this query in the selected time range.")).toBeInTheDocument();
+  // An edit saved to a provisioned dashboard is undone at the next restart.
+  it("lists a provisioned dashboard as not choosable, rather than hiding it", async () => {
+    mockApi();
+    renderAt(at(Q));
+    const option = await screen.findByRole("option", { name: "Home (from a file, edit the file)" });
+    expect(option).toBeDisabled();
+  });
+
+  it("has nothing to save before a query is run", async () => {
+    mockApi();
+    renderAt("/metrics/explorer");
+    expect(await screen.findByText(/Run a query first/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Open in the editor" })).not.toBeInTheDocument();
+  });
+
+  it("saves the charted query, and says so when the box holds an unrun edit", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    renderAt(at(Q));
+    await screen.findByTestId("chart");
+    await user.type(box(), " + 1");
+    expect(screen.getByText(/Saves the charted query/)).toHaveTextContent(Q);
+    expect(link()).toHaveAttribute("href", `/dashboards/new?${new URLSearchParams({ add: Q })}`);
+  });
+
+  it("still offers a new dashboard when the list cannot be loaded", async () => {
+    mockApi(over((u) => (u.pathname === "/api/v1/dashboards" ? { status: 403, body: { error: "boom" } } : undefined)));
+    renderAt(at(Q));
+    expect(await screen.findByText(/Could not list the dashboards \(boom\); a new one still works/)).toBeInTheDocument();
+    expect(link()).toHaveAttribute("href", `/dashboards/new?${new URLSearchParams({ add: Q })}`);
   });
 });
