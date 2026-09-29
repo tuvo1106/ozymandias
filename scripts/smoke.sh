@@ -164,6 +164,32 @@ check "its tag key is listed"              body_has "$OZY_URL/api/v1/tags?metric
 check "its tag value is listed"            body_has "$OZY_URL/api/v1/tags/values?metric=smoke.test&key=source" '"smoke"'
 check "its series are counted"             body_has "$OZY_URL/api/v1/metrics/cardinality?prefix=smoke.test" '"name":"smoke.test"'
 check "its tag keys are counted"           body_has "$OZY_URL/api/v1/tags/cardinality?metric=smoke.test" '"key":"source"'
+# ozyd's self-metrics carry host:<its hostname>. In a container that is the
+# container id unless compose pins it, and then every `make up` adds a host
+# value (and a copy of every self-metric series) to the store. The volume
+# keeps old values, so listing tag values proves nothing; ask which hosts
+# ozyd reported from in the last 20s, which must be the Mac's name alone.
+# Tag values are lower-cased on the wire.
+recent_ozyd_hosts() {
+  local now; now=$(date +%s)
+  curl -fsS --max-time 5 -G "$OZY_URL/api/v1/query" \
+    --data-urlencode 'q=max:ozy.build.info{component:ozyd} by {host}' \
+    --data-urlencode "from=$((now - 20))" --data-urlencode "to=$now" |
+    python3 -c 'import json,sys
+d = json.load(sys.stdin)
+print(",".join(sorted(s["tags"]["host"] for s in d.get("series", [])
+                      if any(p[1] is not None for p in s["points"]))))'
+}
+ozyd_host_is_the_macs() {
+  local want; want=$(printf '%s' "${OZY_HOSTNAME:-$(hostname -s)}" | tr '[:upper:]' '[:lower:]')
+  for _ in $(seq 1 30); do
+    [[ "$(recent_ozyd_hosts)" == "$want" ]] && return 0
+    sleep 1
+  done
+  echo "  ozyd reported as host(s) '$(recent_ozyd_hosts)', expected '$want'" >&2
+  return 1
+}
+check "ozyd tags its own metrics with the Mac's name" ozyd_host_is_the_macs
 check "the histogram became percentiles"   body_has "$OZY_URL/api/v1/metrics?prefix=cron.job.duration" '"cron.job.duration.95percentile"'
 
 # A distribution is the other half of M2: the sketch goes to Pebble whole and

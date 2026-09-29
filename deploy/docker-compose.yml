@@ -28,6 +28,10 @@ services:
         VERSION: ${OZY_VERSION:-dev}
     image: ozymandias:${OZY_VERSION:-dev}
     command: ["-config", "/etc/ozy/ozyd.yaml"]
+    # ozyd tags its own metrics host:<os.Hostname>. A container's default
+    # hostname is its id, new on every recreate, so each `make up` would add a
+    # host value and a set of series. Use the machine's name, as the agent does.
+    hostname: ${OZY_HOSTNAME:-ozymandias-host}
     environment:
       OZY_LOG_FORMAT: json
     ports:

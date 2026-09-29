@@ -14,7 +14,8 @@ troubleshoot it. The design behind each piece is in [../DESIGN.md](../DESIGN.md)
 `make up` builds the image, creates the external `ozymandias` Docker network if
 it's missing, starts both services, and waits until both are healthy. It
 stamps the image with `git describe`, and passes the machine's short hostname
-to the agent's `host` tag. `make down-v` also deletes the data volume.
+to the agent's `host` tag and to ozyd's container hostname (which tags ozyd's
+own metrics), so neither changes when a container is recreated. `make down-v` also deletes the data volume.
 
 | Port | Service | Purpose |
 |---|---|---|
@@ -232,7 +233,7 @@ TCP (the UI, `/healthz`, trace intake on 8126) is unaffected.
 | Exit code 2 | Configuration or usage error. The message names the file, line or key |
 | Exit code 1 | Runtime failure: port in use, unusable `data_dir`, no hostname. See the `exiting` log line |
 | `/` says "built without the web UI" | Run `make web && make build`. The image build does this for you |
-| Agent's `host` tag is `ozymandias-host` | It was started without `make up`. Set `OZY_HOSTNAME` or `OZY_AGENT_HOSTNAME` |
+| Agent's or ozyd's `host` tag is `ozymandias-host` | It was started without `make up`. Set `OZY_HOSTNAME` (or `OZY_AGENT_HOSTNAME` for the agent alone) |
 | A metric never appears | Walk the path in order, stopping at the first zero: `statsd.packets_received` → `messages_received` → `aggregator.contexts` → `forwarder.payloads_sent` → the metric in `/api/v1/metrics`. Each stage below names what a zero there means |
 | `packets_received` is 0 | Nothing arrived. From the Mac to a containerized agent this is the Colima UDP limitation above. Otherwise check the app's `OZY_AGENT_HOST`/`PORT` and that the app and agent share a network |
 | `messages_received` is 0 but packets arrived | The lines are malformed: `parse_errors` counts them, and `unsupported` counts events (`_e{`) and service checks (`_sc`), which ozymandias drops on purpose |
