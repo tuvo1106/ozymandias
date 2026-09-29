@@ -182,7 +182,7 @@ describe("MetricsExplorer", () => {
     expect(params(router).has("metric")).toBe(false);
     expect(params(router).get("range")).toBe("4h");
     expect(router.state.historyAction).toBe("REPLACE");
-    expect(box()).toHaveValue("sum:http.request.count{env:dev} by {route}");
+    await waitFor(() => expect(box()).toHaveValue("sum:http.request.count{env:dev} by {route}"));
     const calls = queryCalls(f);
     expect(calls).toHaveLength(1);
     expect(Object.fromEntries(calls[0]!.searchParams)).toMatchObject({ metric: "http.request.count", by: "route", agg: "sum", filter: "env:dev" });
@@ -206,7 +206,7 @@ describe("MetricsExplorer", () => {
     await user.click(screen.getByRole("button", { name: "Clear" }));
     await waitFor(() => expect(params(router).has("metric")).toBe(false));
     expect(params(router).has("agg")).toBe(false);
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
 
   // The box is empty and Run is off: "run it again" would be false here.
@@ -231,7 +231,7 @@ describe("MetricsExplorer", () => {
     release();
     await waitFor(() => expect(params(router).get("q")).toBe("avg:m{*}"));
     expect(box()).toHaveValue("sum:other{*}");
-    expect(screen.getByText(/Edited, not run/)).toBeInTheDocument();
+    expect(await screen.findByText(/Edited, not run/)).toBeInTheDocument();
   });
 
   describe("the translation's answer, seeding the chart", () => {
@@ -329,8 +329,8 @@ describe("MetricsExplorer", () => {
     await user.click(screen.getByRole("button", { name: "Clear" }));
     await waitFor(() => expect(params(router).has("q")).toBe(false));
     expect(params(router).get("range")).toBe("4h");
-    expect(box()).toHaveValue("");
-    expect(screen.getByText("Write a query and run it (Ctrl+Enter) to chart it.")).toBeInTheDocument();
+    await waitFor(() => expect(box()).toHaveValue(""));
+    expect(await screen.findByText("Write a query and run it (Ctrl+Enter) to chart it.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Clear" })).not.toBeInTheDocument();
   });
 
@@ -345,7 +345,7 @@ describe("MetricsExplorer", () => {
     expect(queryCalls(f)).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Run" }));
     await waitFor(() => expect(params(router).get("q")).toBe(`${Q}x`));
-    expect(screen.queryByText(/Edited, not run/)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/Edited, not run/)).not.toBeInTheDocument());
   });
 
   // Back and forward step through runs; the box has to follow, or it would
@@ -480,7 +480,7 @@ describe("MetricsExplorer", () => {
     await user.click(screen.getByRole("button", { name: "Apply" }));
     await waitFor(() => expect(params(router).get("from")).toBe(String(new Date(2026, 8, 19, 10).getTime() / 1000)));
     expect(params(router).get("to")).toBe(String(new Date(2026, 8, 19, 11, 30).getTime() / 1000));
-    expect(screen.getByRole("checkbox", { name: /Auto-refresh/ })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: /Auto-refresh/ })).toBeDisabled());
   });
 });
 
