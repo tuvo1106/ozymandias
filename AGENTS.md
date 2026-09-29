@@ -181,7 +181,9 @@ your machine, you are not the person who should be touching them.
 make help           list every target
 make build          go build ./cmd/... into ./bin (embeds the UI if built)
 make web            build the UI into internal/api/ui/dist
-make ci             the full local gate; lefthook runs it on git push
+make ci             the full local gate; lefthook runs it on git push. It runs
+                    on the efficiency cores (macOS taskpolicy) so a push does
+                    not heat the laptop; CI_PRIORITY=full make ci for speed
 make test / lint / docs-check / web-check / fuzz / fuzz-long
 make up / down / down-v   the compose stack (waits until healthy)
 make smoke          end-to-end checks against the running stack

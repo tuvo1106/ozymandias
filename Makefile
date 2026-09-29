@@ -13,6 +13,19 @@ COMPOSE  := OZY_VERSION=$(VERSION) OZY_HOSTNAME=$(shell hostname -s) docker comp
 FUZZTIME ?= 30s
 CI_FUZZTIME ?= 10s
 
+# `make ci` on a laptop runs at background priority: on macOS, `taskpolicy -c
+# background` keeps it (and every process it starts) on the efficiency cores.
+# Every tool in the gate sizes itself to all the cores — `go test -p`, each
+# race binary's GOMAXPROCS, the fuzz workers, vitest's pool — so at full
+# priority a push pinned all ten and heated the machine for two and a half
+# minutes. Measured on internal/tsdb/db, the slowest package: 32s at full
+# priority, 75s in the background; fuzzing is time-boxed and takes as long
+# either way. CI_PRIORITY=full restores the fast, hot run. Where taskpolicy
+# does not exist (Linux, GitHub Actions — which runs the targets one by one
+# anyway) this is a no-op.
+CI_PRIORITY ?= background
+CI_NICE := $(if $(and $(filter background,$(CI_PRIORITY)),$(shell command -v taskpolicy 2>/dev/null)),taskpolicy -c background,)
+
 .PHONY: help
 help: ## List targets
 	@grep -hE '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{ printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2 }'
@@ -74,7 +87,11 @@ sdk-check: ## Both SDKs: install, typecheck, lint, tests with their 90% gates
 	cd sdk/python && uv sync --locked -q && uv run ruff check && uv run ruff format --check && uv run mypy && uv run pytest -q
 
 .PHONY: ci
-ci: lint test docs-check web-check sdk-check ## The full local gate (runs on git push via lefthook)
+ci: ## The full local gate, at background priority (runs on git push via lefthook; CI_PRIORITY=full for speed)
+	$(CI_NICE) $(MAKE) ci-gate
+
+.PHONY: ci-gate
+ci-gate: lint test docs-check web-check sdk-check
 	$(MAKE) fuzz FUZZTIME=$(CI_FUZZTIME)
 
 # --- run ---------------------------------------------------------------------

@@ -9,6 +9,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`make ci` runs at background priority on macOS.** Every tool in the gate
+  sized itself to all the cores, so each push (lefthook runs `make ci`)
+  pinned the machine for two and a half minutes. It now runs under `taskpolicy
+  -c background`, which keeps it on the efficiency cores: slower, and cool.
+  `CI_PRIORITY=full make ci` is the old behaviour; elsewhere it is unchanged.
+
 - **`conditional_formats` is refused outside `query_value` and `table`.** A
   timeseries, toplist or heatmap accepted them and drew nothing; the rule in
   docs/dashboards.md ("a field that belongs to another type is an error") now
