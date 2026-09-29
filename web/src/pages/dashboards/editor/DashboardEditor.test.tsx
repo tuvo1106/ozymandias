@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createMemoryRouter, RouterProvider } from "react-router";
+import { createBrowserRouter, createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routes } from "../../../app/routes";
 import type { TimeseriesChartProps } from "../../../charts/TimeseriesChart";
@@ -496,5 +496,22 @@ describe("review fixes: download", () => {
     click.mockRestore();
     URL.createObjectURL = saved.create;
     URL.revokeObjectURL = saved.revoke;
+  });
+});
+
+describe("review fixes: the 'Saved.' banner across a real reload", () => {
+  // A memory router keeps state in memory; a reload keeps it in
+  // window.history. This runs the browser router over jsdom's History API,
+  // with a remount standing in for the reload.
+  it("clears the flag from window.history, so a reload does not repeat the banner", async () => {
+    mockApi();
+    window.history.replaceState({ usr: { saved: true }, key: "k", idx: 0 }, "", "/dashboards/2/edit");
+    const first = render(<RouterProvider router={createBrowserRouter(routes)} />);
+    expect(await screen.findByText("Saved.")).toBeInTheDocument();
+    await waitFor(() => expect((window.history.state as { usr?: unknown } | null)?.usr ?? null).toBeNull());
+    first.unmount();
+    render(<RouterProvider router={createBrowserRouter(routes)} />);
+    await screen.findByRole("heading", { name: "Checkout" });
+    expect(screen.queryByText("Saved.")).not.toBeInTheDocument();
   });
 });

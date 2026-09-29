@@ -77,6 +77,11 @@ function firstError(
  * rather than letting the server refuse it — so no answer is coming and "No
  * data" is the true statement rather than a wait that never ends.
  */
+/** Whether every query the widget has is blank, so nothing was or will be asked. */
+export function unasked(widget: Widget): boolean {
+  return !(widget.queries ?? []).some((q) => q.q.trim() !== "");
+}
+
 function answered(
   widget: Widget,
   results: readonly (BatchResult | undefined)[],
@@ -178,6 +183,7 @@ export function TimeseriesWidget({
       error={error}
       warnings={allWarnings(results, hiddenWarnings)}
       empty={answered(widget, results) && lines.length === 0}
+      unasked={unasked(widget)}
     >
       <TimeseriesChart
         data={data}
@@ -261,6 +267,7 @@ export function QueryValueWidget({
       error={error}
       warnings={allWarnings(results, hiddenWarnings)}
       empty={answered(widget, results) && lines.length === 0}
+      unasked={unasked(widget)}
     >
       <div className="flex h-full flex-col items-center justify-center">
         <span className={`text-4xl font-semibold tabular-nums ${color}`}>
@@ -307,6 +314,7 @@ export function ToplistWidget({
       error={error}
       warnings={allWarnings(results, hiddenWarnings)}
       empty={answered(widget, results) && rows.length === 0}
+      unasked={unasked(widget)}
     >
       <ol className="h-full overflow-auto text-sm">
         {rows.map((row) => (
@@ -370,6 +378,7 @@ export function TableWidget({
       error={error}
       warnings={allWarnings(results, hiddenWarnings)}
       empty={answered(widget, results) && rows.size === 0}
+      unasked={unasked(widget)}
     >
       <div className="h-full overflow-auto">
         <table className="w-full text-left text-sm">

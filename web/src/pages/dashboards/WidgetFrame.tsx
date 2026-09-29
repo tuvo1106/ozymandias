@@ -36,6 +36,13 @@ export interface WidgetFrameProps {
    * dashboard must not say by accident.
    */
   empty?: boolean;
+  /**
+   * True when the widget has nothing to ask: every query is blank. A fourth
+   * state beside error, warnings and empty, because "No data" says the
+   * service is silent, and a widget with no query has not asked anybody —
+   * which is every new widget in the editor.
+   */
+  unasked?: boolean;
   children?: ReactNode;
 }
 
@@ -45,6 +52,7 @@ export function WidgetFrame({
   error,
   warnings,
   empty,
+  unasked,
   children,
 }: WidgetFrameProps) {
   return (
@@ -76,7 +84,11 @@ export function WidgetFrame({
         {/* Nothing to draw and no error: say so. Nothing to draw and an error:
             the error has already said so, and "No data" under it reads as a
             second, separate problem. */}
-        {empty ? (
+        {unasked ? (
+          <p role="status" className="text-xs text-zinc-500">
+            No query yet
+          </p>
+        ) : empty ? (
           error ? null : (
             <p role="status" className="text-xs text-zinc-500">
               No data

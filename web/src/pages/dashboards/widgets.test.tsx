@@ -70,10 +70,24 @@ describe("a widget that has not heard back", () => {
   });
 
   // Nothing was ever sent for a blank query, so no answer is coming and the
-  // wait would never end.
-  it("says No data for a widget whose only query is blank", () => {
-    render(<TimeseriesWidget widget={widget({ queries: [{ q: "  " }] })} results={[undefined]} />);
+  // wait would never end — but "No data" would claim the service is silent,
+  // when the widget has not asked anybody. Every new widget in the editor
+  // starts here, which is where the browser check caught it.
+  it.each([
+    ["timeseries", TimeseriesWidget],
+    ["query_value", QueryValueWidget],
+    ["toplist", ToplistWidget],
+    ["table", TableWidget],
+  ] as const)("says there is no query yet on a %s whose queries are all blank", (type, Widget) => {
+    render(<Widget widget={widget({ type, queries: [{ q: "  " }, { q: "" }] })} results={[undefined, undefined]} />);
+    expect(screen.getByText("No query yet")).toBeInTheDocument();
+    expect(screen.queryByText("No data")).not.toBeInTheDocument();
+  });
+
+  it("says nothing about a blank query when another one asked", () => {
+    render(<TimeseriesWidget widget={widget({ queries: [{ q: "" }, { q: "sum:x{*}" }] })} results={[undefined, ok(1, [])]} />);
     expect(screen.getByText("No data")).toBeInTheDocument();
+    expect(screen.queryByText("No query yet")).not.toBeInTheDocument();
   });
 });
 

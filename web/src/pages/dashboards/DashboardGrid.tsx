@@ -258,7 +258,9 @@ function EditHandles({
         className={`${handle} bottom-1 right-1 h-3 w-3 cursor-se-resize`}
       />
       {edit.stale.has(widget.id) ? (
-        <span role="status" className="absolute right-6 top-1 z-10 rounded bg-zinc-800/80 px-1 text-[10px] text-white">
+        // Bottom-left: the move bar is centred at the top, and on a narrow
+        // widget a badge up there covered it.
+        <span role="status" className="absolute bottom-1 left-1 z-10 rounded bg-zinc-800/80 px-1 text-[10px] text-white">
           Updating preview…
         </span>
       ) : null}

@@ -113,7 +113,7 @@ and loses some of it, which is an argument for smaller dashboards.
 | `heatmap` | the distribution behind a metric: a column per bucket, a band per bin, coloured by how many observations fell in it |
 | `note` | the author's text |
 
-Every widget has the same three ways of having nothing to draw, and each says
+Every widget has the same four ways of having nothing to draw, and each says
 which one it is:
 
 - **an error** — the query was refused and the message says why. Per widget on
@@ -128,6 +128,9 @@ which one it is:
   of a service that is not reporting, and saying so is the difference between it
   and a widget that failed silently. Nothing at all, rather than "No data",
   means the answer has not arrived yet.
+- **No query yet** — every query the widget has is blank, so nothing was
+  asked. Not "No data": that would say the service is silent when nobody has
+  asked it anything, which is what every new widget in the editor looks like.
 
 A widget whose `type` this build does not know says so in its own frame rather
 than taking the page down with it — which is what an older UI and a newer
