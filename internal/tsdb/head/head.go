@@ -187,9 +187,24 @@ func (h *Head) Append(refs []tsdb.SeriesRef, samples []Sample) (stored []bool, r
 	h.logMu.Lock()
 	defer h.logMu.Unlock()
 
+	// The bound is checked before a series is resolved, not only in appendTo:
+	// resolving creates and indexes a new series, and one whose every sample
+	// is out of bounds would be left in the index with nothing in it — listed
+	// by the metadata queries, counted by the Metric Summary and against the
+	// per-metric series limit, and invisible to every query until the next
+	// Truncate. minValid only moves under logMu (Freeze, Truncate), which is
+	// held here, so this check and appendTo's cannot disagree.
+	minValid := h.MinValidTime()
 	resolved := make([]*memSeries, len(samples))
 	ok := make([]bool, len(samples))
 	for i := range samples {
+		if samples[i].T < minValid {
+			h.mu.Lock()
+			h.oooDropped++
+			h.mu.Unlock()
+			rejected = append(rejected, Rejection{Index: i, Err: ErrOutOfBounds})
+			continue
+		}
 		ms, _, err := h.getOrCreate(refs[i])
 		if err != nil {
 			rejected = append(rejected, Rejection{Index: i, Err: err})
@@ -522,16 +537,9 @@ func (h *Head) Series(id uint64) (tsdb.SeriesRef, bool) {
 	return ms.ref, true
 }
 
-// SeriesOf returns the identity of every series of one metric that holds at
-// least one sample in the head — no samples are decoded. For the cardinality
+// SeriesOf returns the identity of every series of one metric the head
+// holds, from the index alone — no samples are read. For the cardinality
 // counts, which must dedupe the head against the blocks by key.
-//
-// "Holds a sample" and not "is in the index": [Head.Append] creates and
-// indexes a series before its samples are checked, so a batch of new series
-// whose every sample is out of bounds leaves series with nothing in them
-// until the next [Head.Truncate]. Counted, they would show a cardinality
-// explosion with no data behind it — one no query, and no other store, can
-// see.
 //
 // The lock is held only to copy the ids, as [Head.Select] does: appends that
 // create a series take it for writing, and a large metric's walk must not
@@ -542,14 +550,7 @@ func (h *Head) SeriesOf(metric string) []tsdb.SeriesRef {
 	h.mu.RUnlock()
 	out := make([]tsdb.SeriesRef, 0, len(ids))
 	for _, id := range ids {
-		ms := h.series(id)
-		if ms == nil {
-			continue
-		}
-		ms.mu.RLock()
-		empty := len(ms.chunks) == 0
-		ms.mu.RUnlock()
-		if !empty {
+		if ms := h.series(id); ms != nil {
 			out = append(out, ms.ref)
 		}
 	}

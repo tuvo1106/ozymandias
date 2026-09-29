@@ -770,12 +770,12 @@ func TestHead_ASeriesRecordIsWrittenUntilItLands(t *testing.T) {
 	}
 }
 
-// A series is created and indexed before its sample is checked, so a new
-// series whose only sample is out of bounds is in the index with nothing in
-// it. The cardinality counts must not see it: no query can, and a backfill of
-// fresh ids would otherwise read as an explosion.
-func TestHead_SeriesOfSkipsSeriesWithNoSamples(t *testing.T) {
-	h := New(Options{BlockRange: 1_000_000})
+// A new series whose only sample is out of bounds must not be created. It
+// used to be: the series was indexed before its sample was checked, and left
+// empty — listed by the metadata queries, counted by the Metric Summary and
+// against the per-metric limit, and invisible to every query.
+func TestHead_OutOfBoundsSampleCreatesNoSeries(t *testing.T) {
+	h := New(Options{BlockRange: 1_000_000, MaxSeriesPerMetric: 2})
 	if err := appendOne(h, ref("m", "id:kept"), 6000, 1); err != nil {
 		t.Fatal(err)
 	}
@@ -783,9 +783,18 @@ func TestHead_SeriesOfSkipsSeriesWithNoSamples(t *testing.T) {
 	if err := appendOne(h, ref("m", "id:rejected"), 4000, 1); !errors.Is(err, ErrOutOfBounds) {
 		t.Fatalf("err = %v, want ErrOutOfBounds", err)
 	}
-	got := h.SeriesOf("m")
-	if len(got) != 1 || got[0].Key() != ref("m", "id:kept").Key() {
+	if got := h.SeriesOf("m"); len(got) != 1 || got[0].Key() != ref("m", "id:kept").Key() {
 		t.Errorf("SeriesOf(m) = %v, want only id:kept", got)
+	}
+	if got := h.Lookup().TagValues("id"); len(got) != 1 || got[0] != "kept" {
+		t.Errorf("TagValues(id) = %v, want [kept]", got)
+	}
+	if st := h.Stats(); st.Series != 1 || st.OOORejected != 1 {
+		t.Errorf("Stats: series %d, rejected %d; want 1, 1", st.Series, st.OOORejected)
+	}
+	// The limit is 2 and one real series exists: a second must fit.
+	if err := appendOne(h, ref("m", "id:second"), 7000, 1); err != nil {
+		t.Errorf("second real series: %v", err)
 	}
 	if got := h.SeriesOf("missing"); len(got) != 0 {
 		t.Errorf("SeriesOf(missing) = %v", got)

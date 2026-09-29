@@ -39,10 +39,7 @@ reason `Select` gives — into a map by key, so a series in three places is
 one. The naive store's `series` table is already unique by key, so it is a
 `GROUP BY` (two, in one read transaction, for `TagCardinality`).
 
-A series counts only once it holds a sample. The head creates and indexes a
-series before it checks the series' samples, so a batch of new series whose
-every sample is out of bounds leaves empty series behind until the next
-truncation; the head skips them, since no query can see them. `TestDB_MatchesTheNaiveStore` holds the two to the same answers,
+`TestDB_MatchesTheNaiveStore` holds the two to the same answers,
 and a targeted test holds the TSDB to one count for a series in both a block
 and the head.
 
@@ -68,11 +65,13 @@ answers).
 ## Consequences
 
 - Counting every metric walks the whole index: each series is resolved to its
-  key once per source that holds it. No sample is read. The head is read for
-  every matching metric first and the blocks are acquired once after it, so
-  what is held at once is the head's keys for those metrics — no more than the
-  head already holds — plus one metric's block keys. The `limit` does not
-  bound this: ranking needs every count, and a prefix is what narrows it. That is the page's cost, and it is paid per load —
+  key once per source that holds it, and one metric's keys are held at a
+  time. No sample is read. The blocks are acquired once per metric, since the
+  head must be read before the block list is taken and reading the whole head
+  first would hold a second copy of its identities; that costs about 240 ns
+  per metric at 30 blocks. The `limit` does not bound the walk: ranking needs
+  every count, and a prefix is what narrows it. That is the page's cost, and
+  it is paid per load —
   there is no cache, as in ADR-0020.
 - A series is counted until retention drops its block, so a metric that
   stopped exploding yesterday still shows yesterday's number for up to the
@@ -82,6 +81,11 @@ answers).
 - Distributions' sketches live in the sketch store and are not counted here;
   a distribution's series show up as its `<name>.count`, `.sum`, `.min` and
   `.max` series, which have the same tags.
+- The head no longer creates a series for a sample it will reject as out of
+  bounds. It used to create and index the series first, leaving it empty
+  until the next truncation, where every reader of the head's index — the
+  metadata queries, the per-metric series limit, and these counts — saw a
+  series no query could.
 - `DB.Stats().Series` still double-counts and feeds `ozy.store.series`. It is
   a size gauge, not a cardinality, and fixing it would put this walk on the
   self-metrics tick; it is left as it is and named here.

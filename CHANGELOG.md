@@ -379,6 +379,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A rejected sample no longer leaves an empty series behind.** The head
+  created and indexed a new series before checking whether its sample was too
+  old to accept, so a backfill of fresh ids behind a block cut left empty
+  series until the next truncation: listed by autocomplete, counted by the
+  Metric Summary, and counted against the per-metric series limit, which could
+  then refuse real series. Out-of-bounds samples are now rejected before any
+  series is created, and are no longer written to the WAL.
 - **One unusable dashboard row no longer sinks the whole list.** `GET
   /api/v1/dashboards` encoded every row in one call, so a single definition that
   could not be spliced made the endpoint a `500` — and the list is what a

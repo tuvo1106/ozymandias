@@ -217,43 +217,27 @@ func (db *DB) acquireBlocks() ([]*block.Block, func()) {
 // to show. So each metric's series are gathered by key.
 //
 // The work is the index: every series of every matching metric, resolved to
-// its identity once per source that holds it, and no sample read. The head
-// is read for every metric first and the blocks are acquired once after it
-// (see [DB.metricSeries] for why that order), so what is held at once is the
-// head's keys for the matching metrics — no more than the head already holds —
-// plus one metric's block keys.
+// its identity once per source that holds it, and no sample read. One
+// metric's keys are held at a time. That means the blocks are acquired once
+// per metric rather than once per call — the head has to be read before the
+// block list is taken (see [DB.metricSeries]), and reading the whole head
+// first to acquire once would hold every matching metric's keys at once, a
+// second copy of the head's identities. Acquiring and releasing 30 blocks
+// measured 239 ns and two allocations on a laptop, so 2,000 metrics pay about
+// half a millisecond for it; the key strings are the cost that matters.
 func (db *DB) SeriesCounts(ctx context.Context, prefix string) ([]tsdb.MetricSeriesCount, error) {
 	names, err := db.MetricNames(ctx, prefix, 0)
 	if err != nil {
 		return nil, err
 	}
-	fromHead := make([]map[string]struct{}, len(names))
-	for i, name := range names {
-		fromHead[i] = map[string]struct{}{}
-		for _, ref := range db.head.SeriesOf(name) {
-			fromHead[i][ref.Key()] = struct{}{}
-		}
-	}
-	blocks, release := db.acquireBlocks()
-	defer release()
 	out := make([]tsdb.MetricSeriesCount, 0, len(names))
-	for i, name := range names {
-		if err := ctx.Err(); err != nil {
+	for _, name := range names {
+		series, err := db.metricSeries(ctx, name)
+		if err != nil {
 			return nil, err
 		}
-		keys := fromHead[i]
-		fromHead[i] = nil
-		for _, b := range blocks {
-			refs, err := b.SeriesOf(name)
-			if err != nil {
-				return nil, err
-			}
-			for _, ref := range refs {
-				keys[ref.Key()] = struct{}{}
-			}
-		}
-		if len(keys) > 0 {
-			out = append(out, tsdb.MetricSeriesCount{Metric: name, Series: len(keys)})
+		if len(series) > 0 {
+			out = append(out, tsdb.MetricSeriesCount{Metric: name, Series: len(series)})
 		}
 	}
 	return out, nil
