@@ -220,7 +220,7 @@ func (db *DB) acquireBlocks() ([]*block.Block, func()) {
 // its identity once per source that holds it, and no sample read. One
 // metric's keys are held at a time. That means the blocks are acquired once
 // per metric rather than once per call — the head has to be read before the
-// block list is taken (see [DB.metricSeries]), and reading the whole head
+// block list is taken (see [DB.eachSeries]), and reading the whole head
 // first to acquire once would hold every matching metric's keys at once, a
 // second copy of the head's identities. Acquiring and releasing 30 blocks
 // measured 239 ns and two allocations on a laptop, so 2,000 metrics pay about
@@ -232,12 +232,13 @@ func (db *DB) SeriesCounts(ctx context.Context, prefix string) ([]tsdb.MetricSer
 	}
 	out := make([]tsdb.MetricSeriesCount, 0, len(names))
 	for _, name := range names {
-		series, err := db.metricSeries(ctx, name)
-		if err != nil {
+		// Keys only: a count needs the set, not each series' identity.
+		keys := map[string]struct{}{}
+		if err := db.eachSeries(ctx, name, func(key string, _ tsdb.SeriesRef) { keys[key] = struct{}{} }); err != nil {
 			return nil, err
 		}
-		if len(series) > 0 {
-			out = append(out, tsdb.MetricSeriesCount{Metric: name, Series: len(series)})
+		if len(keys) > 0 {
+			out = append(out, tsdb.MetricSeriesCount{Metric: name, Series: len(keys)})
 		}
 	}
 	return out, nil
@@ -247,8 +248,8 @@ func (db *DB) SeriesCounts(ctx context.Context, prefix string) ([]tsdb.MetricSer
 // series as [DB.SeriesCounts]. The series count is the size of the set the
 // keys were counted over, so no key can be on more series than the metric.
 func (db *DB) TagCardinality(ctx context.Context, metric string) (tsdb.MetricTagCardinality, error) {
-	series, err := db.metricSeries(ctx, metric)
-	if err != nil {
+	series := map[string]tsdb.SeriesRef{}
+	if err := db.eachSeries(ctx, metric, func(key string, ref tsdb.SeriesRef) { series[key] = ref }); err != nil {
 		return tsdb.MetricTagCardinality{}, err
 	}
 	type acc struct {
@@ -281,29 +282,29 @@ func (db *DB) TagCardinality(ctx context.Context, metric string) (tsdb.MetricTag
 	return tsdb.MetricTagCardinality{Series: len(series), Keys: keys}, nil
 }
 
-// metricSeries returns one metric's series, by key, from the head and every
-// block. The head is read before the block list is taken, for the reason
-// [DB.Select] gives: a block cut publishes the block before it drops the
-// series from the head, so this order sees a moving series at least once, and
-// the map makes "more than once" harmless.
-func (db *DB) metricSeries(ctx context.Context, metric string) (map[string]tsdb.SeriesRef, error) {
+// eachSeries calls visit with the key and identity of every series of one
+// metric in the head and every block — a series in several places once per
+// place, which the caller's set by key makes harmless. The head is read before
+// the block list is taken, for the reason [DB.Select] gives: a block cut
+// publishes the block before it drops the series from the head, so this order
+// sees a moving series at least once.
+func (db *DB) eachSeries(ctx context.Context, metric string, visit func(key string, ref tsdb.SeriesRef)) error {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return err
 	}
-	out := map[string]tsdb.SeriesRef{}
 	for _, ref := range db.head.SeriesOf(metric) {
-		out[ref.Key()] = ref
+		visit(ref.Key(), ref)
 	}
 	blocks, release := db.acquireBlocks()
 	defer release()
 	for _, b := range blocks {
 		refs, err := b.SeriesOf(metric)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for _, ref := range refs {
-			out[ref.Key()] = ref
+			visit(ref.Key(), ref)
 		}
 	}
-	return out, nil
+	return nil
 }

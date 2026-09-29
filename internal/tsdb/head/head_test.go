@@ -800,3 +800,103 @@ func TestHead_OutOfBoundsSampleCreatesNoSeries(t *testing.T) {
 		t.Errorf("SeriesOf(missing) = %v", got)
 	}
 }
+
+// A failed log write stores nothing, and must not leave the series it
+// created behind: a full disk would otherwise fill the per-metric limit with
+// empty series and refuse real ones after the disk recovers.
+func TestHead_AFailedLogWriteCreatesNoSeries(t *testing.T) {
+	lg := &failingLog{ok: 1}
+	h := New(Options{WAL: lg, BlockRange: 1 << 40, MaxSeriesPerMetric: 2})
+	if err := appendOne(h, ref("m", "id:a"), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendOne(h, ref("m", "id:b"), 1, 1); err == nil {
+		t.Fatal("the log is full; the append should fail")
+	}
+	if got := h.SeriesOf("m"); len(got) != 1 || got[0].Key() != ref("m", "id:a").Key() {
+		t.Errorf("SeriesOf(m) = %v, want only id:a", got)
+	}
+	lg.ok = 1 // the disk recovers
+	if err := appendOne(h, ref("m", "id:c"), 1, 1); err != nil {
+		t.Errorf("a real series after recovery: %v", err)
+	}
+}
+
+// Every checkpoint keeps the series records, so the log defines series whose
+// samples a block took long ago. After a restart they must not come back as
+// empty series.
+func TestHead_ReplayLeavesNoEmptySeries(t *testing.T) {
+	dir := t.TempDir()
+	w, err := wal.Open(wal.Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Options{WAL: w, BlockRange: 1 << 40})
+	if err := appendOne(h, ref("m", "id:old"), 1000, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendOne(h, ref("m", "id:new"), 9000, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// As the DB opens it: everything below 5000 is in a block already.
+	restored := New(Options{BlockRange: 1 << 40})
+	restored.Truncate(5000)
+	if _, err := Replay(restored, dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := restored.SeriesOf("m"); len(got) != 1 || got[0].Key() != ref("m", "id:new").Key() {
+		t.Errorf("SeriesOf(m) = %v, want only id:new", got)
+	}
+	if st := restored.Stats(); st.Series != 1 {
+		t.Errorf("Stats().Series = %d, want 1", st.Series)
+	}
+}
+
+// An out-of-bounds sample is refused before anything reaches the log: a
+// fresh replay, which refuses nothing, must not find it or its series.
+func TestHead_OutOfBoundsSampleIsNotLogged(t *testing.T) {
+	dir := t.TempDir()
+	w, err := wal.Open(wal.Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Options{WAL: w, BlockRange: 1 << 40})
+	if err := appendOne(h, ref("m", "id:kept"), 6000, 1); err != nil {
+		t.Fatal(err)
+	}
+	h.Truncate(5000)
+	if err := appendOne(h, ref("m", "id:stale"), 4000, 1); !errors.Is(err, ErrOutOfBounds) {
+		t.Fatalf("err = %v, want ErrOutOfBounds", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restored := New(Options{BlockRange: 1 << 40})
+	if _, err := Replay(restored, dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := restored.SeriesOf("m"); len(got) != 1 {
+		t.Errorf("replayed %v, want only id:kept", got)
+	}
+}
+
+// Rejections come back in index order whichever check found them, so the
+// first rejection per series is the one it always was.
+func TestHead_RejectionsAreInIndexOrder(t *testing.T) {
+	h := New(Options{BlockRange: 1 << 40})
+	r := ref("m")
+	if err := appendOne(h, r, 6000, 1); err != nil {
+		t.Fatal(err)
+	}
+	h.Truncate(5000)
+	_, rejected := h.Append([]tsdb.SeriesRef{r, r}, []Sample{{T: 5500, V: 2}, {T: 4000, V: 2}})
+	if len(rejected) != 2 || rejected[0].Index != 0 || !errors.Is(rejected[0].Err, ErrOutOfOrder) {
+		t.Errorf("rejected = %v, want out-of-order at 0 first", rejected)
+	}
+	if st := h.Stats(); st.OOORejected != 2 {
+		t.Errorf("OOORejected = %d, want 2", st.OOORejected)
+	}
+}

@@ -81,11 +81,16 @@ answers).
 - Distributions' sketches live in the sketch store and are not counted here;
   a distribution's series show up as its `<name>.count`, `.sum`, `.min` and
   `.max` series, which have the same tags.
-- The head no longer creates a series for a sample it will reject as out of
-  bounds. It used to create and index the series first, leaving it empty
-  until the next truncation, where every reader of the head's index — the
-  metadata queries, the per-metric series limit, and these counts — saw a
-  series no query could.
+- The head keeps no empty series. It used to create and index a series
+  before applying its samples, and three paths left one with nothing in it
+  until the next truncation — every sample out of bounds, a failed log write,
+  and replay restoring series whose samples a block had long since taken —
+  where every reader of the head's index (the metadata queries, the
+  per-metric series limit, and these counts) saw a series no query could.
+  Append now refuses out-of-bounds samples before resolving, forgets any
+  series it created and stored nothing in, and replay forgets the restored
+  series it left empty. A series is visible, empty, only for the moment
+  between its creation and its first sample inside one append.
 - `DB.Stats().Series` still double-counts and feeds `ozy.store.series`. It is
   a size gauge, not a cardinality, and fixing it would put this walk on the
   self-metrics tick; it is left as it is and named here.
