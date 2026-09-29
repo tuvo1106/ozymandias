@@ -15,6 +15,7 @@ import {
   type ExplorerAnswer,
 } from "../../lib/useMetricsApi";
 import { QueryEditor } from "../dashboards/editor/QueryEditor";
+import { MetricsTabs } from "./MetricsTabs";
 import { SaveToDashboard } from "./SaveToDashboard";
 import { TimeRangePicker } from "./TimeRangePicker";
 
@@ -93,6 +94,7 @@ export function MetricsExplorer() {
   return (
     <div className="flex flex-col gap-4">
       <h1 className="text-2xl font-semibold">Metrics Explorer</h1>
+      <MetricsTabs />
 
       <section aria-label="Query" className="flex flex-col gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
         <QueryEditor label="Query" value={draft} onChange={setDraft} variables={[]} onSubmit={run} />
