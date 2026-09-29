@@ -7,8 +7,6 @@ import {
   REFRESH_INTERVAL_MS,
   shouldAutoRefresh,
   useExplorerQuery,
-  useTagKeys,
-  useTagValues,
 } from "./useMetricsApi";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -17,7 +15,7 @@ function wrapper({ children }: { children: ReactNode }) {
 }
 
 const ok = (from = 0, to = 1) =>
-  new Response(JSON.stringify({ status: "ok", from, to, interval: 10, series: [] }));
+  new Response(JSON.stringify({ status: "ok", query: "sum:m{*}", from, to, interval: 10, series: [], warnings: [] }));
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -41,9 +39,9 @@ describe("shouldAutoRefresh", () => {
 });
 
 describe("useExplorerQuery", () => {
-  const state: ExplorerState = { ...DEFAULT_EXPLORER_STATE, metric: "m", range: { kind: "relative", preset: "5m" } };
+  const state: ExplorerState = { ...DEFAULT_EXPLORER_STATE, q: "sum:m{*}", range: { kind: "relative", preset: "5m" } };
 
-  it("stays idle without a metric", () => {
+  it("stays idle without a query", () => {
     const f = vi.fn();
     vi.stubGlobal("fetch", f);
     const { result } = renderHook(() => useExplorerQuery(DEFAULT_EXPLORER_STATE), { wrapper });
@@ -63,10 +61,10 @@ describe("useExplorerQuery", () => {
       await vi.advanceTimersByTimeAsync(REFRESH_INTERVAL_MS);
     });
     await waitFor(() => expect(f).toHaveBeenCalledTimes(2));
-    const urls = f.mock.calls.map((c) => new URL((c as unknown as [string])[0], "http://x").searchParams);
-    expect(urls.map((u) => [u.get("from"), u.get("to")])).toEqual([
-      ["999700", "1000000"],
-      ["999710", "1000010"],
+    const bodies = f.mock.calls.map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)) as { from: number; to: number });
+    expect(bodies.map((b) => [b.from, b.to])).toEqual([
+      [999_700, 1_000_000],
+      [999_710, 1_000_010],
     ]);
   });
 
@@ -81,13 +79,24 @@ describe("useExplorerQuery", () => {
     });
     expect(f).toHaveBeenCalledTimes(1);
   });
-});
 
-describe("tag hooks", () => {
-  it("stay idle until their inputs are known", () => {
-    const f = vi.fn();
-    vi.stubGlobal("fetch", f);
-    renderHook(() => [useTagKeys(""), useTagValues("m", "")], { wrapper });
-    expect(f).not.toHaveBeenCalled();
+  // The pairing the page relies on: an answer names the text it answers.
+  it("says which query each answer is for, including the one kept while the next loads", async () => {
+    let release: (() => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_u: string, init: RequestInit) => {
+        if ((JSON.parse(String(init.body)) as { q: string }).q === "sum:n{*}") await new Promise<void>((r) => (release = r));
+        return ok();
+      }),
+    );
+    const { result, rerender } = renderHook(({ s }) => useExplorerQuery(s), { wrapper, initialProps: { s: state } });
+    await waitFor(() => expect(result.current.data?.asked).toBe("sum:m{*}"));
+    rerender({ s: { ...state, q: "sum:n{*}" } });
+    await waitFor(() => expect(result.current.isPlaceholderData).toBe(true));
+    expect(result.current.data?.asked).toBe("sum:m{*}");
+    await waitFor(() => expect(release).toBeDefined());
+    release?.();
+    await waitFor(() => expect(result.current.data?.asked).toBe("sum:n{*}"));
   });
 });

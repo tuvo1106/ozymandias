@@ -519,6 +519,27 @@ function copyTitle(title: string, service: string | undefined): string {
   return withSuffix(title.slice(0, title.length - tail.length), tail + COPY_SUFFIX, MAX_TITLE_BYTES);
 }
 
+/**
+ * The draft with a timeseries widget charting `q` added below everything
+ * else, and that widget's id — the Metrics Explorer's "Save to dashboard".
+ *
+ * A timeseries because it is what the explorer drew, so the widget shows
+ * what the author was looking at when they chose to keep it. Titled with the
+ * query, cut to the server's limit: that is the one true thing to call it
+ * until the author names it, which the editor opens on the widget to invite.
+ */
+export function withQueryWidget(d: Dashboard, q: string): { dashboard: Dashboard; id: string } {
+  // Built on newWidget, so a default added there reaches these widgets too.
+  // The title on one line: the box keeps a query's newlines and indentation
+  // on purpose, and a title bar is not the place for them.
+  const widget: Widget = {
+    ...newWidget("timeseries", d.widgets),
+    title: withSuffix(q.replace(/\s+/g, " ").trim(), "", MAX_TITLE_BYTES),
+    queries: [{ q }],
+  };
+  return { dashboard: { ...d, widgets: [...d.widgets, widget] }, id: widget.id };
+}
+
 /** The server's title limit, in UTF-8 bytes (`dashboard.MaxTitle`). */
 export const MAX_TITLE_BYTES = 200;
 const COPY_SUFFIX = " (copy)";

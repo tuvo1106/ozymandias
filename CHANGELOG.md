@@ -77,6 +77,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The Metrics Explorer takes a query.** A metricql box with the dashboard
+  editor's completion and inline parse errors replaces M1's pickers; Run (or
+  Ctrl/⌘+Enter) charts it, and the URL holds the query that was run
+  (`?q=`). A legend table gives each line's last, avg, min and max. M1 links
+  (`?metric=&filter=&by=&agg=`) still open: ozyd translates them, and the
+  query it ran replaces them in the URL.
+  See docs/ui.md §2, ADR-0022.
+- **Save to dashboard** from the Metrics Explorer: opens a stored or new
+  dashboard in the editor with a timeseries widget for the charted query
+  added and unsaved (`?add=` on `/dashboards/{id}/edit` and
+  `/dashboards/new`).
 - **The dashboard editor** (`/dashboards/{id}/edit`, `/dashboards/new`): a
   12-column grid with drag and keyboard move/resize, a widget panel offering
   exactly the fields each type uses, a live preview drawn by the real widgets,

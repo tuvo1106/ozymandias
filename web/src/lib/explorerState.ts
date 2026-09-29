@@ -1,46 +1,33 @@
 /**
  * The Metrics Explorer's query state and its URL encoding.
  *
- * The URL is the single source of truth for what the explorer shows
+ * The URL is the single source of truth for what the explorer *charts*
  * (docs/plan/ui.md §1: "all view state is URL-encoded so any view is
- * shareable"). The page never keeps a second copy in React state: it parses
- * the search params on every render and writes a new URL to change anything.
- * That makes reload, back/forward and deep links correct by construction.
+ * shareable"): the query that was last run, the time range, and whether it
+ * refreshes. The query box holds a draft beside it, and running the draft is
+ * what writes it here — so a link is always the question its chart answers,
+ * never half of one that was being typed (ADR-0022).
  *
- * The encoding mirrors the query API's own parameters where it can
- * (`metric`, `filter=k:v,!k2:v2`, `by=k1,k2`, `agg`) so a URL is readable and
- * easy to translate into a curl command. (A consequence of copying the API's
- * comma-joined lists: a filter value cannot contain a comma, here or in the
- * API.) Parsing is forgiving — a hand-edited or stale link degrades to
- * defaults field by field rather than failing — and serializing omits
- * defaults so ordinary links stay short.
+ * `q` is the query language as `/api/v1/query` takes it. M1's explorer wrote
+ * the structured parameters instead (`metric`, `filter=k:v,!k2:v2`, `by`,
+ * `agg`). Those are carried as they are, in `legacy`, for the server to
+ * translate — it is the one translator, and a second one here would be a
+ * second place to get "which of these does ozyd refuse?" wrong (ADR-0022).
+ * The range and `live` are forgiving — a hand-edited or stale value degrades
+ * to its default rather than failing — and serializing omits defaults so
+ * ordinary links stay short.
  */
 import { isRangePreset, type RangePreset, type TimeRange } from "./timeRange";
 
-/** Cross-series aggregators the query API accepts. */
-export const AGGREGATORS = ["avg", "sum", "min", "max"] as const;
-
-/** One cross-series aggregator. */
-export type Aggregator = (typeof AGGREGATORS)[number];
-
-/**
- * One tag filter. `value` may contain `*` wildcards (the server matches
- * them); `negate` turns `key:value` into `!key:value` (not equal).
- */
-export interface TagFilter {
-  key: string;
-  value: string;
-  negate: boolean;
-}
-
 /** Everything that determines the explorer's view. */
 export interface ExplorerState {
-  /** Metric name; "" means none chosen yet. */
-  metric: string;
-  filters: TagFilter[];
-  /** Tag keys to group by, in the order chosen. */
-  by: string[];
-  agg: Aggregator;
+  /** The metricql query that is charted; "" means none has been run. */
+  q: string;
+  /**
+   * M1's structured parameters, as a query string, when the link has them
+   * and no `q`: "" otherwise. The page asks the server to translate them.
+   */
+  legacy: string;
   range: TimeRange;
   /** Whether a relative range re-queries every 10 s. */
   live: boolean;
@@ -48,46 +35,29 @@ export interface ExplorerState {
 
 const DEFAULT_PRESET: RangePreset = "1h";
 
-/** The state of a fresh explorer: nothing chosen, last hour, avg, live. */
+/** The state of a fresh explorer: no query, last hour, live. */
 export const DEFAULT_EXPLORER_STATE: ExplorerState = {
-  metric: "",
-  filters: [],
-  by: [],
-  agg: "avg",
+  q: "",
+  legacy: "",
   range: { kind: "relative", preset: DEFAULT_PRESET },
   live: true,
 };
 
-/** Formats one filter the way the API and URL spell it: `k:v` or `!k:v`. */
-export function formatFilter(f: TagFilter): string {
-  return `${f.negate ? "!" : ""}${f.key}:${f.value}`;
-}
+/** The M1 parameters, in the order M1 wrote them. */
+const LEGACY_PARAMS = ["metric", "filter", "by", "agg"] as const;
 
 /**
- * Parses one `k:v` / `!k:v` term. The key ends at the *first* colon, so
- * values may contain colons (`url:http://x`). Returns undefined for a term
- * without a colon or with an empty key or value.
+ * An M1 link's parameters, exactly as sent, or "" when it has none. Not
+ * trimmed or checked: the server refuses what it refuses, and the page says
+ * so in the server's words.
  */
-export function parseFilter(term: string): TagFilter | undefined {
-  const t = term.trim();
-  const negate = t.startsWith("!");
-  const body = negate ? t.slice(1) : t;
-  const i = body.indexOf(":");
-  if (i <= 0 || i === body.length - 1) return undefined;
-  return { key: body.slice(0, i), value: body.slice(i + 1), negate };
-}
-
-/** Formats a filter list as the API's comma-joined `filter` parameter. */
-export function formatFilters(filters: readonly TagFilter[]): string {
-  return filters.map(formatFilter).join(",");
-}
-
-function splitList(s: string | null): string[] {
-  if (!s) return [];
-  return s
-    .split(",")
-    .map((x) => x.trim())
-    .filter((x) => x !== "");
+export function legacyParams(params: URLSearchParams): string {
+  const out = new URLSearchParams();
+  for (const k of LEGACY_PARAMS) {
+    const v = params.get(k);
+    if (v !== null && v !== "") out.set(k, v);
+  }
+  return out.toString();
 }
 
 function parseRange(params: URLSearchParams): TimeRange {
@@ -107,26 +77,15 @@ function parseRange(params: URLSearchParams): TimeRange {
 }
 
 /**
- * Reads explorer state from URL search params. Unknown or malformed values
- * fall back to the default for that field alone; duplicate filters and
- * group-by keys are dropped.
+ * Reads explorer state from URL search params. `q` wins over M1's
+ * parameters when a link carries both: it is the newer spelling, and the
+ * only one this explorer writes.
  */
 export function parseExplorerState(params: URLSearchParams): ExplorerState {
-  const agg = params.get("agg") ?? "";
-  const filters: TagFilter[] = [];
-  const seen = new Set<string>();
-  for (const term of splitList(params.get("filter"))) {
-    const f = parseFilter(term);
-    if (f && !seen.has(formatFilter(f))) {
-      seen.add(formatFilter(f));
-      filters.push(f);
-    }
-  }
+  const q = (params.get("q") ?? "").trim();
   return {
-    metric: (params.get("metric") ?? "").trim(),
-    filters,
-    by: [...new Set(splitList(params.get("by")))],
-    agg: (AGGREGATORS as readonly string[]).includes(agg) ? (agg as Aggregator) : DEFAULT_EXPLORER_STATE.agg,
+    q,
+    legacy: q ? "" : legacyParams(params),
     range: parseRange(params),
     live: params.get("live") !== "0",
   };
@@ -139,10 +98,10 @@ export function parseExplorerState(params: URLSearchParams): ExplorerState {
  */
 export function serializeExplorerState(state: ExplorerState): URLSearchParams {
   const p = new URLSearchParams();
-  if (state.metric) p.set("metric", state.metric);
-  if (state.filters.length) p.set("filter", formatFilters(state.filters));
-  if (state.by.length) p.set("by", state.by.join(","));
-  if (state.agg !== DEFAULT_EXPLORER_STATE.agg) p.set("agg", state.agg);
+  if (state.q) p.set("q", state.q);
+  // Kept until the server has translated them, so a range change while it
+  // does — or after it refused them — still names the same question.
+  else for (const [k, v] of new URLSearchParams(state.legacy)) p.set(k, v);
   if (state.range.kind === "absolute") {
     p.set("from", String(state.range.from));
     p.set("to", String(state.range.to));

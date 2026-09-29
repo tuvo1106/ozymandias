@@ -536,3 +536,63 @@ describe("review fixes: what a save invalidates", () => {
       expect(staleAfterSave(k)).toBe(false);
   });
 });
+
+describe("?add=: a query from the Metrics Explorer", () => {
+  const Q = "sum:http.request.count{*} by {route}";
+  const addTo = (path: string) => `${path}${path.includes("?") ? "&" : "?"}${new URLSearchParams({ add: Q })}`;
+
+  it("opens a stored dashboard with the widget added, selected and unsaved, then saves it", async () => {
+    const f = mockApi(over((_p, init) => (init?.method === "PUT" ? { body: stored } : undefined)));
+    const router = await openEditor(addTo("/dashboards/2/edit"));
+    expect(await screen.findByRole("complementary", { name: `Edit ${Q}` })).toBeInTheDocument();
+    expect(screen.getByText(/unsaved changes/)).toBeInTheDocument();
+    // Read once: a reload after saving must not add it again.
+    await waitFor(() => expect(new URLSearchParams(router.state.location.search).has("add")).toBe(false));
+    expect(screen.getByRole("complementary", { name: `Edit ${Q}` })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved.");
+    const [put] = sent(f, "PUT");
+    const widgets = put!.body.widgets as { type: string; queries: { q: string }[] }[];
+    expect(widgets).toHaveLength(3);
+    expect(widgets[2]).toMatchObject({ type: "timeseries", queries: [{ q: Q }] });
+  });
+
+  it("keeps the other parameters when it removes add", async () => {
+    mockApi();
+    const router = await openEditor(addTo("/dashboards/2/edit?range=4h"));
+    await waitFor(() => expect(router.state.location.search).toBe("?range=4h"));
+  });
+
+  it("starts a new dashboard with it, and creates it with the widget", async () => {
+    const f = mockApi(
+      over((path, init) => {
+        if (path === "/api/v1/dashboards" && init?.method === "POST") return { status: 201, body: { ...stored, id: 7 } };
+        if (path === "/api/v1/dashboards/7") return { body: { ...stored, id: 7 } };
+        return undefined;
+      }),
+    );
+    const router = renderAt(addTo("/dashboards/new"));
+    expect(await screen.findByRole("complementary", { name: `Edit ${Q}` })).toBeInTheDocument();
+    // On /new the parameter is the seed: a reload before creating keeps it.
+    expect(new URLSearchParams(router.state.location.search).get("add")).toBe(Q);
+    await userEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/dashboards/7/edit"));
+    const [post] = sent(f, "POST");
+    expect(post!.body.widgets).toEqual([expect.objectContaining({ type: "timeseries", queries: [{ q: Q }] })]);
+  });
+
+  it("carries the query into the copy offered for a provisioned dashboard", async () => {
+    mockApi();
+    await openEditor(addTo("/dashboards/3/edit"));
+    expect(await screen.findByRole("link", { name: "save a copy" })).toHaveAttribute(
+      "href",
+      `/dashboards/new?${new URLSearchParams({ copy: "3", add: Q })}`,
+    );
+  });
+
+  it("ignores a blank add", async () => {
+    mockApi();
+    await openEditor("/dashboards/2/edit?add=%20");
+    expect(screen.queryByText(/unsaved changes/)).not.toBeInTheDocument();
+  });
+});

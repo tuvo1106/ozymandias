@@ -29,16 +29,41 @@ export interface QueryEditorProps {
   onChange: (q: string) => void;
   /** The dashboard's template variable names, for `$` completion. */
   variables: readonly string[];
+  /**
+   * Called on Ctrl+Enter (⌘+Enter on a Mac), for a page where the query is
+   * run rather than followed. Plain Enter stays a newline, or a choice when
+   * the list is open: a query can span lines, and a key that sometimes
+   * inserts and sometimes runs would run half-written queries.
+   */
+  onSubmit?: () => void;
 }
 
 /** A metricql text box with completion and inline parse errors. */
-export function QueryEditor({ label, value, onChange, variables }: QueryEditorProps) {
+export function QueryEditor({ label, value, onChange, variables, onSubmit }: QueryEditorProps) {
   const id = useId();
   const listId = `${id}-list`;
   const ref = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(value.length);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
+  // The last text this box handed out through [[emit]]. A value that differs
+  // from it was put here from outside — the Explorer's back/forward, a Format
+  // click — and what was recorded for the old text describes some other
+  // query: the caret is a position in it, and the list and its highlight are
+  // its completions, which Enter would insert. The caret goes to the end and
+  // the list closes, as for a box that has just been handed new text.
+  const [own, setOwn] = useState(value);
+  if (value !== own) {
+    setOwn(value);
+    setCaret(value.length);
+    setOpen(false);
+    setActive(-1);
+  }
+  /** Every edit made *in* this box goes through here, and nothing else does. */
+  const emit = (text: string) => {
+    setOwn(text);
+    onChange(text);
+  };
   const ctx = completionContext(value, caret);
   const list = useCompletions(ctx, variables);
   const verdict = useQueryValidation(value);
@@ -65,7 +90,7 @@ export function QueryEditor({ label, value, onChange, variables }: QueryEditorPr
   const choose = (item: Completion) => {
     if (ctx.kind === "none") return;
     const next = applyCompletion(value, ctx, item);
-    onChange(next.text);
+    emit(next.text);
     setCaret(next.caret);
     setActive(-1);
     // Keep completing: after `sum:` comes a metric, after a metric a key.
@@ -74,6 +99,12 @@ export function QueryEditor({ label, value, onChange, variables }: QueryEditorPr
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (onSubmit && e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      setOpen(false);
+      onSubmit();
+      return;
+    }
     if (e.key === " " && e.ctrlKey) {
       e.preventDefault();
       setOpen(true);
@@ -114,7 +145,7 @@ export function QueryEditor({ label, value, onChange, variables }: QueryEditorPr
           rows={Math.min(4, value.split("\n").length)}
           value={value}
           onChange={(e) => {
-            onChange(e.target.value);
+            emit(e.target.value);
             setCaret(e.target.selectionStart);
             setOpen(true);
             setActive(-1);
@@ -124,11 +155,15 @@ export function QueryEditor({ label, value, onChange, variables }: QueryEditorPr
           onFocus={() => setOpen(true)}
           onBlur={() => setOpen(false)}
           onKeyDown={onKeyDown}
-          placeholder="sum:http.request.count{$env} by {route}.as_rate()"
+          // A variable only where there are variables: the Explorer has none,
+          // and would refuse the example it offered.
+          placeholder={`sum:http.request.count{${variables[0] ? `$${variables[0]}` : "*"}} by {route}.as_rate()`}
           className="w-full resize-y rounded-md border border-zinc-300 bg-white px-2 py-1 font-mono text-xs outline-none focus:border-violet-500 aria-[invalid=true]:border-red-400 dark:border-zinc-700 dark:bg-zinc-900"
         />
         {shown ? <Suggestions id={listId} list={list} active={active} onChoose={choose} /> : null}
       </div>
+      {/* Not emit: a reformat is new text handed to the box, and the caret
+          and list should be treated as for any other. */}
       <Verdict id={`${id}-verdict`} text={value} verdict={verdict} onFormat={onChange} />
     </div>
   );

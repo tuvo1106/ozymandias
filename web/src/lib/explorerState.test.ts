@@ -1,35 +1,21 @@
-import {
-  AGGREGATORS,
-  DEFAULT_EXPLORER_STATE,
-  formatFilter,
-  parseExplorerState,
-  parseFilter,
-  serializeExplorerState,
-  type ExplorerState,
-} from "./explorerState";
+import { DEFAULT_EXPLORER_STATE, legacyParams, parseExplorerState, serializeExplorerState, type ExplorerState } from "./explorerState";
 import { RANGE_PRESETS } from "./timeRange";
 
 const parse = (qs: string) => parseExplorerState(new URLSearchParams(qs));
+const legacy = (qs: string) => legacyParams(new URLSearchParams(qs));
 
-describe("parseFilter / formatFilter", () => {
-  it.each([
-    ["env:dev", { key: "env", value: "dev", negate: false }],
-    ["!env:dev", { key: "env", value: "dev", negate: true }],
-    ["route:/api/*", { key: "route", value: "/api/*", negate: false }],
-    ["url:http://x:8080", { key: "url", value: "http://x:8080", negate: false }],
-    [" env:dev ", { key: "env", value: "dev", negate: false }],
-  ])("parses %j", (term, want) => {
-    expect(parseFilter(term)).toEqual(want);
+describe("legacyParams", () => {
+  // The server is the one translator; a second one here would be a second
+  // place to decide what it refuses. So: exactly as sent, in M1's order.
+  it("carries M1's parameters exactly as sent", () => {
+    expect(legacy("agg=sum:other{*}%20%2B%20avg&by=Route&filter=canary,a:b}&metric=%20m&range=4h")).toBe(
+      new URLSearchParams({ metric: " m", filter: "canary,a:b}", by: "Route", agg: "sum:other{*} + avg" }).toString(),
+    );
   });
 
-  it.each(["env", ":dev", "env:", "!", "!:x", ""])("rejects %j", (term) => {
-    expect(parseFilter(term)).toBeUndefined();
-  });
-
-  it("formats the inverse of parse", () => {
-    for (const t of ["env:dev", "!env:dev", "url:http://x:8080"]) {
-      expect(formatFilter(parseFilter(t)!)).toBe(t);
-    }
+  it("is nothing without them, and leaves out empty ones", () => {
+    expect(legacy("q=sum:x{*}&range=4h")).toBe("");
+    expect(legacy("metric=m&filter=&by=")).toBe("metric=m");
   });
 });
 
@@ -39,17 +25,20 @@ describe("parseExplorerState", () => {
   });
 
   it("reads every field", () => {
-    expect(parse("metric=http.request.count&filter=env:dev,!route:/x&by=route,env&agg=max&range=15m&live=0")).toEqual({
-      metric: "http.request.count",
-      filters: [
-        { key: "env", value: "dev", negate: false },
-        { key: "route", value: "/x", negate: true },
-      ],
-      by: ["route", "env"],
-      agg: "max",
+    expect(parse("q=sum:x{*}&range=15m&live=0")).toEqual({
+      q: "sum:x{*}",
+      legacy: "",
       range: { kind: "relative", preset: "15m" },
       live: false,
     });
+  });
+
+  it("keeps an M1 link's parameters for the server to translate", () => {
+    expect(parse("metric=m&by=a&range=4h")).toMatchObject({ q: "", legacy: "metric=m&by=a" });
+  });
+
+  it("prefers q to M1's parameters when a link has both", () => {
+    expect(parse("q=sum:x{*}&metric=m")).toMatchObject({ q: "sum:x{*}", legacy: "" });
   });
 
   it("prefers a valid absolute range over a preset", () => {
@@ -67,24 +56,12 @@ describe("parseExplorerState", () => {
     "from=&to=200",
     "from=100&to=",
     "from=%20&to=200",
-  ])(
-    "falls back to the preset for a bad absolute range (%s)",
-    (qs) => {
-      expect(parse(`${qs}&range=4h`).range).toEqual({ kind: "relative", preset: "4h" });
-    },
-  );
-
-  it("degrades bad fields one at a time", () => {
-    const s = parse("metric=m&agg=median&range=2h&filter=bad,env:dev,,&by=,a,,a,b");
-    expect(s.metric).toBe("m");
-    expect(s.agg).toBe("avg");
-    expect(s.range).toEqual({ kind: "relative", preset: "1h" });
-    expect(s.filters).toEqual([{ key: "env", value: "dev", negate: false }]);
-    expect(s.by).toEqual(["a", "b"]);
+  ])("falls back to the preset for a bad absolute range (%s)", (qs) => {
+    expect(parse(`${qs}&range=4h`).range).toEqual({ kind: "relative", preset: "4h" });
   });
 
-  it("drops duplicate filters but keeps a filter and its negation", () => {
-    expect(parse("filter=env:dev,env:dev,!env:dev").filters).toHaveLength(2);
+  it("falls back to the default preset for an unknown one", () => {
+    expect(parse("range=2h").range).toEqual({ kind: "relative", preset: "1h" });
   });
 });
 
@@ -93,18 +70,10 @@ describe("serializeExplorerState", () => {
     expect(serializeExplorerState(DEFAULT_EXPLORER_STATE).toString()).toBe("");
   });
 
-  it("uses the API's spelling", () => {
-    const s: ExplorerState = {
-      metric: "m",
-      filters: [{ key: "env", value: "dev", negate: true }],
-      by: ["a", "b"],
-      agg: "sum",
-      range: { kind: "absolute", from: 1, to: 2 },
-      live: false,
-    };
-    expect(decodeURIComponent(serializeExplorerState(s).toString())).toBe(
-      "metric=m&filter=!env:dev&by=a,b&agg=sum&from=1&to=2&live=0",
-    );
+  it("writes q, and M1's parameters only until there is a q", () => {
+    const legacyState = parse("metric=m&filter=!env:dev&agg=sum&from=1&to=2&live=0");
+    expect(decodeURIComponent(serializeExplorerState(legacyState).toString())).toBe("metric=m&filter=!env:dev&agg=sum&from=1&to=2&live=0");
+    expect(serializeExplorerState({ ...legacyState, q: "sum:m{*}", legacy: "" }).get("metric")).toBeNull();
   });
 
   // A small hand-rolled property test: random states survive the trip
@@ -115,27 +84,20 @@ describe("serializeExplorerState", () => {
       seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31;
       return seed % n;
     };
-    const word = () => ["env", "route", "a.b", "x-y", "/api/*", "http://h:1", "ünï", "a b", "&=?"][rnd(9)]!;
+    const word = () => ["sum:x{*}", "a b", "&=?", "ünï", "p95:y{r:/a/*} by {k}", "x{a:b}}", "#h", "+"][rnd(8)]!;
     for (let i = 0; i < 500; i++) {
-      const filters = new Map<string, { key: string; value: string; negate: boolean }>();
-      for (let j = rnd(4); j > 0; j--) {
-        const f = { key: word().replace(/[:,]/g, "") || "k", value: word(), negate: rnd(2) === 1 };
-        filters.set(formatFilter(f), f);
-      }
       const from = rnd(1_000_000);
+      const q = rnd(4) === 0 ? "" : `${word()} ${word()}`;
       const s: ExplorerState = {
-        metric: rnd(4) === 0 ? "" : `metric.${word()}`,
-        filters: [...filters.values()],
-        by: [...new Set(Array.from({ length: rnd(3) }, () => word().replace(/,/g, "")))],
-        agg: AGGREGATORS[rnd(AGGREGATORS.length)]!,
+        q,
+        legacy: q || rnd(2) === 0 ? "" : new URLSearchParams({ metric: word(), ...(rnd(2) ? { agg: word() } : {}) }).toString(),
         range:
           rnd(3) === 0
             ? { kind: "absolute", from, to: from + 1 + rnd(1000) }
             : { kind: "relative", preset: RANGE_PRESETS[rnd(RANGE_PRESETS.length)]! },
         live: rnd(2) === 0,
       };
-      const url = `?${serializeExplorerState(s).toString()}`;
-      expect(parseExplorerState(new URLSearchParams(url))).toEqual(s);
+      expect(parseExplorerState(new URLSearchParams(`?${serializeExplorerState(s).toString()}`))).toEqual(s);
     }
   });
 });

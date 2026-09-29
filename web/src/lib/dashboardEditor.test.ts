@@ -18,6 +18,7 @@ import {
   unknownKeys,
   unusedFields,
   WIDGET_TYPES,
+  withQueryWidget,
 } from "./dashboardEditor";
 
 const chart: Widget = {
@@ -259,6 +260,35 @@ describe("definitions, copies and exports", () => {
   it("cuts on a character, never inside one", () => {
     expect(withSuffix("aé", "!", 3)).toBe("a!"); // é would need bytes 2–3
     expect(withSuffix("abc", "!", 10)).toBe("abc!");
+  });
+});
+
+describe("withQueryWidget", () => {
+  const d: Dashboard = { title: "D", widgets: [chart, { ...chart, id: "w2", layout: { x: 6, y: 2, w: 6, h: 4 } }] };
+
+  it("adds a timeseries of the query below everything, with a new id", () => {
+    const { dashboard, id } = withQueryWidget(d, "sum:m{*}");
+    expect(dashboard.widgets.slice(0, 2)).toEqual(d.widgets);
+    const added = dashboard.widgets[2]!;
+    expect(added).toMatchObject({ id, type: "timeseries", title: "sum:m{*}", queries: [{ q: "sum:m{*}" }] });
+    expect(d.widgets.map((w) => w.id)).not.toContain(id);
+    expect(added.layout.y).toBe(6);
+    expect(d.widgets).toHaveLength(2);
+  });
+
+  it("titles a query written over lines on one line, and keeps the query as written", () => {
+    const q = "sum:m{a:b,\n    c:d}\n  by {k}";
+    const added = withQueryWidget(d, q).dashboard.widgets[2]!;
+    expect(added.title).toBe("sum:m{a:b, c:d} by {k}");
+    expect(added.queries).toEqual([{ q }]);
+  });
+
+  // The title is the query until the author names it, and the server
+  // refuses a title over the limit.
+  it("cuts a long query to the title limit, in bytes", () => {
+    const title = withQueryWidget(d, `sum:${"é".repeat(150)}{*}`).dashboard.widgets[2]!.title!;
+    expect(new TextEncoder().encode(title).length).toBeLessThanOrEqual(MAX_TITLE_BYTES);
+    expect(title.startsWith("sum:é")).toBe(true);
   });
 });
 

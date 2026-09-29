@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryEditor } from "./QueryEditor";
 
@@ -32,9 +32,21 @@ const validator: Handler = (path, _p, body) => {
     : { body: { ok: true, query: q.trim().toLowerCase() } };
 };
 
-function Harness({ initial = "", variables = [] as string[] }) {
+function Harness({
+  initial = "",
+  variables = [] as string[],
+  onSubmit,
+  outside,
+}: {
+  initial?: string;
+  variables?: string[];
+  onSubmit?: () => void;
+  /** Receives the setter, to set the text from outside as back/forward does. */
+  outside?: (set: (q: string) => void) => void;
+}) {
   const [q, setQ] = useState(initial);
-  return <QueryEditor label="Query" value={q} onChange={setQ} variables={variables} />;
+  useEffect(() => outside?.(setQ), [outside]);
+  return <QueryEditor label="Query" value={q} onChange={setQ} variables={variables} onSubmit={onSubmit} />;
 }
 
 function renderEditor(props: Parameters<typeof Harness>[0] = {}) {
@@ -175,5 +187,76 @@ describe("QueryEditor completions", () => {
     await userEvent.type(box, "sum:m{{$r");
     await userEvent.keyboard("{ArrowDown}{Enter}");
     expect(box).toHaveValue("sum:m{$region");
+  });
+});
+
+describe("QueryEditor submit", () => {
+  it("runs on Ctrl+Enter or ⌘+Enter, and plain Enter stays a newline", async () => {
+    mockApi(validator);
+    const onSubmit = vi.fn();
+    const box = renderEditor({ initial: "sum:m{*}", onSubmit });
+    await userEvent.click(box);
+    await userEvent.keyboard("{Enter}");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(box.value).toBe("sum:m{*}\n");
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
+    await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    expect(box.value).toBe("sum:m{*}\n");
+  });
+});
+
+describe("QueryEditor text set from outside", () => {
+  // The caret recorded for the old text is a position in some other query.
+  it("completes at the end of the new text, not at the old caret", async () => {
+    mockApi((path) =>
+      path === "/api/v1/metrics"
+        ? { body: { metrics: ["mmm"] } }
+        : path === "/api/v1/tags/values"
+          ? { body: { values: ["prod"] } }
+          : validator(path, new URLSearchParams(), { q: "" }),
+    );
+    let set: ((q: string) => void) | undefined;
+    const box = renderEditor({ outside: (s) => (set = s) });
+    await userEvent.type(box, "avg:x");
+    // Back/forward while the box is not focused: React reports selection
+    // changes only for the focused element, so nothing re-reads the caret…
+    act(() => box.blur());
+    act(() => set?.("sum:m{env:"));
+    expect(box.value).toBe("sum:m{env:");
+    // …and focus coming back opens the list before any key-up or click would.
+    fireEvent.focusIn(box);
+    expect(await screen.findByRole("option", { name: /^prod/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /^mmm/ })).not.toBeInTheDocument();
+  });
+
+  // The old list's highlight is an index into completions of other text:
+  // Enter would insert whatever now sits at that index.
+  it("closes the list and drops its highlight, so Enter is a newline again", async () => {
+    mockApi((path) => (path === "/api/v1/metrics" ? { body: { metrics: ["m1", "m2", "m3"] } } : validator(path, new URLSearchParams(), { q: "" })));
+    let set: ((q: string) => void) | undefined;
+    const box = renderEditor({ outside: (s) => (set = s) });
+    await userEvent.type(box, "avg:m");
+    await screen.findByRole("option", { name: /^m2/ });
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+    expect(box).toHaveAttribute("aria-activedescendant");
+    // New text whose end is also a metric, so its own list would be ready
+    // to draw — and the old highlight would pick from it.
+    act(() => set?.("sum:m"));
+    expect(box).toHaveAttribute("aria-expanded", "false");
+    expect(box).not.toHaveAttribute("aria-activedescendant");
+    await userEvent.keyboard("{Enter}");
+    expect(box.value).toBe("sum:m\n");
+  });
+
+  // The example must be one the page would accept.
+  it("puts a variable in the placeholder only where there are variables", () => {
+    mockApi(validator);
+    expect(renderEditor()).toHaveAttribute("placeholder", "sum:http.request.count{*} by {route}.as_rate()");
+  });
+
+  it("uses the dashboard's own variable in the placeholder", () => {
+    mockApi(validator);
+    expect(renderEditor({ variables: ["region"] })).toHaveAttribute("placeholder", "sum:http.request.count{$region} by {route}.as_rate()");
   });
 });
