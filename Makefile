@@ -17,10 +17,12 @@ CI_FUZZTIME ?= 10s
 # background` keeps it (and every process it starts) on the efficiency cores.
 # Every tool in the gate sizes itself to all the cores — `go test -p`, each
 # race binary's GOMAXPROCS, the fuzz workers, vitest's pool — so at full
-# priority a push pinned all ten and heated the machine for two and a half
-# minutes. Measured on internal/tsdb/db, the slowest package: 32s at full
-# priority, 75s in the background; fuzzing is time-boxed and takes as long
-# either way. CI_PRIORITY=full restores the fast, hot run. Where taskpolicy
+# priority a run pinned all ten and heated the machine for two and a half
+# minutes; it used to do that on every push, until ADR-0024 took it off the
+# pre-push hook. Measured: internal/tsdb/db, the slowest package, 32s at full
+# priority and 75s in the background; the whole gate about 140s and 207s.
+# Fuzzing is time-boxed and takes as long either way. CI_PRIORITY=full
+# restores the fast, hot run. Where taskpolicy
 # does not exist (Linux, GitHub Actions — which runs the targets one by one
 # anyway) this is a no-op.
 CI_PRIORITY ?= background
@@ -87,7 +89,7 @@ sdk-check: ## Both SDKs: install, typecheck, lint, tests with their 90% gates
 	cd sdk/python && uv sync --locked -q && uv run ruff check && uv run ruff format --check && uv run mypy && uv run pytest -q
 
 .PHONY: ci
-ci: ## The full local gate, at background priority (runs on git push via lefthook; CI_PRIORITY=full for speed)
+ci: ## The full gate by hand, at background priority (Actions runs it on every PR; CI_PRIORITY=full for speed)
 	$(CI_NICE) $(MAKE) ci-gate
 
 .PHONY: ci-gate

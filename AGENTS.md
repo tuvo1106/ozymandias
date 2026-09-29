@@ -52,16 +52,18 @@ what "done" means:
 
 1. Work milestones in order. Do not start M(n+1) until every acceptance
    criterion of M(n) passes and is demonstrated (command + output in the notes).
-2. **Two gates, local first** (ADR-0013). So:
+2. **Two gates: pre-commit, then Actions** (ADR-0024). So:
    - **Batch.** One PR per milestone, or per large coherent chunk of one, not
      one per feature slice. Slices are still separate, well-described
      *commits* on the branch, so history stays reviewable.
-   - **The git hooks are the fast gate.** pre-commit runs the checks for what
-     you staged, and pre-push runs the full `make ci`. Never `--no-verify` a
-     push. GitHub Actions re-runs `make ci` on every PR — the repo is public,
-     so the minutes are free — but it is the backstop, not the thing you wait
-     on. Put the local evidence (`make ci`, and `make smoke` when runtime
-     behaviour changed) in the PR description either way.
+   - **pre-commit is the fast gate**: the checks for what you staged. There
+     is no pre-push hook. **GitHub Actions is the full gate**: it runs
+     `make ci`'s targets on every PR, `ci` is a required check, and a PR
+     merges only when it is green on the head commit. Run `make ci` by hand
+     once before opening a PR (it runs on the efficiency cores, so it does
+     not heat the laptop) and put that evidence, plus `make smoke` when
+     runtime behaviour changed, in the PR description. Batch fixes so a
+     review round costs one push.
    - Scopes are package-ish: `feat(agent): …`, `test(tsdb): …`,
      `feat(sdk-python): …`, `feat(web): …`.
    - The repo is `github.com/tuvo1106/ozymandias` (public). Open PRs with `gh`.
@@ -181,9 +183,9 @@ your machine, you are not the person who should be touching them.
 make help           list every target
 make build          go build ./cmd/... into ./bin (embeds the UI if built)
 make web            build the UI into internal/api/ui/dist
-make ci             the full local gate; lefthook runs it on git push. It runs
-                    on the efficiency cores (macOS taskpolicy) so a push does
-                    not heat the laptop; CI_PRIORITY=full make ci for speed
+make ci             the full gate, by hand before a PR (Actions runs it on
+                    every PR). On the efficiency cores (macOS taskpolicy) so
+                    it does not heat the laptop; CI_PRIORITY=full for speed
 make test / lint / docs-check / web-check / fuzz / fuzz-long
 make up / down / down-v   the compose stack (waits until healthy)
 make smoke          end-to-end checks against the running stack

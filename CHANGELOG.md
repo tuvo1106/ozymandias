@@ -9,12 +9,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **`make ci` runs at background priority on macOS.** Every tool in the gate
-  sized itself to all the cores, so each push (lefthook runs `make ci`)
-  pinned the machine for two and a half minutes. It now runs under `taskpolicy
-  -c background`, which keeps it on the efficiency cores: slower, and cool.
-  `CI_PRIORITY=full make ci` is the old behaviour; elsewhere it is unchanged.
-
+- **`git push` no longer runs `make ci`; GitHub Actions is the full gate**
+  (ADR-0024). The pre-push hook ran the whole gate on every push, a duplicate
+  of the required `ci` check every merge already waits for, and held all ten
+  cores for about 140 s. pre-commit is unchanged. Run `make ci` by hand before
+  opening a PR: on macOS it now runs at background priority (`taskpolicy -c
+  background`, the efficiency cores), about 207 s and cool;
+  `CI_PRIORITY=full make ci` is the old fast, hot run.
 - **`conditional_formats` is refused outside `query_value` and `table`.** A
   timeseries, toplist or heatmap accepted them and drew nothing; the rule in
   docs/dashboards.md ("a field that belongs to another type is an error") now

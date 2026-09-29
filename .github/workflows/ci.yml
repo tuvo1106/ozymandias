@@ -1,8 +1,8 @@
-# CI — the backstop (ADR-0013). The primary gate is still the git hooks
-# (lefthook.yml): pre-commit runs the fast checks on each commit, pre-push runs
-# the full `make ci`. This re-runs `make ci` on every pull request, on a clean
-# machine, so a pushed branch is verified by something other than the laptop
-# that produced it. The repo is public, so the minutes are free.
+# CI — the full gate (ADR-0024). pre-commit (lefthook.yml) runs the fast checks
+# on each commit; there is no pre-push hook. This runs `make ci`'s targets on
+# every pull request, on a clean machine, and `ci` is a required check on main,
+# so nothing merges that this has not passed. The repo is public, so the
+# minutes are free.
 #
 # It runs everything `make ci` runs except the parts that need more than a
 # checkout: `make smoke` (wants the compose stack), the crash loop and
@@ -83,7 +83,7 @@ jobs:
       # version-file, not version: Dependabot rewrites `uses:` references and
       # never a step's `with:` inputs, so a version pinned inline here would
       # be the one thing in the job it cannot keep current — and `make lint`
-      # could not read it either, so the pre-push gate and CI would lint with
+      # could not read it either, so a local `make ci` and CI would lint with
       # different binaries and neither would say so.
       - uses: golangci/golangci-lint-action@v9
         with:

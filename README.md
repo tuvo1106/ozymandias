@@ -38,7 +38,7 @@ Requirements: Go 1.27+, Node 24 (`web/.nvmrc`), Docker with Compose,
 golangci-lint 2.x and lefthook.
 
 ```bash
-lefthook install        # once: commit-msg, pre-commit and pre-push hooks
+lefthook install        # once: commit-msg and pre-commit hooks
 make up                 # build the image; ozyd on :9400 (UI + API), agent on :8126 and :8125/udp
 make dev                # or run both natively, with the Vite dev server on :9401
 ```
@@ -54,10 +54,11 @@ make smoke              # end to end against the compose stack (after `make up`)
 make fuzz-long          # every fuzz target for 10 minutes
 ```
 
-Two gates ([ADR-0013](docs/adr/0013-actions-on-pull-requests.md)). The git
-hooks are the fast one — every commit runs the checks for what's staged, every
-push runs `make ci` — and GitHub Actions re-runs `make ci` on every pull
-request from a clean checkout. `make smoke`, the crash loop and `fuzz-long`
+Two gates ([ADR-0024](docs/adr/0024-actions-is-the-full-gate.md)). The
+pre-commit hook is the fast one — every commit runs the checks for what's
+staged — and GitHub Actions runs `make ci`'s targets on every pull request
+from a clean checkout, as a required check. Run `make ci` by hand before
+opening a pull request; on macOS it keeps to the efficiency cores. `make smoke`, the crash loop and `fuzz-long`
 stay manual, once per milestone.
 
 ## Docs
