@@ -324,6 +324,21 @@ func (b *Block) Series() []tsdb.SeriesRef {
 	return out
 }
 
+// SeriesOf returns the identity of every series of one metric in the block,
+// from the index alone. An id past the series table is the same corruption
+// [Block.Select] refuses, and is refused the same way.
+func (b *Block) SeriesOf(metric string) ([]tsdb.SeriesRef, error) {
+	ids := b.ix.Postings(index.MetricName, metric)
+	out := make([]tsdb.SeriesRef, 0, len(ids))
+	for _, id := range ids {
+		if id >= uint64(len(b.ix.series)) {
+			return nil, fmt.Errorf("block: %s: postings name series %d of %d", b.meta.ULID, id, len(b.ix.series))
+		}
+		out = append(out, b.ix.series[id].ref)
+	}
+	return out, nil
+}
+
 // SamplesFor returns every sample of one series, or nil if the block does not
 // hold it. Series are stored in key order, so the lookup is a binary search.
 //

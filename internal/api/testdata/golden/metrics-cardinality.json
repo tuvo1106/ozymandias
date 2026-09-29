@@ -1,0 +1,17 @@
+OK
+{
+  "metrics": [
+    {
+      "name": "http.request.count",
+      "series": 2,
+      "type": "count"
+    },
+    {
+      "name": "queue.depth",
+      "series": 1,
+      "type": null
+    }
+  ],
+  "total": 2,
+  "truncated": false
+}

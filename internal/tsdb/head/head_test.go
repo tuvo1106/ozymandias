@@ -769,3 +769,161 @@ func TestHead_ASeriesRecordIsWrittenUntilItLands(t *testing.T) {
 		t.Fatalf("head holds %+v, want only the sample that was logged", head[0].Samples)
 	}
 }
+
+// A new series whose only sample is out of bounds must not be created. It
+// used to be: the series was indexed before its sample was checked, and left
+// empty — listed by the metadata queries, counted by the Metric Summary and
+// against the per-metric limit, and invisible to every query.
+func TestHead_OutOfBoundsSampleCreatesNoSeries(t *testing.T) {
+	h := New(Options{BlockRange: 1_000_000, MaxSeriesPerMetric: 2})
+	if err := appendOne(h, ref("m", "id:kept"), 6000, 1); err != nil {
+		t.Fatal(err)
+	}
+	h.Truncate(5000)
+	if err := appendOne(h, ref("m", "id:rejected"), 4000, 1); !errors.Is(err, ErrOutOfBounds) {
+		t.Fatalf("err = %v, want ErrOutOfBounds", err)
+	}
+	if got := h.SeriesOf("m"); len(got) != 1 || got[0].Key() != ref("m", "id:kept").Key() {
+		t.Errorf("SeriesOf(m) = %v, want only id:kept", got)
+	}
+	if got := h.Lookup().TagValues("id"); len(got) != 1 || got[0] != "kept" {
+		t.Errorf("TagValues(id) = %v, want [kept]", got)
+	}
+	if st := h.Stats(); st.Series != 1 || st.OOORejected != 1 {
+		t.Errorf("Stats: series %d, rejected %d; want 1, 1", st.Series, st.OOORejected)
+	}
+	// The limit is 2 and one real series exists: a second must fit.
+	if err := appendOne(h, ref("m", "id:second"), 7000, 1); err != nil {
+		t.Errorf("second real series: %v", err)
+	}
+	if got := h.SeriesOf("missing"); len(got) != 0 {
+		t.Errorf("SeriesOf(missing) = %v", got)
+	}
+}
+
+// A failed log write stores nothing, and must not leave the series it
+// created behind: a full disk would otherwise fill the per-metric limit with
+// empty series and refuse real ones after the disk recovers.
+func TestHead_AFailedLogWriteCreatesNoSeries(t *testing.T) {
+	lg := &failingLog{ok: 1}
+	h := New(Options{WAL: lg, BlockRange: 1 << 40, MaxSeriesPerMetric: 2})
+	if err := appendOne(h, ref("m", "id:a"), 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendOne(h, ref("m", "id:b"), 1, 1); err == nil {
+		t.Fatal("the log is full; the append should fail")
+	}
+	if got := h.SeriesOf("m"); len(got) != 1 || got[0].Key() != ref("m", "id:a").Key() {
+		t.Errorf("SeriesOf(m) = %v, want only id:a", got)
+	}
+	lg.ok = 1 // the disk recovers
+	if err := appendOne(h, ref("m", "id:c"), 1, 1); err != nil {
+		t.Errorf("a real series after recovery: %v", err)
+	}
+}
+
+// Every checkpoint keeps the series records, so after a restart the head
+// holds series whose samples a block took long ago. Replay keeps them — one
+// that reports again must reuse its logged id, not write a new record each
+// restart — and the cardinality counts must not see them.
+func TestHead_ReplayedDormantSeriesAreKeptButNotCounted(t *testing.T) {
+	dir := t.TempDir()
+	w, err := wal.Open(wal.Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Options{WAL: w, BlockRange: 1 << 40})
+	if err := appendOne(h, ref("m", "id:old"), 1000, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendOne(h, ref("m", "id:new"), 9000, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// As the DB opens it: everything below 5000 is in a block already.
+	restored := New(Options{BlockRange: 1 << 40})
+	restored.Truncate(5000)
+	if _, err := Replay(restored, dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := restored.SeriesOf("m"); len(got) != 1 || got[0].Key() != ref("m", "id:new").Key() {
+		t.Errorf("SeriesOf(m) = %v, want only id:new", got)
+	}
+	ms, isNew, err := restored.getOrCreate(ref("m", "id:old"))
+	if err != nil || isNew || !ms.logged {
+		t.Errorf("returning series: new=%v logged=%v err=%v; want the restored, logged one", isNew, ms != nil && ms.logged, err)
+	}
+}
+
+// Forgetting a series twice must not count its metric down twice, or the
+// per-metric limit would admit more series than it allows.
+func TestHead_ForgetIsIdempotent(t *testing.T) {
+	h := New(Options{BlockRange: 1 << 40})
+	for _, id := range []string{"id:a", "id:b"} {
+		if err := appendOne(h, ref("m", id), 1, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ms, _, _ := h.getOrCreate(ref("m", "id:a"))
+	h.forget(ms.id, ms.ref)
+	h.forget(ms.id, ms.ref)
+	if n := h.perMetric["m"]; n != 1 {
+		t.Errorf("perMetric[m] = %d, want 1", n)
+	}
+}
+
+// An out-of-bounds sample is refused before anything reaches the log: a
+// fresh replay, which refuses nothing, must not find it or its series.
+func TestHead_OutOfBoundsSampleIsNotLogged(t *testing.T) {
+	dir := t.TempDir()
+	w, err := wal.Open(wal.Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(Options{WAL: w, BlockRange: 1 << 40})
+	if err := appendOne(h, ref("m", "id:kept"), 6000, 1); err != nil {
+		t.Fatal(err)
+	}
+	h.Truncate(5000)
+	if err := appendOne(h, ref("m", "id:stale"), 4000, 1); !errors.Is(err, ErrOutOfBounds) {
+		t.Fatalf("err = %v, want ErrOutOfBounds", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restored := New(Options{BlockRange: 1 << 40})
+	if _, err := Replay(restored, dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := restored.SeriesOf("m"); len(got) != 1 {
+		t.Errorf("replayed %v, want only id:kept", got)
+	}
+}
+
+// Rejections come back in index order whichever check found them, so the
+// first rejection per series is the one it always was.
+func TestHead_RejectionsAreInIndexOrder(t *testing.T) {
+	h := New(Options{BlockRange: 1 << 40})
+	r := ref("m")
+	if err := appendOne(h, r, 6000, 1); err != nil {
+		t.Fatal(err)
+	}
+	h.Truncate(5000)
+	_, rejected := h.Append([]tsdb.SeriesRef{r, r}, []Sample{{T: 5500, V: 2}, {T: 4000, V: 2}})
+	if len(rejected) != 2 || rejected[0].Index != 0 || !errors.Is(rejected[0].Err, ErrOutOfOrder) {
+		t.Errorf("rejected = %v, want out-of-order at 0 first", rejected)
+	}
+	if st := h.Stats(); st.OOORejected != 2 {
+		t.Errorf("OOORejected = %d, want 2", st.OOORejected)
+	}
+	// A batch-wide failure stays last, after the per-sample rejections.
+	lg := &failingLog{}
+	f := New(Options{WAL: lg, BlockRange: 1 << 40})
+	f.Truncate(5000)
+	_, rejected = f.Append([]tsdb.SeriesRef{ref("m", "id:a"), ref("m", "id:b")}, []Sample{{T: 6000, V: 1}, {T: 4000, V: 1}})
+	if len(rejected) != 2 || rejected[0].Index != 1 || rejected[1].Index != -1 {
+		t.Errorf("rejected = %v, want the out-of-bounds sample then the log failure", rejected)
+	}
+}

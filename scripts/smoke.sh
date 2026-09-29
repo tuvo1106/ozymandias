@@ -162,6 +162,8 @@ check "the cron script's counter landed"   wait_sum cron.job.runs 1
 check "metric appears in the catalogue"    body_has "$OZY_URL/api/v1/metrics?prefix=smoke" '"smoke.test"'
 check "its tag key is listed"              body_has "$OZY_URL/api/v1/tags?metric=smoke.test" '"source"'
 check "its tag value is listed"            body_has "$OZY_URL/api/v1/tags/values?metric=smoke.test&key=source" '"smoke"'
+check "its series are counted"             body_has "$OZY_URL/api/v1/metrics/cardinality?prefix=smoke.test" '"name":"smoke.test"'
+check "its tag keys are counted"           body_has "$OZY_URL/api/v1/tags/cardinality?metric=smoke.test" '"key":"source"'
 check "the histogram became percentiles"   body_has "$OZY_URL/api/v1/metrics?prefix=cron.job.duration" '"cron.job.duration.95percentile"'
 
 # A distribution is the other half of M2: the sketch goes to Pebble whole and

@@ -35,6 +35,7 @@ func Replay(h *Head, dir string) (Stats, error) {
 	byLogID := map[uint64]*memSeries{}
 	var samples []Sample
 	var applied, skipped int64
+	minValid := h.MinValidTime()
 
 	for r.Next() {
 		rec := r.Record()
@@ -59,7 +60,7 @@ func Replay(h *Head, dir string) (Stats, error) {
 					skipped++
 					continue
 				}
-				stored, err := h.appendTo(ms, s.T, s.V)
+				stored, err := h.appendTo(ms, s.T, s.V, minValid)
 				if err != nil {
 					skipped++
 					continue

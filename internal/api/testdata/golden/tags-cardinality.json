@@ -1,0 +1,18 @@
+OK
+{
+  "keys": [
+    {
+      "key": "route",
+      "series": 2,
+      "values": 2
+    },
+    {
+      "key": "env",
+      "series": 2,
+      "values": 1
+    }
+  ],
+  "metric": "http.request.count",
+  "series": 2,
+  "type": "count"
+}

@@ -65,6 +65,8 @@ func (m *Metrics) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/metrics", m.metrics)
 	mux.HandleFunc("GET /api/v1/tags", m.tagKeys)
 	mux.HandleFunc("GET /api/v1/tags/values", m.tagValues)
+	mux.HandleFunc("GET /api/v1/metrics/cardinality", m.metricsCardinality)
+	mux.HandleFunc("GET /api/v1/tags/cardinality", m.tagsCardinality)
 }
 
 // metrics handles GET /api/v1/metrics?prefix=&limit=.

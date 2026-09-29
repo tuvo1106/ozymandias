@@ -108,6 +108,19 @@ func TestDB_MatchesTheNaiveStore(t *testing.T) {
 							mustStrings(t, func() ([]string, error) { return oracle.TagValues(ctx, m, k, 0) }))
 					}
 				}
+				// The cardinality view: counts of distinct series, which the
+				// TSDB has to dedupe across head and blocks and the naive
+				// store gets from a GROUP BY.
+				for _, prefix := range []string{"", "a", "b.g", "zz"} {
+					compareCounts(t, fmt.Sprintf("SeriesCounts(%q)", prefix),
+						must(t, func() ([]tsdb.MetricSeriesCount, error) { return real.SeriesCounts(ctx, prefix) }),
+						must(t, func() ([]tsdb.MetricSeriesCount, error) { return oracle.SeriesCounts(ctx, prefix) }))
+				}
+				for _, m := range []string{"a.count", "b.gauge", "nope"} {
+					compareCounts(t, fmt.Sprintf("TagCardinality(%q)", m),
+						must(t, func() (tsdb.MetricTagCardinality, error) { return real.TagCardinality(ctx, m) }),
+						must(t, func() (tsdb.MetricTagCardinality, error) { return oracle.TagCardinality(ctx, m) }))
+				}
 
 			}
 		}
@@ -135,8 +148,10 @@ func drawBatch(t *rapid.T, base int64, step int) []tsdb.SeriesSamples {
 		label := fmt.Sprintf("e%d_%d", step, i)
 		metric := rapid.SampledFrom([]string{"a.count", "b.gauge"}).Draw(t, "metric"+label)
 		tags := rapid.SliceOfNDistinct(
-			rapid.SampledFrom([]string{"env:prod", "env:dev", "host:h1", "host:h2"}),
-			0, 2, func(s string) string { return s[:3] },
+			// "canary" is a bare tag: it counts toward its key's series in
+			// the cardinality view and not toward its values.
+			rapid.SampledFrom([]string{"env:prod", "env:dev", "host:h1", "host:h2", "canary"}),
+			0, 3, func(s string) string { return s[:3] },
 		).Draw(t, "tags"+label)
 
 		entry := tsdb.SeriesSamples{Series: tsdb.NewSeriesRef(metric, tags)}
@@ -248,6 +263,22 @@ func compareStrings(t *rapid.T, what string, got, want []string) {
 }
 
 func mustStrings(t *rapid.T, res func() ([]string, error)) []string {
+	t.Helper()
+	got, err := res()
+	if err != nil {
+		t.Fatalf("metadata query: %v", err)
+	}
+	return got
+}
+
+func compareCounts[T any](t *rapid.T, what string, got, want T) {
+	t.Helper()
+	if fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", want) {
+		t.Fatalf("%s:\ntsdb  %+v\nnaive %+v", what, got, want)
+	}
+}
+
+func must[T any](t *rapid.T, res func() (T, error)) T {
 	t.Helper()
 	got, err := res()
 	if err != nil {

@@ -1,0 +1,91 @@
+# 2026/09/28 20:20:04.414503 [TestDB_MatchesTheNaiveStore] [rapid] draw steps: 1
+# 2026/09/28 20:20:04.414507 [TestDB_MatchesTheNaiveStore] [rapid] draw op0: "metadata"
+# 2026/09/28 20:20:04.414725 [TestDB_MatchesTheNaiveStore] [rapid] draw steps: 2
+# 2026/09/28 20:20:04.414727 [TestDB_MatchesTheNaiveStore] [rapid] draw op1: "query"
+# 2026/09/28 20:20:04.414727 [TestDB_MatchesTheNaiveStore] [rapid] draw qmetric1: "a.count"
+# 2026/09/28 20:20:04.414729 [TestDB_MatchesTheNaiveStore] [rapid] draw nmatch1: 0
+# 2026/09/28 20:20:04.414730 [TestDB_MatchesTheNaiveStore] [rapid] draw from1: 0
+# 2026/09/28 20:20:04.414730 [TestDB_MatchesTheNaiveStore] [rapid] draw span1: 0
+# 2026/09/28 20:20:04.414739 [TestDB_MatchesTheNaiveStore] [rapid] draw steps: 3
+# 2026/09/28 20:20:04.414741 [TestDB_MatchesTheNaiveStore] [rapid] draw op2: "append"
+# 2026/09/28 20:20:04.414741 [TestDB_MatchesTheNaiveStore] [rapid] draw entries2: 2
+# 2026/09/28 20:20:04.414742 [TestDB_MatchesTheNaiveStore] [rapid] draw metrice2_0: "a.count"
+# 2026/09/28 20:20:04.414744 [TestDB_MatchesTheNaiveStore] [rapid] draw tagse2_0: []string{"env:prod", "host:h1", "canary"}
+# 2026/09/28 20:20:04.414746 [TestDB_MatchesTheNaiveStore] [rapid] draw tse2_0: []int64{0}
+# 2026/09/28 20:20:04.414747 [TestDB_MatchesTheNaiveStore] [rapid] draw ve2_0: 0
+# 2026/09/28 20:20:04.414748 [TestDB_MatchesTheNaiveStore] [rapid] draw metrice2_1: "a.count"
+# 2026/09/28 20:20:04.414748 [TestDB_MatchesTheNaiveStore] [rapid] draw tagse2_1: []string{}
+# 2026/09/28 20:20:04.414749 [TestDB_MatchesTheNaiveStore] [rapid] draw tse2_1: []int64{0}
+# 2026/09/28 20:20:04.414749 [TestDB_MatchesTheNaiveStore] [rapid] draw ve2_1: 0
+# 2026/09/28 20:20:04.414845 [TestDB_MatchesTheNaiveStore] [rapid] draw steps: 4
+# 2026/09/28 20:20:04.414846 [TestDB_MatchesTheNaiveStore] [rapid] draw op3: "metadata"
+# 2026/09/28 20:20:04.415046 [TestDB_MatchesTheNaiveStore] TagCardinality("a.count"):
+# tsdb  [{Key:canary Series:1 Values:1} {Key:env Series:1 Values:1} {Key:host Series:1 Values:1}]
+# naive [{Key:canary Series:1 Values:0} {Key:env Series:1 Values:1} {Key:host Series:1 Values:1}]
+# 
+v0.4.8#5174490894566593894
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x1
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0xccccccccccccd
+0x0
+0x0
+0xccccccccccccd
+0x38e38e38e38e4
+0x2
+0xccccccccccccd
+0x6b74f03291620
+0x4
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x9867f1f40f739
+0x3
+0x38e38e38e38e4
+0x2

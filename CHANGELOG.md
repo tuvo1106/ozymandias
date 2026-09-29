@@ -77,6 +77,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The Metric Summary page** (`/metrics/summary`): every metric by series
+  count, highest first, and for one metric the tag keys that make its series,
+  most values first. Backed by `GET /api/v1/metrics/cardinality` and
+  `GET /api/v1/tags/cardinality`, and by two new `MetricStore` methods,
+  `SeriesCounts` and `TagCardinality`, which count distinct series from the
+  index — once however many places the TSDB keeps a series in. See
+  ADR-0023, docs/api.md and docs/ui.md §2.
 - **The Metrics Explorer takes a query.** A metricql box with the dashboard
   editor's completion and inline parse errors replaces M1's pickers; Run (or
   Ctrl/⌘+Enter) charts it, and the URL holds the query that was run
@@ -372,6 +379,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A rejected append no longer leaves an empty series behind.** The head
+  created and indexed a series before applying its samples, so an append that
+  stored nothing — every sample out of bounds (a backfill behind a block cut),
+  or the WAL write refused (a full disk) — left empty series until the next
+  truncation: listed by autocomplete and counted against the per-metric series
+  limit, which could then refuse real series. Out-of-bounds samples are now
+  rejected before a series is created and are no longer written to the WAL,
+  and a series an append created and stored nothing in is forgotten.
 - **One unusable dashboard row no longer sinks the whole list.** `GET
   /api/v1/dashboards` encoded every row in one call, so a single definition that
   could not be spliced made the endpoint a `500` — and the list is what a

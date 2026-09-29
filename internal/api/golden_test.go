@@ -43,6 +43,9 @@ var goldenCases = []struct{ name, method, path, body string }{
 	{"refused-percentile", "GET", "/api/v1/query?q=" + urlEncode("p95:http.request.count{*}") + window, ""},
 	{"validate-ok", "POST", "/api/v1/query/validate", `{"q":"SUM:x{ a : b } BY {K}"}`},
 	{"validate-error", "POST", "/api/v1/query/validate", `{"q":"sum:x{a:b by {k}"}`},
+	// queue.depth has no recorded type: its "type" must stay null, not "".
+	{"metrics-cardinality", "GET", "/api/v1/metrics/cardinality", ""},
+	{"tags-cardinality", "GET", "/api/v1/tags/cardinality?metric=http.request.count", ""},
 }
 
 func TestQuery_Golden(t *testing.T) {
