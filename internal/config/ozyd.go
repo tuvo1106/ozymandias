@@ -140,8 +140,16 @@ func (s Storage) Validate() error {
 
 // Ozyd is the ozyd server's configuration.
 type Ozyd struct {
-	HTTP         HTTP         `yaml:"http"`
-	DataDir      string       `yaml:"data_dir"`
+	HTTP    HTTP   `yaml:"http"`
+	DataDir string `yaml:"data_dir"`
+	// Hostname is the host tag on ozyd's own metrics. Empty means the OS
+	// hostname, which is the wrong answer twice over: in a container it is
+	// the container id, new on every recreate, so each restart would add a
+	// host value and a copy of every self-metric series; and on macOS it is
+	// "name.local" where the agent, given `hostname -s`, says "name", so
+	// the two processes on one machine would not agree. Deployments set it
+	// from the same value as the agent's hostname (OZY_HOSTNAME).
+	Hostname     string       `yaml:"hostname"`
 	Log          Log          `yaml:"log"`
 	Storage      Storage      `yaml:"storage"`
 	Provisioning Provisioning `yaml:"provisioning"`

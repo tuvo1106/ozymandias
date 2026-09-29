@@ -16,11 +16,15 @@ COMPOSE=(docker compose -f deploy/docker-compose.yml)
 pass=0
 check() { # <description> <command...>
   local desc=$1; shift
-  if "$@" >/dev/null 2>&1; then
-    echo "✓ $desc"; pass=$((pass + 1))
+  # stderr is kept for the failure report: the wait_* helpers say there what
+  # they saw, which is usually the one line that explains the failure.
+  local err; err=$(mktemp)
+  if "$@" >/dev/null 2>"$err"; then
+    echo "✓ $desc"; pass=$((pass + 1)); rm -f "$err"
   else
     echo "✗ $desc"
     echo "  command: $*"
+    sed 's/^/  /' "$err"; rm -f "$err"
     echo "  --- recent logs ---"
     "${COMPOSE[@]}" logs --tail 20 2>&1 | sed 's/^/  /'
     exit 1
@@ -121,7 +125,7 @@ wait_agg() {
     within "$(query_agg "$1" "$2")" "$3" "$4" && return 0
     sleep 1
   done
-  echo "  $2:$1 = $(query_agg "$1" "$2"), expected $3 ±$4" >&2
+  echo "$2:$1 = $(query_agg "$1" "$2"), expected $3 ±$4" >&2
   return 1
 }
 # wait_sum <metric> <expected> — poll until the agent flushes (10s) and the
@@ -131,7 +135,7 @@ wait_sum() {
     [[ "$(query_sum "$1")" == "$2" ]] && return 0
     sleep 1
   done
-  echo "  $1: Σ = $(query_sum "$1"), expected $2" >&2
+  echo "$1: Σ = $(query_sum "$1"), expected $2" >&2
   return 1
 }
 
@@ -164,29 +168,31 @@ check "its tag key is listed"              body_has "$OZY_URL/api/v1/tags?metric
 check "its tag value is listed"            body_has "$OZY_URL/api/v1/tags/values?metric=smoke.test&key=source" '"smoke"'
 check "its series are counted"             body_has "$OZY_URL/api/v1/metrics/cardinality?prefix=smoke.test" '"name":"smoke.test"'
 check "its tag keys are counted"           body_has "$OZY_URL/api/v1/tags/cardinality?metric=smoke.test" '"key":"source"'
-# ozyd's self-metrics carry host:<its hostname>. In a container that is the
-# container id unless compose pins it, and then every `make up` adds a host
-# value (and a copy of every self-metric series) to the store. The volume
-# keeps old values, so listing tag values proves nothing; ask which hosts
-# ozyd reported from in the last 20s, which must be the Mac's name alone.
-# Tag values are lower-cased on the wire.
-recent_ozyd_hosts() {
+# ozyd's self-metrics carry host:<OZY_HOSTNAME>. Unset in a container, that
+# would be the container id, and every `make up` would add a host value (and a
+# copy of every self-metric series) to the store. The volume keeps old values,
+# so listing tag values proves nothing; ask which hosts ozyd reported from in
+# its newest bucket, which must be the Mac's name alone. The window is wide
+# because ozyd stamps points with the VM's clock, which can drift from the
+# Mac's after a sleep. Tag values are lower-cased on the wire.
+latest_ozyd_hosts() {
   local now; now=$(date +%s)
-  curl -fsS --max-time 5 -G "$OZY_URL/api/v1/query" \
+  curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" \
     --data-urlencode 'q=max:ozy.build.info{component:ozyd} by {host}' \
-    --data-urlencode "from=$((now - 20))" --data-urlencode "to=$now" |
+    --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 300))" |
     python3 -c 'import json,sys
-d = json.load(sys.stdin)
-print(",".join(sorted(s["tags"]["host"] for s in d.get("series", [])
-                      if any(p[1] is not None for p in s["points"]))))'
+series = json.load(sys.stdin).get("series", [])
+seen = {(s["tags"]["host"], p[0]) for s in series for p in s["points"] if p[1] is not None}
+newest = max((t for _, t in seen), default=None)
+print(",".join(sorted(h for h, t in seen if t == newest)))'
 }
 ozyd_host_is_the_macs() {
   local want; want=$(printf '%s' "${OZY_HOSTNAME:-$(hostname -s)}" | tr '[:upper:]' '[:lower:]')
-  for _ in $(seq 1 30); do
-    [[ "$(recent_ozyd_hosts)" == "$want" ]] && return 0
+  for _ in $(seq 1 15); do
+    [[ "$(latest_ozyd_hosts)" == "$want" ]] && return 0
     sleep 1
   done
-  echo "  ozyd reported as host(s) '$(recent_ozyd_hosts)', expected '$want'" >&2
+  echo "ozyd's newest self-metrics are from host(s) '$(latest_ozyd_hosts)', expected '$want'" >&2
   return 1
 }
 check "ozyd tags its own metrics with the Mac's name" ozyd_host_is_the_macs

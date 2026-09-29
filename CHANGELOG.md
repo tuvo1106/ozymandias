@@ -9,13 +9,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **ozyd's own metrics are tagged with the machine's name under compose.**
-  They were tagged with the container's hostname, a random id that changed on
-  every `make up`, so each restart of the stack added a `host` value and a
-  fresh copy of every self-metric series (24 values after a day of work, found
-  by the Metric Summary page). The compose file now sets ozyd's `hostname:` to
-  `OZY_HOSTNAME`, as the agent's tag already was. Values recorded before this
-  change stay until retention drops them.
+- **ozyd has a `hostname` setting for the `host` tag on its own metrics**
+  (`OZY_HOSTNAME`), and `make up` and `make dev` set it to the agent's name.
+  It used to be the OS hostname: in compose, a container id that changed on
+  every `make up`, so each restart added a `host` value and a fresh copy of
+  every self-metric series (24 values after a day, found by the Metric Summary
+  page); natively on macOS, `name.local` where the agent said `name`. Values
+  recorded before this change stay until retention drops them.
 
 - **`git push` no longer runs `make ci`; GitHub Actions is the full gate**
   (ADR-0024). The pre-push hook ran the whole gate on every push, a duplicate

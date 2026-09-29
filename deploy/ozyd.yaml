@@ -27,6 +27,12 @@ http:
 # must be writable. The container overrides this to /data (a named volume).
 data_dir: ./data/ozyd
 
+# Value of the `host` tag on ozyd's own metrics (ozy.*). Empty means the OS
+# hostname. Set it to the agent's hostname: in a container the OS hostname is
+# a random id, new on every recreate, and on macOS it is "name.local" where
+# `hostname -s` says "name". `make up` and `make dev` set OZY_HOSTNAME.
+hostname: ""
+
 storage:
   # Which metric store to run. "tsdb" is the real engine (M2): a write-ahead
   # log, an in-memory head and immutable blocks under data_dir/tsdb/.

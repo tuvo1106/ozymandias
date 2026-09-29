@@ -64,8 +64,8 @@ type Options struct {
 	Clock    clock.Clock           // default: clock.Real()
 	// UI serves the web UI at /. Nil means no UI (API-only).
 	UI http.Handler
-	// Hostname tags ozyd's own metrics. Default: os.Hostname, falling
-	// back to "ozyd".
+	// Hostname tags ozyd's own metrics when the config's hostname is
+	// empty. Default: os.Hostname, falling back to "ozyd".
 	Hostname func() (string, error)
 }
 
@@ -139,9 +139,13 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		Clock: s.clock, Metrics: s.reg, Logger: s.log,
 	})
 
-	host, err := opts.Hostname()
-	if err != nil || host == "" {
-		host = Component
+	host := cfg.Hostname
+	if host == "" {
+		h, err := opts.Hostname()
+		if err != nil || h == "" {
+			h = Component
+		}
+		host = h
 	}
 	hostTag, _ := wire.NormalizeTag("host:" + host)
 	s.self = selfmetrics.NewReporter(s.reg, selfReportInterval, hostTag)
