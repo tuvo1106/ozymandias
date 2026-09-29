@@ -16,6 +16,18 @@ import type { Dashboard } from "../../../lib/dashboard";
 import { exportDefinition, readImport } from "../../../lib/dashboardEditor";
 import { button } from "./fields";
 
+/**
+ * How long a download's blob URL is kept before it is revoked.
+ *
+ * No event says a download has finished reading its blob, and revoking before
+ * it has fails the download ("Failed – No file"). Browsers start a download
+ * asynchronously, so "the next task" is not provably late enough; this is
+ * FileSaver.js's figure, which has held across browsers for years, and not a
+ * measurement. Holding the URL longer only keeps a few kilobytes of JSON alive
+ * — the cheap side to err on.
+ */
+export const REVOKE_AFTER_MS = 40_000;
+
 /** Props for JsonPanel. */
 export interface JsonPanelProps {
   dashboard: Dashboard;
@@ -35,13 +47,11 @@ export function JsonPanel({ dashboard, onImport }: JsonPanelProps) {
     const a = document.createElement("a");
     a.href = url;
     a.download = `${dashboard.uid || dashboard.title.replace(/[^\w-]+/g, "-").toLowerCase() || "dashboard"}.json`;
-    // Attached, clicked, detached; the URL revoked on a later task. Firefox
-    // ignores a click on a detached anchor, and revoking synchronously can
-    // pull the blob out from under a download that has not started reading.
+    // Attached, clicked, detached: Firefox ignores a click on a detached anchor.
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+    setTimeout(() => URL.revokeObjectURL(url), REVOKE_AFTER_MS);
   };
 
   return (

@@ -243,6 +243,19 @@ describe("definitions, copies and exports", () => {
     expect(long).not.toContain("\uFFFD");
   });
 
+  // The server cut the template's part so the service would survive; the
+  // service is what tells two instances apart.
+  it("cuts an instance's title before the service, not through it", () => {
+    const at = (service: string) => copyOf({ ...base, title: `${"t".repeat(200 - 2 - service.length)}: ${service}` }, service).title;
+    for (const service of ["checkout", "payments"]) {
+      const title = at(service);
+      expect(title.endsWith(`: ${service} (copy)`)).toBe(true);
+      expect(new TextEncoder().encode(title).length).toBe(MAX_TITLE_BYTES);
+    }
+    // Not an instance title after all: cut like any other.
+    expect(copyOf({ ...base, title: "x".repeat(200) }, "checkout").title).toBe(`${"x".repeat(193)} (copy)`);
+  });
+
   it("cuts on a character, never inside one", () => {
     expect(withSuffix("aé", "!", 3)).toBe("a!"); // é would need bytes 2–3
     expect(withSuffix("abc", "!", 10)).toBe("abc!");

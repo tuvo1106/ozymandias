@@ -495,12 +495,28 @@ export function exportDefinition(d: Dashboard): string {
  * A copy of a definition to be saved as a new dashboard. The `uid` goes,
  * because it is the original's identity and saving a second row under it is
  * a 409; the title says it is a copy, so two rows in the picker are two rows.
+ *
+ * `service` is given for a template instance, whose title the server wrote
+ * as `<template title>: <service>` and cut from the front so the service
+ * survives — it is what tells one instance from another. A title too long
+ * for " (copy)" is cut the same way here, or copies of one template from two
+ * services could come out with the same title.
  */
-export function copyOf(d: Dashboard): Dashboard {
+export function copyOf(d: Dashboard, service?: string): Dashboard {
   const { definition } = definitionOf(d);
   const rest: Record<string, unknown> = { ...definition };
   delete rest.uid;
-  return { ...(rest as unknown as Dashboard), title: withSuffix(definition.title, COPY_SUFFIX, MAX_TITLE_BYTES) };
+  return { ...(rest as unknown as Dashboard), title: copyTitle(definition.title, service) };
+}
+
+function copyTitle(title: string, service: string | undefined): string {
+  const tail = service === undefined ? "" : `: ${service}`;
+  const enc = new TextEncoder();
+  // A service too long to keep with the suffix is cut like any other title;
+  // a tag value is capped well below that, so this is the unreachable case.
+  if (tail === "" || !title.endsWith(tail) || enc.encode(tail + COPY_SUFFIX).length > MAX_TITLE_BYTES)
+    return withSuffix(title, COPY_SUFFIX, MAX_TITLE_BYTES);
+  return withSuffix(title.slice(0, title.length - tail.length), tail + COPY_SUFFIX, MAX_TITLE_BYTES);
 }
 
 /** The server's title limit, in UTF-8 bytes (`dashboard.MaxTitle`). */
@@ -541,12 +557,20 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * Reads imported text. Checks only what the editor itself needs to open the
- * definition — a title, and widgets with an id, a type and a numeric layout —
- * and names every problem rather than the first. Everything else (a query
- * that does not parse, an unknown type, a field in the wrong place) is left
- * for the editor to show and the server to refuse, since both of those say
- * it better than a second validator here would.
+ * Reads imported text, naming every problem rather than the first.
+ *
+ * It checks the *shapes* the editor and the preview read without checking:
+ * a title; widgets with a string id and type, a numeric layout, queries of
+ * `{"q": string}`, a string title and markdown, an object yaxis and a list of
+ * objects for conditional_formats; a string description; and template_vars
+ * with a string name and tag (and default, if present). A wrong shape in any
+ * of those is a TypeError in a render, not a value to show.
+ *
+ * It does not check *values* (a query that does not parse, an unknown type or
+ * reducer, a field in the wrong place, a precision out of range): the editor
+ * shows each of those in its own field and the server refuses them, which
+ * says it better than a second validator here would. A value that would
+ * throw where it is drawn — a precision `toFixed` rejects — is guarded there.
  */
 export function readImport(text: string): ImportReading {
   if (text.trim() === "") return { kind: "empty" };
@@ -608,8 +632,13 @@ export function sameDefinition(a: Dashboard, b: Dashboard): boolean {
   return canonical(a) === canonical(b);
 }
 
-/** JSON with every object's keys sorted, and undefined-valued keys dropped as JSON drops them. */
-function canonical(v: unknown): string {
+/**
+ * JSON with every object's keys sorted, and undefined-valued keys dropped as
+ * JSON drops them: two definitions are the same when these are equal. Exported
+ * so a caller comparing against one fixed side on every render can compute
+ * that side once.
+ */
+export function canonical(v: unknown): string {
   return JSON.stringify(v, (_k, value: unknown) =>
     isRecord(value)
       ? Object.fromEntries(Object.keys(value).sort().map((k) => [k, value[k]]))

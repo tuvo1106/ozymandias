@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { createBrowserRouter, createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routes } from "../../../app/routes";
+import { staleAfterSave } from "./DashboardEditor";
+import { REVOKE_AFTER_MS } from "./JsonPanel";
 import type { TimeseriesChartProps } from "../../../charts/TimeseriesChart";
 
 // jsdom has no canvas; the chart stands in with what it was handed.
@@ -174,6 +176,10 @@ describe("saving", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Save it as a new dashboard" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/dashboards/9/edit"));
     expect(sent(f, "POST")).toHaveLength(1);
+    // The router keeps the page mounted across /2/edit → /9/edit, so a flag
+    // read once on mount would miss this arrival.
+    expect(await screen.findByText("Saved.")).toBeInTheDocument();
+    await waitFor(() => expect(router.state.location.state).toBeNull());
   });
 
   it("does not claim a create that lost its answer wrote nothing", async () => {
@@ -487,12 +493,16 @@ describe("review fixes: download", () => {
     });
     await openEditor();
     await userEvent.click(screen.getByRole("button", { name: "JSON" }));
-    // fireEvent, not userEvent: the latter awaits timers, which would run the
-    // deferred revoke before this could see that it had not run yet.
+    const timeout = vi.spyOn(window, "setTimeout");
     fireEvent.click(screen.getByRole("button", { name: "Download .json" }));
     expect(attached).toBe(true);
     expect(revoke).not.toHaveBeenCalled();
-    await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:x"));
+    // Not the next task: a download may not have started reading by then.
+    const deferred = timeout.mock.calls.find(([, ms]) => ms === REVOKE_AFTER_MS);
+    expect(deferred).toBeDefined();
+    (deferred?.[0] as () => void)();
+    expect(revoke).toHaveBeenCalledWith("blob:x");
+    timeout.mockRestore();
     click.mockRestore();
     URL.createObjectURL = saved.create;
     URL.revokeObjectURL = saved.revoke;
@@ -513,5 +523,16 @@ describe("review fixes: the 'Saved.' banner across a real reload", () => {
     render(<RouterProvider router={createBrowserRouter(routes)} />);
     await screen.findByRole("heading", { name: "Checkout" });
     expect(screen.queryByText("Saved.")).not.toBeInTheDocument();
+  });
+});
+
+describe("review fixes: what a save invalidates", () => {
+  it("refetches every definition, not the preview's data or another section's queries", () => {
+    for (const k of [["dashboards", "list"], ["dashboards", "one", 2], ["dashboards", "services"], ["dashboards", "service", "checkout"]])
+      expect(staleAfterSave(k)).toBe(true);
+    // A definition query added later is covered without being listed.
+    expect(staleAfterSave(["dashboards", "byUid", "checkout"])).toBe(true);
+    for (const k of [["dashboards", "batch", 2, "q"], ["dashboards", "sketches", 2, "q"], ["monitors", "list"], ["logs", "service", "x"]])
+      expect(staleAfterSave(k)).toBe(false);
   });
 });

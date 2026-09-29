@@ -23,17 +23,17 @@ import { useEffect, useMemo, useReducer, useState } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import type { Dashboard, WidgetType } from "../../../lib/dashboard";
 import {
+  canonical,
   copyOf,
   definitionOf,
   editDashboard,
-  sameDefinition,
   TYPE_RULES,
   WIDGET_TYPES,
 } from "../../../lib/dashboardEditor";
 import { collectRequests, sharedWarnings } from "../../../lib/dashboardQueries";
 import { problemsOf, saveFailure, type SaveState } from "../../../lib/dashboardSave";
 import { createDashboard, updateDashboard } from "../../../lib/dashboardsApi";
-import { parseViewState, serializeViewState, type DashboardViewState } from "../../../lib/dashboardState";
+import { parseViewState, withViewState, type DashboardViewState } from "../../../lib/dashboardState";
 import { useDashboard, useDashboardData, useServiceDashboards } from "../../../lib/useDashboards";
 import { useDebouncedValue } from "../../../lib/useDebouncedValue";
 import { DashboardGrid } from "../DashboardGrid";
@@ -43,11 +43,19 @@ import { button } from "./fields";
 import { JsonPanel } from "./JsonPanel";
 import { WidgetEditor } from "./WidgetEditor";
 
-/** The query parameters that say where a new draft came from. */
-const SEED_PARAMS = ["copy", "service", "template"] as const;
+/** The query-key kinds under "dashboards" that hold the preview's data, not definitions. */
+const DATA_KEYS = new Set(["batch", "sketches"]);
 
-/** The query-key kinds under "dashboards" that hold definitions. */
-const DEFINITION_KEYS = new Set(["list", "one", "service", "services"]);
+/**
+ * Whether a save makes this cached query stale: everything under
+ * "dashboards" but the preview's batch and sketch entries, whose answers a
+ * save does not change. Excluded rather than listed, so a definition query
+ * added later is invalidated by default — forgetting it would show the old
+ * definition, while forgetting a data key only costs a refetch.
+ */
+export function staleAfterSave(queryKey: readonly unknown[]): boolean {
+  return queryKey[0] === "dashboards" && !DATA_KEYS.has(String(queryKey[1]));
+}
 
 /** How long the draft must be still before the preview asks about it. */
 export const PREVIEW_DEBOUNCE_MS = 400;
@@ -72,16 +80,21 @@ export function EditDashboardPage() {
   const query = useDashboard(valid ? numeric : undefined);
   const location = useLocation();
   const justSaved = (location.state as { saved?: boolean } | null)?.saved === true;
-  // Captured once: the effect below clears the history state before the
-  // dashboard has loaded, and the banner is for when it has.
-  const [savedOnArrival] = useState(justSaved);
+  // Remembered per id: the effect below clears the history state before the
+  // dashboard has loaded, and the banner is for when it has. Per id and not
+  // once per mount, because the router keeps this page mounted when only
+  // `:id` changes — which is what "save it as a new dashboard" does.
+  const [savedFor, setSavedFor] = useState(justSaved ? id : undefined);
+  if (justSaved && savedFor !== id) setSavedFor(id);
+  const savedOnArrival = savedFor === id;
   const navigate = useNavigate();
   // The flag is for the render right after a create, and history keeps
   // location state across reloads — so it is cleared once read, or a reload
   // that discarded unsaved edits would open under a "Saved." banner.
   useEffect(() => {
-    if (justSaved) navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
-  }, [justSaved, location.pathname, location.search, navigate]);
+    const { pathname, search, hash } = location;
+    if (justSaved) navigate({ pathname, search, hash }, { replace: true, state: null });
+  }, [justSaved, location, navigate]);
   if (!valid) return <Failed message={`"${id}" is not a dashboard id`} />;
   // Data before error: TanStack keeps `data` and sets `error` when a
   // *refetch* fails, and a failed refetch — ozyd gone for a moment, the
@@ -146,7 +159,7 @@ export function NewDashboardPage() {
     if (!instance)
       return <Failed message={`No template${template ? ` #${template}` : ""} covers ${service}, so there is nothing to copy.`} />;
     return (
-      <Editor key={`svc-${service}-${template}`} initial={copyOf(instance.dashboard)} initialSave={{ kind: "idle" }} />
+      <Editor key={`svc-${service}-${template}`} initial={copyOf(instance.dashboard, service)} initialSave={{ kind: "idle" }} />
     );
   }
   return <Editor key="blank" initial={BLANK} initialSave={{ kind: "idle" }} />;
@@ -172,7 +185,11 @@ function Editor({ initial, storedId: initialId, initialSave }: EditorProps) {
   const [addType, setAddType] = useState<WidgetType>("timeseries");
   const navigate = useNavigate();
   const client = useQueryClient();
-  const dirty = !sameDefinition(draft, baseline);
+  // Memoised per side: the editor re-renders on every preview answer and
+  // every pointer move of a drag, and neither changes these.
+  const baselineText = useMemo(() => canonical(baseline), [baseline]);
+  const draftText = useMemo(() => canonical(draft), [draft]);
+  const dirty = draftText !== baselineText;
 
   // Leaving with unsaved changes asks first. Only the browser's own prompt:
   // an in-app navigation is a link the author chose to click.
@@ -191,14 +208,8 @@ function Editor({ initial, storedId: initialId, initialSave }: EditorProps) {
   // /dashboards/new the query string also holds the seed (?copy=, ?service=,
   // ?template=), and replacing it wholesale would turn the page into a blank
   // new dashboard — remounting the editor and discarding the draft.
-  const update = (patch: Partial<DashboardViewState>) => {
-    const next = serializeViewState({ ...state, ...patch });
-    for (const k of SEED_PARAMS) {
-      const v = params.get(k);
-      if (v !== null) next.set(k, v);
-    }
-    setParams(next, { replace: true });
-  };
+  const update = (patch: Partial<DashboardViewState>) =>
+    setParams(withViewState(params, { ...state, ...patch }), { replace: true });
   const requests = useMemo(() => collectRequests(preview.widgets), [preview.widgets]);
   const syncKey = `editor-${storedId ?? "new"}`;
   const data = useDashboardData(requests, state, preview.template_vars, syncKey);
@@ -228,10 +239,8 @@ function Editor({ initial, storedId: initialId, initialSave }: EditorProps) {
     try {
       const r = id === undefined ? await createDashboard(sent) : await updateDashboard(id, sent);
       setBaseline(draft);
-      // The definitions only — not the preview's batch and sketch entries,
-      // which share the "dashboards" prefix and whose answers a save does
-      // not change — and not awaited: the save is done when ozyd said so.
-      void client.invalidateQueries({ predicate: (q) => DEFINITION_KEYS.has(String(q.queryKey[1])) });
+      // Not awaited: the save is done when ozyd said so.
+      void client.invalidateQueries({ predicate: (q) => staleAfterSave(q.queryKey) });
       if (r.kind === "unreadable") {
         setSave({ kind: "savedUnreadable", created: id === undefined });
         return;

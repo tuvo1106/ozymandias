@@ -66,28 +66,31 @@ function firstError(
 }
 
 /**
+ * Whether every query the widget has is blank, so nothing was or will be
+ * asked: the batch skips a blank query rather than letting the server refuse
+ * it. The frame says "No query yet" for this rather than "No data", which
+ * would tell the reader a service is silent when nobody asked it anything.
+ */
+export function unasked(widget: Widget): boolean {
+  return !(widget.queries ?? []).some((q) => q.q.trim() !== "");
+}
+
+/**
  * Whether this widget has heard back.
  *
  * The distinction the frame needs: "No data" before anything has arrived tells
  * the reader their service is silent, and a dashboard saying that by accident
  * during a slow first load is worse than saying nothing for a moment.
  *
- * A widget whose queries were all blank is *answered* even though nothing came
- * back for it, because nothing was ever sent — the batch skips a blank query
- * rather than letting the server refuse it — so no answer is coming and "No
- * data" is the true statement rather than a wait that never ends.
+ * An [[unasked]] widget counts as answered even though nothing came back for
+ * it, because no answer is coming: left out, it would wait forever rather than
+ * say "No query yet".
  */
-/** Whether every query the widget has is blank, so nothing was or will be asked. */
-export function unasked(widget: Widget): boolean {
-  return !(widget.queries ?? []).some((q) => q.q.trim() !== "");
-}
-
 function answered(
   widget: Widget,
   results: readonly (BatchResult | undefined)[],
 ): boolean {
-  if (results.some((r) => r !== undefined)) return true;
-  return !(widget.queries ?? []).some((q) => q.q.trim() !== "");
+  return results.some((r) => r !== undefined) || unasked(widget);
 }
 
 /**
@@ -227,14 +230,24 @@ function formatClass(value: number | null, widget: Widget): string | undefined {
  * `undefined` means "pick something sensible" and falls through to the same
  * formatter the charts use — which is what makes a query_value and the chart
  * beside it agree about what 1234.5 looks like.
+ *
+ * A precision `toFixed` would throw on is drawn as if absent. The server
+ * refuses anything outside 0…10, but a draft is not saved yet — an import
+ * carrying `precision: 101` reaches this before any server sees it — and a
+ * RangeError here would unmount the whole editor with the draft in it. The
+ * widget panel's precision field is what says the value is wrong.
  */
 export function formatWidgetValue(
   value: number | null,
   precision: number | undefined,
 ): string {
   if (value === null) return "—";
-  if (precision === undefined) return formatValue(value);
+  if (precision === undefined || !toFixedAccepts(precision)) return formatValue(value);
   return value.toFixed(precision);
+}
+
+function toFixedAccepts(precision: number): boolean {
+  return Number.isInteger(precision) && precision >= 0 && precision <= 100;
 }
 
 /** One number, reduced from one query's line. */

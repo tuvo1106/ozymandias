@@ -156,6 +156,24 @@ describe("reducers", () => {
   });
 });
 
+describe("a precision toFixed would throw on", () => {
+  // The server refuses it, but an imported draft reaches the preview before
+  // any server has seen it, and a RangeError here unmounts the editor.
+  it.each([101, -1, 2.5])("draws %s as if it were absent", (precision) => {
+    const results = [ok(0, [line({}, [1, 2, 1234.5678])])];
+    const q = [{ q: "sum:x{*}", reducer: "last" as const }];
+    const shown = (w: Widget) => {
+      const { container, unmount } = render(<QueryValueWidget widget={w} results={results} />);
+      const text = container.querySelector(".text-4xl")?.textContent;
+      unmount();
+      return text;
+    };
+    const automatic = shown(widget({ type: "query_value", queries: q }));
+    expect(automatic).toMatch(/\d/);
+    expect(shown(widget({ type: "query_value", queries: q, precision }))).toBe(automatic);
+  });
+});
+
 describe("a reducer this build does not know", () => {
   // Same route as the unknown widget type below, one level down: a definition
   // is served back from the store without being re-validated, so `reducer` is
