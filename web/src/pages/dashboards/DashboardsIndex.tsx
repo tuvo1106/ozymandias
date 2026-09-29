@@ -38,7 +38,15 @@ export function DashboardsIndex() {
 
   return (
     <div className="flex flex-col gap-8">
-      <h1 className="text-2xl font-semibold">Dashboards</h1>
+      <div className="flex items-center justify-between gap-2">
+        <h1 className="text-2xl font-semibold">Dashboards</h1>
+        <Link
+          to="/dashboards/new"
+          className="rounded-md bg-violet-600 px-3 py-1 text-sm font-medium text-white hover:bg-violet-700"
+        >
+          New dashboard
+        </Link>
+      </div>
 
       <Panel title="Saved">
         {list.isPending ? (

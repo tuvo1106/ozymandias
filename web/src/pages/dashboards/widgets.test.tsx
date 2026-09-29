@@ -70,10 +70,24 @@ describe("a widget that has not heard back", () => {
   });
 
   // Nothing was ever sent for a blank query, so no answer is coming and the
-  // wait would never end.
-  it("says No data for a widget whose only query is blank", () => {
-    render(<TimeseriesWidget widget={widget({ queries: [{ q: "  " }] })} results={[undefined]} />);
+  // wait would never end — but "No data" would claim the service is silent,
+  // when the widget has not asked anybody. Every new widget in the editor
+  // starts here, which is where the browser check caught it.
+  it.each([
+    ["timeseries", TimeseriesWidget],
+    ["query_value", QueryValueWidget],
+    ["toplist", ToplistWidget],
+    ["table", TableWidget],
+  ] as const)("says there is no query yet on a %s whose queries are all blank", (type, Widget) => {
+    render(<Widget widget={widget({ type, queries: [{ q: "  " }, { q: "" }] })} results={[undefined, undefined]} />);
+    expect(screen.getByText("No query yet")).toBeInTheDocument();
+    expect(screen.queryByText("No data")).not.toBeInTheDocument();
+  });
+
+  it("says nothing about a blank query when another one asked", () => {
+    render(<TimeseriesWidget widget={widget({ queries: [{ q: "" }, { q: "sum:x{*}" }] })} results={[undefined, ok(1, [])]} />);
     expect(screen.getByText("No data")).toBeInTheDocument();
+    expect(screen.queryByText("No query yet")).not.toBeInTheDocument();
   });
 });
 
@@ -142,6 +156,24 @@ describe("reducers", () => {
   });
 });
 
+describe("a precision toFixed would throw on", () => {
+  // The server refuses it, but an imported draft reaches the preview before
+  // any server has seen it, and a RangeError here unmounts the editor.
+  it.each([101, -1, 2.5])("draws %s as if it were absent", (precision) => {
+    const results = [ok(0, [line({}, [1, 2, 1234.5678])])];
+    const q = [{ q: "sum:x{*}", reducer: "last" as const }];
+    const shown = (w: Widget) => {
+      const { container, unmount } = render(<QueryValueWidget widget={w} results={results} />);
+      const text = container.querySelector(".text-4xl")?.textContent;
+      unmount();
+      return text;
+    };
+    const automatic = shown(widget({ type: "query_value", queries: q }));
+    expect(automatic).toMatch(/\d/);
+    expect(shown(widget({ type: "query_value", queries: q, precision }))).toBe(automatic);
+  });
+});
+
 describe("a reducer this build does not know", () => {
   // Same route as the unknown widget type below, one level down: a definition
   // is served back from the store without being re-validated, so `reducer` is
@@ -188,6 +220,33 @@ describe("a reducer this build does not know", () => {
     expect(screen.getByText(/nothing is shown for that query/)).toBeInTheDocument();
   });
 
+  // The server accepts conditional_formats on a table; until the editor
+  // mirrored its rules, the table drew none of them.
+  it("colours a table's cells by its conditional formats, first match wins", () => {
+    const w = widget({
+      type: "table",
+      queries: [{ q: "sum:a{*} by {r}", reducer: "last" }],
+      conditional_formats: [
+        { op: ">", value: 10, color: "red" },
+        { op: ">", value: 1, color: "yellow" },
+        { op: ">", value: 0, color: "chartreuse" },
+      ],
+    });
+    render(
+      <TableWidget
+        widget={w}
+        results={[ok(0, [line({ r: "hot" }, [50]), line({ r: "warm" }, [5]), line({ r: "odd" }, [0.5]), line({ r: "cold" }, [0])])]}
+      />,
+    );
+    const cell = (group: string) => within(screen.getByRole("row", { name: new RegExp(group) })).getByRole("cell");
+    expect(cell("hot").className).toMatch(/text-red-600/);
+    expect(cell("warm").className).toMatch(/text-amber-600/);
+    // A colour this build does not have draws the value plainly, not not at all.
+    expect(cell("odd")).toHaveTextContent("0.5");
+    expect(cell("odd").className).not.toMatch(/text-(red|amber|emerald|sky)/);
+    expect(cell("cold").className).not.toMatch(/text-(red|amber)/);
+  });
+
   it("says so rather than quietly shortening a toplist", () => {
     const w = widget({
       type: "toplist",
@@ -215,7 +274,7 @@ describe("a widget type this build does not know", () => {
     render(
       <DashboardGrid
         widgets={widgets}
-        byWidget={new Map([["known", new Map([[0, ok(0, [line({}, [1, 2])])]])]])}
+        byWidget={new Map([["known", new Map([[0, { asked: widgets[0]!.queries![0]!.q.trim(), result: ok(0, [line({}, [1, 2])]) }]])]])}
         sketches={new Map()}
         syncKey="k"
       />,

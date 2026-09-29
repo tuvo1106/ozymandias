@@ -21,6 +21,7 @@ import {
   type Widget,
 } from "../../lib/dashboard";
 import type { BatchResult } from "../../lib/dashboardsApi";
+import type { FormatColor } from "../../lib/dashboardEditor";
 import type { SketchState } from "../../lib/useDashboards";
 import type { Series } from "../../lib/metricsApi";
 import { WidgetFrame } from "./WidgetFrame";
@@ -41,6 +42,12 @@ export interface WidgetProps {
    * keyed by type (see [[DashboardGrid]]) needs every entry to take it.
    */
   sketch?: SketchState;
+  /**
+   * Warnings the page has already said once above the grid, because every
+   * answering widget carried them (see [[sharedWarnings]]). Left out of this
+   * widget's own list so a sentence is not repeated six times.
+   */
+  hiddenWarnings?: ReadonlySet<string>;
 }
 
 /**
@@ -59,23 +66,31 @@ function firstError(
 }
 
 /**
+ * Whether every query the widget has is blank, so nothing was or will be
+ * asked: the batch skips a blank query rather than letting the server refuse
+ * it. The frame says "No query yet" for this rather than "No data", which
+ * would tell the reader a service is silent when nobody asked it anything.
+ */
+export function unasked(widget: Widget): boolean {
+  return !(widget.queries ?? []).some((q) => q.q.trim() !== "");
+}
+
+/**
  * Whether this widget has heard back.
  *
  * The distinction the frame needs: "No data" before anything has arrived tells
  * the reader their service is silent, and a dashboard saying that by accident
  * during a slow first load is worse than saying nothing for a moment.
  *
- * A widget whose queries were all blank is *answered* even though nothing came
- * back for it, because nothing was ever sent — the batch skips a blank query
- * rather than letting the server refuse it — so no answer is coming and "No
- * data" is the true statement rather than a wait that never ends.
+ * An [[unasked]] widget counts as answered even though nothing came back for
+ * it, because no answer is coming: left out, it would wait forever rather than
+ * say "No query yet".
  */
 function answered(
   widget: Widget,
   results: readonly (BatchResult | undefined)[],
 ): boolean {
-  if (results.some((r) => r !== undefined)) return true;
-  return !(widget.queries ?? []).some((q) => q.q.trim() !== "");
+  return results.some((r) => r !== undefined) || unasked(widget);
 }
 
 /**
@@ -107,9 +122,14 @@ function reducerProblem(widget: Widget): string | undefined {
   return `This build cannot apply ${unknown.size === 1 ? "a" : "the"} ${names} reducer${unknown.size === 1 ? "" : "s"}, so nothing is shown for ${unknown.size === 1 ? "that query" : "those queries"}.`;
 }
 
-/** Every warning across a widget's queries, deduplicated. */
-function allWarnings(results: readonly (BatchResult | undefined)[]): string[] {
-  return [...new Set(results.flatMap((r) => r?.warnings ?? []))];
+/** Every warning across a widget's queries, deduplicated, less the hoisted ones. */
+function allWarnings(
+  results: readonly (BatchResult | undefined)[],
+  hidden: ReadonlySet<string> | undefined,
+): string[] {
+  return [...new Set(results.flatMap((r) => r?.warnings ?? []))].filter(
+    (w) => !hidden?.has(w),
+  );
 }
 
 /** A row of one query's answer: the series, labelled the way a legend wants. */
@@ -155,6 +175,7 @@ export function TimeseriesWidget({
   results,
   xRange,
   syncKey,
+  hiddenWarnings,
 }: WidgetProps) {
   const lines = useMemo(() => linesOf(widget, results), [widget, results]);
   const data = useMemo(() => alignSeries(lines.map((l) => l.series)), [lines]);
@@ -163,8 +184,9 @@ export function TimeseriesWidget({
     <WidgetFrame
       title={widget.title}
       error={error}
-      warnings={allWarnings(results)}
+      warnings={allWarnings(results, hiddenWarnings)}
       empty={answered(widget, results) && lines.length === 0}
+      unasked={unasked(widget)}
     >
       <TimeseriesChart
         data={data}
@@ -176,15 +198,30 @@ export function TimeseriesWidget({
   );
 }
 
-/** The colours a conditional format may name, mapped to this build's palette. */
-const FORMAT_COLORS: Record<string, string> = {
+/**
+ * The colours a conditional format may name, mapped to this build's palette.
+ * `satisfies` so a palette name added to [[FORMAT_COLORS]] must be drawn here.
+ */
+const FORMAT_CLASSES = {
   red: "text-red-600 dark:text-red-400",
   yellow: "text-amber-600 dark:text-amber-400",
   green: "text-emerald-600 dark:text-emerald-400",
   blue: "text-sky-600 dark:text-sky-400",
   grey: "text-zinc-500",
   gray: "text-zinc-500",
-};
+} satisfies Record<FormatColor, string>;
+
+/**
+ * The class for a value under a widget's conditional formats, or undefined
+ * when no rule matches. A rule naming a colour this build does not have
+ * draws in the default colour — the editor shows the unknown name as itself,
+ * and a value that renders at all beats one that vanishes.
+ */
+function formatClass(value: number | null, widget: Widget): string | undefined {
+  const format = matchConditionalFormat(value, widget.conditional_formats);
+  if (!format) return undefined;
+  return Object.hasOwn(FORMAT_CLASSES, format.color) ? FORMAT_CLASSES[format.color as FormatColor] : undefined;
+}
 
 /**
  * Formats one reduced number, honouring the widget's `precision`.
@@ -193,18 +230,32 @@ const FORMAT_COLORS: Record<string, string> = {
  * `undefined` means "pick something sensible" and falls through to the same
  * formatter the charts use — which is what makes a query_value and the chart
  * beside it agree about what 1234.5 looks like.
+ *
+ * A precision `toFixed` would throw on is drawn as if absent. The server
+ * refuses anything outside 0…10, but a draft is not saved yet — an import
+ * carrying `precision: 101` reaches this before any server sees it — and a
+ * RangeError here would unmount the whole editor with the draft in it. The
+ * widget panel's precision field is what says the value is wrong.
  */
 export function formatWidgetValue(
   value: number | null,
   precision: number | undefined,
 ): string {
   if (value === null) return "—";
-  if (precision === undefined) return formatValue(value);
+  if (precision === undefined || !toFixedAccepts(precision)) return formatValue(value);
   return value.toFixed(precision);
 }
 
+function toFixedAccepts(precision: number): boolean {
+  return Number.isInteger(precision) && precision >= 0 && precision <= 100;
+}
+
 /** One number, reduced from one query's line. */
-export function QueryValueWidget({ widget, results }: WidgetProps) {
+export function QueryValueWidget({
+  widget,
+  results,
+  hiddenWarnings,
+}: WidgetProps) {
   const error = firstError(results) ?? reducerProblem(widget);
   const lines = linesOf(widget, results);
   // A query_value shows one number, so a query that grouped has more answers
@@ -222,16 +273,14 @@ export function QueryValueWidget({ widget, results }: WidgetProps) {
         first.query.reducer,
       )
     : null;
-  const format = matchConditionalFormat(value, widget.conditional_formats);
-  const color = format
-    ? (FORMAT_COLORS[format.color] ?? "text-zinc-900 dark:text-zinc-100")
-    : "text-zinc-900 dark:text-zinc-100";
+  const color = formatClass(value, widget) ?? "text-zinc-900 dark:text-zinc-100";
   return (
     <WidgetFrame
       title={widget.title}
       error={error}
-      warnings={allWarnings(results)}
+      warnings={allWarnings(results, hiddenWarnings)}
       empty={answered(widget, results) && lines.length === 0}
+      unasked={unasked(widget)}
     >
       <div className="flex h-full flex-col items-center justify-center">
         <span className={`text-4xl font-semibold tabular-nums ${color}`}>
@@ -248,7 +297,11 @@ export function QueryValueWidget({ widget, results }: WidgetProps) {
 }
 
 /** Rows ranked by their reduced value, biggest first. */
-export function ToplistWidget({ widget, results }: WidgetProps) {
+export function ToplistWidget({
+  widget,
+  results,
+  hiddenWarnings,
+}: WidgetProps) {
   const error = firstError(results) ?? reducerProblem(widget);
   // Each line by its own query's reducer. A toplist may carry several queries
   // and each carries its own rule, so one taken from `queries[0]` and applied
@@ -272,8 +325,9 @@ export function ToplistWidget({ widget, results }: WidgetProps) {
     <WidgetFrame
       title={widget.title}
       error={error}
-      warnings={allWarnings(results)}
+      warnings={allWarnings(results, hiddenWarnings)}
       empty={answered(widget, results) && rows.length === 0}
+      unasked={unasked(widget)}
     >
       <ol className="h-full overflow-auto text-sm">
         {rows.map((row) => (
@@ -307,7 +361,11 @@ export function ToplistWidget({ widget, results }: WidgetProps) {
  * lines the two queries up on the route rather than on the order they came
  * back in — which is what makes the row mean one thing.
  */
-export function TableWidget({ widget, results }: WidgetProps) {
+export function TableWidget({
+  widget,
+  results,
+  hiddenWarnings,
+}: WidgetProps) {
   const error = firstError(results) ?? reducerProblem(widget);
   const queries = widget.queries ?? [];
   const rows = new Map<string, (number | null)[]>();
@@ -331,8 +389,9 @@ export function TableWidget({ widget, results }: WidgetProps) {
     <WidgetFrame
       title={widget.title}
       error={error}
-      warnings={allWarnings(results)}
+      warnings={allWarnings(results, hiddenWarnings)}
       empty={answered(widget, results) && rows.size === 0}
+      unasked={unasked(widget)}
     >
       <div className="h-full overflow-auto">
         <table className="w-full text-left text-sm">
@@ -366,7 +425,7 @@ export function TableWidget({ widget, results }: WidgetProps) {
                   {label}
                 </th>
                 {cells.map((cell, i) => (
-                  <td key={i} className="py-1 pl-2 text-right tabular-nums">
+                  <td key={i} className={`py-1 pl-2 text-right tabular-nums ${formatClass(cell, widget) ?? ""}`}>
                     {formatWidgetValue(cell, widget.precision)}
                   </td>
                 ))}

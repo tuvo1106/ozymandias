@@ -1,0 +1,59 @@
+{
+  "aggregators": [
+    "avg",
+    "count",
+    "dist",
+    "max",
+    "min",
+    "p50",
+    "p75",
+    "p90",
+    "p95",
+    "p99",
+    "sum"
+  ],
+  "functions": [
+    "abs",
+    "clamp_max",
+    "clamp_min",
+    "diff",
+    "histogram_quantile",
+    "log10",
+    "log2",
+    "moving_avg",
+    "timeshift",
+    "top"
+  ],
+  "modifiers": [
+    {
+      "name": "as_count",
+      "argument": ""
+    },
+    {
+      "name": "as_rate",
+      "argument": ""
+    },
+    {
+      "name": "fill",
+      "argument": "fill_modes"
+    },
+    {
+      "name": "rollup",
+      "argument": "rollup_methods"
+    }
+  ],
+  "rollup_methods": [
+    "avg",
+    "count",
+    "last",
+    "max",
+    "min",
+    "sum"
+  ],
+  "fill_modes": [
+    "last",
+    "linear",
+    "null",
+    "zero"
+  ]
+}

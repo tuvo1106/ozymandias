@@ -24,7 +24,7 @@ import {
   wantsLogAxis,
 } from "../../lib/heatmap";
 import { WidgetFrame } from "./WidgetFrame";
-import type { WidgetProps } from "./widgets";
+import { unasked, type WidgetProps } from "./widgets";
 
 /** A count as a sentence fragment, pluralised. */
 function plural(n: number, one: string, many: string): string {
@@ -43,6 +43,7 @@ export function HeatmapWidget({
   sketch,
   xRange,
   syncKey,
+  hiddenWarnings,
 }: WidgetProps) {
   const { series, others } = useMemo(
     () => primarySeries(sketch?.data?.series ?? []),
@@ -54,7 +55,9 @@ export function HeatmapWidget({
 
   // Every note the picture cannot make: an error bar, the groups this widget
   // is not the place for, and the observations the axis cannot hold.
-  const notes = [...(sketch?.data?.warnings ?? [])];
+  const notes = (sketch?.data?.warnings ?? []).filter(
+    (w) => !hiddenWarnings?.has(w),
+  );
   const alpha = relativeAccuracy(buckets);
   if (alpha > 0)
     notes.push(`Bands are accurate to ±${(alpha * 100).toFixed(1)}%`);
@@ -91,6 +94,7 @@ export function HeatmapWidget({
       error={sketch?.error}
       warnings={notes}
       empty={answered && !drawable && !sketch?.error}
+      unasked={unasked(widget)}
     >
       {drawable && range && xRange && sketch?.data ? (
         <HeatmapChart

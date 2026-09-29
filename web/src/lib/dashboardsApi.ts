@@ -13,7 +13,7 @@
  * So `fetchBatch` rejects only when the *request* failed, and a caller reads
  * each result's own `status`.
  */
-import { ApiError, getJSON, postJSON, type Series } from "./metricsApi";
+import { ApiError, getJSON, postJSON, putJSON, type Series } from "./metricsApi";
 import type { Dashboard, StoredDashboard } from "./dashboard";
 import type { ResolvedRange } from "./timeRange";
 
@@ -115,6 +115,39 @@ export async function fetchDashboard(
       `ozyd sent an unexpected /api/v1/dashboards/${id} response`,
     );
   return body;
+}
+
+/**
+ * What a successful save answered with.
+ *
+ * `unreadable` is a success: the server said 2xx, so the row is written, and
+ * only its description of the row could not be read. Reporting it as a
+ * failure invites the author to save again, which for a create is a second
+ * dashboard.
+ */
+export type Saved =
+  | { kind: "stored"; dashboard: StoredDashboard }
+  | { kind: "unreadable" };
+
+/** Creates a dashboard. Rejects with an ApiError when the server refused. */
+export async function createDashboard(
+  definition: Dashboard,
+  fetchImpl: FetchLike = fetch,
+  signal?: AbortSignal,
+): Promise<Saved> {
+  const body = await postJSON("/api/v1/dashboards", definition, fetchImpl, signal);
+  return isStoredDashboard(body) ? { kind: "stored", dashboard: body } : { kind: "unreadable" };
+}
+
+/** Replaces a stored dashboard's definition. Rejects with an ApiError when refused. */
+export async function updateDashboard(
+  id: number,
+  definition: Dashboard,
+  fetchImpl: FetchLike = fetch,
+  signal?: AbortSignal,
+): Promise<Saved> {
+  const body = await putJSON(`/api/v1/dashboards/${id}`, definition, fetchImpl, signal);
+  return isStoredDashboard(body) ? { kind: "stored", dashboard: body } : { kind: "unreadable" };
 }
 
 /** The services a template dashboard can be instantiated for. */

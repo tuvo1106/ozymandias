@@ -100,6 +100,28 @@ export function serializeViewState(state: DashboardViewState): URLSearchParams {
   return params;
 }
 
+/** The keys [[serializeViewState]] owns: the range, `live`, and every `var.*`. */
+function isViewStateKey(key: string): boolean {
+  return key === "range" || key === "from" || key === "to" || key === "live" || key.startsWith(VAR_PREFIX);
+}
+
+/**
+ * `params` with its view state replaced by `state`, and every other
+ * parameter kept as it was.
+ *
+ * For a page whose query string holds more than the view — the editor's
+ * `?copy=` seed, say — where writing [[serializeViewState]]'s output
+ * wholesale would drop the rest. It removes what it owns rather than keeping
+ * a list of what it does not, so a parameter a page adds later survives a
+ * time-range change without anyone remembering to list it here.
+ */
+export function withViewState(params: URLSearchParams, state: DashboardViewState): URLSearchParams {
+  const next = new URLSearchParams();
+  for (const [k, v] of params) if (!isViewStateKey(k)) next.append(k, v);
+  for (const [k, v] of serializeViewState(state)) next.append(k, v);
+  return next;
+}
+
 /**
  * The value a selector should show: the URL's choice if there is one, else
  * the definition's default, else "all".

@@ -6,9 +6,12 @@
  * from, which is the whole point of instantiating on the server — the UI draws
  * a definition and does not care that this one was never stored.
  */
-import { useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { useDashboard, useServiceDashboards } from "../../lib/useDashboards";
 import { DashboardView } from "./DashboardView";
+
+const action =
+  "rounded-md border border-zinc-300 px-2 py-1 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800";
 
 function Loading() {
   return <p className="text-sm text-zinc-500">Loading…</p>;
@@ -38,10 +41,19 @@ export function StoredDashboardPage() {
       syncKey={`dashboard-${query.data.id}`}
       actions={
         query.data.provisioned ? (
-          <span className="rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-500 dark:bg-zinc-800">
-            Provisioned from a file — edit the file, not this page
+          <span className="flex items-center gap-2">
+            <span className="rounded bg-zinc-100 px-2 py-1 text-xs text-zinc-500 dark:bg-zinc-800">
+              Provisioned from a file — edit the file, not this page
+            </span>
+            <Link className={action} to={`/dashboards/new?copy=${query.data.id}`}>
+              Save a copy
+            </Link>
           </span>
-        ) : null
+        ) : (
+          <Link className={action} to={`/dashboards/${query.data.id}/edit`}>
+            Edit
+          </Link>
+        )
       }
     />
   );
@@ -71,8 +83,16 @@ export function ServiceDashboardPage() {
           dashboard={instance.dashboard}
           syncKey={`service-${name}-${instance.template_id}`}
           actions={
-            <span className="text-xs text-zinc-500">
-              from the {instance.template_uid ?? `#${instance.template_id}`} template
+            <span className="flex items-center gap-2">
+              <span className="text-xs text-zinc-500">
+                from the {instance.template_uid ?? `#${instance.template_id}`} template
+              </span>
+              <Link
+                className={action}
+                to={`/dashboards/new?service=${encodeURIComponent(name)}&template=${instance.template_id}`}
+              >
+                Save a copy
+              </Link>
             </span>
           }
         />

@@ -6,6 +6,7 @@ import {
   parseViewState,
   selectedValue,
   serializeViewState,
+  withViewState,
   type DashboardViewState,
 } from "./dashboardState";
 
@@ -76,6 +77,22 @@ describe("serializeViewState", () => {
   it("writes variables in a stable order", () => {
     const params = serializeViewState({ ...DEFAULT_VIEW_STATE, vars: { z: "1", a: "2" } });
     expect(params.toString()).toBe("var.a=2&var.z=1");
+  });
+});
+
+describe("withViewState", () => {
+  const next = (qs: string, s: DashboardViewState) => withViewState(new URLSearchParams(qs), s).toString();
+
+  // The editor's seed, and whatever a page adds after it: nothing lists them.
+  it("keeps every parameter the view state does not own", () => {
+    expect(next("copy=38&panel=w1", { ...DEFAULT_VIEW_STATE, live: false })).toBe("copy=38&panel=w1&live=0");
+  });
+
+  // Including the ones the new state leaves at their default: a stale range
+  // or a variable no longer chosen must not outlive the change.
+  it("replaces all of the view state, not just the keys it writes", () => {
+    expect(next("from=1&to=2&range=4h&live=0&var.env=prod&copy=3", DEFAULT_VIEW_STATE)).toBe("copy=3");
+    expect(next("var.env=prod", { ...DEFAULT_VIEW_STATE, vars: { region: "eu" } })).toBe("var.region=eu");
   });
 });
 
