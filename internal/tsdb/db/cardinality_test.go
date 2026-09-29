@@ -39,11 +39,11 @@ func TestDB_CardinalityCountsASeriesOnceWhereverItLives(t *testing.T) {
 	}
 	// env: carried by all three series, once each though one carries it
 	// twice; four values. canary: one series, no value.
-	if got, want := fmt.Sprintf("%+v", card), "[{Key:canary Series:1 Values:0} {Key:env Series:3 Values:4}]"; got != want {
+	if got, want := fmt.Sprintf("%+v", card), "{Series:3 Keys:[{Key:canary Series:1 Values:0} {Key:env Series:3 Values:4}]}"; got != want {
 		t.Errorf("TagCardinality = %s, want %s", got, want)
 	}
 
-	if got, err := db.TagCardinality(ctx, "missing"); err != nil || len(got) != 0 {
+	if got, err := db.TagCardinality(ctx, "missing"); err != nil || got.Series != 0 || len(got.Keys) != 0 {
 		t.Errorf("TagCardinality(missing) = %v, %v; want empty", got, err)
 	}
 	if got, err := db.SeriesCounts(ctx, "o"); err != nil || fmt.Sprintf("%+v", got) != "[{Metric:other Series:1}]" {

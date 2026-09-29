@@ -297,10 +297,10 @@ func TestStore_Cardinality(t *testing.T) {
 		t.Errorf("SeriesCounts(m) = %s, %v", got, err)
 	}
 	card, err := s.TagCardinality(ctx, "m")
-	if got := fmt.Sprintf("%+v", card); err != nil || got != "[{Key:canary Series:1 Values:0} {Key:env Series:3 Values:4}]" {
+	if got := fmt.Sprintf("%+v", card); err != nil || got != "{Series:3 Keys:[{Key:canary Series:1 Values:0} {Key:env Series:3 Values:4}]}" {
 		t.Errorf("TagCardinality(m) = %s, %v", got, err)
 	}
-	if card, err := s.TagCardinality(ctx, "none"); err != nil || len(card) != 0 {
+	if card, err := s.TagCardinality(ctx, "none"); err != nil || card.Series != 0 || len(card.Keys) != 0 {
 		t.Errorf("unknown metric = %v, %v", card, err)
 	}
 }

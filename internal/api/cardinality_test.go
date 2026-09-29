@@ -106,8 +106,8 @@ func (failingCounts) SeriesCounts(context.Context, string) ([]tsdb.MetricSeriesC
 	return nil, errors.New("open /var/lib/ozy/index.dat: permission denied")
 }
 
-func (failingCounts) TagCardinality(context.Context, string) ([]tsdb.TagKeyCardinality, error) {
-	return nil, errors.New("open /var/lib/ozy/index.dat: permission denied")
+func (failingCounts) TagCardinality(context.Context, string) (tsdb.MetricTagCardinality, error) {
+	return tsdb.MetricTagCardinality{}, errors.New("open /var/lib/ozy/index.dat: permission denied")
 }
 
 // The series count is the metric's own, not its prefix's: "m" is not "m.x".
@@ -115,6 +115,25 @@ func TestTagsCardinality_SeriesIsTheExactMetrics(t *testing.T) {
 	h := cardinalityAPI(t, map[string]int{"m": 2, "m.x": 7})
 	if _, out := get(t, h, "/api/v1/tags/cardinality?metric=m"); out["series"] != 2.0 {
 		t.Errorf("series %v, want 2", out["series"])
+	}
+}
+
+// oneRead answers TagCardinality and fails anything else, so the endpoint can
+// only succeed by taking the series count from the same read as the keys.
+type oneRead struct{ failingCounts }
+
+func (oneRead) TagCardinality(context.Context, string) (tsdb.MetricTagCardinality, error) {
+	return tsdb.MetricTagCardinality{Series: 4, Keys: []tsdb.TagKeyCardinality{{Key: "env", Series: 4, Values: 2}}}, nil
+}
+
+// The series count and the keys come from one store read: from two, an
+// append between them can put a key on 5 series of a metric with 4.
+func TestTagsCardinality_SeriesComesFromTheSameRead(t *testing.T) {
+	mux := http.NewServeMux()
+	(&Metrics{Store: oneRead{}}).Register(mux)
+	code, out := get(t, mux, "/api/v1/tags/cardinality?metric=m")
+	if code != 200 || out["series"] != 4.0 {
+		t.Errorf("%d series=%v, want 200 series=4", code, out["series"])
 	}
 }
 

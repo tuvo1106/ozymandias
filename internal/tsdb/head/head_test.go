@@ -769,3 +769,25 @@ func TestHead_ASeriesRecordIsWrittenUntilItLands(t *testing.T) {
 		t.Fatalf("head holds %+v, want only the sample that was logged", head[0].Samples)
 	}
 }
+
+// A series is created and indexed before its sample is checked, so a new
+// series whose only sample is out of bounds is in the index with nothing in
+// it. The cardinality counts must not see it: no query can, and a backfill of
+// fresh ids would otherwise read as an explosion.
+func TestHead_SeriesOfSkipsSeriesWithNoSamples(t *testing.T) {
+	h := New(Options{BlockRange: 1_000_000})
+	if err := appendOne(h, ref("m", "id:kept"), 6000, 1); err != nil {
+		t.Fatal(err)
+	}
+	h.Truncate(5000)
+	if err := appendOne(h, ref("m", "id:rejected"), 4000, 1); !errors.Is(err, ErrOutOfBounds) {
+		t.Fatalf("err = %v, want ErrOutOfBounds", err)
+	}
+	got := h.SeriesOf("m")
+	if len(got) != 1 || got[0].Key() != ref("m", "id:kept").Key() {
+		t.Errorf("SeriesOf(m) = %v, want only id:kept", got)
+	}
+	if got := h.SeriesOf("missing"); len(got) != 0 {
+		t.Errorf("SeriesOf(missing) = %v", got)
+	}
+}

@@ -120,6 +120,18 @@ describe("MetricSummary", () => {
     expect(prefixes).toEqual(["", "queue"]);
   });
 
+  // The URL is trimmed; the box is the author's and keeps what they typed.
+  it("does not strip a space from the box while the author types", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    const router = renderAt("/metrics/summary");
+    await screen.findByRole("table", { name: "Series per metric" });
+    await user.type(screen.getByRole("searchbox"), "queue ");
+    await waitFor(() => expect(params(router).get("prefix")).toBe("queue"));
+    await waitFor(() => expect(rows("Series per metric")).toEqual(["queue.depthnot recorded3"]));
+    expect(screen.getByRole("searchbox")).toHaveValue("queue ");
+  });
+
   // Back must not be undone by the box's debounced value writing itself back.
   it("follows the URL when it changes under the box", async () => {
     mockApi();

@@ -70,38 +70,28 @@ func (m *Metrics) metricsCardinality(w http.ResponseWriter, r *http.Request) {
 //
 // With the metric's own series count, because "no keys" is two different
 // answers: a metric whose series carry no tags (series > 0), and a metric
-// this store does not have (series 0). The page says which.
+// this store does not have (series 0). The page says which. The count comes
+// from the same store read as the keys, so a key is never on more series
+// than the metric has.
 func (m *Metrics) tagsCardinality(w http.ResponseWriter, r *http.Request) {
 	metric := r.URL.Query().Get("metric")
 	if metric == "" {
 		writeError(w, http.StatusBadRequest, errors.New("metric is required"))
 		return
 	}
-	keys, err := m.Store.TagCardinality(r.Context(), metric)
+	card, err := m.Store.TagCardinality(r.Context(), metric)
 	if err != nil {
 		m.countsFailed(w, r, err)
 		return
 	}
-	// The prefix scan finds the metric and any longer name it begins;
-	// only the exact one is this metric.
-	counts, err := m.Store.SeriesCounts(r.Context(), metric)
-	if err != nil {
-		m.countsFailed(w, r, err)
-		return
-	}
-	series := 0
-	for _, c := range counts {
-		if c.Metric == metric {
-			series = c.Series
-		}
-	}
+	keys := card.Keys
 	// Stable over the store's key order, as above.
 	sort.SliceStable(keys, func(i, j int) bool { return keys[i].Values > keys[j].Values })
 	rows := make([]tagCardinality, 0, len(keys))
 	for _, k := range keys {
 		rows = append(rows, tagCardinality{Key: k.Key, Series: k.Series, Values: k.Values})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"metric": metric, "type": m.typeOf(metric), "series": series, "keys": rows})
+	writeJSON(w, http.StatusOK, map[string]any{"metric": metric, "type": m.typeOf(metric), "series": card.Series, "keys": rows})
 }
 
 // typeOf is the metric's recorded kind, or nil.

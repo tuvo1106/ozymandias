@@ -118,8 +118,8 @@ func TestDB_MatchesTheNaiveStore(t *testing.T) {
 				}
 				for _, m := range []string{"a.count", "b.gauge", "nope"} {
 					compareCounts(t, fmt.Sprintf("TagCardinality(%q)", m),
-						must(t, func() ([]tsdb.TagKeyCardinality, error) { return real.TagCardinality(ctx, m) }),
-						must(t, func() ([]tsdb.TagKeyCardinality, error) { return oracle.TagCardinality(ctx, m) }))
+						must(t, func() (tsdb.MetricTagCardinality, error) { return real.TagCardinality(ctx, m) }),
+						must(t, func() (tsdb.MetricTagCardinality, error) { return oracle.TagCardinality(ctx, m) }))
 				}
 
 			}
@@ -271,7 +271,7 @@ func mustStrings(t *rapid.T, res func() ([]string, error)) []string {
 	return got
 }
 
-func compareCounts[T any](t *rapid.T, what string, got, want []T) {
+func compareCounts[T any](t *rapid.T, what string, got, want T) {
 	t.Helper()
 	if fmt.Sprintf("%+v", got) != fmt.Sprintf("%+v", want) {
 		t.Fatalf("%s:\ntsdb  %+v\nnaive %+v", what, got, want)

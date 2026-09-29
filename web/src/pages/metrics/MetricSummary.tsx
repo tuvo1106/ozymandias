@@ -43,7 +43,9 @@ export function MetricSummary() {
   const [synced, setSynced] = useState(prefix);
   if (synced !== prefix) {
     setSynced(prefix);
-    setText(prefix);
+    // The URL holds the trimmed box; when that is all that changed, the
+    // space the author just typed stays where they typed it.
+    if (text.trim() !== prefix) setText(prefix);
   }
   const settled = useDebouncedValue(text, PREFIX_DEBOUNCE_MS);
   // Only a settled box writes: after back/forward the box already holds the

@@ -109,8 +109,9 @@ func Open(path string) (*Store, error) {
 }
 
 // query runs q and scans every row with scan. One place for the
-// Query/Next/Scan/Err/Close dance, so each caller is just its SQL.
-func query[T any](ctx context.Context, db *sql.DB, scan func(*sql.Rows) (T, error), q string, args ...any) ([]T, error) {
+// Query/Next/Scan/Err/Close dance, so each caller is just its SQL. db is the
+// database or a transaction, for answers that must come from one read.
+func query[T any](ctx context.Context, db querier, scan func(*sql.Rows) (T, error), q string, args ...any) ([]T, error) {
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -125,6 +126,11 @@ func query[T any](ctx context.Context, db *sql.DB, scan func(*sql.Rows) (T, erro
 		out = append(out, v)
 	}
 	return out, rows.Err()
+}
+
+// querier is what [query] needs: a *sql.DB or a *sql.Tx.
+type querier interface {
+	QueryContext(ctx context.Context, q string, args ...any) (*sql.Rows, error)
 }
 
 // Append stores a batch in one transaction.
@@ -345,15 +351,27 @@ func (s *Store) SeriesCounts(ctx context.Context, prefix string) ([]tsdb.MetricS
 		len(prefix), prefix)
 }
 
-// TagCardinality returns each tag key of metric's series, sorted, with the
-// series that carry it and its distinct non-empty values. DISTINCT on the
-// series id because a series may carry one key twice (`env:a,env:b`).
-func (s *Store) TagCardinality(ctx context.Context, metric string) ([]tsdb.TagKeyCardinality, error) {
-	return query(ctx, s.db, func(r *sql.Rows) (c tsdb.TagKeyCardinality, err error) {
+// TagCardinality returns metric's series count and each tag key of its
+// series, sorted, with the series that carry it and its distinct non-empty
+// values. DISTINCT on the series id because a series may carry one key twice
+// (`env:a,env:b`). Both queries run in one read transaction, so an append
+// between them cannot make a key's series outnumber the metric's.
+func (s *Store) TagCardinality(ctx context.Context, metric string) (tsdb.MetricTagCardinality, error) {
+	var out tsdb.MetricTagCardinality
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return out, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM series WHERE metric = ?`, metric).Scan(&out.Series); err != nil {
+		return out, err
+	}
+	out.Keys, err = query(ctx, tx, func(r *sql.Rows) (c tsdb.TagKeyCardinality, err error) {
 		return c, r.Scan(&c.Key, &c.Series, &c.Values)
 	}, `SELECT t.key, COUNT(DISTINCT t.series_id), COUNT(DISTINCT NULLIF(t.value, ''))
 		FROM series_tags t JOIN series s ON s.id = t.series_id
 		WHERE s.metric = ? GROUP BY t.key ORDER BY t.key`, metric)
+	return out, err
 }
 
 // Stats counts series and samples. It runs COUNT(*) queries — fine for a

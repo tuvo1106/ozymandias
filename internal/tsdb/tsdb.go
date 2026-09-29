@@ -246,6 +246,15 @@ type TagKeyCardinality struct {
 	Values int
 }
 
+// MetricTagCardinality is one metric's series count and its tag keys, taken
+// from one read. They come together because a page compares them — a key on
+// "all" series, "no tags" versus "no such metric" — and two separate reads
+// can straddle a write and disagree: a key on 5 series of a metric with 4.
+type MetricTagCardinality struct {
+	Series int
+	Keys   []TagKeyCardinality
+}
+
 // MetricStore is the storage contract every metric store implements. The
 // naive SQLite store (M1) and the real TSDB (M2) sit behind it; everything
 // above — intake, query, monitors — only knows this interface.
@@ -273,9 +282,10 @@ type MetricStore interface {
 	// SeriesCounts returns every metric whose name starts with prefix, with
 	// its number of series.
 	SeriesCounts(ctx context.Context, prefix string) ([]MetricSeriesCount, error)
-	// TagCardinality returns each tag key of metric's series with how many
-	// series carry it and how many values it takes; empty for an unknown metric.
-	TagCardinality(ctx context.Context, metric string) ([]TagKeyCardinality, error)
+	// TagCardinality returns metric's series count and each tag key of its
+	// series with how many series carry it and how many values it takes, all
+	// from one read; zero series and no keys for an unknown metric.
+	TagCardinality(ctx context.Context, metric string) (MetricTagCardinality, error)
 	Stats() StoreStats
 	Close() error
 }

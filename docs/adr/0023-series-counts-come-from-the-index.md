@@ -25,16 +25,24 @@ Two methods on `MetricStore`, both answered from the index alone:
 
 - `SeriesCounts(ctx, prefix)` — every metric with the prefix, with its number
   of distinct series.
-- `TagCardinality(ctx, metric)` — for one metric, each tag key with how many
-  of its series carry the key and how many distinct values it takes. A bare
-  tag counts toward the series and not the values, as `TagValues` already
-  leaves the empty value out.
+- `TagCardinality(ctx, metric)` — for one metric, its series count and each
+  tag key with how many of its series carry the key and how many distinct
+  values it takes, all from one read. A bare tag counts toward the series and
+  not the values, as `TagValues` already leaves the empty value out. The
+  metric's count comes with the keys, not from a second call, because the page
+  compares them ("all" series, "no tags" versus "no such metric") and two
+  reads can straddle an append and disagree.
 
 "Distinct" means by series key (`metric|k:v,…`). The TSDB gathers one
 metric's series from the head and then every block — head first, for the
 reason `Select` gives — into a map by key, so a series in three places is
 one. The naive store's `series` table is already unique by key, so it is a
-`GROUP BY`. `TestDB_MatchesTheNaiveStore` holds the two to the same answers,
+`GROUP BY` (two, in one read transaction, for `TagCardinality`).
+
+A series counts only once it holds a sample. The head creates and indexes a
+series before it checks the series' samples, so a batch of new series whose
+every sample is out of bounds leaves empty series behind until the next
+truncation; the head skips them, since no query can see them. `TestDB_MatchesTheNaiveStore` holds the two to the same answers,
 and a targeted test holds the TSDB to one count for a series in both a block
 and the head.
 
@@ -60,8 +68,11 @@ answers).
 ## Consequences
 
 - Counting every metric walks the whole index: each series is resolved to its
-  key once per source that holds it, and one metric's keys are held at a
-  time. No sample is read. That is the page's cost, and it is paid per load —
+  key once per source that holds it. No sample is read. The head is read for
+  every matching metric first and the blocks are acquired once after it, so
+  what is held at once is the head's keys for those metrics — no more than the
+  head already holds — plus one metric's block keys. The `limit` does not
+  bound this: ranking needs every count, and a prefix is what narrows it. That is the page's cost, and it is paid per load —
   there is no cache, as in ADR-0020.
 - A series is counted until retention drops its block, so a metric that
   stopped exploding yesterday still shows yesterday's number for up to the
