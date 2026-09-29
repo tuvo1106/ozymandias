@@ -10,6 +10,14 @@
  * and a reload that quietly turned "a copy of Checkout" into a blank page
  * would be the editor concluding "no seed" from "seed not delivered".
  *
+ * Either route also takes `?add={query}`: the Metrics Explorer's "Save to
+ * dashboard" (ADR-0022). The draft opens with a timeseries widget charting
+ * that query added and selected, *unsaved* — the author sees where it lands
+ * and saves it through the same save, with the same answers, as any other
+ * edit. On `/edit` the parameter is removed once read, or reloading after the
+ * save would add the widget a second time; on `/new` it stays, because
+ * there it is the seed and nothing has been saved to add it to twice.
+ *
  * **The preview is the real page.** It draws with the same grid, the same
  * batch and the same widgets as the view, from a copy of the draft that
  * follows it once typing pauses — so what the editor shows is what the saved
@@ -29,6 +37,7 @@ import {
   editDashboard,
   TYPE_RULES,
   WIDGET_TYPES,
+  withQueryWidget,
 } from "../../../lib/dashboardEditor";
 import { collectRequests, sharedWarnings } from "../../../lib/dashboardQueries";
 import { problemsOf, saveFailure, type SaveState } from "../../../lib/dashboardSave";
@@ -72,6 +81,25 @@ function Failed({ message }: { message: string }) {
   );
 }
 
+/** What the Editor opens on: the draft, what counts as unsaved, and the panel. */
+interface Opening {
+  initial: Dashboard;
+  baseline: Dashboard;
+  panel: Panel;
+}
+
+/** `base`, with the widget `?add=` asks for when it asks for one. */
+function opening(base: Dashboard, add: string): Opening {
+  if (!add) return { initial: base, baseline: base, panel: { kind: "dashboard" } };
+  const { dashboard, id } = withQueryWidget(base, add);
+  return { initial: dashboard, baseline: base, panel: { kind: "widget", id } };
+}
+
+/** `?add=`, trimmed; "" when absent or blank. */
+function addParam(search: string): string {
+  return (new URLSearchParams(search).get("add") ?? "").trim();
+}
+
 /** `/dashboards/{id}/edit`: a stored dashboard, if it can be edited here. */
 export function EditDashboardPage() {
   const { id } = useParams();
@@ -80,21 +108,26 @@ export function EditDashboardPage() {
   const query = useDashboard(valid ? numeric : undefined);
   const location = useLocation();
   const justSaved = (location.state as { saved?: boolean } | null)?.saved === true;
-  // Remembered per id: the effect below clears the history state before the
-  // dashboard has loaded, and the banner is for when it has. Per id and not
-  // once per mount, because the router keeps this page mounted when only
-  // `:id` changes — which is what "save it as a new dashboard" does.
-  const [savedFor, setSavedFor] = useState(justSaved ? id : undefined);
-  if (justSaved && savedFor !== id) setSavedFor(id);
-  const savedOnArrival = savedFor === id;
+  const add = addParam(location.search);
+  // What this arrival carried, remembered per id: the effect below clears
+  // both before the dashboard has loaded, and they are for when it has. Per
+  // id and not once per mount, because the router keeps this page mounted
+  // when only `:id` changes — which is what "save it as a new dashboard" does.
+  const [arrival, setArrival] = useState({ id, saved: justSaved, add });
+  if (arrival.id !== id || (justSaved && !arrival.saved) || (add && add !== arrival.add))
+    setArrival({ id, saved: justSaved, add });
   const navigate = useNavigate();
-  // The flag is for the render right after a create, and history keeps
-  // location state across reloads — so it is cleared once read, or a reload
-  // that discarded unsaved edits would open under a "Saved." banner.
+  // Both are for the render they arrived with, and history keeps them across
+  // reloads — so they are cleared once read, or a reload that discarded
+  // unsaved edits would open under a "Saved." banner, and one after saving
+  // an added widget would add it again.
   useEffect(() => {
-    const { pathname, search, hash } = location;
-    if (justSaved) navigate({ pathname, search, hash }, { replace: true, state: null });
-  }, [justSaved, location, navigate]);
+    if (!justSaved && !add) return;
+    const search = new URLSearchParams(location.search);
+    search.delete("add");
+    const rest = search.toString();
+    navigate({ pathname: location.pathname, search: rest ? `?${rest}` : "", hash: location.hash }, { replace: true, state: null });
+  }, [justSaved, add, location, navigate]);
   if (!valid) return <Failed message={`"${id}" is not a dashboard id`} />;
   // Data before error: TanStack keeps `data` and sets `error` when a
   // *refetch* fails, and a failed refetch — ozyd gone for a moment, the
@@ -111,7 +144,10 @@ export function EditDashboardPage() {
         <h1 className="text-2xl font-semibold">{query.data.title}</h1>
         <p className="rounded-md border border-zinc-200 p-3 text-sm dark:border-zinc-800">
           This dashboard is provisioned from a file, so an edit saved here would be undone at the next restart. Edit the file — or{" "}
-          <Link className="underline" to={`/dashboards/new?copy=${query.data.id}`}>
+          <Link
+            className="underline"
+            to={`/dashboards/new?${new URLSearchParams({ copy: String(query.data.id), ...(arrival.add ? { add: arrival.add } : {}) })}`}
+          >
             save a copy
           </Link>{" "}
           and edit that.
@@ -122,9 +158,9 @@ export function EditDashboardPage() {
   return (
     <Editor
       key={query.data.id}
-      initial={definitionOf(query.data).definition}
+      {...opening(definitionOf(query.data).definition, arrival.add)}
       storedId={query.data.id}
-      initialSave={savedOnArrival ? { kind: "saved", dashboard: query.data } : { kind: "idle" }}
+      initialSave={arrival.saved ? { kind: "saved", dashboard: query.data } : { kind: "idle" }}
     />
   );
 }
@@ -137,6 +173,7 @@ export function NewDashboardPage() {
   const copyParam = params.get("copy");
   const service = params.get("service") ?? "";
   const template = params.get("template");
+  const add = addParam(params.toString());
   const copyId = copyParam === null ? undefined : Number(copyParam);
   const copyValid = copyId !== undefined && Number.isInteger(copyId) && copyId > 0;
   const stored = useDashboard(copyValid ? copyId : undefined);
@@ -148,7 +185,7 @@ export function NewDashboardPage() {
       if (stored.error) return <Failed message={`Could not load the dashboard to copy: ${(stored.error as Error).message}`} />;
       return <Loading what="the dashboard to copy" />;
     }
-    return <Editor key={`copy-${copyId}`} initial={copyOf(stored.data)} initialSave={{ kind: "idle" }} />;
+    return <Editor key={`copy-${copyId}-${add}`} {...opening(copyOf(stored.data), add)} initialSave={{ kind: "idle" }} />;
   }
   if (service !== "") {
     if (!instances.data) {
@@ -159,28 +196,31 @@ export function NewDashboardPage() {
     if (!instance)
       return <Failed message={`No template${template ? ` #${template}` : ""} covers ${service}, so there is nothing to copy.`} />;
     return (
-      <Editor key={`svc-${service}-${template}`} initial={copyOf(instance.dashboard, service)} initialSave={{ kind: "idle" }} />
+      <Editor
+        key={`svc-${service}-${template}-${add}`}
+        {...opening(copyOf(instance.dashboard, service), add)}
+        initialSave={{ kind: "idle" }}
+      />
     );
   }
-  return <Editor key="blank" initial={BLANK} initialSave={{ kind: "idle" }} />;
+  return <Editor key={`blank-${add}`} {...opening(BLANK, add)} initialSave={{ kind: "idle" }} />;
 }
 
 type Panel = { kind: "dashboard" } | { kind: "widget"; id: string } | { kind: "json" };
 
 /** Props for Editor. */
-interface EditorProps {
-  initial: Dashboard;
+interface EditorProps extends Opening {
   /** The stored row this edits; undefined for a dashboard not yet saved. */
   storedId?: number;
   initialSave: SaveState;
 }
 
-function Editor({ initial, storedId: initialId, initialSave }: EditorProps) {
+function Editor({ initial, baseline: initialBaseline, panel: initialPanel, storedId: initialId, initialSave }: EditorProps) {
   const [draft, dispatch] = useReducer(editDashboard, initial);
-  const [baseline, setBaseline] = useState(initial);
+  const [baseline, setBaseline] = useState(initialBaseline);
   const storedId = initialId;
   const [save, setSave] = useState<SaveState>(initialSave);
-  const [panel, setPanel] = useState<Panel>({ kind: "dashboard" });
+  const [panel, setPanel] = useState<Panel>(initialPanel);
   const [notice, setNotice] = useState<string | null>(null);
   const [addType, setAddType] = useState<WidgetType>("timeseries");
   const navigate = useNavigate();

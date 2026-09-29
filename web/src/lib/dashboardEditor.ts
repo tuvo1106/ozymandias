@@ -519,6 +519,27 @@ function copyTitle(title: string, service: string | undefined): string {
   return withSuffix(title.slice(0, title.length - tail.length), tail + COPY_SUFFIX, MAX_TITLE_BYTES);
 }
 
+/**
+ * The draft with a timeseries widget charting `q` added below everything
+ * else, and that widget's id — the Metrics Explorer's "Save to dashboard".
+ *
+ * A timeseries because it is what the explorer drew, so the widget shows
+ * what the author was looking at when they chose to keep it. Titled with the
+ * query, cut to the server's limit: that is the one true thing to call it
+ * until the author names it, which the editor opens on the widget to invite.
+ */
+export function withQueryWidget(d: Dashboard, q: string): { dashboard: Dashboard; id: string } {
+  const rules = TYPE_RULES.timeseries;
+  const widget: Widget = {
+    id: nextWidgetId(d.widgets),
+    type: "timeseries",
+    title: withSuffix(q, "", MAX_TITLE_BYTES),
+    layout: newWidgetLayout(d.widgets, rules.size.w, rules.size.h),
+    queries: [{ q }],
+  };
+  return { dashboard: { ...d, widgets: [...d.widgets, widget] }, id: widget.id };
+}
+
 /** The server's title limit, in UTF-8 bytes (`dashboard.MaxTitle`). */
 export const MAX_TITLE_BYTES = 200;
 const COPY_SUFFIX = " (copy)";
