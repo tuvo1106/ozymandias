@@ -1,8 +1,12 @@
 # CI — the full gate (ADR-0024). pre-commit (lefthook.yml) runs the fast checks
-# on each commit; there is no pre-push hook. This runs `make ci`'s targets on
-# every pull request, on a clean machine, and `ci` is a required check on main,
-# so nothing merges that this has not passed. The repo is public, so the
-# minutes are free.
+# on each commit; there is no pre-push hook. This runs the checks `make ci`
+# runs — lint through golangci-lint-action rather than `make lint`, and a web
+# production build on top — on every pull request, on a clean machine, and
+# `ci` is a required check on main, so no pull request merges without passing
+# it. It also runs on every push to main: the ruleset does not require a
+# branch to be up to date, so two pull requests green on their own can merge
+# into a main neither was tested against, and this is what sees that main.
+# The repo is public, so the minutes are free.
 #
 # It runs everything `make ci` runs except the parts that need more than a
 # checkout: `make smoke` (wants the compose stack), the crash loop and
@@ -24,6 +28,8 @@ name: ci
 on:
   workflow_dispatch:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read

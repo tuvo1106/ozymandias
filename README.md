@@ -56,8 +56,9 @@ make fuzz-long          # every fuzz target for 10 minutes
 
 Two gates ([ADR-0024](docs/adr/0024-actions-is-the-full-gate.md)). The
 pre-commit hook is the fast one — every commit runs the checks for what's
-staged — and GitHub Actions runs `make ci`'s targets on every pull request
-from a clean checkout, as a required check. Run `make ci` by hand before
+staged — and GitHub Actions runs the checks `make ci` runs, plus a web
+production build, on every pull request from a clean checkout, as a required
+check, and again on main after each merge. Run `make ci` by hand before
 opening a pull request; on macOS it keeps to the efficiency cores. `make smoke`, the crash loop and `fuzz-long`
 stay manual, once per milestone.
 

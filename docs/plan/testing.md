@@ -138,13 +138,14 @@ milestone) so regressions are visible.
 
 ## 4. The gates: pre-commit, then Actions
 
-**pre-commit is the fast gate**, and GitHub Actions runs `make ci`'s targets
-on every PR as the full one — a required check (ADR-0024):
+**pre-commit is the fast gate**, and GitHub Actions runs the checks `make ci`
+runs, plus a web production build, as the full one — a required check on
+every PR, and a run on main after each merge (ADR-0024):
 
 | Hook | Runs | Typical cost |
 |---|---|---|
 | pre-commit | Only the checks the staged file types need: gofmt, golangci-lint, race tests with coverage gates (cached, so only affected packages re-run), docs drift, no app coupling, web typecheck, ESLint and related Vitest tests | 1–3 s warm |
-| Actions, every PR | `make ci`'s targets: everything, over the whole tree, plus web coverage thresholds and a 10 s-per-target fuzz pass | about 5 min |
+| Actions, every PR and main | `make ci`'s checks and a web build: everything, over the whole tree, plus web coverage thresholds and a 10 s-per-target fuzz pass | about 5 min |
 | by hand | `make ci` once before opening a PR (efficiency cores on macOS, about 3.5 min) | per PR |
 | by hand | `make smoke` (L9), `make fuzz-long` (L4), the crash loop (L5, from M2) | per milestone |
 

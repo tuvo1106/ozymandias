@@ -177,8 +177,9 @@ network `ozymandias`, which the apps' containers join to reach the agent as
 
 The standard is [docs/plan/testing.md](docs/plan/testing.md). Two gates
 (ADR-0024). The pre-commit hook is the fast one: it runs the checks for
-whatever is staged. GitHub Actions is the full one: it runs `make ci`'s targets
-on every pull request from a clean checkout, as a required check. `make ci` is
+whatever is staged. GitHub Actions is the full one: it runs the checks `make
+ci` runs, plus a web production build, on every pull request from a clean
+checkout as a required check, and on main after each merge. `make ci` is
 run by hand once before a pull request.
 `make smoke` exercises the real compose stack end to end; it needs docker, so
 it stays manual and its output goes in the PR.

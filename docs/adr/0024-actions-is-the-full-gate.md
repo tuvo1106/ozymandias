@@ -31,18 +31,30 @@ their coverage gates, docs drift, and the related web tests.
 
 ## Decision
 
-**GitHub Actions is the full gate.** It runs `make ci`'s targets on every pull
-request, and `ci` stays a required check on `main`. A PR merges when it is
-green on the head commit.
+**GitHub Actions is the full gate.** It runs the checks `make ci` runs — lint
+through golangci-lint-action rather than `make lint`, and a web production
+build on top — on every pull request, and `ci` stays a required check on
+`main`. A PR merges when it is green on the head commit.
 
-**pre-commit stays the fast gate**, unchanged. **pre-push runs nothing.**
+**It also runs on every push to `main`.** ADR-0013 rejected that as
+re-verifying what pre-push had checked; without pre-push the reason is gone,
+and something has to see `main` itself. The ruleset does not require a branch
+to be up to date before merging, so two pull requests each green on its own
+can merge into a `main` neither was tested against.
+
+**pre-commit stays the fast gate.** Its globs widen to cover what only
+pre-push used to catch: `.golangci.yml` runs the linter, and testdata and the
+coverage thresholds run the Go tests. Never `--no-verify` a commit, except a
+WIP commit fixed before pushing. **pre-push runs nothing.**
 
 **`make ci` stays, run by hand** before opening a PR or when a change is risky,
 and its output still goes in the PR description with `make smoke` when
 runtime behaviour changed. On macOS it runs at background priority
 (`taskpolicy -c background`, on the efficiency cores): 207 s instead of about
 140 s, with no load on the performance cores. `CI_PRIORITY=full` runs it at
-full speed.
+full speed, and is the first thing to try if a timing-sensitive test (an
+`Eventually` with a 2 s deadline) fails only at background priority — after
+which the deadline is what to fix.
 
 ## Alternatives considered
 
@@ -60,11 +72,15 @@ the push. That is sometimes one more push. `--no-verify` stops mattering for
 pushes, since there is nothing to skip.
 
 A PR's evidence is now the green check plus whatever was run by hand. The PR
-template's request for local `make ci` output stands, so the author still runs
-the whole gate at least once per PR — at a time of their choosing, not on
-every push.
+template gains a checkbox for a hand-run `make ci` and its result, so the
+author still runs the whole gate at least once per PR — at a time of their
+choosing, not on every push.
 
-`lefthook.yml`, `AGENTS.md`, `README.md`, `docs/plan/testing.md` §4 and the
-workflow's header describe the new split. A clone with hooks installed before
+Each merge costs one more Actions run, on `main`. A red one there means two
+pull requests conflicted in meaning, and is fixed forward in a new PR.
+
+`lefthook.yml`, `AGENTS.md`, `README.md`, `DESIGN.md` §8,
+`docs/plan/testing.md` §4, the PR template and the workflow's header describe
+the new split. A clone with hooks installed before
 this change keeps a `pre-push` hook that calls lefthook, which now has nothing
 to run for it.

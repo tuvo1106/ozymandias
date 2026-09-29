@@ -42,13 +42,16 @@ pre-commit:
       run: gofmt -w {staged_files}
       stage_fixed: true
     go-lint:
-      glob: "*.{go,mod,sum}"
+      glob: "{*.go,go.mod,go.sum,.golangci.yml}"
       run: golangci-lint run ./...
     # Race tests + the coverage gates. Go's test cache (which also covers
     # -coverprofile runs) re-runs only packages affected by the change, so
     # this is a second or two when warm.
+    # testdata and the coverage gates too: with no pre-push hook (ADR-0024), a
+    # commit that only edits a golden or a threshold would otherwise reach
+    # Actions untested.
     go-test:
-      glob: "*.{go,mod,sum,yaml}"
+      glob: "{*.go,go.mod,go.sum,*.yaml,**/testdata/**,scripts/check-coverage.sh,scripts/coverage-thresholds.txt}"
       run: scripts/check-coverage.sh > /tmp/ozymandias-precommit-test.log 2>&1 || { grep -E "✗|FAIL|panic|--- " /tmp/ozymandias-precommit-test.log; exit 1; }
 
     # --- repo-wide checks (grep-based, instant) --------------------------------

@@ -56,10 +56,13 @@ what "done" means:
    - **Batch.** One PR per milestone, or per large coherent chunk of one, not
      one per feature slice. Slices are still separate, well-described
      *commits* on the branch, so history stays reviewable.
-   - **pre-commit is the fast gate**: the checks for what you staged. There
-     is no pre-push hook. **GitHub Actions is the full gate**: it runs
-     `make ci`'s targets on every PR, `ci` is a required check, and a PR
-     merges only when it is green on the head commit. Run `make ci` by hand
+   - **pre-commit is the fast gate**: the checks for what you staged. Never
+     `--no-verify` a commit, except a WIP commit you fix before pushing — it
+     is the only local gate. There is no pre-push hook. **GitHub Actions is
+     the full gate**: it runs the checks `make ci` runs (plus a web
+     production build) on every PR and on every push to main, `ci` is a
+     required check, and a PR merges only when it is green on the head
+     commit. Run `make ci` by hand
      once before opening a PR (it runs on the efficiency cores, so it does
      not heat the laptop) and put that evidence, plus `make smoke` when
      runtime behaviour changed, in the PR description. Batch fixes so a

@@ -10,6 +10,9 @@
 
 <!-- How was this verified? Which test layers from docs/plan/testing.md does this add (unit / property / differential / fuzz / crash / golden / smoke)? -->
 
+- [ ] `make ci` run by hand on this branch (ADR-0024: there is no pre-push hook), and its result:
+- [ ] `make smoke`, if runtime behaviour changed
+
 ## Docs
 
 - [ ] `CHANGELOG.md` updated under `[Unreleased]`, if user-visible

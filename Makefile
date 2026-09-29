@@ -1,7 +1,9 @@
 # ozymandias — developer entry points. `make help` lists them.
 #
-# CI calls these same targets (.github/workflows/ci.yml), so "green locally"
-# and "green in CI" mean the same thing.
+# CI runs the same checks (.github/workflows/ci.yml) — lint through
+# golangci-lint-action rather than `make lint`, and a web production build on
+# top — so "green locally" and "green in CI" mean the same thing, bar that
+# build.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -22,11 +24,17 @@ CI_FUZZTIME ?= 10s
 # pre-push hook. Measured: internal/tsdb/db, the slowest package, 32s at full
 # priority and 75s in the background; the whole gate about 140s and 207s.
 # Fuzzing is time-boxed and takes as long either way. CI_PRIORITY=full
-# restores the fast, hot run. Where taskpolicy
+# restores the fast, hot run — and is the first thing to try if a timing-
+# sensitive test (an Eventually with a 2s deadline) fails only here: then the
+# deadline, not the priority, is what to fix. Where taskpolicy
 # does not exist (Linux, GitHub Actions — which runs the targets one by one
 # anyway) this is a no-op.
 CI_PRIORITY ?= background
-CI_NICE := $(if $(and $(filter background,$(CI_PRIORITY)),$(shell command -v taskpolicy 2>/dev/null)),taskpolicy -c background,)
+ifeq ($(filter background full,$(CI_PRIORITY)),)
+$(error CI_PRIORITY must be background or full, not "$(CI_PRIORITY)")
+endif
+# Recursive (=), so the taskpolicy probe runs only when the ci recipe uses it.
+CI_NICE = $(if $(and $(filter background,$(CI_PRIORITY)),$(shell command -v taskpolicy 2>/dev/null)),taskpolicy -c background,)
 
 .PHONY: help
 help: ## List targets
