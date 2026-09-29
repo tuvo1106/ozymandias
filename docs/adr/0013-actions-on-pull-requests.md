@@ -1,6 +1,6 @@
 # ADR-0013: GitHub Actions runs on pull requests; the hooks stay the fast gate
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0024](0024-actions-is-the-full-gate.md)
 - **Date:** 2026-09-23
 - **Supersedes:** [ADR-0010](0010-local-first-ci.md)
 

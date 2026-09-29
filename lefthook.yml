@@ -22,18 +22,15 @@ commit-msg:
           exit 1
         fi
 
-# The hooks are the fast gate (ADR-0013): pre-commit runs every quick check on
-# each commit, pre-push runs the complete `make ci`, and GitHub Actions re-runs
-# `make ci` on the PR as a backstop. `--no-verify` skips the local ones — don't,
-# except for a WIP commit you will fix before pushing.
+# pre-commit is the fast gate: it runs every quick check on each commit.
+# GitHub Actions is the full one, running `make ci`'s targets on every PR as a
+# required check (ADR-0024). There is deliberately no pre-push hook: it ran the
+# whole of `make ci` again on every push, a copy of the check every merge
+# already waits for. Run `make ci` by hand before opening a PR. `--no-verify`
+# skips pre-commit — don't, except for a WIP commit you will fix before pushing.
 #
 # The gates check the working tree, not only what's staged: stash or commit
 # unrelated edits first, or a commit can pass or fail because of them.
-
-pre-push:
-  commands:
-    make-ci:
-      run: make ci
 
 pre-commit:
   parallel: true
@@ -45,13 +42,16 @@ pre-commit:
       run: gofmt -w {staged_files}
       stage_fixed: true
     go-lint:
-      glob: "*.{go,mod,sum}"
+      glob: "{*.go,go.mod,go.sum,.golangci.yml}"
       run: golangci-lint run ./...
     # Race tests + the coverage gates. Go's test cache (which also covers
     # -coverprofile runs) re-runs only packages affected by the change, so
     # this is a second or two when warm.
+    # testdata and the coverage gates too: with no pre-push hook (ADR-0024), a
+    # commit that only edits a golden or a threshold would otherwise reach
+    # Actions untested.
     go-test:
-      glob: "*.{go,mod,sum,yaml}"
+      glob: "{*.go,go.mod,go.sum,*.yaml,**/testdata/**,scripts/check-coverage.sh,scripts/coverage-thresholds.txt}"
       run: scripts/check-coverage.sh > /tmp/ozymandias-precommit-test.log 2>&1 || { grep -E "✗|FAIL|panic|--- " /tmp/ozymandias-precommit-test.log; exit 1; }
 
     # --- repo-wide checks (grep-based, instant) --------------------------------

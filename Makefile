@@ -1,7 +1,9 @@
 # ozymandias — developer entry points. `make help` lists them.
 #
-# CI calls these same targets (.github/workflows/ci.yml), so "green locally"
-# and "green in CI" mean the same thing.
+# CI runs the same checks (.github/workflows/ci.yml) — lint through
+# golangci-lint-action rather than `make lint`, and a web production build on
+# top — so "green locally" and "green in CI" mean the same thing, bar that
+# build.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -12,6 +14,27 @@ LDFLAGS  := -s -w -X $(MODULE)/internal/buildinfo.Version=$(VERSION)
 COMPOSE  := OZY_VERSION=$(VERSION) OZY_HOSTNAME=$(shell hostname -s) docker compose -f deploy/docker-compose.yml
 FUZZTIME ?= 30s
 CI_FUZZTIME ?= 10s
+
+# `make ci` on a laptop runs at background priority: on macOS, `taskpolicy -c
+# background` keeps it (and every process it starts) on the efficiency cores.
+# Every tool in the gate sizes itself to all the cores — `go test -p`, each
+# race binary's GOMAXPROCS, the fuzz workers, vitest's pool — so at full
+# priority a run pinned all ten and heated the machine for two and a half
+# minutes; it used to do that on every push, until ADR-0024 took it off the
+# pre-push hook. Measured: internal/tsdb/db, the slowest package, 32s at full
+# priority and 75s in the background; the whole gate about 140s and 207s.
+# Fuzzing is time-boxed and takes as long either way. CI_PRIORITY=full
+# restores the fast, hot run — and is the first thing to try if a timing-
+# sensitive test (an Eventually with a 2s deadline) fails only here: then the
+# deadline, not the priority, is what to fix. Where taskpolicy
+# does not exist (Linux, GitHub Actions — which runs the targets one by one
+# anyway) this is a no-op.
+CI_PRIORITY ?= background
+ifeq ($(filter background full,$(CI_PRIORITY)),)
+$(error CI_PRIORITY must be background or full, not "$(CI_PRIORITY)")
+endif
+# Recursive (=), so the taskpolicy probe runs only when the ci recipe uses it.
+CI_NICE = $(if $(and $(filter background,$(CI_PRIORITY)),$(shell command -v taskpolicy 2>/dev/null)),taskpolicy -c background,)
 
 .PHONY: help
 help: ## List targets
@@ -74,7 +97,11 @@ sdk-check: ## Both SDKs: install, typecheck, lint, tests with their 90% gates
 	cd sdk/python && uv sync --locked -q && uv run ruff check && uv run ruff format --check && uv run mypy && uv run pytest -q
 
 .PHONY: ci
-ci: lint test docs-check web-check sdk-check ## The full local gate (runs on git push via lefthook)
+ci: ## The full gate by hand, at background priority (Actions runs it on every PR; CI_PRIORITY=full for speed)
+	$(CI_NICE) $(MAKE) ci-gate
+
+.PHONY: ci-gate
+ci-gate: lint test docs-check web-check sdk-check
 	$(MAKE) fuzz FUZZTIME=$(CI_FUZZTIME)
 
 # --- run ---------------------------------------------------------------------
