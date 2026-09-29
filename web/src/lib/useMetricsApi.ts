@@ -11,7 +11,7 @@
  */
 import { keepPreviousData, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import type { ExplorerState } from "./explorerState";
-import { fetchQuery, type QueryResult } from "./metricsApi";
+import { fetchLegacyQuery, fetchQuery, type QueryResult } from "./metricsApi";
 import { resolveTimeRange, type TimeRange } from "./timeRange";
 
 /** How often a live view re-queries. */
@@ -47,6 +47,11 @@ export interface ExplorerAnswer {
   result: QueryResult;
 }
 
+/** The cache key of the explorer's answer to `q` over `range`. */
+export function explorerKey(q: string, range: TimeRange): readonly unknown[] {
+  return ["metrics", "query", q, rangeKey(range)];
+}
+
 /**
  * The explorer's chart query. Idle without a query; refetches every
  * REFRESH_INTERVAL_MS while shouldAutoRefresh holds — and TanStack Query
@@ -63,7 +68,7 @@ export function useExplorerQuery(
   now: () => number = Date.now,
 ): UseQueryResult<ExplorerAnswer> {
   return useQuery({
-    queryKey: ["metrics", "query", state.q, rangeKey(state.range)],
+    queryKey: explorerKey(state.q, state.range),
     queryFn: async ({ signal }) => ({
       asked: state.q,
       result: await fetchQuery(state.q, resolveTimeRange(state.range, now()), fetch, signal),
@@ -72,5 +77,25 @@ export function useExplorerQuery(
     retry: false,
     refetchInterval: shouldAutoRefresh(state) ? REFRESH_INTERVAL_MS : false,
     placeholderData: keepPreviousData,
+  });
+}
+
+/**
+ * The server's translation of an M1 link: its answer to the link's
+ * structured parameters, whose `query` is what they mean in the query
+ * language. Idle unless the link has them and no `q`. Not retried, for the
+ * same reasons as [[useExplorerQuery]], and not refetched: the page replaces
+ * the parameters with the translation as soon as it has one.
+ */
+export function useLegacyTranslation(
+  state: ExplorerState,
+  now: () => number = Date.now,
+): UseQueryResult<QueryResult> {
+  return useQuery({
+    queryKey: ["metrics", "legacy", state.legacy, rangeKey(state.range)],
+    queryFn: ({ signal }) => fetchLegacyQuery(state.legacy, resolveTimeRange(state.range, now()), fetch, signal),
+    enabled: state.q === "" && state.legacy !== "",
+    retry: false,
+    staleTime: Infinity,
   });
 }

@@ -44,17 +44,26 @@ export function QueryEditor({ label, value, onChange, variables, onSubmit }: Que
   const listId = `${id}-list`;
   const ref = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(value.length);
-  // The last text this box handed to onChange. A value that differs from it
-  // was put here from outside — the Explorer's back/forward, a Format click —
-  // and the caret recorded for the old text is a position in some other
-  // query, which would complete the wrong token. It goes to the end instead.
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  // The last text this box handed out through [[emit]]. A value that differs
+  // from it was put here from outside — the Explorer's back/forward, a Format
+  // click — and what was recorded for the old text describes some other
+  // query: the caret is a position in it, and the list and its highlight are
+  // its completions, which Enter would insert. The caret goes to the end and
+  // the list closes, as for a box that has just been handed new text.
   const [own, setOwn] = useState(value);
   if (value !== own) {
     setOwn(value);
     setCaret(value.length);
+    setOpen(false);
+    setActive(-1);
   }
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(-1);
+  /** Every edit made *in* this box goes through here, and nothing else does. */
+  const emit = (text: string) => {
+    setOwn(text);
+    onChange(text);
+  };
   const ctx = completionContext(value, caret);
   const list = useCompletions(ctx, variables);
   const verdict = useQueryValidation(value);
@@ -81,8 +90,7 @@ export function QueryEditor({ label, value, onChange, variables, onSubmit }: Que
   const choose = (item: Completion) => {
     if (ctx.kind === "none") return;
     const next = applyCompletion(value, ctx, item);
-    setOwn(next.text);
-    onChange(next.text);
+    emit(next.text);
     setCaret(next.caret);
     setActive(-1);
     // Keep completing: after `sum:` comes a metric, after a metric a key.
@@ -137,8 +145,7 @@ export function QueryEditor({ label, value, onChange, variables, onSubmit }: Que
           rows={Math.min(4, value.split("\n").length)}
           value={value}
           onChange={(e) => {
-            setOwn(e.target.value);
-            onChange(e.target.value);
+            emit(e.target.value);
             setCaret(e.target.selectionStart);
             setOpen(true);
             setActive(-1);
@@ -155,6 +162,8 @@ export function QueryEditor({ label, value, onChange, variables, onSubmit }: Que
         />
         {shown ? <Suggestions id={listId} list={list} active={active} onChoose={choose} /> : null}
       </div>
+      {/* Not emit: a reformat is new text handed to the box, and the caret
+          and list should be treated as for any other. */}
       <Verdict id={`${id}-verdict`} text={value} verdict={verdict} onFormat={onChange} />
     </div>
   );

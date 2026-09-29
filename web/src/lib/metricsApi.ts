@@ -152,14 +152,21 @@ export async function fetchTagValues(
   return stringList(await getJSON(`/api/v1/tags/values?${q}`, fetchImpl, signal), "values", "/api/v1/tags/values");
 }
 
+/** The `POST /api/v1/query` body the Explorer sends. */
+export interface QueryBody {
+  q: string;
+  from: number;
+  to: number;
+}
+
 /**
- * The `POST /api/v1/query` body for a query and a resolved window.
- * `interval` is left to the server (range/300 rounded to 10 s) unless given.
- * POST, as [[postJSON]] says why: the query is free text the author typed,
- * possibly over several lines, and does not belong in a URL.
+ * The body for a query and a resolved window; the interval is left to the
+ * server (range/300 rounded to 10 s). POST, as [[postJSON]] says why: the
+ * query is free text the author typed, possibly over several lines, and does
+ * not belong in a URL.
  */
-export function queryBody(q: string, range: ResolvedRange, interval?: number): Record<string, unknown> {
-  return { q, from: range.from, to: range.to, ...(interval !== undefined ? { interval } : {}) };
+export function queryBody(q: string, range: ResolvedRange): QueryBody {
+  return { q, from: range.from, to: range.to };
 }
 
 function isPoint(v: unknown): v is [number, number | null] {
@@ -192,6 +199,27 @@ export function isQueryResult(v: unknown): v is QueryResult {
     v.series.every(isSeries) &&
     isStringArray(v.warnings)
   );
+}
+
+/**
+ * Runs an M1 link's structured parameters (`metric=…&filter=…`, as
+ * explorerState's legacyParams carries them) and validates the result, whose `query` is
+ * the server's translation. GET, because that is the verb those parameters
+ * were written for and the only one they fit: they are short, and already a
+ * query string.
+ */
+export async function fetchLegacyQuery(
+  legacy: string,
+  range: ResolvedRange,
+  fetchImpl: FetchLike = fetch,
+  signal?: AbortSignal,
+): Promise<QueryResult> {
+  const p = new URLSearchParams(legacy);
+  p.set("from", String(range.from));
+  p.set("to", String(range.to));
+  const body = await getJSON(`/api/v1/query?${p}`, fetchImpl, signal);
+  if (!isQueryResult(body)) throw new ApiError("ozyd sent an unexpected /api/v1/query response");
+  return body;
 }
 
 /** Runs a query and validates the result. */

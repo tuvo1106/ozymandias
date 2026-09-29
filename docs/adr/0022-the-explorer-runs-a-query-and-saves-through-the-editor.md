@@ -39,9 +39,15 @@ author never saw.
 - On `/edit`, `add` is removed from the URL once read, so a reload after
   saving does not add the widget twice. On `/new` it stays: it is the seed, like
   `?copy=`, and nothing has been saved yet to add it to twice.
-- M1 links (`?metric=…&filter=…&by=…&agg=…`) are translated to `q` on read, the
-  same translation the server makes for those parameters, so an old link
-  charts what it charted and shows it as text. The pickers are removed.
+- M1 links (`?metric=…&filter=…&by=…&agg=…`) are **sent to the server as they
+  are**, which already accepts them (api.md, "The M1 structured parameters"),
+  and the `query` its answer says it ran replaces them in the URL — replacing,
+  not pushing, since back to parameters that mean the same thing is not a
+  step. That answer seeds the chart, so nothing is asked twice. If the server
+  refuses them, the page says so in the server's words, the parameters stay in
+  the URL, and **Clear** leaves. The pickers are removed.
+- A blank box runs nothing, by button or key: Run never means "clear". Clearing
+  is its own button.
 
 ## Alternatives considered
 
@@ -50,11 +56,15 @@ author never saw.
 | Chart the draft once typing pauses, as the dashboard preview does | The preview is not in the URL; the Explorer is. Pushing per pause fills history with half-queries, replacing loses "back to the previous query", and either way a link can name a query nobody finished. The editor's parse verdict already answers "is this valid?" as you type, which is most of what a live chart would give. |
 | `PUT` from the Explorer | A second save path with a smaller set of answers, and a widget placed where the author did not see it. Opening the editor costs one more click and reuses everything. |
 | Keep the pickers beside the text box | Two editors of one query means translating in both directions, and the text language says things (`by`, functions, arithmetic) the pickers cannot, so the pickers would have to refuse to show some queries. The box completes metrics, tag keys and values, which is what the pickers were for. |
+| Translate M1 parameters in the browser | A second implementation of rules the server enforces. Both attempts at it went wrong in review: the first fell back to `avg` for an aggregator it did not list, charting a different question than the link asked; the second kept every piece verbatim for the parser to refuse, and `agg=sum:other{*} + avg` became a query that *parses* — exactly the injection the server's allowlist exists to refuse. The server is the one translator. |
 | Answer `?add=` in router state instead of the URL | Router state is gone on reload, so `/new` would reload as a blank dashboard — the same reason `?copy=` is in the URL. |
 
 ## Consequences
 
-- A link to the Explorer is always a query and the chart that answers it.
+- A link to the Explorer is always a query and the chart that answers it. An M1
+  link charts what the server's M1 parameters chart — for a link M1's own
+  explorer wrote, the same chart it showed then — and costs one GET to learn
+  its query.
   Typing changes nothing until Run, which is one keystroke more than a live
   chart.
 - Saving from the Explorer gets every save state the editor has, and every

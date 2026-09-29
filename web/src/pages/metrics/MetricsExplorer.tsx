@@ -1,11 +1,19 @@
-import { useMemo, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import { TimeseriesChart } from "../../charts/TimeseriesChart";
 import { reduceSeries, type Reducer } from "../../lib/dashboard";
 import { alignSeries, formatValue, seriesLabel } from "../../lib/chartData";
 import { parseExplorerState, serializeExplorerState, type ExplorerState } from "../../lib/explorerState";
 import { ApiError, type QueryResult } from "../../lib/metricsApi";
-import { REFRESH_INTERVAL_MS, shouldAutoRefresh, useExplorerQuery, type ExplorerAnswer } from "../../lib/useMetricsApi";
+import {
+  explorerKey,
+  REFRESH_INTERVAL_MS,
+  shouldAutoRefresh,
+  useExplorerQuery,
+  useLegacyTranslation,
+  type ExplorerAnswer,
+} from "../../lib/useMetricsApi";
 import { QueryEditor } from "../dashboards/editor/QueryEditor";
 import { SaveToDashboard } from "./SaveToDashboard";
 import { TimeRangePicker } from "./TimeRangePicker";
@@ -19,13 +27,29 @@ import { TimeRangePicker } from "./TimeRangePicker";
  * always answers a query the author finished, a link always names the query
  * its chart answers, and back/forward steps through queries rather than
  * keystrokes (ADR-0022).
+ *
+ * A link with M1's parameters instead of `q` is sent to the server as it is,
+ * and the query the server says it ran replaces them in the URL — its answer
+ * seeding the chart, so nothing is asked twice. If the server refuses them,
+ * the page says so in its words, and the parameters stay in the URL.
  */
 export function MetricsExplorer() {
   const [params, setParams] = useSearchParams();
   const state = useMemo(() => parseExplorerState(params), [params]);
   const update = (patch: Partial<ExplorerState>) => setParams(serializeExplorerState({ ...state, ...patch }));
   const query = useExplorerQuery(state);
+  const legacy = useLegacyTranslation(state);
+  const client = useQueryClient();
   const autoRefresh = shouldAutoRefresh(state);
+
+  // An M1 link, translated: from here on it is an ordinary `q` link. Replace,
+  // not push — back should not return to parameters that mean the same.
+  const translated = legacy.data?.query ?? "";
+  useEffect(() => {
+    if (state.q || !state.legacy || !legacy.data || !translated) return;
+    client.setQueryData<ExplorerAnswer>(explorerKey(translated, state.range), { asked: translated, result: legacy.data });
+    setParams(serializeExplorerState({ ...state, q: translated, legacy: "" }), { replace: true });
+  }, [state, legacy.data, translated, client, setParams]);
 
   // The draft follows the URL when the URL changes under it — back/forward,
   // a pasted link — and otherwise is the author's. Adjusted during render,
@@ -39,8 +63,12 @@ export function MetricsExplorer() {
   const edited = draft.trim() !== state.q;
   // One guard for the button and the key. A blank box runs nothing: there
   // is nothing to ask — a refetch would send `q=` for a 400 nobody sees —
-  // and "run" must not quietly mean "clear the chart" either.
+  // and "run" must not quietly mean "clear the chart"; Clear says that.
   const canRun = draft.trim() !== "";
+  const clear = () => {
+    setDraft("");
+    update({ q: "", legacy: "" });
+  };
   const run = () => {
     if (!canRun) return;
     if (edited) update({ q: draft.trim() });
@@ -62,9 +90,23 @@ export function MetricsExplorer() {
           >
             Run
           </button>
-          {edited && state.q !== "" ? (
+          {state.q !== "" || state.legacy !== "" ? (
+            <button
+              type="button"
+              onClick={clear}
+              className="rounded-md border border-zinc-300 px-3 py-1 text-sm hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              Clear
+            </button>
+          ) : null}
+          {edited && canRun && state.q !== "" ? (
             <span role="status" className="text-xs text-amber-700 dark:text-amber-400">
               Edited, not run: the chart is still the query in the URL.
+            </span>
+          ) : null}
+          {!canRun && state.q !== "" ? (
+            <span role="status" className="text-xs text-zinc-500">
+              The box is empty; the chart is still the query in the URL. Clear removes it.
             </span>
           ) : null}
           <TimeRangePicker key={JSON.stringify(state.range)} range={state.range} onChange={(range) => update({ range })} />
@@ -81,11 +123,15 @@ export function MetricsExplorer() {
             Auto-refresh every {REFRESH_INTERVAL_MS / 1000}s
           </label>
         </div>
-        <SaveToDashboard q={state.q} edited={edited} />
+        <SaveToDashboard q={state.q} edited={edited && canRun} />
       </section>
 
       <section aria-label="Chart" className="flex flex-col gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
-        <ChartArea q={state.q} query={query} />
+        {state.q === "" && state.legacy !== "" ? (
+          <LegacyArea legacy={state.legacy} translation={legacy} />
+        ) : (
+          <ChartArea q={state.q} query={query} />
+        )}
       </section>
     </div>
   );
@@ -156,15 +202,41 @@ function ChartArea({ q, query }: ChartAreaProps) {
   );
 }
 
-function Failure({ error }: { error: Error }) {
+/**
+ * An M1 link on its way to being a `q` link, or stopped: translating, refused
+ * by the server (the parameters stay in the URL, and the message is the
+ * server's), not answered, or answered without saying what it ran — which
+ * would otherwise leave a link that charts nothing and says nothing.
+ */
+function LegacyArea({ legacy, translation }: { legacy: string; translation: ReturnType<typeof useLegacyTranslation> }) {
+  const shown = [...new URLSearchParams(legacy)].map(([k, v]) => `${k}=${v}`).join("&");
+  const params = <code className="font-mono">{shown}</code>;
+  if (translation.error) return <Failure error={translation.error} what={<>this link's M1 parameters, {params}</>} />;
+  if (translation.data && !translation.data.query)
+    return (
+      <p role="alert" className="text-sm text-red-700 dark:text-red-400">
+        ozyd answered this link's M1 parameters, {params}, without saying what query they mean, so there is nothing to put in the box.
+      </p>
+    );
+  return (
+    <p role="status" className="text-zinc-500">
+      Asking ozyd what this link's M1 parameters, {params}, mean as a query…
+    </p>
+  );
+}
+
+function Failure({ error, what = "this query" }: { error: Error; what?: ReactNode }) {
   // 400 is the query's fault: asking again will get the same answer. Anything
   // else — 503 out of time, 500, no answer at all — might not.
   const refused = error instanceof ApiError && error.status === 400;
   return (
     <div role="alert" className="text-sm text-red-700 dark:text-red-400">
-      <p className="font-medium">{refused ? "ozyd refused this query:" : "ozyd did not answer this query:"}</p>
+      <p className="font-medium">
+        {refused ? "ozyd refused " : "ozyd did not answer "}
+        {what}:
+      </p>
       <p className="whitespace-pre-wrap font-mono text-xs">{error.message}</p>
-      {refused ? null : <p className="mt-1 text-xs text-zinc-500">Run it again to retry.</p>}
+      {refused ? null : <p className="mt-1 text-xs text-zinc-500">Reload or run it again to retry.</p>}
     </div>
   );
 }

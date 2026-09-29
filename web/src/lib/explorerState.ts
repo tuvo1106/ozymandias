@@ -10,11 +10,12 @@
  *
  * `q` is the query language as `/api/v1/query` takes it. M1's explorer wrote
  * the structured parameters instead (`metric`, `filter=k:v,!k2:v2`, `by`,
- * `agg`); a link from then is translated into the same query the server would
- * have run for it, so it still charts what it charted, and the first change
- * rewrites it as `q`. The range and `live` are forgiving — a hand-edited or
- * stale value degrades to its default rather than failing — and serializing
- * omits defaults so ordinary links stay short.
+ * `agg`). Those are carried as they are, in `legacy`, for the server to
+ * translate — it is the one translator, and a second one here would be a
+ * second place to get "which of these does ozyd refuse?" wrong (ADR-0022).
+ * The range and `live` are forgiving — a hand-edited or stale value degrades
+ * to its default rather than failing — and serializing omits defaults so
+ * ordinary links stay short.
  */
 import { isRangePreset, type RangePreset, type TimeRange } from "./timeRange";
 
@@ -22,6 +23,11 @@ import { isRangePreset, type RangePreset, type TimeRange } from "./timeRange";
 export interface ExplorerState {
   /** The metricql query that is charted; "" means none has been run. */
   q: string;
+  /**
+   * M1's structured parameters, as a query string, when the link has them
+   * and no `q`: "" otherwise. The page asks the server to translate them.
+   */
+  legacy: string;
   range: TimeRange;
   /** Whether a relative range re-queries every 10 s. */
   live: boolean;
@@ -32,51 +38,26 @@ const DEFAULT_PRESET: RangePreset = "1h";
 /** The state of a fresh explorer: no query, last hour, live. */
 export const DEFAULT_EXPLORER_STATE: ExplorerState = {
   q: "",
+  legacy: "",
   range: { kind: "relative", preset: DEFAULT_PRESET },
   live: true,
 };
 
-function splitList(s: string | null): string[] {
-  if (!s) return [];
-  return s
-    .split(",")
-    .map((x) => x.trim())
-    .filter((x) => x !== "");
-}
+/** The M1 parameters, in the order M1 wrote them. */
+const LEGACY_PARAMS = ["metric", "filter", "by", "agg"] as const;
 
 /**
- * The query an M1 link (`?metric=…&filter=…&by=…&agg=…`) asked for, or ""
- * when it names no metric.
- *
- * The server's own translation of those parameters (`structuredExpression`
- * in internal/api/query.go, api.md "The M1 structured parameters"), done here
- * so the text lands in the query box where it can be read and edited:
- *
- * - `agg` defaults to `avg` and is otherwise kept as sent — `p99`, `count`
- *   and `dist` included;
- * - a bare `k` (or `k:`) filter term is widened to `k:*`, which the query
- *   language can say and "has the bare tag k" it cannot — the server warns
- *   about this, and here the widened term is simply in the text;
- * - terms and keys keep their order and repeats.
- *
- * Where the server would *refuse* a piece — an aggregator it does not know, a
- * term with no key, a brace in a value — the piece is kept, so the query box
- * shows the parser refusing it rather than the page charting a different
- * question from the one the link names.
+ * An M1 link's parameters, exactly as sent, or "" when it has none. Not
+ * trimmed or checked: the server refuses what it refuses, and the page says
+ * so in the server's words.
  */
-export function legacyQuery(params: URLSearchParams): string {
-  const metric = (params.get("metric") ?? "").trim();
-  if (!metric) return "";
-  const agg = (params.get("agg") ?? "").trim() || "avg";
-  const filters = splitList(params.get("filter")).map((term) => {
-    const negate = term.startsWith("!");
-    const body = negate ? term.slice(1) : term;
-    const i = body.indexOf(":");
-    const widened = i < 0 ? `${body}:*` : i === body.length - 1 ? `${body}*` : body;
-    return `${negate ? "!" : ""}${widened}`;
-  });
-  const by = splitList(params.get("by"));
-  return `${agg}:${metric}{${filters.length ? filters.join(",") : "*"}}` + (by.length ? ` by {${by.join(",")}}` : "");
+export function legacyParams(params: URLSearchParams): string {
+  const out = new URLSearchParams();
+  for (const k of LEGACY_PARAMS) {
+    const v = params.get(k);
+    if (v !== null && v !== "") out.set(k, v);
+  }
+  return out.toString();
 }
 
 function parseRange(params: URLSearchParams): TimeRange {
@@ -103,7 +84,8 @@ function parseRange(params: URLSearchParams): TimeRange {
 export function parseExplorerState(params: URLSearchParams): ExplorerState {
   const q = (params.get("q") ?? "").trim();
   return {
-    q: q || legacyQuery(params),
+    q,
+    legacy: q ? "" : legacyParams(params),
     range: parseRange(params),
     live: params.get("live") !== "0",
   };
@@ -117,6 +99,9 @@ export function parseExplorerState(params: URLSearchParams): ExplorerState {
 export function serializeExplorerState(state: ExplorerState): URLSearchParams {
   const p = new URLSearchParams();
   if (state.q) p.set("q", state.q);
+  // Kept until the server has translated them, so a range change while it
+  // does — or after it refused them — still names the same question.
+  else for (const [k, v] of new URLSearchParams(state.legacy)) p.set(k, v);
   if (state.range.kind === "absolute") {
     p.set("from", String(state.range.from));
     p.set("to", String(state.range.to));

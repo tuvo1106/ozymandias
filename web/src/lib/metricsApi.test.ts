@@ -1,6 +1,7 @@
 import {
   ApiError,
   fetchMetricNames,
+  fetchLegacyQuery,
   fetchQuery,
   fetchTagKeys,
   fetchTagValues,
@@ -109,12 +110,18 @@ describe("autocomplete endpoints", () => {
 });
 
 describe("queryBody", () => {
-  it("sends the query as q, with the window", () => {
-    expect(queryBody(q, { from: 100, to: 200 }, 10)).toEqual({ q, from: 100, to: 200, interval: 10 });
+  it("sends the query as q, with the window, and leaves the interval to the server", () => {
+    expect(queryBody(q, { from: 100, to: 200 })).toEqual({ q, from: 100, to: 200 });
   });
+});
 
-  it("leaves the interval to the server", () => {
-    expect(queryBody("sum:m{*}", { from: 1, to: 2 })).toEqual({ q: "sum:m{*}", from: 1, to: 2 });
+describe("fetchLegacyQuery", () => {
+  it("sends an M1 link's parameters as they are, with the window", async () => {
+    const { f, calls } = fakeFetch(json(result));
+    await expect(fetchLegacyQuery("metric=m&filter=canary&agg=p99", { from: 1, to: 2 }, f)).resolves.toEqual(result);
+    const url = new URL(calls[0]!, "http://h");
+    expect(url.pathname).toBe("/api/v1/query");
+    expect(Object.fromEntries(url.searchParams)).toEqual({ metric: "m", filter: "canary", agg: "p99", from: "1", to: "2" });
   });
 });
 

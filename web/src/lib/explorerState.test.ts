@@ -1,43 +1,21 @@
-import { DEFAULT_EXPLORER_STATE, legacyQuery, parseExplorerState, serializeExplorerState, type ExplorerState } from "./explorerState";
+import { DEFAULT_EXPLORER_STATE, legacyParams, parseExplorerState, serializeExplorerState, type ExplorerState } from "./explorerState";
 import { RANGE_PRESETS } from "./timeRange";
 
 const parse = (qs: string) => parseExplorerState(new URLSearchParams(qs));
-const legacy = (qs: string) => legacyQuery(new URLSearchParams(qs));
+const legacy = (qs: string) => legacyParams(new URLSearchParams(qs));
 
-describe("legacyQuery", () => {
-  // The server's translation of these parameters (internal/api/query.go,
-  // structuredExpression), so an M1 link charts what it always charted.
-  it.each([
-    ["metric=m", "avg:m{*}"],
-    ["metric=http.request.count&filter=env:dev,!route:/x&by=route,env&agg=max", "max:http.request.count{env:dev,!route:/x} by {route,env}"],
-    ["metric=m&filter=route:/api/*,url:http://x:8080", "avg:m{route:/api/*,url:http://x:8080}"],
-    ["metric=m&filter=%20env:dev%20,,&by=,a,,b", "avg:m{env:dev} by {a,b}"],
-    // Kept, as the server keeps them: not only avg, sum, min and max.
-    ["metric=lat&agg=p99", "p99:lat{*}"],
-    ["metric=lat&agg=count", "count:lat{*}"],
-    ["metric=lat&agg=dist", "dist:lat{*}"],
-    // "has the bare tag k" has no spelling; the server widens it to k:*.
-    ["metric=m&filter=canary,!canary,env:", "avg:m{canary:*,!canary:*,env:*}"],
-    // Repeats are the server's to keep, and it keeps them.
-    ["metric=m&filter=a:b,a:b&by=k,k", "avg:m{a:b,a:b} by {k,k}"],
-  ])("translates %s", (qs, want) => {
-    expect(legacy(qs)).toBe(want);
+describe("legacyParams", () => {
+  // The server is the one translator; a second one here would be a second
+  // place to decide what it refuses. So: exactly as sent, in M1's order.
+  it("carries M1's parameters exactly as sent", () => {
+    expect(legacy("agg=sum:other{*}%20%2B%20avg&by=Route&filter=canary,a:b}&metric=%20m&range=4h")).toBe(
+      new URLSearchParams({ metric: " m", filter: "canary,a:b}", by: "Route", agg: "sum:other{*} + avg" }).toString(),
+    );
   });
 
-  it("is nothing without a metric", () => {
-    expect(legacy("filter=env:dev&by=a&agg=sum")).toBe("");
-    expect(legacy("metric=%20")).toBe("");
-  });
-
-  // The server refuses these; translating them into something it would run
-  // would chart a question the link never asked. Kept, the box shows the
-  // parser refusing them.
-  it.each([
-    ["metric=m&agg=median", "median:m{*}"],
-    ["metric=m&filter=a:b}", "avg:m{a:b}}"],
-    ["metric=m&filter=:dev", "avg:m{:dev}"],
-  ])("keeps what the server would refuse: %s", (qs, want) => {
-    expect(legacy(qs)).toBe(want);
+  it("is nothing without them, and leaves out empty ones", () => {
+    expect(legacy("q=sum:x{*}&range=4h")).toBe("");
+    expect(legacy("metric=m&filter=&by=")).toBe("metric=m");
   });
 });
 
@@ -49,17 +27,18 @@ describe("parseExplorerState", () => {
   it("reads every field", () => {
     expect(parse("q=sum:x{*}&range=15m&live=0")).toEqual({
       q: "sum:x{*}",
+      legacy: "",
       range: { kind: "relative", preset: "15m" },
       live: false,
     });
   });
 
-  it("reads an M1 link as the query it asked for", () => {
-    expect(parse("metric=m&by=a&range=4h").q).toBe("avg:m{*} by {a}");
+  it("keeps an M1 link's parameters for the server to translate", () => {
+    expect(parse("metric=m&by=a&range=4h")).toMatchObject({ q: "", legacy: "metric=m&by=a" });
   });
 
   it("prefers q to M1's parameters when a link has both", () => {
-    expect(parse("q=sum:x{*}&metric=m").q).toBe("sum:x{*}");
+    expect(parse("q=sum:x{*}&metric=m")).toMatchObject({ q: "sum:x{*}", legacy: "" });
   });
 
   it("prefers a valid absolute range over a preset", () => {
@@ -91,9 +70,10 @@ describe("serializeExplorerState", () => {
     expect(serializeExplorerState(DEFAULT_EXPLORER_STATE).toString()).toBe("");
   });
 
-  it("writes q, never M1's parameters", () => {
-    const s = parse("metric=m&filter=!env:dev&agg=sum&from=1&to=2&live=0");
-    expect(decodeURIComponent(serializeExplorerState(s).toString())).toBe("q=sum:m{!env:dev}&from=1&to=2&live=0");
+  it("writes q, and M1's parameters only until there is a q", () => {
+    const legacyState = parse("metric=m&filter=!env:dev&agg=sum&from=1&to=2&live=0");
+    expect(decodeURIComponent(serializeExplorerState(legacyState).toString())).toBe("metric=m&filter=!env:dev&agg=sum&from=1&to=2&live=0");
+    expect(serializeExplorerState({ ...legacyState, q: "sum:m{*}", legacy: "" }).get("metric")).toBeNull();
   });
 
   // A small hand-rolled property test: random states survive the trip
@@ -107,8 +87,10 @@ describe("serializeExplorerState", () => {
     const word = () => ["sum:x{*}", "a b", "&=?", "ünï", "p95:y{r:/a/*} by {k}", "x{a:b}}", "#h", "+"][rnd(8)]!;
     for (let i = 0; i < 500; i++) {
       const from = rnd(1_000_000);
+      const q = rnd(4) === 0 ? "" : `${word()} ${word()}`;
       const s: ExplorerState = {
-        q: rnd(4) === 0 ? "" : `${word()} ${word()}`,
+        q,
+        legacy: q || rnd(2) === 0 ? "" : new URLSearchParams({ metric: word(), ...(rnd(2) ? { agg: word() } : {}) }).toString(),
         range:
           rnd(3) === 0
             ? { kind: "absolute", from, to: from + 1 + rnd(1000) }

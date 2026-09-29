@@ -81,7 +81,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   editor's completion and inline parse errors replaces M1's pickers; Run (or
   Ctrl/⌘+Enter) charts it, and the URL holds the query that was run
   (`?q=`). A legend table gives each line's last, avg, min and max. M1 links
-  (`?metric=&filter=&by=&agg=`) still open, as the equivalent query.
+  (`?metric=&filter=&by=&agg=`) still open: ozyd translates them, and the
+  query it ran replaces them in the URL.
   See docs/ui.md §2, ADR-0022.
 - **Save to dashboard** from the Metrics Explorer: opens a stored or new
   dashboard in the editor with a timeseries widget for the charted query

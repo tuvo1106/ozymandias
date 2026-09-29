@@ -58,8 +58,11 @@ const defaultApi: Api = (url) => {
       return { body: { values: ["dev", "prod"] } };
     case "/api/v1/query/validate":
       return { body: { ok: true, query: "x" } };
-    case "/api/v1/query":
-      return { body: queryBody(url.searchParams.get("q") ?? "") };
+    case "/api/v1/query": {
+      // An M1 request answers with its translation in `query`, as ozyd does.
+      const metric = url.searchParams.get("metric");
+      return { body: queryBody(metric ? `${url.searchParams.get("agg") ?? "avg"}:${metric}{*}` : (url.searchParams.get("q") ?? "")) };
+    }
     case "/api/v1/dashboards":
       return { body: dashboardList };
     default:
@@ -165,19 +168,62 @@ describe("MetricsExplorer", () => {
     expect(within(table).getAllByRole("row")[1]).toHaveTextContent("m{*}————");
   });
 
-  // M1 wrote structured parameters. A link from then still charts what it
-  // charted, now as text the author can read and edit.
-  it("opens an M1 link as the query it asked for, and rewrites it on the first change", async () => {
-    const f = mockApi();
-    const user = userEvent.setup();
-    const router = renderAt("/metrics/explorer?metric=http.request.count&by=route&agg=sum&filter=env:dev");
+  // M1 wrote structured parameters. The server is the one translator: its
+  // answer's `query` replaces them, and that answer draws the chart.
+  it("asks ozyd what an M1 link means, and becomes that query without asking twice", async () => {
+    const f = mockApi(
+      over((u) =>
+        u.searchParams.get("metric") ? { body: queryBody("sum:http.request.count{env:dev} by {route}") } : undefined,
+      ),
+    );
+    const router = renderAt("/metrics/explorer?metric=http.request.count&by=route&agg=sum&filter=env:dev&range=4h");
     await screen.findByTestId("chart");
+    await waitFor(() => expect(params(router).get("q")).toBe("sum:http.request.count{env:dev} by {route}"));
+    expect(params(router).has("metric")).toBe(false);
+    expect(params(router).get("range")).toBe("4h");
+    expect(router.state.historyAction).toBe("REPLACE");
     expect(box()).toHaveValue("sum:http.request.count{env:dev} by {route}");
-    expect(queryCalls(f)[0]?.searchParams.get("q")).toBe("sum:http.request.count{env:dev} by {route}");
+    const calls = queryCalls(f);
+    expect(calls).toHaveLength(1);
+    expect(Object.fromEntries(calls[0]!.searchParams)).toMatchObject({ metric: "http.request.count", by: "route", agg: "sum", filter: "env:dev" });
+  });
+
+  // What ozyd refuses, the page says it refused, in its words; nothing is
+  // charted in its place.
+  it("says ozyd refused an M1 link's parameters, and keeps them in the URL", async () => {
+    mockApi(over((u) => (u.searchParams.get("metric") ? { status: 400, body: { error: 'agg "sum:other{*} + avg": want one of avg, sum' } } : undefined)));
+    const user = userEvent.setup();
+    const router = renderAt(`/metrics/explorer?${new URLSearchParams({ metric: "m", agg: "sum:other{*} + avg" })}`);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("ozyd refused this link's M1 parameters, metric=m&agg=sum:other{*} + avg:");
+    expect(alert).toHaveTextContent('want one of avg, sum');
+    expect(screen.queryByTestId("chart")).not.toBeInTheDocument();
+    expect(box()).toHaveValue("");
     await user.selectOptions(screen.getByRole("combobox", { name: "Time range" }), "4h");
     await waitFor(() => expect(params(router).get("range")).toBe("4h"));
-    expect(params(router).get("q")).toBe("sum:http.request.count{env:dev} by {route}");
-    expect(params(router).has("metric")).toBe(false);
+    expect(params(router).get("agg")).toBe("sum:other{*} + avg");
+    // And Clear is the way out of a link that cannot be charted.
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(params(router).has("metric")).toBe(false));
+    expect(params(router).has("agg")).toBe(false);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("says so when ozyd answers an M1 link without saying what it ran", async () => {
+    mockApi(over((u) => (u.searchParams.get("metric") ? { body: queryBody("") } : undefined)));
+    const router = renderAt("/metrics/explorer?metric=m");
+    expect(await screen.findByRole("alert")).toHaveTextContent(/without saying what query they mean/);
+    expect(params(router).get("metric")).toBe("m");
+  });
+
+  it("says it is asking while the translation is on its way", async () => {
+    mockApi(over((u) => (u.searchParams.get("metric") ? new Promise(() => {}) : undefined)));
+    renderAt("/metrics/explorer?metric=m");
+    await waitFor(() =>
+      expect(within(screen.getByRole("region", { name: "Chart" })).getByRole("status")).toHaveTextContent(
+        "Asking ozyd what this link's M1 parameters, metric=m, mean as a query…",
+      ),
+    );
   });
 
   // Nothing to ask, and "run" must not mean "clear the chart".
@@ -188,6 +234,9 @@ describe("MetricsExplorer", () => {
     await user.click(await screen.findByRole("combobox", { name: "Query" }));
     await user.keyboard("{Control>}{Enter}{/Control}");
     expect(screen.getByRole("button", { name: "Run" })).toBeDisabled();
+    // The empty page's own case: Ctrl+Enter must not refetch a query of "".
+    await new Promise((r) => setTimeout(r, 50));
+    expect(queryCalls(f)).toHaveLength(0);
 
     await router.navigate(at(Q));
     await screen.findByTestId("chart");
@@ -197,6 +246,25 @@ describe("MetricsExplorer", () => {
     expect(params(router).get("q")).toBe(Q);
     expect(screen.getByTestId("chart")).toBeInTheDocument();
     expect(queryCalls(f).filter((u) => u.searchParams.get("q") === "")).toHaveLength(0);
+    // It says what the empty box means, rather than "edited, not run".
+    expect(screen.getByText(/The box is empty; the chart is still the query in the URL/)).toBeInTheDocument();
+    expect(screen.queryByText(/Edited, not run/)).not.toBeInTheDocument();
+    // An empty box is not an edit that Save to dashboard would be passing over.
+    expect(screen.queryByText(/Saves the charted query/)).not.toBeInTheDocument();
+  });
+
+  // Clearing is its own action, now that Run never does it.
+  it("clears the chart with Clear", async () => {
+    mockApi();
+    const user = userEvent.setup();
+    const router = renderAt(at(Q, "&range=4h"));
+    await screen.findByTestId("chart");
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    await waitFor(() => expect(params(router).has("q")).toBe(false));
+    expect(params(router).get("range")).toBe("4h");
+    expect(box()).toHaveValue("");
+    expect(screen.getByText("Write a query and run it (Ctrl+Enter) to chart it.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear" })).not.toBeInTheDocument();
   });
 
   it("says an edit has not been run, and keeps charting the URL's query until it is", async () => {
@@ -262,7 +330,7 @@ describe("MetricsExplorer", () => {
     expect(refused).not.toHaveTextContent(/retry/);
     await router.navigate(at("sum:big{*}"));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("ozyd did not answer this query:the query ran out of time"));
-    expect(screen.getByRole("alert")).toHaveTextContent("Run it again to retry.");
+    expect(screen.getByRole("alert")).toHaveTextContent("Reload or run it again to retry.");
   });
 
   // A previous query's lines under a failing query's text would read as its answer.

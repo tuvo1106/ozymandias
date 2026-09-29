@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useEffect, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -219,12 +219,35 @@ describe("QueryEditor text set from outside", () => {
     let set: ((q: string) => void) | undefined;
     const box = renderEditor({ outside: (s) => (set = s) });
     await userEvent.type(box, "avg:x");
-    // No user event: a click, a key-up or a focus would re-read the caret
-    // and hide the stale one, which is exactly what back/forward lacks.
+    // Two things put the caret at the new end: React's onSelect, when the
+    // browser reports the selection moving, and the box's own reset, for when
+    // it does not. jsdom reports it, so this pins the behaviour, not which of
+    // the two provides it — removing either alone leaves it passing (checked).
     act(() => set?.("sum:m{env:"));
     expect(box.value).toBe("sum:m{env:");
+    // Ctrl+Space as a bare keydown: its key-up would re-read the caret too.
+    fireEvent.keyDown(box, { key: " ", ctrlKey: true });
     expect(await screen.findByRole("option", { name: /^prod/ })).toBeInTheDocument();
     expect(screen.queryByRole("option", { name: /^mmm/ })).not.toBeInTheDocument();
+  });
+
+  // The old list's highlight is an index into completions of other text:
+  // Enter would insert whatever now sits at that index.
+  it("closes the list and drops its highlight, so Enter is a newline again", async () => {
+    mockApi((path) => (path === "/api/v1/metrics" ? { body: { metrics: ["m1", "m2", "m3"] } } : validator(path, new URLSearchParams(), { q: "" })));
+    let set: ((q: string) => void) | undefined;
+    const box = renderEditor({ outside: (s) => (set = s) });
+    await userEvent.type(box, "avg:m");
+    await screen.findByRole("option", { name: /^m2/ });
+    await userEvent.keyboard("{ArrowDown}{ArrowDown}");
+    expect(box).toHaveAttribute("aria-activedescendant");
+    // New text whose end is also a metric, so its own list would be ready
+    // to draw — and the old highlight would pick from it.
+    act(() => set?.("sum:m"));
+    expect(box).toHaveAttribute("aria-expanded", "false");
+    expect(box).not.toHaveAttribute("aria-activedescendant");
+    await userEvent.keyboard("{Enter}");
+    expect(box.value).toBe("sum:m\n");
   });
 
   // The example must be one the page would accept.

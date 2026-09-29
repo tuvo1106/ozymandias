@@ -70,9 +70,11 @@ down — running it again might); answered with no series; or, while a new
 query runs, the previous query's chart, dimmed and named. A refresh that fails
 keeps the last answer on screen with the time it is from.
 
-A link from M1 (`?metric=…&filter=…&by=…&agg=…`) still works: it is read as
-the query the server would have run for it, shown in the box, and rewritten as
-`?q=` on the first change.
+A link from M1 (`?metric=…&filter=…&by=…&agg=…`) still works: its parameters
+are sent to ozyd as they are, and the query ozyd says they mean replaces them
+in the URL and the box. If ozyd refuses them, the page says why in ozyd's
+words and leaves the link as it was. **Clear** empties the chart and the
+box — Run never does: a blank box runs nothing.
 
 **Save to dashboard** picks a stored dashboard (or a new one) and opens it in
 the editor with a timeseries widget for the charted query added and selected,
