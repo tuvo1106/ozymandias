@@ -215,9 +215,10 @@ func New(opts Options) *Aggregator {
 	a.watermark.Store(math.MinInt64)
 	a.first = math.MinInt64
 	if !opts.Started.IsZero() {
-		// A boundary at the very second the agent started counts as after
-		// it: whole seconds are the stamp's resolution.
-		a.first = floorTo(opts.Started.Unix()-1, a.interval) + a.interval
+		// Strictly after the start second, even when that second is a
+		// boundary: the agent before this one may have stopped in that same
+		// second and flushed the bucket it opens.
+		a.first = floorTo(opts.Started.Unix(), a.interval) + a.interval
 	}
 	return a
 }
@@ -386,7 +387,10 @@ func contextKey(kind Kind, name string, tags []string) string {
 // contexts idle for longer than the expiry. With final set it also emits the
 // open buckets — used once, at shutdown, when there is no later flush to wait
 // for. A restarted agent does not write that bucket again: it stamps
-// nothing before its first whole bucket (Options.Started).
+// nothing before its first whole bucket (Options.Started). A bucket that
+// starts after now is not emitted even then: it holds samples an agent
+// stopped within its first interval moved forward to its floor, and the
+// next agent, started before that boundary, has the same floor.
 func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.SketchSeries) {
 	began := time.Now()
 	nowS := now.Unix()
@@ -400,7 +404,7 @@ func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.Ske
 	for _, sh := range a.shards {
 		sh.mu.Lock()
 		for key, c := range sh.contexts {
-			out, sketches = a.flushContext(out, sketches, c, cutoff, final)
+			out, sketches = a.flushContext(out, sketches, c, cutoff, final, nowS)
 			if len(c.buckets) == 0 && nowS-c.lastSeen > a.expiry && (c.kind != Counter || c.next > c.lastData+a.expiry) {
 				delete(sh.contexts, key)
 				a.nContexts.Add(-1)
@@ -432,10 +436,10 @@ func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.Ske
 	return out, sketches
 }
 
-func (a *Aggregator) flushContext(out []wire.Series, sketches []wire.SketchSeries, c *aggContext, cutoff int64, final bool) ([]wire.Series, []wire.SketchSeries) {
+func (a *Aggregator) flushContext(out []wire.Series, sketches []wire.SketchSeries, c *aggContext, cutoff int64, final bool, nowS int64) ([]wire.Series, []wire.SketchSeries) {
 	starts := make([]int64, 0, len(c.buckets))
 	for s := range c.buckets {
-		if s < cutoff || final {
+		if s < cutoff || final && s <= nowS {
 			starts = append(starts, s)
 		}
 	}
