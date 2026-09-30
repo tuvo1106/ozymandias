@@ -102,6 +102,7 @@ func TestAgent_Validate(t *testing.T) {
 		"tag with pipe":       func(a *Agent) { a.Tags = []string{"a|b"} },
 		"bad log level":       func(a *Agent) { a.Log.Level = "chatty" },
 		"bad http addr":       func(a *Agent) { a.HTTP.Addr = "8126" },
+		"hostname with comma": func(a *Agent) { a.Hostname = "mac,mini" },
 	}
 	for name, mutate := range cases {
 		a := Default()

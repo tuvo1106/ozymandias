@@ -99,7 +99,7 @@ func Default() Agent {
 
 // Validate checks every section.
 func (a *Agent) Validate() error {
-	errs := []error{a.HTTP.Validate(), a.Log.Validate()}
+	errs := []error{a.HTTP.Validate(), a.Log.Validate(), base.ValidateHostname(a.Hostname)}
 	if u, err := url.Parse(a.Intake.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		errs = append(errs, fmt.Errorf("intake.url %q: want an absolute http(s) URL", a.Intake.URL))
 	}

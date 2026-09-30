@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,6 +17,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/agent/statsd"
 	"github.com/tuvo1106/ozymandias/internal/buildinfo"
 	"github.com/tuvo1106/ozymandias/internal/clock"
+	base "github.com/tuvo1106/ozymandias/internal/config"
 	"github.com/tuvo1106/ozymandias/internal/httpserve"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
@@ -71,13 +71,9 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 	if opts.Hostname == nil {
 		opts.Hostname = os.Hostname
 	}
-	host := cfg.Hostname
-	if host == "" {
-		h, err := opts.Hostname()
-		if err != nil {
-			return nil, fmt.Errorf("hostname is not configured and the OS hostname is unavailable: %w", err)
-		}
-		host = h
+	host, hostTag, err := base.ResolveHostname(cfg.Hostname, opts.Hostname)
+	if err != nil {
+		return nil, err
 	}
 	a := &Agent{cfg: cfg, log: opts.Logger, reg: opts.Registry, clock: opts.Clock, hostname: host, started: opts.Clock.Now()}
 
@@ -105,7 +101,6 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		Registry:      a.reg,
 		Logger:        a.log,
 	})
-	hostTag, _ := wire.NormalizeTag("host:" + host)
 	a.self = selfmetrics.NewReporter(a.reg, cfg.Aggregator.FlushInterval, hostTag)
 
 	if cfg.Statsd.Enabled {

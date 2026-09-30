@@ -26,7 +26,6 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/tsdb/db"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/head"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/naive"
-	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
 // Component is how ozyd identifies itself in health output and on its
@@ -139,15 +138,15 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		Clock: s.clock, Metrics: s.reg, Logger: s.log,
 	})
 
-	host := cfg.Hostname
-	if host == "" {
-		h, err := opts.Hostname()
-		if err != nil || h == "" {
-			h = Component
-		}
-		host = h
+	// Unlike the agent, ozyd does not refuse to start without a hostname:
+	// only its own metrics carry the tag, and "ozyd" still says whose they
+	// are. A configured name that cannot be a tag never gets here; Validate
+	// refused it.
+	_, hostTag, err := config.ResolveHostname(cfg.Hostname, opts.Hostname)
+	if err != nil {
+		s.log.Warn("no usable hostname; tagging self-metrics host:"+Component, "error", err)
+		hostTag = "host:" + Component
 	}
-	hostTag, _ := wire.NormalizeTag("host:" + host)
 	s.self = selfmetrics.NewReporter(s.reg, selfReportInterval, hostTag)
 
 	s.reg.Gauge("ozy.build.info", "component:"+Component, "version:"+buildinfo.Version).Set(1)
