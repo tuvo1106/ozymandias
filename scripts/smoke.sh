@@ -627,5 +627,28 @@ no_errors() { # <collector>
   python3 -c "import sys; sys.exit(0 if float('$errs') == 0 else 1)" || { echo "$1: $errs errors in 90s" >&2; return 1; }
 }
 check "without errors"                         no_errors host
+check "and no docker errors"                    no_errors docker
+
+# The Docker collector and the event watcher (ADR-0028). A container that
+# lives long enough to be polled shows up in container.*; one that exits at
+# once is never polled, and is counted only because the watcher saw its die.
+wait_sum() { # <query> <seconds> — until the window's sum is positive
+  local v i
+  for ((i = 0; i < $2; i++)); do
+    v=$(sum_window "$1")
+    [[ -n $v ]] && python3 -c "import sys; sys.exit(0 if float('$v') > 0 else 1)" && return 0
+    sleep 1
+  done
+  echo "$1: sum '$v' after $2s, want > 0" >&2
+  return 1
+}
+smoke_ct="ozy-smoke-$(date +%s)-$$"
+docker run -d --name "$smoke_ct-long" busybox sh -c 'sleep 45; exit 3' >/dev/null
+docker run --rm --name "$smoke_ct-short" busybox sh -c 'exit 7' >/dev/null || true
+check "a running container is polled"          wait_sum "max:container.memory.usage{container_name:$smoke_ct-long}" 45
+check "a container too brief to poll still counts" wait_sum "sum:container.exits{container_name:$smoke_ct-short,exit_code:7}" 30
+docker stop -t 0 "$smoke_ct-long" >/dev/null 2>&1 || true
+check "and so does a stopped one"              wait_sum "sum:container.exits{container_name:$smoke_ct-long}" 30
+docker rm -f "$smoke_ct-long" >/dev/null 2>&1 || true
 
 echo "smoke: $pass checks passed"
