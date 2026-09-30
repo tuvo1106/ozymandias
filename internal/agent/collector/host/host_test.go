@@ -290,10 +290,31 @@ func TestHost_ForgetsWhatDisappears(t *testing.T) {
 	before := c.rates.Len()
 	src.net = src.net[:0]
 	src.io = map[string]disk.IOCountersStat{}
-	fc.Advance(forgetAfter + time.Second)
-	_, _ = run(t, c)
+	for range forgetAfter/(15*time.Second) + 1 { // a run every 15s
+		fc.Advance(15 * time.Second)
+		_, _ = run(t, c)
+	}
 	if c.rates.Len() != 0 || before == 0 {
 		t.Fatalf("tracked %d keys before, %d after everything went away", before, c.rates.Len())
+	}
+}
+
+// With runs 10 minutes apart, one failed read of the network must not
+// cost the next run its rates: what it needs is 10 minutes old, older than
+// forgetAfter.
+func TestHost_ALongIntervalKeepsReadingsAcrossAFailedRun(t *testing.T) {
+	src := machine()
+	fc := testutil.NewFakeClock(t0)
+	c := newCollector(src, fc)
+	_, _ = run(t, c)
+	fc.Advance(10 * time.Minute)
+	src.failWith = map[string]error{"net": errors.New("x")}
+	_, _ = run(t, c)
+	fc.Advance(10 * time.Minute)
+	src.failWith = nil
+	got, _ := run(t, c)
+	if len(got["system.net.bytes_rcvd"]) == 0 {
+		t.Fatal("no network rate after one failed run: the readings were forgotten")
 	}
 }
 
