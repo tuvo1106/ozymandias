@@ -149,8 +149,10 @@ collectors:
 
   # Checks: collectors you configure, one per instance. Every instance takes
   # the common settings `name` (instances of one check need distinct names;
-  # the collector tag becomes <check>:<name>), `interval` (default
-  # collectors.interval) and `tags`, plus the check's own. An unknown check
+  # the collector tag becomes <check>:<name>, and every metric is tagged
+  # instance:<name> so that instances do not overwrite each other's series),
+  # `interval` (default collectors.interval) and `tags`, plus the check's
+  # own. An unknown check
   # or setting fails startup. conf.d fragments append instances. The shipped
   # checks and their settings are in docs/operations.md.
   checks: {}

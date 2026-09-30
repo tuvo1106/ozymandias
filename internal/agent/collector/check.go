@@ -180,6 +180,18 @@ func (i *instance) Collect(ctx context.Context, emit Emit) error {
 // Configured builds every instance under collectors.checks, in a stable
 // order (by check name, then position), and returns every error rather than
 // the first, so one startup shows every misconfigured instance.
+//
+// Each instance that has something to tell it apart — a name, or a
+// position among several unnamed ones — gets the tag instance:<that>. Most
+// checks name nothing about their target in their metrics (redis.mem.used
+// is tagged only with the agent's host), so two redis instances would
+// otherwise write the same series, and the store keeps one point per
+// series and timestamp: one server's numbers would overwrite the other's.
+// A single unnamed instance gets no tag; it has nothing to collide with.
+// An instance whose own tags already say instance: keeps that one. Two
+// names that normalise to one tag (Cache, cache) are refused like two
+// equal names. Discovered instances (autodiscovery calls NewInstance, not
+// this) carry their container's tags instead.
 func (r Registry) Configured(checks map[string][]map[string]any, clk clock.Clock, log *slog.Logger) ([]Collector, error) {
 	names := make([]string, 0, len(checks))
 	for n := range checks {
@@ -187,9 +199,10 @@ func (r Registry) Configured(checks map[string][]map[string]any, clk clock.Clock
 	}
 	sort.Strings(names)
 	var (
-		out  []Collector
-		errs []error
-		seen = map[string]bool{}
+		out     []Collector
+		errs    []error
+		seen    = map[string]bool{}
+		seenTag = map[string]bool{}
 	)
 	for _, check := range names {
 		list := checks[check]
@@ -204,8 +217,46 @@ func (r Registry) Configured(checks map[string][]map[string]any, clk clock.Clock
 				continue
 			}
 			seen[c.Name()] = true
+			if err := tagInstance(c, check, seenTag); err != nil {
+				errs = append(errs, err)
+				continue
+			}
 			out = append(out, c)
 		}
 	}
 	return out, errors.Join(errs...)
+}
+
+// instanceTag is the tag key Configured adds to tell instances apart.
+const instanceTag = "instance"
+
+// tagInstance adds instance:<suffix> to c, a configured instance of check,
+// when its name has a suffix (<check>:<suffix>) and its own tags do not
+// already carry an instance tag. seen holds the tags given so far, per
+// check, so two names that normalise alike are an error rather than one
+// series.
+func tagInstance(c Collector, check string, seen map[string]bool) error {
+	in, ok := c.(*instance)
+	if !ok {
+		return nil
+	}
+	suffix, named := strings.CutPrefix(in.name, check+":")
+	if !named {
+		return nil
+	}
+	for _, t := range in.tags {
+		if k, _ := wire.SplitTag(t); k == instanceTag {
+			return nil
+		}
+	}
+	tag, ok := wire.NormalizeTag(instanceTag + ":" + suffix)
+	if !ok {
+		return fmt.Errorf("check %s: the name cannot be sent as a tag (%s:%s)", in.name, instanceTag, suffix)
+	}
+	if seen[check+"|"+tag] {
+		return fmt.Errorf("check %s: another instance's name makes the same tag, %s", in.name, tag)
+	}
+	seen[check+"|"+tag] = true
+	in.tags = append(in.tags, tag)
+	return nil
 }

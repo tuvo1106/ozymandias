@@ -137,6 +137,17 @@ a valid check are logged once and counted in
 container restarted with a new address gets its check rebuilt, and one
 that failed for want of an address is tried again once it has one.
 
+#### Several instances of one check
+
+Configured instances of one check are told apart by the tag
+`instance:<name>` on every metric (`instance:0`, `instance:1`, … for
+unnamed ones), since most checks' metrics say nothing about their target:
+two redis instances would otherwise write the same `redis.*` series and
+overwrite each other. A single unnamed instance gets no such tag, an
+instance whose `tags` already has an `instance:` tag keeps its own, and two
+names that differ only in case are refused. Discovered instances carry
+their container's tags instead.
+
 #### Check: openmetrics
 
 Scrapes a Prometheus or OpenMetrics `/metrics` page every run. Counters become

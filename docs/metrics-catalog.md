@@ -169,7 +169,9 @@ and `container.exits` are the figures to trust.
 
 From configured or autodiscovered checks (`collectors.checks`, docs/operations.md). Every
 metric of an instance carries that instance's `tags` and, when autodiscovered, the
-container's tags.
+container's tags. A configured instance with a name, or one of several unnamed ones, also
+carries `instance:<name>` (or `instance:<position>`), so two instances of a check never
+write the same series.
 
 | Metric | Type | Unit | Tags | Meaning |
 |---|---|---|---|---|

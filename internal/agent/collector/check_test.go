@@ -116,3 +116,65 @@ func TestRegistry_Configured(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// tagsOf is the one metric an echo instance emits, by its tags.
+func tagsOf(t *testing.T, c collector.Collector) []string {
+	t.Helper()
+	ms := collect(t, c)
+	if len(ms) != 1 {
+		t.Fatalf("%s emitted %d metrics", c.Name(), len(ms))
+	}
+	return ms[0].Tags
+}
+
+// Two configured instances of one check must not write the same series:
+// most checks say nothing about their target in their tags, so the
+// instance's name (or position) is what tells them apart. A lone unnamed
+// instance has nothing to collide with and gets no tag.
+func TestRegistry_ConfiguredInstancesAreTagged(t *testing.T) {
+	cs, err := registry.Configured(map[string][]map[string]any{
+		"echo": {{"name": "Cache"}, {"name": "queue"}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := tagsOf(t, cs[0]), tagsOf(t, cs[1])
+	if !slices.Contains(a, "instance:cache") || !slices.Contains(b, "instance:queue") {
+		t.Fatalf("named instances tagged %v and %v", a, b)
+	}
+	cs, err = registry.Configured(map[string][]map[string]any{"echo": {{}, {}}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, b := tagsOf(t, cs[0]), tagsOf(t, cs[1]); !slices.Contains(a, "instance:0") || !slices.Contains(b, "instance:1") {
+		t.Fatalf("unnamed instances tagged %v and %v", a, b)
+	}
+	cs, err = registry.Configured(map[string][]map[string]any{"echo": {{}}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tagsOf(t, cs[0]); !slices.Equal(got, []string{"from:echo"}) {
+		t.Fatalf("a lone unnamed instance tagged %v", got)
+	}
+	// An instance tag of the user's own wins.
+	cs, err = registry.Configured(map[string][]map[string]any{"echo": {{"name": "a", "tags": []any{"instance:primary"}}}}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tagsOf(t, cs[0]); !slices.Equal(got, []string{"from:echo", "instance:primary"}) {
+		t.Fatalf("with its own instance tag: %v", got)
+	}
+	// Names that differ only in case would make one series.
+	if _, err := registry.Configured(map[string][]map[string]any{"echo": {{"name": "Cache"}, {"name": "cache"}}}, nil, nil); err == nil || !strings.Contains(err.Error(), "same tag") {
+		t.Fatalf("Cache and cache: %v", err)
+	}
+	// A discovered instance (NewInstance directly) gets none: its
+	// container's tags tell it apart.
+	c, err := registry.NewInstance("echo", 0, 1, map[string]any{"name": "redis-1"}, []string{"container_name:redis-1"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tagsOf(t, c); slices.ContainsFunc(got, func(s string) bool { return strings.HasPrefix(s, "instance:") }) {
+		t.Fatalf("a discovered instance tagged %v", got)
+	}
+}

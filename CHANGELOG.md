@@ -28,8 +28,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Docker VM's socket through the socket's group (ADR-0028: that access is
   root-equivalent).
 - **Checks and autodiscovery** (M3 §3, part 3). Configurable collectors
-  under `collectors.checks.<check>.instances`, each instance with a `name`,
-  `interval` and `tags`, and settings a misspelling of which fails startup:
+  under `collectors.checks.<check>.instances`, each instance with a `name`
+  (which also tags its metrics `instance:<name>`), `interval` and `tags`, and settings a misspelling of which fails startup:
   `openmetrics` (scrape any Prometheus `/metrics` page: counters as rates,
   histograms as bucket counts or as distributions for `p90:`), `http_check`
   (`network.http.*`: status, latency, TLS days left), `redis` (INFO over
