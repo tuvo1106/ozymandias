@@ -31,7 +31,8 @@ data_dir: ./data/ozyd
 # hostname. Set it to the agent's hostname: in a container the OS hostname is
 # a random id, new on every recreate, and on macOS it can be "name.local" or
 # whatever the network's DHCP calls the machine. A name that cannot be a tag
-# (a comma, over 195 bytes) fails startup.
+# (a comma, surrounding whitespace, a trailing ':', over 195 bytes) fails
+# startup (exit 2).
 #
 # `make up` and `make dev` always set OZY_HOSTNAME (scripts/hostname.sh,
 # unless you export it), and the environment beats this file, so under those

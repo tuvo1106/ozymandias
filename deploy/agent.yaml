@@ -95,7 +95,11 @@ collectors:
       - ^(utun|awdl|llw|anpi|gif|stf)[0-9]+$
 
 # Value of the `host` tag on everything this agent sends. Empty means the OS
-# hostname — set it explicitly in a container, where that is a random id.
+# hostname — set it explicitly in a container, where that is a random id. The
+# same rule as ozyd's `hostname`: a name that cannot be a tag (a comma,
+# surrounding whitespace, a trailing ':', over 195 bytes) fails startup
+# (exit 2), and so does an empty one when the OS has no usable name (exit 1).
+# `make up` and `make dev` set it from scripts/hostname.sh, overriding this.
 hostname: ""
 
 # Tags added to everything this agent sends. conf.d fragments append to this
