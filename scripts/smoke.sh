@@ -684,9 +684,9 @@ docker rm -f "$smoke_ct-long" >/dev/null 2>&1 || true
 # Checks by autodiscovery: a Redis container that asks for the redis check
 # with labels, on the agent's network so %%host%% is reachable. The check is
 # named redis:<container>, and its metrics carry the container's tags.
-docker run -d --rm --name "$smoke_ct-redis" --network ozymandias \
+check "a labelled Redis container starts"      docker run -d --rm --name "$smoke_ct-redis" --network ozymandias \
   --label 'ozy.check.redis.host=%%host%%' --label 'ozy.check.redis.port=%%port%%' \
-  redis:7-alpine >/dev/null
+  redis:7-alpine
 check "a labelled container gets its check"    wait_since "max:redis.can_connect{container_name:$smoke_ct-redis}" 45
 check "which reads the server"                 wait_since "max:redis.net.clients{container_name:$smoke_ct-redis}" 30
 check "and runs without errors"                no_errors "redis:$smoke_ct-redis"
