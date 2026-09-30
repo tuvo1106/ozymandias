@@ -136,12 +136,14 @@ Metadata tables: `dashboards(id, title, description, definition_json, created_at
 ## 3. Agent collectors — `internal/agent/collector`
 
 `Collector` interface: `Name() string; Interval() time.Duration; Collect(ctx, emit func(Metric)) error`
-(*amended in PR #34:* a collector emits a name, kind, value and tags; the
+(*amended by ADR-0027:* a collector emits a name, kind, value and tags; the
 scheduler adds the timestamp, host and global tags, so no collector can get
-them wrong). Built-in collectors (host, docker, self) are on by default, each
-with an `enabled` switch (*amended:* the Docker VM of a machine without Docker
-has nothing for `docker` to read, and turning `host` off is how tests keep
-the real machine out); **checks** are the
+them wrong). Built-in collectors (host, docker) are on by default, each
+with an `enabled` switch, and the agent's own metrics stay in the
+self-metrics registry rather than being a collector (*amended by
+ADR-0027:* a machine without Docker has nothing for `docker` to read,
+turning `host` off is how tests keep the real machine out, and a `self`
+collector would send the self-metrics twice); **checks** are the
 user-configurable kind: `Check` = a collector factory registered by name,
 instantiated once per `instances:` entry in `deploy/agent.d/<name>.yaml`, or
 via **autodiscovery** from container labels
