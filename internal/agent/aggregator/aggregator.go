@@ -56,12 +56,12 @@ const TimestampTolerance = 60 * time.Second
 
 // Options configures an Aggregator. Zero values get the documented defaults.
 type Options struct {
-	// Started is when the agent process started. No point is stamped in a
-	// bucket that began before it: the agent before this one (a restart)
+	// Started is when the agent process started. No point is stamped in the
+	// bucket it started in, or any earlier: the agent before this one (a restart)
 	// may have written that bucket in its final flush, and the store
 	// refuses a second point at a timestamp it has. Samples from the first
 	// partial bucket are counted in the next instead — seconds late rather
-	// than refused. Zero means no such floor.
+	// than refused (ADR-0029). Zero means no such floor.
 	Started  time.Time
 	Clock    clock.Clock           // default clock.Real()
 	Registry *selfmetrics.Registry // default: a new registry
@@ -387,13 +387,13 @@ func contextKey(kind Kind, name string, tags []string) string {
 // contexts idle for longer than the expiry. With final set it also emits the
 // open buckets — used once, at shutdown, when there is no later flush to wait
 // for. A restarted agent does not write that bucket again: it stamps
-// nothing before its first whole bucket (Options.Started). The one open
-// bucket not emitted even then is that first bucket while it is still in
-// the future: it holds the samples of an agent stopped within its first
-// interval, moved forward to its floor, and the next agent, started before
-// that boundary, has the same floor and would be refused. Those samples are
-// the cost of never having a point refused; any other bucket ahead of now
-// (a client clock running fast, within TimestampTolerance) is emitted.
+// nothing before its first whole bucket (Options.Started). No bucket that
+// starts after now is emitted even then: the next agent's first bucket is
+// the one after the second it starts in, which can be any bucket after now,
+// and it would be refused a second point there. Such buckets hold the
+// samples of an agent stopped within its first interval (moved forward to
+// its floor) or from a client clock running fast; losing them at shutdown
+// is the cost of never having a point refused (ADR-0029).
 func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.SketchSeries) {
 	began := time.Now()
 	nowS := now.Unix()
@@ -442,7 +442,7 @@ func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.Ske
 func (a *Aggregator) flushContext(out []wire.Series, sketches []wire.SketchSeries, c *aggContext, cutoff int64, final bool, nowS int64) ([]wire.Series, []wire.SketchSeries) {
 	starts := make([]int64, 0, len(c.buckets))
 	for s := range c.buckets {
-		if s < cutoff || final && (s <= nowS || s != a.first) {
+		if s < cutoff || final && s <= nowS {
 			starts = append(starts, s)
 		}
 	}

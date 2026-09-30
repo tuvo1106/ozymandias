@@ -655,12 +655,13 @@ func TestAggregator_FinalFlushWritesNoFutureBucket(t *testing.T) {
 		t.Fatalf("final flush at 6 wrote %+v: bucket 10 is the next agent's too", got)
 	}
 
-	// A client clock running ahead puts a sample in a later bucket, which is
-	// not the floor: written, as before.
-	c := newAgg(t, Options{Started: at(3)})
+	// A client clock running ahead puts a sample in a later bucket. That is
+	// held back too: the next agent, started at 31, would begin in bucket 40
+	// — but one started at 25 begins in 30, and would be refused.
+	c := newAgg(t, Options{Started: at(-100)})
 	c.Add(Sample{Name: "depth", Kind: Gauge, Value: 5, Timestamp: at(35).Unix()}, at(6))
-	if s := find(flushSeries(c, at(6), true), "depth"); points(s) != "30:5" {
-		t.Fatalf("got %s, want 30:5: only the floor bucket is held back", points(s))
+	if s := find(flushSeries(c, at(6), true), "depth"); s != nil {
+		t.Fatalf("final flush at 6 wrote %s, a bucket the next agent may write", points(s))
 	}
 
 	// Past the floor, the final flush writes the open bucket as before.

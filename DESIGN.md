@@ -265,7 +265,8 @@ pressure, and each stage is explicit about how.
    host and a gauge on another.
 
 Shutdown runs this pipeline in reverse: the statsd listener stops, the
-aggregator does a final flush of every open bucket, and the forwarder gets one
+aggregator does a final flush of every open bucket that has begun (ADR-0029:
+a bucket ahead of now may be the next agent's first), and the forwarder gets one
 last attempt within its budget. The agent must therefore stop *before*
 ozyd, or that final flush has nowhere to go — `make dev` and compose both
 encode that order.
@@ -423,8 +424,8 @@ Collector.Collect ──emit(Metric)──▶ Scheduler ──[]wire.Series─�
   counts inside user time.
 - **The Docker collector and the event watcher** split one source by shape.
   Polling the daemon (list, then stats per container, at most
-  `max_concurrency` at once because each stats call takes the daemon about a
-  second) suits levels and rates. It cannot see a container that starts and
+  `max_concurrency` at once, which bounds the load a run puts on the daemon;
+  stats are one-shot, so CPU % is taken between runs) suits levels and rates. It cannot see a container that starts and
   dies between two polls, so a watcher follows the event stream and turns
   each die into `container.exits` and `container.lifetime`. Those samples
   arrive one at a time, at any moment, several per interval: the statsd
