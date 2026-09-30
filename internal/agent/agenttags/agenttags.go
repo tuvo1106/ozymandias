@@ -12,10 +12,13 @@ import (
 // another machine (tags: [host:db1], or a check that sets it) keeps its own.
 // dropped is how many tags the cap removed; which ones is deterministic,
 // because the set is sorted first, so a series keeps one identity.
+//
+// Decorate appends to tags and may reorder it in place, so the caller
+// passes a slice it owns, ideally with room for len(agentTags)+1 more: on
+// the statsd path that saves a copy per sample (the caller has just built
+// the slice from the raw tags anyway).
 func Decorate(tags, agentTags []string, hostTag string) (out []string, dropped int) {
-	out = make([]string, 0, len(tags)+len(agentTags)+1)
-	out = append(out, tags...)
-	out = append(out, agentTags...)
+	out = append(tags, agentTags...)
 	if hostTag != "" && !wire.HasTagKey(out, "host") {
 		out = append(out, hostTag)
 	}
