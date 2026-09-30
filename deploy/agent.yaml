@@ -103,6 +103,31 @@ collectors:
       - ^(utun|awdl|llw|anpi|gif|stf)[0-9]+$
       - ^(veth[0-9a-f]+|docker0|br-[0-9a-f]+)$
 
+  # Containers, through the Docker daemon's socket (container.*,
+  # docker.containers.running), plus its event stream for what polling
+  # misses: container.exits and container.lifetime for containers that live
+  # a few seconds. Compose mounts the socket read-only (ADR-0028); `make dev`
+  # points this at the socket the docker CLI uses.
+  docker:
+    enabled: true
+    socket: /var/run/docker.sock
+    # 0 means collectors.interval.
+    interval: 0s
+    # Stats requests in flight at once. Each takes the daemon about a second
+    # (it samples CPU twice), so this bounds both the run's length and the
+    # load on the daemon.
+    max_concurrency: 8
+    # Rename matching containers before the name becomes a tag, and drop
+    # their container_id: for containers that are many and short-lived by
+    # design (a sandbox per job), which would otherwise be a series each.
+    # Same-named containers become one series: amounts summed, uptime and
+    # memory limit the largest. First match wins; conf.d fragments append.
+    container_name_rewrite: []
+    # container_name_rewrite:
+    #   -
+    #     match: ^judge-.*
+    #     replace: judge
+
 # Value of the `host` tag on everything this agent sends. Empty means the OS
 # hostname — set it explicitly in a container, where that is a random id. The
 # same rule as ozyd's `hostname`: a name that cannot be a tag (a comma,

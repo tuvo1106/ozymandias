@@ -34,7 +34,13 @@ trap cleanup INT TERM EXIT
 # scripts/hostname.sh, which also decides for make up and make smoke).
 host=$(scripts/hostname.sh)
 OZY_HOSTNAME=$host ./bin/ozyd -config deploy/ozyd.yaml & pids+=($!)
-OZY_AGENT_HOSTNAME=$host \
+# The Docker socket the CLI uses (Colima's lives in ~/.colima, not
+# /var/run), so the docker collector sees the same containers `docker ps`
+# does. Unset when there is no Docker: the collector then logs one failure.
+sock=${OZY_AGENT_COLLECTORS_DOCKER_SOCKET:-$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null | sed -n 's|^unix://||p')}
+# env, because an assignment that comes out of an expansion is not an
+# assignment to the shell; env execs the agent, so $! is still its pid.
+env OZY_AGENT_HOSTNAME="$host" ${sock:+OZY_AGENT_COLLECTORS_DOCKER_SOCKET="$sock"} \
   ./bin/agent -config deploy/agent.yaml & pids+=($!)
 # exec: the tracked pid is vite itself, not an npm wrapper that would
 # swallow the signal and leave vite running.

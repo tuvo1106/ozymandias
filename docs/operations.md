@@ -88,6 +88,14 @@ every run.
 | Collector | Config | Reports | Notes |
 |---|---|---|---|
 | `host` | `collectors.host` | `system.*` | In compose, the Docker VM's kernel, not the Mac's: its CPUs, memory and disks — but network counters are per namespace, so `system.net.*` is the agent container's own traffic. `make dev` runs the agent natively and reports the Mac. Rates need two readings, so the first 15s after start have gauges only |
+| `docker` | `collectors.docker` | `container.*`, `docker.containers.running`, and from the event stream `container.exits`, `container.lifetime` | Every container on the daemon behind `collectors.docker.socket`. In compose that is the Docker VM's daemon, reached through the mounted socket and the socket's group, which `make up` looks up (ADR-0028); `docker compose up` by hand gets gid 0 and, under Colima, permission denied — logged once, the rest of the agent unaffected. `make dev` uses the docker context's socket. Name many short-lived containers as one with `container_name_rewrite` (the app-python fragment does, for its judge sandboxes) |
+
+**Socket access is root on the Docker VM.** Anything that can call the
+Docker API can start a privileged container. The agent only reads (list,
+stats, inspect, events), but for a deployment where the host matters, put a
+GET-only proxy in front that serves its own unix socket (the agent's client
+speaks only unix sockets, not TCP) and point `collectors.docker.socket` at
+that, or disable the collector.
 
 ## Health and self-metrics
 

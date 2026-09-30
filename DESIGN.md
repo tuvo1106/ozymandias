@@ -421,6 +421,19 @@ Collector.Collect ──emit(Metric)──▶ Scheduler ──[]wire.Series─�
   vanished interface). CPU percentages are computed from its own total of
   the states, because gopsutil's includes guest time that Linux already
   counts inside user time.
+- **The Docker collector and the event watcher** split one source by shape.
+  Polling the daemon (list, then stats per container, at most
+  `max_concurrency` at once because each stats call takes the daemon about a
+  second) suits levels and rates. It cannot see a container that starts and
+  dies between two polls, so a watcher follows the event stream and turns
+  each die into `container.exits` and `container.lifetime`. Those samples
+  arrive one at a time, at any moment, several per interval: the statsd
+  aggregator's shape, so the watcher feeds it rather than the scheduler.
+  After a disconnect the watcher resumes from the last event seen and drops
+  the one the daemon replays. `container_name_rewrite` folds containers that
+  are many by design into one name, and same-tagged containers are combined
+  (amounts summed) rather than sent as points that overwrite each other.
+  Reading the socket is root-equivalent on the Docker host (ADR-0028).
 
 ---
 

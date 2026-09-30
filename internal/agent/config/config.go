@@ -69,8 +69,51 @@ type Collectors struct {
 	// seconds: a count's interval is whole seconds on the wire.
 	Interval time.Duration `yaml:"interval"`
 	// Timeout bounds one run of one collector (capped at its interval).
-	Timeout time.Duration `yaml:"timeout"`
-	Host    HostCollector `yaml:"host"`
+	Timeout time.Duration   `yaml:"timeout"`
+	Host    HostCollector   `yaml:"host"`
+	Docker  DockerCollector `yaml:"docker"`
+}
+
+// DockerCollector configures the Docker collector (container.*) and the
+// event watcher behind container.exits and container.lifetime.
+type DockerCollector struct {
+	Enabled bool `yaml:"enabled"`
+	// Socket is the Docker daemon's unix socket.
+	Socket string `yaml:"socket"`
+	// Interval overrides collectors.interval; zero means use it.
+	Interval time.Duration `yaml:"interval"`
+	// MaxConcurrency bounds stats requests in flight; each takes the daemon
+	// about a second.
+	MaxConcurrency int `yaml:"max_concurrency"`
+	// ContainerNameRewrite renames matching containers before the name
+	// becomes a tag, and drops their container_id: for containers that are
+	// many and short-lived by design. The first matching rule wins.
+	// Fragments append.
+	ContainerNameRewrite []NameRewrite `yaml:"container_name_rewrite"`
+}
+
+// Matches compiles each ContainerNameRewrite rule's Match, in order: the
+// one place a rule is checked, used by Validate and by the agent.
+func (d DockerCollector) Matches() ([]*regexp.Regexp, error) {
+	out := make([]*regexp.Regexp, len(d.ContainerNameRewrite))
+	for i, r := range d.ContainerNameRewrite {
+		if r.Match == "" {
+			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d]: match is empty", i)
+		}
+		rx, err := regexp.Compile(r.Match)
+		if err != nil {
+			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d] %q: %w", i, r.Match, err)
+		}
+		out[i] = rx
+	}
+	return out, nil
+}
+
+// NameRewrite is one container_name_rewrite rule: a regular expression and
+// its replacement ($1 and friends work).
+type NameRewrite struct {
+	Match   string `yaml:"match"`
+	Replace string `yaml:"replace"`
 }
 
 // HostCollector configures the host collector (system.*).
@@ -134,7 +177,8 @@ func Default() Agent {
 		Forwarder:  Forwarder{Timeout: 10 * time.Second, MaxQueueBytes: 64 << 20, ShutdownTimeout: 5 * time.Second},
 		Collectors: Collectors{
 			Interval: 15 * time.Second, Timeout: 10 * time.Second,
-			Host: HostCollector{Enabled: true, ExcludeInterfaces: slices.Clone(DefaultExcludeInterfaces)},
+			Host:   HostCollector{Enabled: true, ExcludeInterfaces: slices.Clone(DefaultExcludeInterfaces)},
+			Docker: DockerCollector{Enabled: true, Socket: "/var/run/docker.sock", MaxConcurrency: 8},
 		},
 		ConfdPath: "./deploy/agent.d",
 		Log:       base.Log{Level: "info", Format: "text"},
@@ -188,6 +232,15 @@ func (c Collectors) validate() error {
 	}
 	if iv := c.Host.Interval; iv != 0 && !wholeSeconds(iv) {
 		errs = append(errs, fmt.Errorf("collectors.host.interval %v: want 0 or a whole number of seconds", iv))
+	}
+	if iv := c.Docker.Interval; iv != 0 && !wholeSeconds(iv) {
+		errs = append(errs, fmt.Errorf("collectors.docker.interval %v: want 0 or a whole number of seconds", iv))
+	}
+	if c.Docker.Enabled && (c.Docker.Socket == "" || c.Docker.MaxConcurrency < 1) {
+		errs = append(errs, errors.New("collectors.docker: socket must be set and max_concurrency at least 1"))
+	}
+	if _, err := c.Docker.Matches(); err != nil {
+		errs = append(errs, err)
 	}
 	if _, err := c.Host.Excludes(); err != nil {
 		errs = append(errs, err)

@@ -18,7 +18,13 @@ LDFLAGS  := -s -w -X $(MODULE)/internal/buildinfo.Version=$(VERSION)
 # (`=`), so the script runs only for the targets that use it, not for
 # `make help`. `make OZY_HOSTNAME=x up` still overrides it.
 OZY_HOSTNAME = $(shell scripts/hostname.sh)
-COMPOSE  = OZY_VERSION=$(VERSION) OZY_HOSTNAME=$(OZY_HOSTNAME) docker compose -f deploy/docker-compose.yml
+# The Docker socket's group inside the Docker VM, for the agent's group_add
+# (ADR-0028). Read from a throwaway container because the VM's /var/run is
+# not the Mac's. Recursive, so only compose targets pay for it. Named, because
+# the agent reports every container's exit by name, and an unnamed one gets a
+# new random name (and so a new series) every time.
+OZY_DOCKER_GID = $(shell docker run --rm --name ozymandias-gid-probe -v /var/run/docker.sock:/s busybox stat -c %g /s 2>/dev/null)
+COMPOSE  = OZY_VERSION=$(VERSION) OZY_HOSTNAME=$(OZY_HOSTNAME) OZY_DOCKER_GID=$(OZY_DOCKER_GID) docker compose -f deploy/docker-compose.yml
 FUZZTIME ?= 30s
 CI_FUZZTIME ?= 10s
 

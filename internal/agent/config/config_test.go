@@ -160,3 +160,37 @@ func TestDefaultExcludeInterfaces(t *testing.T) {
 		}
 	}
 }
+
+// The shipped fragments load over the reference file, as compose runs them,
+// and the judge rule is in effect.
+func TestLoad_ShippedFragments(t *testing.T) {
+	cfg, warnings, err := Load("../../../deploy/agent.yaml", []string{"OZY_AGENT_CONFD_PATH=../../../deploy/agent.d"})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("err=%v warnings=%v", err, warnings)
+	}
+	rules := cfg.Collectors.Docker.ContainerNameRewrite
+	if len(rules) != 1 || rules[0].Match != "^judge-.*" || rules[0].Replace != "judge" {
+		t.Fatalf("container_name_rewrite = %+v", rules)
+	}
+}
+
+func TestAgent_ValidateDocker(t *testing.T) {
+	for name, mutate := range map[string]func(*Agent){
+		"empty rewrite match": func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Replace: "x"}} },
+		"bad rewrite match":   func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "("}} },
+		"no socket":           func(a *Agent) { a.Collectors.Docker.Socket = "" },
+		"zero concurrency":    func(a *Agent) { a.Collectors.Docker.MaxConcurrency = 0 },
+		"fractional interval": func(a *Agent) { a.Collectors.Docker.Interval = 1500 * time.Millisecond },
+	} {
+		a := Default()
+		mutate(&a)
+		if err := a.Validate(); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+	a := Default()
+	a.Collectors.Docker.Enabled, a.Collectors.Docker.Socket = false, ""
+	if err := a.Validate(); err != nil {
+		t.Errorf("a disabled collector needs no socket: %v", err)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
+	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
 	"github.com/tuvo1106/ozymandias/internal/agent/config"
 	"github.com/tuvo1106/ozymandias/internal/httpserve"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
@@ -38,6 +40,7 @@ func testConfig() config.Agent {
 	// among the fake clock's waiters that tests wait on. Collectors have
 	// their own test below.
 	cfg.Collectors.Host.Enabled = false
+	cfg.Collectors.Docker.Enabled = false
 	return cfg
 }
 
@@ -196,7 +199,9 @@ func TestRun_StatsdToIntake(t *testing.T) {
 	}))
 	defer intake.Close()
 
-	clk := testutil.NewFakeClock(time.Unix(1790000001, 0))
+	// On a bucket boundary: an agent writes no bucket that began before it
+	// started (aggregator.Options.Started).
+	clk := testutil.NewFakeClock(time.Unix(1790000000, 0))
 	cfg := testConfig()
 	cfg.Hostname = "box"
 	cfg.Tags = []string{"env:test"}
@@ -378,5 +383,108 @@ func TestNew_ABadInterfacePatternIsAnErrorNotAPanic(t *testing.T) {
 	cfg.Collectors.Host.ExcludeInterfaces = []string{"("}
 	if _, err := newAgent(t, cfg, Options{Logger: quiet}); err == nil || !strings.Contains(err.Error(), "exclude_interfaces") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// eventsAPI is a Docker daemon with no running containers whose event
+// stream delivers evs once, then stays open until the agent stops.
+type eventsAPI struct {
+	evs       []dockerapi.Event
+	delivered chan struct{}
+	once      sync.Once
+}
+
+func (*eventsAPI) ListContainers(context.Context) ([]dockerapi.Container, error) { return nil, nil }
+func (*eventsAPI) Stats(context.Context, string) (dockerapi.Stats, error) {
+	return dockerapi.Stats{}, dockerapi.ErrNotFound
+}
+func (*eventsAPI) Inspect(context.Context, string) (dockerapi.ContainerJSON, error) {
+	return dockerapi.ContainerJSON{}, dockerapi.ErrNotFound
+}
+func (e *eventsAPI) Events(ctx context.Context, _ time.Time, fn func(dockerapi.Event) error) error {
+	e.once.Do(func() {
+		for _, ev := range e.evs {
+			_ = fn(ev)
+		}
+		close(e.delivered)
+	})
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// A container exit from the event stream reaches the intake as a count,
+// through the aggregator, tagged like a statsd series and renamed by the
+// configured rewrite.
+func TestRun_DockerEventsToIntake(t *testing.T) {
+	testutil.CheckGoroutines(t)
+	var mu sync.Mutex
+	var got []wire.Series
+	intake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var p wire.SeriesPayload
+		_ = json.NewDecoder(zr).Decode(&p)
+		mu.Lock()
+		got = append(got, p.Series...)
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer intake.Close()
+
+	at := time.Unix(1790000000, 0) // a bucket boundary: see aggregator.Options.Started
+	id := strings.Repeat("ab", 32)
+	ev := func(action string, t time.Time, attrs map[string]string) dockerapi.Event {
+		a := map[string]string{"name": "judge-42", "image": "sandbox:1"}
+		maps.Copy(a, attrs)
+		return dockerapi.Event{Type: "container", Action: action, Actor: dockerapi.Actor{ID: id, Attributes: a}, Time: t.Unix(), TimeNano: t.UnixNano()}
+	}
+	api := &eventsAPI{
+		evs:       []dockerapi.Event{ev("start", at.Add(-3*time.Second), nil), ev("die", at, map[string]string{"exitCode": "3"})},
+		delivered: make(chan struct{}),
+	}
+	clk := testutil.NewFakeClock(at)
+	cfg := testConfig()
+	cfg.Hostname = "box"
+	cfg.Tags = []string{"env:test"}
+	cfg.Intake.URL = intake.URL
+	cfg.Statsd.Enabled = false
+	cfg.Collectors.Docker.Enabled = true
+	cfg.Collectors.Docker.ContainerNameRewrite = []config.NameRewrite{{Match: `^judge-.*`, Replace: "judge"}}
+	a, err := newAgent(t, cfg, Options{Logger: quiet, Clock: clk, DockerAPI: api})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, _ := httpserve.Listen("127.0.0.1:0")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx, ln) }()
+
+	select {
+	case <-api.delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("event stream never read")
+	}
+	// The aggregator's ticker and the docker collector's start-up timer.
+	testutil.Eventually(t, 2*time.Second, func() bool { return clk.Waiters() >= 2 }, "not armed")
+	clk.Advance(10 * time.Second)
+	testutil.Eventually(t, 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.ContainsFunc(got, func(s wire.Series) bool { return s.Metric == "container.exits" })
+	}, "container.exits not forwarded")
+	mu.Lock()
+	i := slices.IndexFunc(got, func(s wire.Series) bool { return s.Metric == "container.exits" })
+	s := got[i]
+	mu.Unlock()
+	if s.Type != wire.KindCount || s.Points[0].Value != 1 ||
+		strings.Join(s.Tags, ",") != "container_name:judge,env:test,exit_code:3,host:box,image_name:sandbox,image_tag:1,oom_killed:false" {
+		t.Fatalf("container.exits = %+v", s)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
