@@ -1,0 +1,27 @@
+# TYPE acme_http_requests counter
+# UNIT acme_http_requests requests
+# HELP acme_http_requests Requests served.
+acme_http_requests_total{code="200"} 1027 1759071234.5
+acme_http_requests_created{code="200"} 1759070000.0
+acme_http_requests_total{code="500"} 3
+# TYPE acme_request_seconds histogram
+# UNIT acme_request_seconds seconds
+acme_request_seconds_bucket{le="0.1"} 8 # {trace_id="0af7651916cd43dd8448eb211c80319c"} 0.067 1759071230.1
+acme_request_seconds_bucket{le="1.0"} 11
+acme_request_seconds_bucket{le="+Inf"} 12
+acme_request_seconds_count 12
+acme_request_seconds_sum 5.1
+acme_request_seconds_created 1759070000.0
+# TYPE acme_build info
+acme_build_info{version="2.0.1"} 1
+# TYPE acme_feature stateset
+acme_feature{acme_feature="a"} 1
+acme_feature{acme_feature="b"} 0
+# TYPE acme_queue_depth gaugehistogram
+acme_queue_depth_gbucket{le="10"} 4
+acme_queue_depth_gbucket{le="+Inf"} 5
+acme_queue_depth_gcount 5
+acme_queue_depth_gsum 31
+# TYPE acme_mystery unknown
+acme_mystery 7
+# EOF

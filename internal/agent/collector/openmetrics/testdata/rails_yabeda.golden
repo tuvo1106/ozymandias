@@ -1,0 +1,37 @@
+family rails_requests_total type=counter help="A counter of the total number of HTTP requests rails processed."
+  rails_requests_total{controller="orders",action="create",status="201",format="json",method="post"} 1402
+  rails_requests_total{controller="orders",action="index",status="200",format="json",method="get"} 22861
+  rails_requests_total{controller="health",action="show",status="200",format="*/*",method="get"} 9120
+family rails_request_duration_seconds type=histogram help="A histogram of the response latency."
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="0.005"} 0
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="0.01"} 3
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="0.025"} 51
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="0.05"} 402
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="0.1"} 1011
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="0.25"} 1360
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="0.5"} 1398
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="1"} 1401
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="2.5"} 1402
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="5"} 1402
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="10"} 1402
+  rails_request_duration_seconds_bucket{controller="orders",action="create",le="+Inf"} 1402
+  rails_request_duration_seconds_sum{controller="orders",action="create"} 98.412
+  rails_request_duration_seconds_count{controller="orders",action="create"} 1402
+  histogram{controller="orders",action="create"} sum=98.412(true) count=1402(true) [≤0.005:0] [≤0.01:3] [≤0.025:51] [≤0.05:402] [≤0.1:1011] [≤0.25:1360] [≤0.5:1398] [≤1:1401] [≤2.5:1402] [≤5:1402] [≤10:1402] [≤+Inf:1402]
+family sidekiq_jobs_executed_total type=counter help="A counter of the total number of jobs sidekiq executed."
+  sidekiq_jobs_executed_total{queue="default",worker="OrderMailerJob"} 1388
+  sidekiq_jobs_executed_total{queue="critical",worker="ChargeCardJob"} 1402
+family sidekiq_jobs_waiting_count type=gauge help="The number of jobs waiting to process in sidekiq."
+  sidekiq_jobs_waiting_count{queue="default"} 3
+  sidekiq_jobs_waiting_count{queue="critical"} 0
+family shop_order_wait_seconds type=histogram help="Time from order placed to \"ready\", by size."
+  shop_order_wait_seconds_bucket{size="small",le="60"} 12
+  shop_order_wait_seconds_bucket{size="small",le="300"} 140
+  shop_order_wait_seconds_bucket{size="small",le="900"} 301
+  shop_order_wait_seconds_bucket{size="small",le="1800"} 330
+  shop_order_wait_seconds_bucket{size="small",le="+Inf"} 333
+  shop_order_wait_seconds_sum{size="small"} 131220.5
+  shop_order_wait_seconds_count{size="small"} 333
+  histogram{size="small"} sum=131220.5(true) count=333(true) [≤60:12] [≤300:140] [≤900:301] [≤1800:330] [≤+Inf:333]
+family shop_orders_in_progress type=gauge help="Orders currently being prepared."
+  shop_orders_in_progress 4

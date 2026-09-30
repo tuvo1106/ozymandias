@@ -1,0 +1,35 @@
+# HELP http_request_duration_seconds Latency of HTTP requests.
+# TYPE http_request_duration_seconds histogram
+http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="0.005"} 12
+http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="0.01"} 40
+http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="0.025"} 81
+http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="0.05"} 95
+http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="0.1"} 99
+http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="+Inf"} 100
+http_request_duration_seconds_sum{handler="/api/v1/query",method="GET"} 1.52
+http_request_duration_seconds_count{handler="/api/v1/query",method="GET"} 100
+# HELP rpc_durations_seconds RPC latency distributions.
+# TYPE rpc_durations_seconds summary
+rpc_durations_seconds{service="exponential",quantile="0.5"} 7.23e-07
+rpc_durations_seconds{service="exponential",quantile="0.9"} 2.3e-06
+rpc_durations_seconds{service="exponential",quantile="0.99"} 4.9e-06
+rpc_durations_seconds_sum{service="exponential"} 0.0079
+rpc_durations_seconds_count{service="exponential"} 7921
+# HELP temperature_celsius Temperature, which can be negative.
+# TYPE temperature_celsius histogram
+temperature_celsius_bucket{le="-20"} 0
+temperature_celsius_bucket{le="-10"} 3
+temperature_celsius_bucket{le="0"} 20
+temperature_celsius_bucket{le="10"} 71
+temperature_celsius_bucket{le="+Inf"} 80
+temperature_celsius_sum 312.5
+temperature_celsius_count 80
+# HELP build_info A metric with a constant '1' value labeled by version, "revision" \\ and goversion.
+# TYPE build_info gauge
+build_info{goversion="go1.25.1",revision="0000000",version="v1.2.3",path="C:\\app\\bin",note="line\nbreak \"quoted\""} 1
+# HELP process_start_time_seconds Start time of the process since unix epoch in seconds.
+# TYPE process_start_time_seconds gauge
+process_start_time_seconds 1.75907e+09
+# HELP legacy_gauge_with_timestamp A gauge carrying an explicit timestamp.
+# TYPE legacy_gauge_with_timestamp gauge
+legacy_gauge_with_timestamp 42 1759071234567

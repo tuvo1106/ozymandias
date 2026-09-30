@@ -1,0 +1,25 @@
+family acme_http_requests type=counter unit=requests help="Requests served."
+  acme_http_requests_total{code="200"} 1027 @1759071234500ms
+  acme_http_requests_created{code="200"} 1.75907e+09
+  acme_http_requests_total{code="500"} 3
+family acme_request_seconds type=histogram unit=seconds
+  acme_request_seconds_bucket{le="0.1"} 8
+  acme_request_seconds_bucket{le="1.0"} 11
+  acme_request_seconds_bucket{le="+Inf"} 12
+  acme_request_seconds_count 12
+  acme_request_seconds_sum 5.1
+  acme_request_seconds_created 1.75907e+09
+  histogram sum=5.1(true) count=12(true) [≤0.1:8] [≤1:11] [≤+Inf:12]
+family acme_build type=info
+  acme_build_info{version="2.0.1"} 1
+family acme_feature type=stateset
+  acme_feature{acme_feature="a"} 1
+  acme_feature{acme_feature="b"} 0
+family acme_queue_depth type=gaugehistogram
+  acme_queue_depth_gbucket{le="10"} 4
+  acme_queue_depth_gbucket{le="+Inf"} 5
+  acme_queue_depth_gcount 5
+  acme_queue_depth_gsum 31
+  histogram sum=31(true) count=5(true) [≤10:4] [≤+Inf:5]
+family acme_mystery type=unknown
+  acme_mystery 7

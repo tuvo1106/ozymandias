@@ -1,0 +1,43 @@
+# HELP redis_up Information about the Redis instance
+# TYPE redis_up gauge
+redis_up 1
+# HELP redis_instance_info Information about the Redis instance
+# TYPE redis_instance_info gauge
+redis_instance_info{executable="/usr/local/bin/redis-server",maxmemory_policy="noeviction",os="Linux 6.8.0 x86_64",process_id="1",redis_build_id="0000000000000000",redis_mode="standalone",redis_version="7.2.4",role="master",run_id="0000000000000000000000000000000000000000",tcp_port="6379"} 1
+# HELP redis_connected_clients Redis connected clients
+# TYPE redis_connected_clients gauge
+redis_connected_clients 7
+# HELP redis_memory_used_bytes memory_used_bytes metric
+# TYPE redis_memory_used_bytes gauge
+redis_memory_used_bytes 1.1845632e+07
+# HELP redis_commands_processed_total commands_processed_total metric
+# TYPE redis_commands_processed_total counter
+redis_commands_processed_total 184523
+# HELP redis_keyspace_hits_total keyspace_hits_total metric
+# TYPE redis_keyspace_hits_total counter
+redis_keyspace_hits_total 90211
+# HELP redis_keyspace_misses_total keyspace_misses_total metric
+# TYPE redis_keyspace_misses_total counter
+redis_keyspace_misses_total 3120
+# HELP redis_evicted_keys_total evicted_keys_total metric
+# TYPE redis_evicted_keys_total counter
+redis_evicted_keys_total 0
+# HELP redis_db_keys Total number of keys by DB
+# TYPE redis_db_keys gauge
+redis_db_keys{db="db0"} 412
+redis_db_keys{db="db1"} 0
+# HELP redis_commands_duration_seconds_total Total amount of time in seconds spent per command
+# TYPE redis_commands_duration_seconds_total counter
+redis_commands_duration_seconds_total{cmd="get"} 0.412
+redis_commands_duration_seconds_total{cmd="set"} 0.219
+redis_commands_duration_seconds_total{cmd="lpush"} 0.051
+# HELP redis_latency_percentiles_usec A summary of latency percentile distribution per command
+# TYPE redis_latency_percentiles_usec summary
+redis_latency_percentiles_usec{cmd="get",quantile="50"} 2.007
+redis_latency_percentiles_usec{cmd="get",quantile="99"} 9.023
+redis_latency_percentiles_usec{cmd="get",quantile="99.9"} 17.023
+redis_latency_percentiles_usec_sum{cmd="get"} 412000
+redis_latency_percentiles_usec_count{cmd="get"} 90211
+# HELP redis_last_slow_execution_duration_seconds The amount of time needed for last slow execution, in seconds
+# TYPE redis_last_slow_execution_duration_seconds gauge
+redis_last_slow_execution_duration_seconds NaN
