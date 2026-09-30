@@ -87,11 +87,6 @@ func (f *Family) Histograms() ([]Histogram, error) {
 				return nil, fmt.Errorf("openmetrics: %s: le=%q is not a number", s.Name, le)
 			}
 			h := get(s.Labels)
-			for _, b := range h.Buckets {
-				if b.UpperBound == ub {
-					return nil, fmt.Errorf("openmetrics: %s: two buckets with le=%q", s.Name, le)
-				}
-			}
 			h.Buckets = append(h.Buckets, Bucket{UpperBound: ub, Count: s.Value})
 		case f.Name + sumSfx:
 			h := get(s.Labels)
@@ -104,6 +99,17 @@ func (f *Family) Histograms() ([]Histogram, error) {
 	res := make([]Histogram, 0, len(out))
 	for _, h := range out {
 		sort.Slice(h.Buckets, func(i, j int) bool { return h.Buckets[i].UpperBound < h.Buckets[j].UpperBound })
+		// Duplicates are found once sorted, where they are neighbours:
+		// O(n log n). Checking each bucket against the ones before it as
+		// it arrived was O(n²) per series, and a target may serve as many
+		// buckets as the sample limit allows — seconds of CPU after the
+		// scrape's timeout has passed, since parsing is not cancellable.
+		for i := 1; i < len(h.Buckets); i++ {
+			if h.Buckets[i].UpperBound == h.Buckets[i-1].UpperBound {
+				return nil, fmt.Errorf("openmetrics: %s%s: two buckets with le=%q",
+					f.Name, bucketSfx, strconv.FormatFloat(h.Buckets[i].UpperBound, 'g', -1, 64))
+			}
+		}
 		if n := len(h.Buckets); n > 0 && !math.IsInf(h.Buckets[n-1].UpperBound, 1) {
 			total := h.Count
 			if !h.HasCount {

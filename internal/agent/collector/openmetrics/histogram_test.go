@@ -4,8 +4,10 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/sketch"
 )
@@ -97,6 +99,40 @@ func TestFamily_Histograms_Errors(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, tc.msg)
 			}
 		})
+	}
+}
+
+// manyBuckets is one histogram series with n buckets, le 0..n-1, in the
+// order given by at.
+func manyBuckets(n int, at func(i int) int) Family {
+	f := Family{Name: "h", Type: TypeHistogram, Samples: make([]Sample, n)}
+	for i := range n {
+		f.Samples[i] = Sample{Name: "h_bucket", Labels: []Label{{"le", strconv.Itoa(at(i))}}, Value: float64(i)}
+	}
+	return f
+}
+
+// A target may serve as many buckets as the sample limit allows (200,000),
+// and parsing cannot be cancelled once the scrape's timeout has passed, so
+// finding duplicate buckets must not be quadratic: 200,000 took about 5s
+// that way, and takes about 0.1s sorted, under -race.
+func TestFamily_Histograms_ManyBuckets(t *testing.T) {
+	const n = 200_000
+	f := manyBuckets(n, func(i int) int { return n - 1 - i })
+	start := time.Now()
+	hs, err := f.Histograms()
+	took := time.Since(start)
+	if err != nil || len(hs) != 1 || len(hs[0].Buckets) != n+1 {
+		t.Fatalf("err %v, %d histograms", err, len(hs))
+	}
+	if took > 2*time.Second {
+		t.Fatalf("%d buckets took %v: quadratic?", n, took)
+	}
+	// A duplicate as far apart as the input allows is still found.
+	f = manyBuckets(n, func(i int) int { return min(i, n-2) })
+	_, err = f.Histograms()
+	if err == nil || !strings.Contains(err.Error(), `two buckets with le="199998"`) {
+		t.Fatalf("err = %v", err)
 	}
 }
 
