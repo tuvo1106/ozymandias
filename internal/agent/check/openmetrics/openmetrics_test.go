@@ -345,13 +345,48 @@ func TestCheck_MaxSeries(t *testing.T) {
 	_, url := serve(t, b.String())
 	c, _ := check(t, map[string]any{"url": url, "max_series": 4})
 	g, err := scrape(t, c)
-	if err == nil || !strings.Contains(err.Error(), "6 metrics dropped") {
+	if err == nil || !strings.Contains(err.Error(), "6 metrics or series dropped") {
 		t.Fatalf("err = %v", err)
 	}
 	if n := len(g.named("g")); n != 4 {
 		t.Fatalf("emitted %d, want the cap of 4", n)
 	}
 	g.one(t, "openmetrics.up") // the health metrics are outside the cap
+}
+
+// max_series bounds what the check remembers, not only what it sends: a
+// target serving far more counter and histogram series than the cap leaves
+// no more than the cap in the check's state, scrape after scrape. The
+// series first admitted keep working.
+func TestCheck_MaxSeriesBoundsState(t *testing.T) {
+	page := func(v int) string {
+		var b strings.Builder
+		b.WriteString("# TYPE req counter\n")
+		for i := range 500 {
+			fmt.Fprintf(&b, "req_total{id=\"%d\"} %d\n", i, v)
+		}
+		b.WriteString("# TYPE lat histogram\n")
+		for i := range 200 {
+			fmt.Fprintf(&b, "lat_bucket{id=\"%d\",le=\"1\"} %d\nlat_bucket{id=\"%d\",le=\"+Inf\"} %d\nlat_sum{id=\"%d\"} %d\nlat_count{id=\"%d\"} %d\n", i, v, i, v, i, v, i, v)
+		}
+		return b.String()
+	}
+	_, url := serve(t, page(1), page(2), page(3))
+	c, fc := check(t, map[string]any{"url": url, "max_series": 50})
+	oc := c.(*Check)
+	for range 3 {
+		if _, err := scrape(t, c); err == nil || !strings.Contains(err.Error(), "max_series 50") {
+			t.Fatalf("err = %v", err)
+		}
+		if n := oc.rates.Len() + len(oc.buckets) + len(oc.counts.last); n > 50 {
+			t.Fatalf("the check tracks %d series, over max_series 50", n)
+		}
+		fc.Advance(15 * time.Second)
+	}
+	g, _ := scrape(t, c)
+	if len(g.named("req_total")) != 50 {
+		t.Fatalf("the admitted counters: %d reported, want 50", len(g.named("req_total")))
+	}
 }
 
 func TestNew_Refuses(t *testing.T) {

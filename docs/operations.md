@@ -178,7 +178,7 @@ collectors:
 | `exclude_labels` | none | Labels not turned into tags |
 | `timeout` | `10s` | One scrape |
 | `max_body` | 10 MiB | Bytes; a larger page is an error (up 0) |
-| `max_series` | 2000 | Metrics one scrape may emit; the rest are dropped and the run reports an error |
+| `max_series` | 2000 | Metrics one scrape may emit, and series (counters, histograms) the check remembers between scrapes; the rest are dropped and the run reports an error |
 | `histogram_buckets_as_distributions` | `false` | Send each histogram as one distribution (a DDSketch of the interval's buckets) named after the family, instead of `.bucket` counts, so `p90:` works on it. Lossy: a percentile is as precise as the bucket widths |
 
 The first scrape has gauges only: a rate or a count needs two. A target that

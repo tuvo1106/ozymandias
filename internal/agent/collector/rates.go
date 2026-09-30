@@ -110,3 +110,10 @@ func (r *Rates) Sweep(now time.Time) {
 
 // Len returns the number of keys being tracked.
 func (r *Rates) Len() int { return len(r.last) }
+
+// Has reports whether key has a reading: whether the next Observe of it
+// updates state rather than adding it.
+func (r *Rates) Has(key string) bool {
+	_, ok := r.last[key]
+	return ok
+}

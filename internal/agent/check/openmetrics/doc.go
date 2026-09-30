@@ -40,9 +40,10 @@
 // `metrics` (regexes, empty = everything) and `exclude` (regexes) choose;
 // `rename` maps a name to another; `namespace` is prefixed with a dot. A
 // target is someone else's process, so everything is bounded: the body by
-// max_body, the samples by the parser's limits, and what one scrape may emit
-// by max_series — beyond it the rest are dropped and the run reports an
-// error saying how many.
+// max_body, the samples by the parser's limits, and both what one scrape
+// may emit and how many series the check remembers between scrapes by
+// max_series — beyond it the rest are dropped and the run reports an error
+// saying how many.
 //
 // # Health
 //

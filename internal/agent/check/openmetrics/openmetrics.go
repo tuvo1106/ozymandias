@@ -52,7 +52,8 @@ type Config struct {
 	Timeout time.Duration `yaml:"timeout"`
 	// MaxBody bounds the page, in bytes. Default 10 MiB.
 	MaxBody int64 `yaml:"max_body"`
-	// MaxSeries bounds the metrics one scrape emits. Default 2000.
+	// MaxSeries bounds the metrics one scrape emits, and the series whose
+	// last reading the check keeps between scrapes. Default 2000.
 	MaxSeries int `yaml:"max_series"`
 }
 
@@ -160,7 +161,7 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 		c.family(&fams[i], now, e)
 	}
 	if e.dropped > 0 {
-		return fmt.Errorf("max_series %d reached: %d metrics dropped from this scrape", c.cfg.MaxSeries, e.dropped)
+		return fmt.Errorf("max_series %d reached: %d metrics or series dropped from this scrape", c.cfg.MaxSeries, e.dropped)
 	}
 	return nil
 }
@@ -179,6 +180,21 @@ func (e *emitter) add(m collector.Metric) {
 	}
 	e.n++
 	e.emit(m)
+}
+
+// admit says whether a series may be tracked between scrapes: one already
+// tracked always may, a new one only while the rates, buckets and counts
+// together hold fewer than max_series. Capping only what is sent would
+// still keep a reading of every series a target serves — 150k of them for
+// a label with a request id in it — for as long as it serves them, which
+// is the growth max_series is there to stop. A series refused is counted
+// as dropped, like a metric past the cap.
+func (c *Check) admit(tracked bool, e *emitter) bool {
+	if tracked || c.rates.Len()+len(c.buckets)+len(c.counts.last) < c.cfg.MaxSeries {
+		return true
+	}
+	e.dropped++
+	return false
 }
 
 func (c *Check) scrape(ctx context.Context) ([]om.Family, error) {
@@ -270,7 +286,11 @@ func (c *Check) family(f *om.Family, now time.Time, e *emitter) {
 			if !ok {
 				continue
 			}
-			if r, ok := c.rates.Observe(seriesKey(s.Name, s.Labels, ""), s.Value, now); ok {
+			key := seriesKey(s.Name, s.Labels, "")
+			if !c.admit(c.rates.Has(key), e) {
+				continue
+			}
+			if r, ok := c.rates.Observe(key, s.Value, now); ok {
 				e.add(collector.Metric{Name: name, Kind: collector.Rate, Value: r, Tags: c.tags(s.Labels, "")})
 			}
 		}
@@ -321,6 +341,9 @@ func (c *Check) histogram(f *om.Family, now time.Time, e *emitter) {
 		tags := c.tags(h.Labels, "")
 		key := seriesKey(f.Name, h.Labels, "")
 		prev, seen := c.buckets[key]
+		if !c.admit(seen, e) {
+			continue
+		}
 		c.buckets[key] = bucketState{buckets: h.Buckets, at: now}
 		if seen && c.cfg.HistogramBucketsAsDistributions {
 			deltas, _ := om.BucketDeltas(prev.buckets, h.Buckets)
@@ -386,12 +409,12 @@ func (c *Check) summary(f *om.Family, now time.Time, e *emitter) {
 // sumCount emits a histogram's or summary's .sum and .count as counts of
 // the interval.
 func (c *Check) sumCount(name, key string, hasSum bool, sum float64, hasCount bool, count float64, tags []string, now time.Time, e *emitter) {
-	if hasSum {
+	if hasSum && c.admit(c.counts.has(key+"\x00sum"), e) {
 		if d, ok := c.counts.observe(key+"\x00sum", sum, now); ok {
 			e.add(collector.Metric{Name: name + ".sum", Kind: collector.Count, Value: d, Tags: tags})
 		}
 	}
-	if hasCount {
+	if hasCount && c.admit(c.counts.has(key+"\x00count"), e) {
 		if d, ok := c.counts.observe(key+"\x00count", count, now); ok {
 			e.add(collector.Metric{Name: name + ".count", Kind: collector.Count, Value: d, Tags: tags})
 		}
@@ -455,6 +478,11 @@ func (d *deltas) observe(key string, v float64, at time.Time) (float64, bool) {
 		return v, true
 	}
 	return v - prev.v, true
+}
+
+func (d *deltas) has(key string) bool {
+	_, ok := d.last[key]
+	return ok
 }
 
 func (d *deltas) prune(cutoff time.Time) {
