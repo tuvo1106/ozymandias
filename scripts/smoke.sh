@@ -546,4 +546,34 @@ check "the counter survived a real restart"  wait_sum smoke.test "$N"
 check "the gauge survived a real restart"    wait_sum smoke.gauge 7
 check "the sketch survived a real restart"  wait_agg smoke.latency p95 95 0.01
 
+# --- M3: agent collectors ------------------------------------------------------
+# The host collector reads the Docker VM's kernel (not the Mac's) every 15s,
+# after a random start within its first interval. The agent was restarted
+# near the top of this script, long enough ago for its first run to be in.
+latest_value() { # <query> — the newest non-null point over the last 5 minutes
+  local now; now=$(date +%s)
+  curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" --data-urlencode "q=$1" \
+    --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 60))" 2>/dev/null |
+    python3 -c 'import json,sys
+pts = [p for s in json.load(sys.stdin).get("series", []) for p in s["points"] if p[1] is not None]
+print(max(pts)[1] if pts else "none")'
+}
+wait_positive() { # <query>
+  local v
+  for _ in $(seq 1 30); do
+    v=$(latest_value "$1")
+    [[ $v != none ]] && python3 -c "import sys; sys.exit(0 if float('$v') > 0 else 1)" && return 0
+    sleep 1
+  done
+  echo "$1: newest value '$v', want > 0" >&2
+  return 1
+}
+host_q="{host:$(scripts/hostname.sh | tr '[:upper:]' '[:lower:]')}"
+check "the host collector reports memory"      wait_positive "max:system.mem.total$host_q"
+check "and disk space, per device"             wait_positive "max:system.disk.total$host_q by {device}"
+check "the collector reports on itself"        wait_positive "sum:ozy.agent.collector.runs{collector:host}"
+# Zero increase may arrive as 0 or not at all, depending on the reporter.
+no_errors() { local v; v=$(latest_value "$1"); [[ $v == none ]] || python3 -c "import sys; sys.exit(0 if float('$v') == 0 else 1)"; }
+check "without errors"                         no_errors 'sum:ozy.agent.collector.errors{collector:host}'
+
 echo "smoke: $pass checks passed"

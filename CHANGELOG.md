@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Host metrics from the agent** (M3 §3, part 1). A collector framework
+  runs pull-based sources on a timer, each on its own goroutine with jitter,
+  a timeout and its own self-metrics (`ozy.agent.collector.*`), and sends
+  their output straight to ozyd. The first collector is `host`: CPU, load,
+  memory, swap, disk space, disk I/O, network and uptime as `system.*`
+  (docs/metrics-catalog.md), every 15s, configured under `collectors:` in
+  `deploy/agent.yaml`. In compose these describe the Docker VM; `make dev`
+  reports the Mac.
+- **Go runtime metrics for the agent**: `ozy.runtime.goroutines`,
+  `ozy.runtime.heap_bytes`, `ozy.runtime.gc_cycles`.
+
 ### Changed
 
 - **One machine is one `host` value** (ADR-0025). ozyd has a `hostname`

@@ -382,6 +382,44 @@ data is being dropped.
 Formats are specified byte by byte in [docs/formats/](docs/formats/), and the
 reasoning behind each package is in its `doc.go`.
 
+## 12. Agent collectors
+
+Statsd is push: applications send, the agent aggregates. Collectors are
+pull: the agent goes and reads a source on a timer — the kernel's counters
+now (M3 §3), the Docker daemon and configured checks next.
+
+```
+Collector.Collect ──emit(Metric)──▶ Scheduler ──[]wire.Series──▶ Forwarder ──▶ ozyd
+     (one per source)          (+host, +tags, +timestamp)      (same queue as statsd)
+```
+
+- **One goroutine per collector** (`internal/agent/collector`). "A slow or
+  failing collector never delays another" then holds by construction rather
+  than by careful timeouts: the Docker daemon taking nine seconds holds up
+  the Docker collector only. Each starts at a random point in its first
+  interval and then runs on a fixed period, so collectors spread out and the
+  spacing between two readings — every rate's denominator — is constant.
+- **Straight to the forwarder, not through the aggregator.** The aggregator
+  exists to combine many samples of one series within a bucket; a collector
+  produces one value per series per run already.
+- **Rates are computed at collection.** Kernel and container counters are
+  cumulative since some start the agent does not control. `collector.Rates`
+  differences two readings, yields nothing for a first reading or across a
+  counter reset (a skipped interval rather than an invented spike), and
+  forgets keys that disappear. Prometheus stores the raw counter and
+  computes `rate()` at query time, which keeps the option of any window
+  later; storing the rate keeps every query cheap and the store free of
+  resets, at the cost of that option.
+- **Failure is data.** A failed run is counted
+  (`ozy.agent.collector.errors`), logged once on the transition into failure
+  and once on recovery, and never fatal. A run past `collectors.timeout` is
+  cancelled; what it read is still sent.
+- **The host collector** reads gopsutil through a narrow `Source` interface,
+  so tests can script what no machine produces on demand (a counter reset, a
+  vanished interface). CPU percentages are computed from its own total of
+  the states, because gopsutil's includes guest time that Linux already
+  counts inside user time.
+
 ---
 
 *Sections added by later milestones: query pipeline (M3),

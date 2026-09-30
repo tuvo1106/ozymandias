@@ -76,6 +76,19 @@ Two ordering rules matter operationally:
   up to 64 MiB of payloads, so a two-minute restart loses nothing (measured in
   [benchmarks.md](benchmarks.md)).
 
+### Agent: collectors (M3)
+
+Collectors read a source on a timer and send what they find, every
+`collectors.interval` (15s). Each is independent: one that fails or hangs
+does not delay another. Per collector, `ozy.agent.collector.runs`,
+`.errors`, `.timeouts` and `.duration_ms` (tag `collector`) say how it is
+doing; a failure is logged once when it starts and once when it clears, not
+every run.
+
+| Collector | Config | Reports | Notes |
+|---|---|---|---|
+| `host` | `collectors.host` | `system.*` | In compose, the Docker VM's kernel, not the Mac's: its CPUs, memory and disks. `make dev` runs the agent natively and reports the Mac. Rates need two readings, so the first 15s after start have gauges only |
+
 ## Health and self-metrics
 
 ```console
