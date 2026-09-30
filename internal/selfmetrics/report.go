@@ -22,6 +22,18 @@ type Reporter struct {
 	mu     sync.Mutex
 	prev   map[string]float64 // counter key → value at the last Collect
 	lastTS int64              // bucket timestamp of the last emitted snapshot
+	first  int64              // no snapshot is stamped before this (NotBefore)
+}
+
+// NotBefore stops the reporter stamping any bucket that began at or before
+// started: the process before this one (a restart) may have reported that
+// bucket, and the store refuses a second point at a timestamp it has. The
+// same floor as the agent's aggregator (ADR-0029); a Collect before it
+// reports nothing, and what it held is reported at the next.
+func (r *Reporter) NotBefore(started time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.first = started.Unix()/r.interval*r.interval + r.interval
 }
 
 // NewReporter reports reg's instruments with tags added to each (typically
@@ -52,7 +64,7 @@ func (r *Reporter) Collect(now time.Time) []wire.Series {
 	snap := r.reg.Snapshot()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if ts == r.lastTS {
+	if ts == r.lastTS || ts < r.first {
 		return nil
 	}
 	r.lastTS = ts

@@ -30,6 +30,10 @@ the floor, or is stamped earlier, is counted in the floor bucket instead:
 seconds late, not lost. "Strictly after" covers an agent started in the
 very second its predecessor stopped, when that second is a boundary.
 
+The agent's self-metrics reporter, whose points ride with each flush,
+takes the same floor. It reports nothing stamped before the floor, and
+what it counted there is reported at the first bucket after it.
+
 The final flush at shutdown emits every open bucket **except those that
 start after now**. The next agent's floor is the bucket after the second it
 starts in, which can be any bucket after this agent's now, so a bucket ahead

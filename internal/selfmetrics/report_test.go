@@ -81,3 +81,24 @@ func TestReporter_DoesNotReemitABucketItAlreadyReported(t *testing.T) {
 		t.Fatalf("next bucket = %+v, want the 3 events since the last report", next)
 	}
 }
+
+// A process stopped before its first whole bucket reports nothing rather
+// than the bucket its predecessor reported (ADR-0029); what it counted is
+// reported at the first bucket after its start, if it lives that long.
+func TestReporter_NotBeforeTheFirstWholeBucket(t *testing.T) {
+	reg := NewRegistry()
+	c := reg.Counter("ozy.test.events")
+	r := NewReporter(reg, 10*time.Second, "host:h")
+	r.NotBefore(time.Unix(100, 0)) // started on a boundary: 100 may be the predecessor's
+
+	c.Add(2)
+	for _, now := range []int64{100, 105, 109} {
+		if got := r.Collect(time.Unix(now, 0)); got != nil {
+			t.Fatalf("collect at %d = %+v, want nothing before 110", now, got)
+		}
+	}
+	got := r.Collect(time.Unix(110, 0))
+	if len(got) != 1 || got[0].Points[0] != (wire.Point{Timestamp: 110, Value: 2}) {
+		t.Fatalf("collect at 110 = %+v, want the 2 events at 110", got)
+	}
+}

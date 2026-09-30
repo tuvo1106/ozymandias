@@ -119,6 +119,7 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		Logger:        a.log,
 	})
 	a.self = selfmetrics.NewReporter(a.reg, cfg.Aggregator.FlushInterval, hostTag)
+	a.self.NotBefore(a.started)
 	selfmetrics.RegisterRuntime(a.reg, "component:"+Component)
 
 	collectors := slices.Clone(opts.Collectors)
