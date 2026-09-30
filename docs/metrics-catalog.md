@@ -151,7 +151,7 @@ first run has none.
 | `container.pids` | gauge | processes | container | Processes and threads in the container |
 | `container.uptime` | gauge | seconds | container | Time since the container last started; back to 0 when it restarts in place |
 | `docker.containers.running` | gauge | containers | `image_name` | Running containers per image |
-| `container.exits` | count | exits | container, `exit_code`, `oom_killed` | Containers that stopped, from the event stream, so a container too short-lived for any poll is still counted. `exit_code:unknown` when the daemon did not say |
+| `container.exits` | count | exits | container, `exit_code`, `oom_killed` | Containers that stopped, from the event stream, so a container too short-lived for any poll is still counted. `exit_code:unknown` when the daemon did not say. A floor: exits while the daemon itself restarts are not replayed |
 | `container.lifetime` | distribution | seconds | container | Start to exit, per exit; percentiles at query time. Missing when the start was neither seen nor could be inspected |
 
 "container" in the Tags column means the container tags above. When a

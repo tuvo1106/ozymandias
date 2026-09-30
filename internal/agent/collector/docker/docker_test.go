@@ -117,9 +117,7 @@ func (f *fakeAPI) Events(ctx context.Context, since time.Time, fn func(dockerapi
 // stats builds a sampled stats answer with cumulative counters scaled by n.
 func stats(n uint64) dockerapi.Stats {
 	var s dockerapi.Stats
-	s.Read = t0
-	s.PreCPUStats.CPUUsage.TotalUsage = 100 * n
-	s.PreCPUStats.SystemUsage = 10_000 * n
+	s.Read = t0.Add(time.Duration(n) * 1500 * time.Millisecond) // 10 steps of n are the tests' 15s
 	s.CPUStats.CPUUsage.TotalUsage = 100*n + 50
 	s.CPUStats.SystemUsage = 10_000*n + 1000
 	s.CPUStats.OnlineCPUs = 4
@@ -132,7 +130,7 @@ func stats(n uint64) dockerapi.Stats {
 }
 
 func ctr(id, name, image string, labels map[string]string) dockerapi.Container {
-	return dockerapi.Container{ID: id, Names: []string{"/" + name}, Image: image, Labels: labels, State: "running"}
+	return dockerapi.Container{ID: id, Names: []string{"/" + name}, Image: image, Labels: labels}
 }
 
 type got map[string][]collector.Metric
@@ -513,5 +511,25 @@ func TestDocker_NoPidsStatsIsNotZeroPids(t *testing.T) {
 	g, _ := collect(t, New(Options{API: api, Clock: testutil.NewFakeClock(t0)}))
 	if len(g["container.pids"]) != 0 {
 		t.Fatalf("pids = %+v, want nothing", g["container.pids"])
+	}
+}
+
+// A rate is timed by the daemon's sample, not the run: a container queued
+// behind others is sampled later than the run began, by a different amount
+// each run.
+func TestDocker_RatesAreTimedByTheSample(t *testing.T) {
+	first, second := stats(1), stats(11)
+	first.Read, second.Read = t0, t0.Add(20*time.Second) // the run gap is 15s
+	api := &fakeAPI{list: []dockerapi.Container{ctr(idAPI, "api", "x", nil)}, stats: map[string]dockerapi.Stats{idAPI: first}}
+	fc := testutil.NewFakeClock(t0)
+	c := New(Options{API: api, Clock: fc})
+	_, _ = collect(t, c)
+	fc.Advance(15 * time.Second)
+	api.mu.Lock()
+	api.stats[idAPI] = second
+	api.mu.Unlock()
+	g, _ := collect(t, c)
+	if v := g.one(t, "container.net.rx_bytes").Value; v != 750 {
+		t.Fatalf("rx = %v, want 15000 bytes / 20s = 750", v)
 	}
 }

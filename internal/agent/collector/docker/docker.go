@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +12,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
 	"github.com/tuvo1106/ozymandias/internal/clock"
+	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
 // API is the part of the Docker Engine API the collector uses.
@@ -122,15 +122,13 @@ type run struct {
 	out  map[string]*collector.Metric
 }
 
-// add keys on the tags as the store will see them — normalized, sorted and
-// without duplicates — so two containers that differ only in, say, the case
-// of a name are combined here rather than sent as two points for one series,
-// of which the store would keep only the last.
-func (r *run) add(m collector.Metric) {
-	m.Tags = agenttags.Normalize(m.Tags)
-	slices.Sort(m.Tags)
-	m.Tags = slices.Compact(m.Tags)
-	key := m.Name + "\x00" + strings.Join(m.Tags, ",")
+// add combines m with any metric of the same name and tags. tagKey is m's
+// tags joined, in the form the store will see them (canonicalTags), so two
+// containers that differ only in, say, the case of a name are combined here
+// rather than sent as two points for one series, of which the store would
+// keep only the last. The caller computes it once per container.
+func (r *run) add(m collector.Metric, tagKey string) {
+	key := m.Name + "\x00" + tagKey
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	prev, ok := r.out[key]
@@ -295,19 +293,31 @@ func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started tim
 	if !s.Sampled() {
 		return nil // stopped between the list and the stats call
 	}
-	tags := c.tag.tags(ct.Name(), ct.ID, ct.Image, ct.Labels)
+	// Normalized and canonical once, for all of this container's metrics:
+	// the key run.add combines on, and a slice they can share (the
+	// scheduler copies tags before it decorates them).
+	tags := wire.CanonicalTags(agenttags.Normalize(c.tag.tags(ct.Name(), ct.ID, ct.Image, ct.Labels)))
+	tagKey := strings.Join(tags, ",")
 	gauge := func(name string, v float64) {
-		res.add(collector.Metric{Name: name, Kind: collector.Gauge, Value: v, Tags: tags})
+		res.add(collector.Metric{Name: name, Kind: collector.Gauge, Value: v, Tags: tags}, tagKey)
+	}
+	// Rates are timed by when the daemon took the sample, not by when the
+	// run began: calls queue behind MaxConcurrency, so on a busy daemon a
+	// container late in the list is sampled seconds after the run's start,
+	// and by a different amount each run.
+	at := now
+	if !s.Read.IsZero() {
+		at = s.Read
 	}
 	rate := func(name string, v uint64, ok bool) {
 		if !ok {
 			return // the daemon has no such counter for it: unknown, not 0
 		}
 		res.mu.Lock()
-		r, ok := c.rates.Observe(ct.ID+"\x00"+name, float64(v), now)
+		r, ok := c.rates.Observe(ct.ID+"\x00"+name, float64(v), at)
 		res.mu.Unlock()
 		if ok {
-			res.add(collector.Metric{Name: name, Kind: collector.Rate, Value: r, Tags: tags})
+			res.add(collector.Metric{Name: name, Kind: collector.Rate, Value: r, Tags: tags}, tagKey)
 		}
 	}
 	res.mu.Lock()

@@ -2,6 +2,7 @@ package config
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -169,8 +170,15 @@ func TestLoad_ShippedFragments(t *testing.T) {
 		t.Fatalf("err=%v warnings=%v", err, warnings)
 	}
 	rules := cfg.Collectors.Docker.ContainerNameRewrite
-	if len(rules) != 1 || rules[0].Match != "^judge-.*" || rules[0].Replace != "judge" {
+	if len(rules) != 2 || rules[1].Match != "^judge-.*" || rules[1].Replace != "judge" {
 		t.Fatalf("container_name_rewrite = %+v", rules)
+	}
+	// The stack's own rule keeps the name (it is there to drop the id).
+	stack := regexp.MustCompile(rules[0].Match)
+	for _, name := range []string{"ozymandias-gid-probe", "ozy-smoke-long", "ozy-smoke-redis"} {
+		if !stack.MatchString(name) || stack.ReplaceAllString(name, rules[0].Replace) != name {
+			t.Errorf("%s: matched %v, rewritten to %q", name, stack.MatchString(name), stack.ReplaceAllString(name, rules[0].Replace))
+		}
 	}
 }
 

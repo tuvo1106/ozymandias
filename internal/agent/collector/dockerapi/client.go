@@ -26,6 +26,9 @@ const (
 	// list of a few hundred containers is well under 1 MiB; this is a guard
 	// against a broken daemon, not a limit anyone should meet.
 	DefaultMaxBodyBytes = 8 << 20
+	// DefaultMaxIdleConns is the connections kept between requests when
+	// Options does not say: the collector's default concurrency.
+	DefaultMaxIdleConns = 8
 	// MaxEventBytes bounds one line of the event stream. An event is a few
 	// hundred bytes plus its container's labels.
 	MaxEventBytes = 1 << 20
@@ -72,6 +75,11 @@ type Options struct {
 	Timeout time.Duration
 	// MaxBodyBytes bounds each non-streaming response body.
 	MaxBodyBytes int64
+	// MaxIdleConns is how many socket connections are kept between
+	// requests. Set it to the most requests the caller has in flight at
+	// once (the collector's max_concurrency), so a run's connections are
+	// reused by the next rather than re-dialled.
+	MaxIdleConns int
 }
 
 // Client talks to one Docker daemon. It is safe for concurrent use; the
@@ -95,6 +103,9 @@ func New(opts Options) *Client {
 	if opts.MaxBodyBytes <= 0 {
 		opts.MaxBodyBytes = DefaultMaxBodyBytes
 	}
+	if opts.MaxIdleConns <= 0 {
+		opts.MaxIdleConns = DefaultMaxIdleConns
+	}
 	socket := opts.Socket
 	tr := &http.Transport{
 		// The URL's host is ignored: every connection goes to the socket.
@@ -102,11 +113,10 @@ func New(opts Options) *Client {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", socket)
 		},
-		// Both at least the collector's stats concurrency, so a run's
-		// connections are kept for the next rather than re-dialled.
-		// MaxIdleConns caps the whole transport, so it must not be lower.
-		MaxIdleConns:        16,
-		MaxIdleConnsPerHost: 16,
+		// Every connection goes to one "host", and MaxIdleConns caps the
+		// whole transport, so the two are the same number.
+		MaxIdleConns:        opts.MaxIdleConns,
+		MaxIdleConnsPerHost: opts.MaxIdleConns,
 		IdleConnTimeout:     90 * time.Second,
 	}
 	// No http.Client.Timeout: it would also cut the event stream. Each

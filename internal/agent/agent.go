@@ -142,7 +142,7 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		}
 		api := opts.DockerAPI
 		if api == nil {
-			a.dockerClient = dockerapi.New(dockerapi.Options{Socket: d.Socket})
+			a.dockerClient = dockerapi.New(dockerapi.Options{Socket: d.Socket, MaxIdleConns: d.MaxConcurrency})
 			api = a.dockerClient
 		}
 		dc := docker.New(docker.Options{
@@ -283,7 +283,8 @@ func (a *Agent) Close() error {
 //     cancelled and what it had read is still sent; one stuck in a syscall
 //     is abandoned after 2s), HTTP drains within http.shutdown_timeout, and
 //     the statsd socket closes after its queue is parsed;
-//  2. the aggregator does a final flush of every open bucket;
+//  2. the aggregator does a final flush of every open bucket that has
+//     begun (ADR-0029);
 //  3. the forwarder makes one last delivery attempt within
 //     forwarder.shutdown_timeout.
 func (a *Agent) Run(ctx context.Context, ln net.Listener) error {

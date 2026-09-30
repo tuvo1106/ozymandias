@@ -39,6 +39,10 @@
 //     (ADR-0026), keyed by container id so a rewritten name that covers
 //     several containers still differences each one's own counter.
 //   - The event stream resumes from the last event seen after a disconnect,
-//     and skips that event when the daemon delivers it again (since is
-//     inclusive), so a daemon restart neither loses nor double-counts exits.
+//     and skips the events at that time the daemon delivers again (since is
+//     inclusive), so a resume does not double-count exits. It cannot recover
+//     what the daemon no longer has: the daemon replays from a bounded
+//     in-memory buffer (256 events), which its own restart empties, so exits
+//     during a daemon restart, or beyond the buffer in a long disconnect,
+//     are lost. container.exits is a floor, not an audit log.
 package docker

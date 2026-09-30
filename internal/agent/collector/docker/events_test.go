@@ -294,3 +294,29 @@ func TestWatcher_TheSameErrorAfterAHealthyStreamIsLoggedAgain(t *testing.T) {
 		return strings.Count(buf.String(), "docker event stream failed") == 2
 	}, "logged %d times, want 2:\n%s", strings.Count(buf.String(), "docker event stream failed"), buf.String())
 }
+
+// Several events can share the resume time (a daemon that sends whole
+// seconds, or a burst): the resume delivers them all again, and none is
+// counted twice.
+func TestWatcher_ResumeSkipsEveryEventAtTheLastTime(t *testing.T) {
+	a, b, c := "a"+idAPI[1:], "b"+idAPI[1:], "c"+idAPI[1:]
+	at := t0.Add(time.Second)
+	dieA := event("die", a, at, map[string]string{"exitCode": "0"})
+	dieB := event("die", b, at, map[string]string{"exitCode": "0"})
+	api := &fakeAPI{
+		scripts: [][]dockerapi.Event{
+			{dieA, dieB},
+			{dieA, dieB, event("die", c, at.Add(time.Second), map[string]string{"exitCode": "0"})},
+		},
+		errs: []error{dockerapi.ErrStreamClosed, nil},
+	}
+	sk, fc, _ := watch(t, api, WatcherOptions{})
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.named("container.exits")) == 2 }, "first two")
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "backoff timer")
+	fc.Advance(minBackoff)
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.named("container.exits")) >= 3 }, "third")
+	time.Sleep(20 * time.Millisecond)
+	if n := len(sk.named("container.exits")); n != 3 {
+		t.Fatalf("%d exits, want 3: a replayed die was counted again", n)
+	}
+}

@@ -2,21 +2,16 @@ package dockerapi
 
 import "strings"
 
-// CPUPercent is the container's CPU use over the daemon's own sampling
-// window (precpu_stats → cpu_stats), in % of one core. ok is false when
-// there is no answer to give, rather than a 0 that would chart as "idle":
+// CPUPercentBetween is the container's CPU use between two stats answers,
+// prev then cur, in % of one core. The caller keeps the history: one-shot
+// stats carry one sample, not the daemon's own pair (precpu_stats, which
+// this package does not decode). ok is false when there is no answer to
+// give, rather than a 0 that would chart as "idle":
 //
-//   - on the first sample of a container, precpu_stats is empty;
+//   - with no previous sample (its SystemUsage is zero);
 //   - when the system delta is zero, the two samples are the same instant;
 //   - when either counter went backwards (the container restarted between
 //     samples, so its counter reset), the difference is not usage.
-func CPUPercent(s Stats) (pct float64, ok bool) {
-	return cpuPercent(s.PreCPUStats, s.CPUStats)
-}
-
-// CPUPercentBetween is [CPUPercent] across two separate stats answers,
-// prev then cur, for a caller that keeps its own history (for example with
-// the daemon's one-shot mode, which skips the second sample).
 func CPUPercentBetween(prev, cur Stats) (pct float64, ok bool) {
 	return cpuPercent(prev.CPUStats, cur.CPUStats)
 }
@@ -50,8 +45,6 @@ type Memory struct {
 	RSS uint64
 	// Cache is page cache: v1 "cache", v2 "file".
 	Cache uint64
-	// CgroupV2 says which key set the numbers came from.
-	CgroupV2 bool
 }
 
 // Breakdown normalises the memory stats of either cgroup version (package
@@ -64,7 +57,6 @@ func (m MemoryStats) Breakdown() (mem Memory, ok bool) {
 	mem = Memory{Usage: m.Usage, Limit: m.Limit}
 	var inactive uint64
 	if _, v2 := m.Stats["anon"]; v2 {
-		mem.CgroupV2 = true
 		mem.RSS, mem.Cache, inactive = m.Stats["anon"], m.Stats["file"], m.Stats["inactive_file"]
 	} else {
 		mem.RSS = m.Stats["rss"]

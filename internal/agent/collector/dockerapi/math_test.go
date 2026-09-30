@@ -5,7 +5,6 @@ import (
 	"math"
 	"os"
 	"testing"
-	"time"
 )
 
 func loadStats(t *testing.T, name string) Stats {
@@ -21,6 +20,24 @@ func loadStats(t *testing.T, name string) Stats {
 	return s
 }
 
+// loadPre is a canned payload's precpu_stats as a previous sample: the
+// daemon's own pair of samples makes a real prev/cur for CPUPercentBetween.
+// The package does not decode precpu_stats; one-shot stats leave it empty.
+func loadPre(t *testing.T, name string) Stats {
+	t.Helper()
+	b, err := os.ReadFile("testdata/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var x struct {
+		Pre CPUStats `json:"precpu_stats"`
+	}
+	if err := json.Unmarshal(b, &x); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return Stats{CPUStats: x.Pre}
+}
+
 func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 
 func TestCPUPercent_FromCannedPayloads(t *testing.T) {
@@ -34,9 +51,9 @@ func TestCPUPercent_FromCannedPayloads(t *testing.T) {
 		{"stats-cgroupv2.json", 50},
 		{"stats-cgroupv1.json", 10},
 	} {
-		got, ok := CPUPercent(loadStats(t, tc.file))
+		got, ok := CPUPercentBetween(loadPre(t, tc.file), loadStats(t, tc.file))
 		if !ok || !near(got, tc.want) {
-			t.Errorf("%s: CPUPercent = %v, %v; want %v", tc.file, got, ok, tc.want)
+			t.Errorf("%s: CPUPercentBetween = %v, %v; want %v", tc.file, got, ok, tc.want)
 		}
 	}
 }
@@ -53,26 +70,26 @@ func TestCPUPercentBetween_TwoSeparateAnswers(t *testing.T) {
 }
 
 func TestCPUPercent_NoAnswerIsNotZero(t *testing.T) {
-	base := loadStats(t, "stats-cgroupv2.json")
-	cases := map[string]func(*Stats){
-		"first sample: precpu empty": func(s *Stats) { s.PreCPUStats = CPUStats{} },
-		"same instant":               func(s *Stats) { s.CPUStats.SystemUsage = s.PreCPUStats.SystemUsage },
-		"system counter backwards":   func(s *Stats) { s.CPUStats.SystemUsage = s.PreCPUStats.SystemUsage - 1 },
-		"container counter reset":    func(s *Stats) { s.CPUStats.CPUUsage.TotalUsage = 1 },
-		"no core count at all":       func(s *Stats) { s.CPUStats.OnlineCPUs = 0; s.CPUStats.CPUUsage.PercpuUsage = nil },
+	pre, base := loadPre(t, "stats-cgroupv2.json"), loadStats(t, "stats-cgroupv2.json")
+	cases := map[string]func(prev, cur *Stats){
+		"no previous sample":       func(p, _ *Stats) { *p = Stats{} },
+		"same instant":             func(p, s *Stats) { s.CPUStats.SystemUsage = p.CPUStats.SystemUsage },
+		"system counter backwards": func(p, s *Stats) { s.CPUStats.SystemUsage = p.CPUStats.SystemUsage - 1 },
+		"container counter reset":  func(_, s *Stats) { s.CPUStats.CPUUsage.TotalUsage = 1 },
+		"no core count at all":     func(_, s *Stats) { s.CPUStats.OnlineCPUs = 0; s.CPUStats.CPUUsage.PercpuUsage = nil },
 	}
 	for name, mutate := range cases {
-		s := base
-		mutate(&s)
-		if got, ok := CPUPercent(s); ok {
-			t.Errorf("%s: CPUPercent = %v, want no answer", name, got)
+		p, s := pre, base
+		mutate(&p, &s)
+		if got, ok := CPUPercentBetween(p, s); ok {
+			t.Errorf("%s: CPUPercentBetween = %v, want no answer", name, got)
 		}
 	}
 	// And an idle container is an answer: 0%, ok.
 	s := base
-	s.CPUStats.CPUUsage.TotalUsage = s.PreCPUStats.CPUUsage.TotalUsage
-	if got, ok := CPUPercent(s); !ok || got != 0 {
-		t.Errorf("idle: CPUPercent = %v, %v; want 0, true", got, ok)
+	s.CPUStats.CPUUsage.TotalUsage = pre.CPUStats.CPUUsage.TotalUsage
+	if got, ok := CPUPercentBetween(pre, s); !ok || got != 0 {
+		t.Errorf("idle: CPUPercentBetween = %v, %v; want 0, true", got, ok)
 	}
 }
 
@@ -81,7 +98,7 @@ func TestMemoryBreakdown(t *testing.T) {
 		file string
 		want Memory
 	}{
-		{"stats-cgroupv2.json", Memory{Usage: 157286400 - 31457280, Limit: 536870912, RSS: 94371840, Cache: 52428800, CgroupV2: true}},
+		{"stats-cgroupv2.json", Memory{Usage: 157286400 - 31457280, Limit: 536870912, RSS: 94371840, Cache: 52428800}},
 		{"stats-cgroupv1.json", Memory{Usage: 83886080 - 16777216, Limit: 2147483648, RSS: 41943040, Cache: 33554432}},
 	} {
 		got, ok := loadStats(t, tc.file).MemoryStats.Breakdown()
@@ -104,7 +121,7 @@ func TestMemoryBreakdown_EdgeCases(t *testing.T) {
 	// v1 fallbacks: total_rss when rss is absent, inactive_file when
 	// total_inactive_file is.
 	m, _ = MemoryStats{Usage: 100, Stats: map[string]uint64{"total_rss": 40, "inactive_file": 30}}.Breakdown()
-	if m.RSS != 40 || m.Usage != 70 || m.CgroupV2 {
+	if m.RSS != 40 || m.Usage != 70 {
 		t.Errorf("v1 fallbacks: %+v", m)
 	}
 }
@@ -170,26 +187,6 @@ func TestShortID(t *testing.T) {
 	} {
 		if got := ShortID(in); got != want {
 			t.Errorf("ShortID(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-func TestContainerStateLifetime(t *testing.T) {
-	t0 := time.Date(2026, 9, 29, 17, 10, 0, 0, time.UTC)
-	for _, tc := range []struct {
-		name string
-		s    ContainerState
-		want time.Duration
-		ok   bool
-	}{
-		{"exited", ContainerState{StartedAt: t0, FinishedAt: t0.Add(2500 * time.Millisecond)}, 2500 * time.Millisecond, true},
-		{"running", ContainerState{Running: true, StartedAt: t0}, 0, false},
-		{"never started", ContainerState{FinishedAt: t0}, 0, false},
-		{"finish before start", ContainerState{StartedAt: t0, FinishedAt: t0.Add(-time.Second)}, 0, false},
-	} {
-		got, ok := tc.s.Lifetime()
-		if got != tc.want || ok != tc.ok {
-			t.Errorf("%s: Lifetime = %v, %v; want %v, %v", tc.name, got, ok, tc.want, tc.ok)
 		}
 	}
 }

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/agent/collector/docker"
+	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
 	base "github.com/tuvo1106/ozymandias/internal/config"
 )
 
@@ -178,7 +180,7 @@ func Default() Agent {
 		Collectors: Collectors{
 			Interval: 15 * time.Second, Timeout: 10 * time.Second,
 			Host:   HostCollector{Enabled: true, ExcludeInterfaces: slices.Clone(DefaultExcludeInterfaces)},
-			Docker: DockerCollector{Enabled: true, Socket: "/var/run/docker.sock", MaxConcurrency: 8},
+			Docker: DockerCollector{Enabled: true, Socket: dockerapi.DefaultSocket, MaxConcurrency: docker.DefaultMaxConcurrency},
 		},
 		ConfdPath: "./deploy/agent.d",
 		Log:       base.Log{Level: "info", Format: "text"},

@@ -71,7 +71,11 @@ type Watcher struct {
 	// after maxTracked.
 	started map[string]time.Time
 	oom     map[string]bool
-	last    dockerapi.Event // for resuming, and for dropping the replayed one
+	last    dockerapi.Event // the newest event seen: where a resume starts
+	// atLast holds every event seen at last's time (action and container):
+	// since is inclusive, so a resume delivers them all again, and several
+	// can share a time — a daemon that sends only whole seconds, or a burst.
+	atLast map[string]bool
 	// began is when the first connection was attempted: the resume point
 	// until an event has been seen, so a disconnect before the first event
 	// still replays what happened meanwhile.
@@ -99,7 +103,7 @@ func NewWatcher(opts WatcherOptions) *Watcher {
 		events:     opts.Registry.Counter("ozy.agent.docker.events"),
 		skipped:    opts.Registry.Counter("ozy.agent.docker.events_skipped"),
 		onStart:    opts.OnStart,
-		started:    map[string]time.Time{}, oom: map[string]bool{},
+		started:    map[string]time.Time{}, oom: map[string]bool{}, atLast: map[string]bool{},
 	}
 }
 
@@ -160,11 +164,21 @@ func (w *Watcher) Run(ctx context.Context) {
 	}
 }
 
-// replayOf reports whether ev is the event a resume delivers again: since
-// is inclusive, so the last event seen comes back first.
+// replayOf reports whether ev is one a resume delivers again (since is
+// inclusive, so everything at the last event's time comes back), and
+// otherwise records it as seen.
 func (w *Watcher) replayOf(ev dockerapi.Event) bool {
-	l := w.last
-	return l.Action != "" && ev.Action == l.Action && ev.Actor.ID == l.Actor.ID && ev.At().Equal(l.At())
+	k := ev.Action + "\x00" + ev.Actor.ID
+	if w.last.Action != "" && ev.At().Equal(w.last.At()) {
+		if w.atLast[k] {
+			return true
+		}
+	} else {
+		clear(w.atLast)
+	}
+	w.atLast[k] = true
+	w.last = ev
+	return false
 }
 
 // skip counts an event line the client could not decode and skipped.
@@ -177,7 +191,6 @@ func (w *Watcher) handle(ctx context.Context, ev dockerapi.Event) error {
 	if w.replayOf(ev) {
 		return nil
 	}
-	w.last = ev
 	w.events.Inc()
 	id := ev.Actor.ID
 	switch ev.Action {

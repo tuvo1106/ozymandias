@@ -29,8 +29,12 @@ func FuzzDecodeStats(f *testing.F) {
 		if json.Unmarshal(data, &s) != nil {
 			return
 		}
-		if pct, ok := CPUPercent(s); ok && (math.IsNaN(pct) || math.IsInf(pct, 0) || pct < 0) {
-			t.Fatalf("CPUPercent = %v from %s", pct, data)
+		var pre struct {
+			CPU CPUStats `json:"precpu_stats"`
+		}
+		_ = json.Unmarshal(data, &pre)
+		if pct, ok := CPUPercentBetween(Stats{CPUStats: pre.CPU}, s); ok && (math.IsNaN(pct) || math.IsInf(pct, 0) || pct < 0) {
+			t.Fatalf("CPUPercentBetween = %v from %s", pct, data)
 		}
 		if m, ok := s.MemoryStats.Breakdown(); ok && m.Usage > s.MemoryStats.Usage {
 			t.Fatalf("Breakdown usage %d exceeds charged usage %d: subtraction wrapped", m.Usage, s.MemoryStats.Usage)

@@ -16,12 +16,8 @@ type Container struct {
 	// Image is the reference the container was started from, as the user
 	// wrote it ("redis:7"), or the image id if that reference has since
 	// been re-pointed or removed. See [ParseImage].
-	Image   string            `json:"Image"`
-	ImageID string            `json:"ImageID"`
-	Labels  map[string]string `json:"Labels"`
-	State   string            `json:"State"`   // "running", "exited", …
-	Status  string            `json:"Status"`  // human text: "Up 2 hours"
-	Created int64             `json:"Created"` // unix seconds
+	Image  string            `json:"Image"`
+	Labels map[string]string `json:"Labels"`
 }
 
 // Name returns the container's first name without the leading "/", or its
@@ -35,38 +31,19 @@ func (c Container) Name() string {
 	return ShortID(c.ID)
 }
 
-// ContainerJSON is the part of GET /containers/{id}/json the collector uses.
+// ContainerJSON is the part of GET /containers/{id}/json the agent uses.
 type ContainerJSON struct {
-	ID     string         `json:"Id"`
-	Name   string         `json:"Name"` // with a leading "/"
-	State  ContainerState `json:"State"`
-	Config struct {
-		Image  string            `json:"Image"`
-		Labels map[string]string `json:"Labels"`
-	} `json:"Config"`
+	State ContainerState `json:"State"`
 }
 
-// ContainerState is a container's lifecycle state. The daemon writes
-// "0001-01-01T00:00:00Z" for a time that has not happened (FinishedAt of a
-// running container), which decodes as the zero time.Time.
+// ContainerState is the part of a container's lifecycle state the agent
+// reads: when it started (for uptime, and for a lifetime whose start event
+// was missed) and whether the kernel's OOM killer ended it. The daemon
+// writes "0001-01-01T00:00:00Z" for a start that has not happened, which
+// decodes as the zero time.Time.
 type ContainerState struct {
-	Status     string    `json:"Status"`
-	Running    bool      `json:"Running"`
-	OOMKilled  bool      `json:"OOMKilled"`
-	ExitCode   int       `json:"ExitCode"`
-	StartedAt  time.Time `json:"StartedAt"`
-	FinishedAt time.Time `json:"FinishedAt"`
-}
-
-// Lifetime is how long the container ran: FinishedAt−StartedAt for a
-// stopped container. ok is false while it is running or when either time is
-// missing, and for a finish before the start (clock trouble) rather than a
-// negative duration.
-func (s ContainerState) Lifetime() (d time.Duration, ok bool) {
-	if s.StartedAt.IsZero() || s.FinishedAt.IsZero() || s.FinishedAt.Before(s.StartedAt) {
-		return 0, false
-	}
-	return s.FinishedAt.Sub(s.StartedAt), true
+	OOMKilled bool      `json:"OOMKilled"`
+	StartedAt time.Time `json:"StartedAt"`
 }
 
 // Stats is one GET /containers/{id}/stats?stream=false answer. The counters
@@ -77,9 +54,7 @@ type Stats struct {
 	// container was not running by the time the daemon looked, and then
 	// every counter is zero too: see [Stats.Sampled].
 	Read        time.Time               `json:"read"`
-	PreRead     time.Time               `json:"preread"`
 	CPUStats    CPUStats                `json:"cpu_stats"`
-	PreCPUStats CPUStats                `json:"precpu_stats"`
 	MemoryStats MemoryStats             `json:"memory_stats"`
 	Networks    map[string]NetworkStats `json:"networks"`
 	BlkioStats  BlkioStats              `json:"blkio_stats"`
