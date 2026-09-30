@@ -76,6 +76,19 @@ Two ordering rules matter operationally:
   up to 64 MiB of payloads, so a two-minute restart loses nothing (measured in
   [benchmarks.md](benchmarks.md)).
 
+### Agent: collectors (M3)
+
+Collectors read a source on a timer and send what they find, every
+`collectors.interval` (15s). Each is independent: one that fails or hangs
+does not delay another. Per collector, `ozy.agent.collector.runs`,
+`.errors`, `.timeouts` and `.duration_ms` (tag `collector`) say how it is
+doing; a failure is logged once when it starts and once when it clears, not
+every run.
+
+| Collector | Config | Reports | Notes |
+|---|---|---|---|
+| `host` | `collectors.host` | `system.*` | In compose, the Docker VM's kernel, not the Mac's: its CPUs, memory and disks — but network counters are per namespace, so `system.net.*` is the agent container's own traffic. `make dev` runs the agent natively and reports the Mac. Rates need two readings, so the first 15s after start have gauges only |
+
 ## Health and self-metrics
 
 ```console
@@ -234,8 +247,8 @@ TCP (the UI, `/healthz`, trace intake on 8126) is unaffected.
 | Symptom | Check |
 |---|---|
 | `make up` hangs at "Waiting" | `docker compose -f deploy/docker-compose.yml logs ozyd`. A config error exits 2 with the reason on the first line |
-| Exit code 2 | Configuration or usage error. The message names the file, line or key |
-| Exit code 1 | Runtime failure: port in use, unusable `data_dir`, no hostname. See the `exiting` log line |
+| Exit code 2 | Configuration or usage error. The message names the file, line or key. Includes a configured `hostname` that cannot be a `host` tag (a comma, surrounding whitespace, a trailing `:`, over 195 bytes), in either binary |
+| Exit code 1 | Runtime failure: port in use, unusable `data_dir`, or (agent only) no `hostname` configured and no usable OS hostname. ozyd in that case tags its own metrics `host:ozyd` and logs a warning. See the `exiting` log line |
 | `/` says "built without the web UI" | Run `make web && make build`. The image build does this for you |
 | `host` tag is `ozymandias-host` | Compose was started without `make up`, which exports `OZY_HOSTNAME`. Export it and recreate: `OZY_HOSTNAME=$(scripts/hostname.sh) docker compose -f deploy/docker-compose.yml up -d` |
 | ozyd's `host` tag differs from the agent's, or is a container id | Run natively without `make dev`, ozyd uses the OS hostname (`name.local` on macOS). Set `hostname` in `ozyd.yaml`, or `OZY_HOSTNAME`, to the agent's name |

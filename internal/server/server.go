@@ -100,6 +100,21 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	if opts.Hostname == nil {
 		opts.Hostname = os.Hostname
 	}
+	// Before anything is opened, so a refusal has nothing to close.
+	//
+	// Unlike the agent, ozyd does not refuse to start when the OS has no
+	// usable name: only its own metrics carry the tag, and "ozyd" still says
+	// whose they are. A *configured* name is different: falling back would
+	// hide the operator's typo, so it is an error even for a caller that
+	// skipped config.Load's validation.
+	_, hostTag, err := config.ResolveHostname(cfg.Hostname, opts.Hostname)
+	if err != nil {
+		if cfg.Hostname != "" {
+			return nil, err
+		}
+		opts.Logger.Warn("no usable OS hostname; tagging self-metrics host:"+Component, "error", err)
+		hostTag = "host:" + Component
+	}
 	// Fail at startup, not at the first write, if the data dir is unusable.
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("data_dir: %w", err)
@@ -138,15 +153,6 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		Clock: s.clock, Metrics: s.reg, Logger: s.log,
 	})
 
-	// Unlike the agent, ozyd does not refuse to start without a hostname:
-	// only its own metrics carry the tag, and "ozyd" still says whose they
-	// are. A configured name that cannot be a tag never gets here; Validate
-	// refused it.
-	_, hostTag, err := config.ResolveHostname(cfg.Hostname, opts.Hostname)
-	if err != nil {
-		s.log.Warn("no usable hostname; tagging self-metrics host:"+Component, "error", err)
-		hostTag = "host:" + Component
-	}
 	s.self = selfmetrics.NewReporter(s.reg, selfReportInterval, hostTag)
 
 	s.reg.Gauge("ozy.build.info", "component:"+Component, "version:"+buildinfo.Version).Set(1)

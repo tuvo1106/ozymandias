@@ -315,7 +315,7 @@ func TestAggregator_ClientTimestampUsedOnlyWithinTolerance(t *testing.T) {
 
 func TestAggregator_TagsNormalizedWithHostAndAgentTags(t *testing.T) {
 	reg := selfmetrics.NewRegistry()
-	a := newAgg(t, Options{Registry: reg, Hostname: "Mac.Local", Tags: []string{"env:dev", "1bad"}})
+	a := newAgg(t, Options{Registry: reg, HostTag: "host:mac.local", Tags: []string{"env:dev", "1bad"}})
 	a.Add(Sample{Name: "c", Kind: Counter, Value: 1, Tags: []string{"Route:/X", "b", "b", "9nope"}}, at(1))
 	a.Add(Sample{Name: "d", Kind: Counter, Value: 1, Tags: []string{"host:other"}}, at(1))
 	out := flushSeries(a, at(10), false)
@@ -586,7 +586,7 @@ func TestPercentileAndFloor(t *testing.T) {
 // --- benchmarks (L12) ------------------------------------------------------
 
 func BenchmarkAggregator_AddExistingContext(b *testing.B) {
-	a := newAgg(b, Options{Hostname: "h", Tags: []string{"env:dev"}})
+	a := newAgg(b, Options{HostTag: "host:h", Tags: []string{"env:dev"}})
 	tags := []string{"service:shop", "route:/api/comics", "method:get", "status:200"}
 	now := at(1)
 	b.ReportAllocs()
@@ -596,7 +596,7 @@ func BenchmarkAggregator_AddExistingContext(b *testing.B) {
 }
 
 func BenchmarkAggregator_AddParallel(b *testing.B) {
-	a := newAgg(b, Options{Hostname: "h"})
+	a := newAgg(b, Options{HostTag: "host:h"})
 	now := at(1)
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
@@ -25,6 +26,13 @@ func ResolveHostname(configured string, lookup func() (string, error)) (name, ta
 		if name == "" {
 			return "", "", errors.New("hostname is not configured and the OS hostname is empty")
 		}
+	}
+	// NormalizeTag keeps surrounding spaces and drops a trailing ':', so
+	// these would make a valid tag that is not the name: "mac " would be a
+	// second host value beside "mac", and "mac:" would be reported as one
+	// name and tagged as another.
+	if strings.TrimSpace(name) != name || strings.HasSuffix(name, ":") {
+		return "", "", fmt.Errorf("hostname %q has surrounding whitespace or a trailing ':'", name)
 	}
 	tag, ok := wire.NormalizeTag("host:" + name)
 	if !ok {

@@ -172,29 +172,41 @@ check "its tag keys are counted"           body_has "$OZY_URL/api/v1/tags/cardin
 # would be the container id, and every `make up` would add a host value (and a
 # copy of every self-metric series) to the store. The volume keeps old values,
 # so listing tag values proves nothing; ask which hosts ozyd reported from in
-# its newest bucket, which must be the Mac's name alone. The window is wide
-# because ozyd stamps points with the VM's clock, which can drift from the
-# Mac's after a sleep. Tag values are lower-cased on the wire.
-latest_ozyd_hosts() {
-  local now body; now=$(date +%s)
+# the last 25s, which must be the Mac's name alone.
+#
+# "Now" is ozyd's, from its Date header, not the Mac's: ozyd stamps points
+# with the VM's clock, which can drift from the Mac's after a sleep, and
+# neither "the newest bucket" nor a wide window survives the VM clock being
+# corrected backwards (old points would then be the newest for a while).
+# Right after a recreate the old container's last bucket is still in the
+# window; the retries outlast it. Tag values are lower-cased on the wire.
+ozyd_now() {
+  curl -fsS --max-time 2 -o /dev/null -D - "$OZY_URL/healthz" | tr -d '\r' |
+    python3 -c 'import sys, email.utils
+for line in sys.stdin:
+    if line.lower().startswith("date:"):
+        print(int(email.utils.parsedate_to_datetime(line[5:].strip()).timestamp()))'
+}
+recent_ozyd_hosts() {
+  local now body
+  now=$(ozyd_now 2>/dev/null) && [[ -n $now ]] || { echo "(ozyd unreachable)"; return; }
   body=$(curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" \
     --data-urlencode 'q=max:ozy.build.info{component:ozyd} by {host}' \
-    --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 300))" 2>/dev/null) ||
+    --data-urlencode "from=$((now - 25))" --data-urlencode "to=$now" 2>/dev/null) ||
     { echo "(query failed)"; return; }
   # A group without the by-key has no "host" in its tags (docs/api.md).
   printf '%s' "$body" | python3 -c 'import json,sys
 series = json.load(sys.stdin).get("series", [])
-seen = {(s["tags"].get("host", "<none>"), p[0]) for s in series for p in s["points"] if p[1] is not None}
-newest = max((t for _, t in seen), default=None)
-print(",".join(sorted(h for h, t in seen if t == newest)))'
+print(",".join(sorted({s["tags"].get("host", "<none>") for s in series
+                       if any(p[1] is not None for p in s["points"])})))'
 }
 ozyd_host_is_the_macs() {
   local want; want=$(printf '%s' "$(scripts/hostname.sh)" | tr '[:upper:]' '[:lower:]')
-  for _ in $(seq 1 15); do
-    [[ "$(latest_ozyd_hosts)" == "$want" ]] && return 0
+  for _ in $(seq 1 25); do
+    [[ "$(recent_ozyd_hosts)" == "$want" ]] && return 0
     sleep 1
   done
-  echo "ozyd's newest self-metrics are from host(s) '$(latest_ozyd_hosts)', expected '$want'" >&2
+  echo "ozyd's self-metrics in the last 25s are from host(s) '$(recent_ozyd_hosts)', expected '$want'" >&2
   return 1
 }
 check "ozyd tags its own metrics with the Mac's name" ozyd_host_is_the_macs
@@ -545,5 +557,75 @@ check "ozyd healthy after the durability restart" healthy ozyd
 check "the counter survived a real restart"  wait_sum smoke.test "$N"
 check "the gauge survived a real restart"    wait_sum smoke.gauge 7
 check "the sketch survived a real restart"  wait_agg smoke.latency p95 95 0.01
+
+# --- M3: agent collectors ------------------------------------------------------
+# The host collector reads the Docker VM's kernel (not the Mac's) every 15s,
+# after a random start within its first interval. The agent was restarted
+# near the top of this script, long enough ago for its first run to be in.
+latest_value() { # <query> — the newest non-null point over the last 5 minutes
+  local now; now=$(ozyd_now 2>/dev/null); [[ -n $now ]] || now=$(date +%s) # the VM clock, see ozyd_now
+  curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" --data-urlencode "q=$1" \
+    --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 60))" 2>/dev/null |
+    python3 -c 'import json,sys
+pts = [p for s in json.load(sys.stdin).get("series", []) for p in s["points"] if p[1] is not None]
+print(max(pts)[1] if pts else "none")'
+}
+wait_rate() { # <query> — like wait_positive, but allowing for the two runs a rate needs
+  local i
+  for i in 1 2 3; do wait_positive "$1" 2>/dev/null && return 0; done
+  wait_positive "$1"
+}
+wait_positive() { # <query>
+  local v
+  for _ in $(seq 1 30); do
+    v=$(latest_value "$1")
+    [[ $v != none ]] && python3 -c "import sys; sys.exit(0 if float('$v') > 0 else 1)" && return 0
+    sleep 1
+  done
+  echo "$1: newest value '$v', want > 0" >&2
+  return 1
+}
+host_q="{host:$(scripts/hostname.sh | tr '[:upper:]' '[:lower:]')}"
+check "the host collector reports memory"      wait_positive "max:system.mem.total$host_q"
+check "and disk space, per device"             wait_positive "max:system.disk.total$host_q by {device}"
+# Only block devices: a folder shared in from the Mac is not a disk, and its
+# path would be a tag value. Read from the newest bucket, so a series left by
+# an older build does not count.
+newest_devices() {
+  local now; now=$(ozyd_now 2>/dev/null); [[ -n $now ]] || now=$(date +%s) # the VM clock, see ozyd_now
+  curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" --data-urlencode "q=max:system.disk.total$host_q by {device}" \
+    --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 60))" 2>/dev/null |
+    python3 -c 'import json,sys
+seen = {(s["tags"].get("device", "<none>"), p[0]) for s in json.load(sys.stdin).get("series", []) for p in s["points"] if p[1] is not None}
+newest = max((t for _, t in seen), default=None)
+print(" ".join(sorted(d for d, t in seen if t == newest)))'
+}
+only_block_devices() { local d; d=$(newest_devices); [[ -n $d ]] && ! grep -qv '^/dev/' <<<"${d// /$'\n'}" || { echo "devices: '$d'" >&2; return 1; }; }
+check "and only block devices"                 only_block_devices
+# A rate needs two runs, and is a gauge on the wire (ADR-0026): a store that
+# typed the name otherwise refuses every point, which only this check sees.
+check "and network rates"                      wait_rate "sum:system.net.bytes_rcvd$host_q"
+check "the collector reports on itself"        wait_positive "sum:ozy.agent.collector.runs{collector:host}"
+# Zero increase may arrive as 0 or not at all, depending on the reporter.
+sum_window() { # <query> [seconds, default 300] — the sum of every point in the window (0 if none)
+  local now; now=$(ozyd_now 2>/dev/null); [[ -n $now ]] || now=$(date +%s)
+  curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" --data-urlencode "q=$1" \
+    --data-urlencode "from=$((now - ${2:-300}))" --data-urlencode "to=$((now + 60))" 2>/dev/null |
+    python3 -c 'import json,sys
+print(sum(p[1] for s in json.load(sys.stdin).get("series", []) for p in s["points"] if p[1] is not None))'
+}
+# Errors are a count: one failing run is a single point, which the newest
+# value would miss, so sum a window. 90s: several runs of this agent, but not
+# the one before `make up` replaced it.
+# No series at all also sums to 0, so the collector's runs must be there in
+# the same window: zero errors from runs that happened, not from silence.
+no_errors() { # <collector>
+  local runs errs
+  runs=$(sum_window "sum:ozy.agent.collector.runs{collector:$1}" 90) || return 1
+  python3 -c "import sys; sys.exit(0 if float('$runs') > 0 else 1)" || { echo "$1: no runs reported in 90s" >&2; return 1; }
+  errs=$(sum_window "sum:ozy.agent.collector.errors{collector:$1}" 90) || return 1
+  python3 -c "import sys; sys.exit(0 if float('$errs') == 0 else 1)" || { echo "$1: $errs errors in 90s" >&2; return 1; }
+}
+check "without errors"                         no_errors host
 
 echo "smoke: $pass checks passed"

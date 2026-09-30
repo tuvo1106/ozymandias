@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/agent/agenttags"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/internal/sketch"
@@ -57,8 +58,11 @@ const TimestampTolerance = 60 * time.Second
 type Options struct {
 	Clock    clock.Clock           // default clock.Real()
 	Registry *selfmetrics.Registry // default: a new registry
-	// Hostname becomes the host tag on every context that doesn't carry one.
-	Hostname string
+	// HostTag ("host:<name>", as config.ResolveHostname returns it) is added
+	// to every context that doesn't carry a host tag. Resolved once by the
+	// caller rather than normalized again here, so the agent's self-metrics
+	// and its forwarded data cannot disagree about the rule.
+	HostTag string
 	// Tags (agent-level, e.g. env:dev) are added to every context. They are
 	// normalized like any other tag; invalid ones are dropped.
 	Tags []string
@@ -192,16 +196,8 @@ func New(opts Options) *Aggregator {
 		flushDuration:  opts.Registry.Gauge("ozy.agent.aggregator.flush_duration_ms"),
 	}
 	opts.Registry.GaugeFunc("ozy.agent.aggregator.contexts", func() float64 { return float64(a.nContexts.Load()) })
-	if opts.Hostname != "" {
-		if t, ok := wire.NormalizeTag("host:" + opts.Hostname); ok {
-			a.hostTag = t
-		}
-	}
-	for _, t := range opts.Tags {
-		if n, ok := wire.NormalizeTag(t); ok {
-			a.agentTags = append(a.agentTags, n)
-		}
-	}
+	a.hostTag = opts.HostTag
+	a.agentTags = agenttags.Normalize(opts.Tags)
 	a.shards = make([]*shard, opts.Shards)
 	for i := range a.shards {
 		a.shards[i] = &shard{contexts: map[string]*aggContext{}}
@@ -350,17 +346,9 @@ func (a *Aggregator) contextTags(raw []string) []string {
 			a.tagsDropped.Inc()
 		}
 	}
-	tags = append(tags, a.agentTags...)
-	if a.hostTag != "" && !wire.HasTagKey(tags, "host") {
-		tags = append(tags, a.hostTag)
-	}
-	tags = wire.CanonicalTags(tags)
-	if len(tags) > wire.MaxTagsPerPoint {
-		// Deterministic (the set is sorted), so a context keeps one identity.
-		a.tagsDropped.Add(int64(len(tags) - wire.MaxTagsPerPoint))
-		tags = tags[:wire.MaxTagsPerPoint]
-	}
-	return slices.Clip(tags)
+	tags, dropped := agenttags.Decorate(tags, a.agentTags, a.hostTag)
+	a.tagsDropped.Add(int64(dropped))
+	return tags
 }
 
 func contextKey(kind Kind, name string, tags []string) string {

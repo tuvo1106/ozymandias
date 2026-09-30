@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Host metrics from the agent** (M3 §3, part 1). A collector framework
+  runs pull-based sources on a timer, each on its own goroutine with jitter,
+  a timeout and its own self-metrics (`ozy.agent.collector.*`), and sends
+  their output straight to ozyd. The first collector is `host`: CPU, load,
+  memory, swap, disk space, disk I/O, network and uptime as `system.*`
+  (docs/metrics-catalog.md), every 15s, configured under `collectors:` in
+  `deploy/agent.yaml`. In compose these describe the Docker VM; `make dev`
+  reports the Mac.
+- **Go runtime metrics for the agent**: `ozy.runtime.goroutines`,
+  `ozy.runtime.heap_bytes`, `ozy.runtime.gc_runs`.
+
 ### Changed
 
 - **One machine is one `host` value** (ADR-0025). ozyd has a `hostname`
@@ -19,6 +32,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `hostname -s` itself changes with the network (`Tus-MacBook-Pro` on one,
   `Mac` on another). A configured hostname that cannot be a tag now fails
   startup; it used to become an empty tag that got every self-metric refused.
+  So does one with surrounding whitespace or a trailing `:`, which made a tag
+  that was not the name (`mac ` beside the agent's `mac`).
   Values recorded before this change stay until retention drops them.
 
 - **`git push` no longer runs `make ci`; GitHub Actions is the full gate**

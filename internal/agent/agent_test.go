@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/agent/collector"
 	"github.com/tuvo1106/ozymandias/internal/agent/config"
 	"github.com/tuvo1106/ozymandias/internal/httpserve"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
@@ -33,6 +34,10 @@ func testConfig() config.Agent {
 	cfg.Statsd.Addr = "127.0.0.1:0"
 	cfg.Intake.URL = "http://127.0.0.1:1"
 	cfg.Forwarder.ShutdownTimeout = time.Second
+	// Off: it reads the real machine, and its start-up timer would count
+	// among the fake clock's waiters that tests wait on. Collectors have
+	// their own test below.
+	cfg.Collectors.Host.Enabled = false
 	return cfg
 }
 
@@ -243,5 +248,135 @@ func TestRun_StatsdToIntake(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// stubCollector emits one gauge per run.
+type stubCollector struct{}
+
+func (stubCollector) Name() string            { return "stub" }
+func (stubCollector) Interval() time.Duration { return time.Second }
+func (stubCollector) Collect(_ context.Context, emit collector.Emit) error {
+	emit(collector.Metric{Name: "stub.level", Kind: collector.Gauge, Value: 42, Tags: []string{"k:v"}})
+	return nil
+}
+
+// Collector output reaches the intake directly, tagged like statsd series
+// are, and the scheduler's own metrics ride along with the self-metrics.
+func TestRun_CollectorsToIntake(t *testing.T) {
+	testutil.CheckGoroutines(t)
+	var mu sync.Mutex
+	var got []wire.Series
+	intake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var p wire.SeriesPayload
+		_ = json.NewDecoder(zr).Decode(&p)
+		mu.Lock()
+		got = append(got, p.Series...)
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer intake.Close()
+
+	clk := testutil.NewFakeClock(time.Unix(1790000001, 0))
+	cfg := testConfig()
+	cfg.Hostname = "box"
+	cfg.Tags = []string{"env:test"}
+	cfg.Intake.URL = intake.URL
+	cfg.Statsd.Enabled = false
+	a, err := newAgent(t, cfg, Options{Logger: quiet, Clock: clk, Collectors: []collector.Collector{stubCollector{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, _ := httpserve.Listen("127.0.0.1:0")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx, ln) }()
+
+	// The aggregator's ticker and the collector's start-up timer.
+	testutil.Eventually(t, 2*time.Second, func() bool { return clk.Waiters() >= 2 }, "not armed")
+	clk.Advance(time.Second)
+	find := func(metric string) *wire.Series {
+		mu.Lock()
+		defer mu.Unlock()
+		for i := range got {
+			if got[i].Metric == metric {
+				return &got[i]
+			}
+		}
+		return nil
+	}
+	testutil.Eventually(t, 3*time.Second, func() bool { return find("stub.level") != nil }, "collector output not forwarded")
+	s := find("stub.level")
+	if s.Type != wire.KindGauge || s.Points[0].Value != 42 || strings.Join(s.Tags, ",") != "env:test,host:box,k:v" {
+		t.Fatalf("stub.level = %+v", s)
+	}
+	// The next aggregator flush carries the scheduler's metrics.
+	clk.Advance(10 * time.Second)
+	testutil.Eventually(t, 3*time.Second, func() bool {
+		r := find("ozy.agent.collector.runs")
+		return r != nil && slices.Contains(r.Tags, "collector:stub")
+	}, "collector self-metrics not forwarded")
+	if find("ozy.runtime.goroutines") == nil {
+		t.Error("runtime self-metrics not forwarded")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A listener that fails ends Run with its error, collectors or not: they
+// must not wait for a SIGTERM that is not coming.
+func TestRun_AListenerFailureStopsTheCollectors(t *testing.T) {
+	testutil.CheckGoroutines(t)
+	cfg := testConfig()
+	cfg.Statsd.Enabled = false
+	a, err := newAgent(t, cfg, Options{Logger: quiet, Clock: testutil.NewFakeClock(time.Unix(1790000001, 0)), Collectors: []collector.Collector{stubCollector{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, _ := httpserve.Listen("127.0.0.1:0")
+	_ = ln.Close()
+	done := make(chan error, 1)
+	go func() { done <- a.Run(context.Background(), ln) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Run returned nil for a closed listener")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after its listener failed")
+	}
+}
+
+func TestNew_HostCollectorFollowsConfig(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		cfg := testConfig()
+		cfg.Collectors.Host.Enabled = on
+		a, err := newAgent(t, cfg, Options{Logger: quiet})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, c := range a.sched.Collectors() {
+			names = append(names, c.Name())
+		}
+		if slices.Contains(names, "host") != on {
+			t.Errorf("enabled=%v: collectors %v", on, names)
+		}
+	}
+}
+
+func TestNew_ABadInterfacePatternIsAnErrorNotAPanic(t *testing.T) {
+	cfg := testConfig()
+	cfg.Collectors.Host.Enabled = true
+	cfg.Collectors.Host.ExcludeInterfaces = []string{"("}
+	if _, err := newAgent(t, cfg, Options{Logger: quiet}); err == nil || !strings.Contains(err.Error(), "exclude_interfaces") {
+		t.Fatalf("err = %v", err)
 	}
 }

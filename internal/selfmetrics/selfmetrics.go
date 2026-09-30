@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"runtime/metrics"
 	"slices"
 	"sort"
 	"strings"
@@ -66,6 +67,7 @@ type Registry struct {
 	counters map[string]*entry[*Counter]
 	gauges   map[string]*entry[*Gauge]
 	funcs    map[string]*entry[func() float64]
+	cfuncs   map[string]*entry[func() float64]
 }
 
 type entry[T any] struct {
@@ -80,6 +82,7 @@ func NewRegistry() *Registry {
 		counters: map[string]*entry[*Counter]{},
 		gauges:   map[string]*entry[*Gauge]{},
 		funcs:    map[string]*entry[func() float64]{},
+		cfuncs:   map[string]*entry[func() float64]{},
 	}
 }
 
@@ -109,6 +112,18 @@ func (r *Registry) GaugeFunc(name string, fn func() float64, tags ...string) {
 	r.funcs[key(name, norm)] = &entry[func() float64]{name: name, tags: norm, inst: fn}
 }
 
+// CounterFunc registers a counter whose cumulative value fn reads at
+// snapshot time, from something that already counts (the runtime's GC
+// cycles). Like a Counter it is reported as the increase since the last
+// report, so a restart does not read as a fall. Registering the same
+// identity again replaces fn.
+func (r *Registry) CounterFunc(name string, fn func() float64, tags ...string) {
+	norm := normalizeTags(tags)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfuncs[key(name, norm)] = &entry[func() float64]{name: name, tags: norm, inst: fn}
+}
+
 func getOrCreate[T any](m map[string]*entry[T], name string, tags []string, mk func() T) T {
 	norm := normalizeTags(tags)
 	k := key(name, norm)
@@ -135,12 +150,19 @@ func (r *Registry) Snapshot() []Point {
 	for _, e := range r.funcs {
 		funcs = append(funcs, e)
 	}
+	cfuncs := make([]*entry[func() float64], 0, len(r.cfuncs))
+	for _, e := range r.cfuncs {
+		cfuncs = append(cfuncs, e)
+	}
 	r.mu.Unlock()
 
-	// Computed gauges run outside the lock: fn may be slow, and must be free
-	// to use the registry itself.
+	// Computed instruments run outside the lock: fn may be slow, and must
+	// be free to use the registry itself.
 	for _, e := range funcs {
 		points = append(points, Point{e.name, TypeGauge, e.tags, e.inst()})
+	}
+	for _, e := range cfuncs {
+		points = append(points, Point{e.name, TypeCounter, e.tags, e.inst()})
 	}
 	sort.Slice(points, func(i, j int) bool {
 		if points[i].Name != points[j].Name {
@@ -191,4 +213,30 @@ func normalizeTags(tags []string) []string {
 
 func key(name string, normTags []string) string {
 	return name + "|" + strings.Join(normTags, ",")
+}
+
+// RegisterRuntime adds the Go runtime's view of the process: goroutines, heap
+// in use, and GC cycles. They answer "is this process leaking" — a goroutine
+// count that climbs with every reconnect, a heap that never comes back down.
+//
+// Read through runtime/metrics rather than runtime.ReadMemStats, which stops
+// the world to take its snapshot; these samples are the ones the runtime
+// keeps current anyway, so reading them costs a few loads.
+func RegisterRuntime(r *Registry, tags ...string) {
+	read := func(name string) func() float64 {
+		return func() float64 {
+			s := []metrics.Sample{{Name: name}}
+			metrics.Read(s)
+			switch s[0].Value.Kind() {
+			case metrics.KindUint64:
+				return float64(s[0].Value.Uint64())
+			case metrics.KindFloat64:
+				return s[0].Value.Float64()
+			}
+			return math.NaN() // unknown to this Go version: skipped by the reporter
+		}
+	}
+	r.GaugeFunc("ozy.runtime.goroutines", read("/sched/goroutines:goroutines"), tags...)
+	r.GaugeFunc("ozy.runtime.heap_bytes", read("/memory/classes/heap/objects:bytes"), tags...)
+	r.CounterFunc("ozy.runtime.gc_runs", read("/gc/cycles/total:gc-cycles"), tags...)
 }

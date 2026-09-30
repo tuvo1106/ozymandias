@@ -55,6 +55,16 @@ interval's increase.
 | `ozy.agent.forwarder.series_sent` | counter | series | — | agent | Series the intake reported as accepted |
 | `ozy.agent.forwarder.series_rejected` | counter | series | — | agent | Series the intake reported as rejected (the reasons are logged) |
 | `ozy.agent.forwarder.queue_bytes` | gauge | bytes | — | agent | Compressed payloads waiting to be sent or retried |
+| `ozy.agent.collector.runs` | counter | runs | `collector` | agent | Completed runs of a collector, successful or not |
+| `ozy.agent.collector.errors` | counter | runs | `collector` | agent | Runs that returned an error (logged once per distinct error, and on recovery) |
+| `ozy.agent.collector.timeouts` | counter | runs | `collector` | agent | Runs cancelled at their limit: `collectors.timeout`, or the collector's interval if that is shorter |
+| `ozy.agent.collector.points` | counter | points | `collector` | agent | Points sent to the forwarder |
+| `ozy.agent.collector.dropped` | counter | points | `collector` | agent | Points that could not be sent: a name the intake would refuse, a non-finite value, or emitted after the run ended |
+| `ozy.agent.collector.tags_dropped` | counter | tags | `collector` | agent | Tags that could not be normalized; the point is kept without them |
+| `ozy.agent.collector.duration_ms` | gauge | ms | `collector` | agent | How long the last run took |
+| `ozy.runtime.goroutines` | gauge | goroutines | `component` | agent | Live goroutines. One that climbs and never falls is a leak |
+| `ozy.runtime.heap_bytes` | gauge | bytes | `component` | agent | Heap occupied by live and not-yet-swept objects |
+| `ozy.runtime.gc_runs` | counter | cycles | `component` | agent | Garbage collections. A rising rate with a flat heap means allocation churn |
 | `ozy.intake.series_accepted` | counter | series | — | ozyd | Series stored by `/v1/series` (and the self-report) |
 | `ozy.intake.series_rejected` | counter | series | — | ozyd | Series refused, per reason in the response's `errors` |
 | `ozy.intake.points_accepted` | counter | points | — | ozyd | Points stored |
@@ -73,3 +83,42 @@ interval's increase.
 | `ozy.sketchstore.points_appended` | count | points | | ozyd | Sketches written, one per series per bucket |
 | `ozy.sketchstore.series_rejected` | count | series | | ozyd | Sketch series the store refused (a ref it cannot key, a timestamp outside the key range, or an id collision) |
 | `ozy.sketchstore.id_collisions` | count | series | | ozyd | **Two series hashed to the same id.** One of them is being refused and its percentiles are missing. Expected to be zero forever — about one chance in 37 million at 100k series — so any value at all is worth a look; the log line names both series |
+
+## Host metrics (`system.*`)
+
+From the agent's host collector (`collectors.host`), every 15s, tagged
+`host:<name>` like everything else the agent sends. They describe the kernel
+the agent runs on: in compose, the Docker VM (Colima, Docker Desktop), not the
+Mac; natively (`make dev`), the Mac. The exception is `system.net.*`: the
+kernel keeps interface counters per network namespace, and the agent's
+container has its own, so in compose they are the agent container's traffic,
+not the VM's (`container.net.*` has every container's). A unit ending in **/s** is a
+per-second rate the agent computed from two readings of a cumulative
+counter, stored as a gauge (ADR-0026) so that it averages correctly over any
+chart bucket; the first run after start has none, and a reading across a
+counter reset is skipped rather than reported as a spike.
+
+| Metric | Type | Unit | Tags | Meaning |
+|---|---|---|---|---|
+| `system.cpu.user` | gauge | % | — | Share of all CPU time spent in user code, nice included, since the previous run. 0–100 across all cores together |
+| `system.cpu.system` | gauge | % | — | In the kernel, interrupt handling included |
+| `system.cpu.idle` | gauge | % | — | Idle |
+| `system.cpu.iowait` | gauge | % | — | Idle with I/O outstanding (Linux; 0 on macOS) |
+| `system.cpu.stolen` | gauge | % | — | Taken by the hypervisor for other guests (a VM only). The five states sum to 100 |
+| `system.load.1` / `.5` / `.15` | gauge | processes | — | Load average over 1, 5 and 15 minutes |
+| `system.mem.total` | gauge | bytes | — | Physical memory |
+| `system.mem.used` | gauge | bytes | — | In use, as the kernel accounts it |
+| `system.mem.free` | gauge | bytes | — | Unused. Near zero on a healthy Linux host, where spare memory is cache |
+| `system.mem.usable` | gauge | bytes | — | Available to a new process without swapping (free plus reclaimable cache). The one to alert on |
+| `system.mem.pct_usable` | gauge | fraction | — | `usable / total`, 0–1 |
+| `system.swap.total` / `.used` / `.free` | gauge | bytes | — | Swap space |
+| `system.swap.pct_free` | gauge | fraction | — | `free / total`, 0–1; absent without swap |
+| `system.disk.total` / `.used` / `.free` | gauge | bytes | `device` | Space on each block device (`/dev/...`), once however many places it is mounted. On macOS, APFS volumes are one container and are reported once as `/dev/diskN`, with used = total − free. In a container: the Docker VM's data disk, seen through the container's bind mounts. Network mounts and folders shared from the Mac are not disks and are skipped |
+| `system.disk.in_use` | gauge | fraction | `device` | `used / (used + free)`, 0–1: `df`'s Use%. Space reserved for root (5% on ext4) counts as neither, so `used + free` can be less than `total` |
+| `system.io.r_s` / `.w_s` | gauge | operations/s | `device` | Read and write operations completed, per whole physical disk: partitions (whose I/O the disk already counts), loop, ram, device-mapper and RAID devices are left out, so a sum over devices counts each write once |
+| `system.io.rkb_s` / `.wkb_s` | gauge | KiB/s | `device` | Read and written |
+| `system.net.bytes_rcvd` / `.bytes_sent` | gauge | bytes/s | `interface` | Traffic per interface, in the agent's network namespace (in compose, its container's). Interfaces that never moved a packet, and those matching `collectors.host.exclude_interfaces`, are skipped |
+| `system.net.packets_in.count` / `packets_out.count` | gauge | packets/s | `interface` | Packets |
+| `system.net.packets_in.error` / `packets_out.error` | gauge | packets/s | `interface` | Packets with errors |
+| `system.net.packets_in.drop` / `packets_out.drop` | gauge | packets/s | `interface` | Packets dropped |
+| `system.uptime` | gauge | seconds | — | Time since the kernel booted |
