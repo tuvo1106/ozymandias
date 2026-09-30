@@ -25,6 +25,14 @@ func TestResolveHostname(t *testing.T) {
 		{"a comma cannot be a tag", "mac,mini", nil, "", ""},
 		{"too long for a tag", strings.Repeat("h", 200), nil, "", ""},
 		{"a bad OS name is refused too", "", os("a,b", nil), "", ""},
+		// Each of these made a valid tag that differs from the name: "host: ",
+		// "host:mac " (a second host value beside an agent's "host:mac"), and
+		// "host:mac" for a name reported as "mac:".
+		{"whitespace only", " ", nil, "", ""},
+		{"padded", "mac ", nil, "", ""},
+		{"leading space", " mac", nil, "", ""},
+		{"trailing colon", "mac:", nil, "", ""},
+		{"a padded OS name is refused too", "", os("mac\n", nil), "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			name, tag, err := ResolveHostname(tc.configured, tc.lookup)

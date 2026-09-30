@@ -32,6 +32,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `hostname -s` itself changes with the network (`Tus-MacBook-Pro` on one,
   `Mac` on another). A configured hostname that cannot be a tag now fails
   startup; it used to become an empty tag that got every self-metric refused.
+  So does one with surrounding whitespace or a trailing `:`, which made a tag
+  that was not the name (`mac ` beside the agent's `mac`).
   Values recorded before this change stay until retention drops them.
 
 - **`git push` no longer runs `make ci`; GitHub Actions is the full gate**
