@@ -58,11 +58,25 @@ type Usage struct {
 	FDsOK   bool
 }
 
+// Fields says which of a [Proc]'s texts a listing must read. Each is one
+// read per process (/proc/<pid>/comm, /proc/<pid>/cmdline on Linux), over
+// the whole process table, on every run of every instance — so an instance
+// asks only for the one its match compares: an exact process_name needs
+// the name, a pattern or a substring match the command line.
+type Fields uint8
+
+// The fields a listing can read.
+const (
+	WantName Fields = 1 << iota
+	WantCmdline
+)
+
 // Source is what the check reads; [System] is the real one.
 type Source interface {
-	// List returns every process. Name and Cmdline may be empty for a
-	// process that exited mid-listing or cannot be read.
-	List(ctx context.Context) ([]Proc, error)
+	// List returns every process, with the texts want asks for (the others
+	// are left empty). Name and Cmdline may also be empty for a process
+	// that exited mid-listing or cannot be read.
+	List(ctx context.Context, want Fields) ([]Proc, error)
 	// Usage reads one process. An error means it is gone (or unreadable)
 	// and is skipped.
 	Usage(ctx context.Context, pid int32) (Usage, error)
@@ -72,6 +86,7 @@ type Source interface {
 type Check struct {
 	cfg     Config
 	exact   bool
+	want    Fields // what match compares, so all List reads
 	pattern *regexp.Regexp
 	src     Source
 	clock   clock.Clock
@@ -123,6 +138,10 @@ func build(cfg Config, src Source, clk clock.Clock) (*Check, error) {
 		return nil, fmt.Errorf("process_name:%s cannot be a tag; set label", label)
 	}
 	c.tags = []string{tag}
+	c.want = WantCmdline
+	if c.pattern == nil && c.exact {
+		c.want = WantName
+	}
 	if c.clock == nil {
 		c.clock = clock.Real()
 	}
@@ -201,7 +220,7 @@ func (c *Check) match(ctx context.Context) ([]int32, error) {
 		}
 		return []int32{int32(pid)}, nil
 	}
-	procs, err := c.src.List(ctx)
+	procs, err := c.src.List(ctx, c.want)
 	if err != nil {
 		return nil, err
 	}
@@ -227,16 +246,21 @@ func (c *Check) match(ctx context.Context) ([]int32, error) {
 type System struct{}
 
 // List implements [Source].
-func (System) List(ctx context.Context) ([]Proc, error) {
+func (System) List(ctx context.Context, want Fields) ([]Proc, error) {
 	ps, err := gprocess.ProcessesWithContext(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Proc, 0, len(ps))
 	for _, p := range ps {
-		name, _ := p.NameWithContext(ctx)
-		cmd, _ := p.CmdlineWithContext(ctx)
-		out = append(out, Proc{PID: p.Pid, Name: name, Cmdline: cmd})
+		proc := Proc{PID: p.Pid}
+		if want&WantName != 0 {
+			proc.Name, _ = p.NameWithContext(ctx)
+		}
+		if want&WantCmdline != 0 {
+			proc.Cmdline, _ = p.CmdlineWithContext(ctx)
+		}
+		out = append(out, proc)
 	}
 	return out, nil
 }

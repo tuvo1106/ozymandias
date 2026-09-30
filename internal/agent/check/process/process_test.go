@@ -21,9 +21,25 @@ type table struct {
 	procs   []Proc
 	usage   map[int32]Usage
 	listErr error
+	asked   []Fields // what each List asked for
 }
 
-func (t *table) List(context.Context) ([]Proc, error) { return t.procs, t.listErr }
+// List hands over only the fields asked for, as System does, so a match
+// that compares a field it did not ask for sees it empty and fails.
+func (t *table) List(_ context.Context, want Fields) ([]Proc, error) {
+	t.asked = append(t.asked, want)
+	out := make([]Proc, len(t.procs))
+	for i, p := range t.procs {
+		out[i].PID = p.PID
+		if want&WantName != 0 {
+			out[i].Name = p.Name
+		}
+		if want&WantCmdline != 0 {
+			out[i].Cmdline = p.Cmdline
+		}
+	}
+	return out, t.listErr
+}
 func (t *table) Usage(_ context.Context, pid int32) (Usage, error) {
 	u, ok := t.usage[pid]
 	if !ok {
@@ -214,9 +230,30 @@ func TestSystem_ThisProcess(t *testing.T) {
 	if err != nil || g["system.processes.number"].Value != 1 || g["system.processes.mem.rss"].Value <= 0 || g["system.processes.threads"].Value < 1 {
 		t.Fatalf("%v %v", g, err)
 	}
-	procs, err := System{}.List(context.Background())
+	procs, err := System{}.List(context.Background(), WantName)
 	if err != nil || len(procs) == 0 {
 		t.Fatalf("list: %d processes, %v", len(procs), err)
+	}
+	named := false
+	for _, p := range procs {
+		named = named || p.Name != ""
+		if p.Cmdline != "" {
+			t.Fatalf("pid %d: a command line read that was not asked for", p.PID)
+		}
+	}
+	if !named {
+		t.Fatal("no process has a name")
+	}
+	procs, _ = System{}.List(context.Background(), WantCmdline)
+	withCmd := false
+	for _, p := range procs {
+		withCmd = withCmd || p.Cmdline != ""
+		if p.Name != "" {
+			t.Fatalf("pid %d: a name read that was not asked for", p.PID)
+		}
+	}
+	if !withCmd {
+		t.Fatal("no process has a command line")
 	}
 	if _, err := (System{}).Usage(context.Background(), 1<<30); err == nil {
 		t.Error("usage of a pid that cannot exist: no error")
@@ -228,5 +265,31 @@ func TestNew_InstanceNameAndProcessName(t *testing.T) {
 	c, err := collector.Registry{Name: New}.NewInstance(Name, 0, 1, map[string]any{"name": "web", "process_name": "nginx"}, nil, nil, nil)
 	if err != nil || c.Name() != "process:web" {
 		t.Fatalf("%v %v", c, err)
+	}
+}
+
+// Each match reads only the field it compares: an exact process_name never
+// reads a command line, which is a /proc read per process per run.
+func TestCheck_ListsOnlyWhatItMatches(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want Fields
+	}{
+		{"exact name", Config{ProcessName: "nginx"}, WantName},
+		{"substring", Config{ProcessName: "uvicorn", ExactMatch: new(false)}, WantCmdline},
+		{"pattern", Config{Pattern: "uvicorn", Label: "api"}, WantCmdline},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := machine()
+			c := mustBuild(t, tc.cfg, m, testutil.NewFakeClock(t0))
+			g, err := run(t, c)
+			if err != nil || g["system.processes.number"].Value == 0 {
+				t.Fatalf("matched nothing: %v %v", g, err)
+			}
+			if len(m.asked) != 1 || m.asked[0] != tc.want {
+				t.Fatalf("listed %v, want %v", m.asked, tc.want)
+			}
+		})
 	}
 }
