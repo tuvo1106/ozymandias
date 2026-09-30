@@ -29,7 +29,7 @@ import (
 // within 1% of the p95 computed from the raw values the test sent — which it
 // still has, and the rest of the pipeline never did.
 func TestEndToEnd_DistributionToPercentile(t *testing.T) {
-	clk := testutil.NewFakeClock(time.Unix(1790000001, 0))
+	clk := testutil.NewFakeClock(time.Unix(1790000000, 0)) // a bucket boundary: an agent writes no bucket that began before it started
 
 	srv, err := New(testConfig(t), Options{Logger: quiet, Clock: clk})
 	if err != nil {

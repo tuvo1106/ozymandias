@@ -56,6 +56,13 @@ const TimestampTolerance = 60 * time.Second
 
 // Options configures an Aggregator. Zero values get the documented defaults.
 type Options struct {
+	// Started is when the agent process started. No point is stamped in a
+	// bucket that began before it: the agent before this one (a restart)
+	// may have written that bucket in its final flush, and the store
+	// refuses a second point at a timestamp it has. Samples from the first
+	// partial bucket are counted in the next instead — seconds late rather
+	// than refused. Zero means no such floor.
+	Started  time.Time
 	Clock    clock.Clock           // default clock.Real()
 	Registry *selfmetrics.Registry // default: a new registry
 	// HostTag ("host:<name>", as config.ResolveHostname returns it) is added
@@ -108,6 +115,9 @@ type Aggregator struct {
 	// yet. A sample for an older bucket arrived too late: its bucket is gone,
 	// so it is counted in the current one instead (see Add).
 	watermark atomic.Int64
+	// first is the start of the first bucket that began at or after
+	// Options.Started; nothing is stamped earlier (see Started).
+	first int64
 
 	nContexts      atomic.Int64
 	samplesDropped *selfmetrics.Counter
@@ -203,6 +213,12 @@ func New(opts Options) *Aggregator {
 		a.shards[i] = &shard{contexts: map[string]*aggContext{}}
 	}
 	a.watermark.Store(math.MinInt64)
+	a.first = math.MinInt64
+	if !opts.Started.IsZero() {
+		// A boundary at the very second the agent started counts as after
+		// it: whole seconds are the stamp's resolution.
+		a.first = floorTo(opts.Started.Unix()-1, a.interval) + a.interval
+	}
 	return a
 }
 
@@ -246,7 +262,7 @@ func (a *Aggregator) Add(s Sample, now time.Time) {
 	// taking any shard lock, so either this sample lands in a bucket that
 	// flush is about to emit, or it sees the new watermark. It can never
 	// land in a bucket that was already emitted.
-	start := floorTo(ts, a.interval)
+	start := max(floorTo(ts, a.interval), a.first)
 	if wm := a.watermark.Load(); start < wm {
 		// The bucket this belongs to has been flushed. Counting it in the
 		// oldest open bucket keeps every counter increment (Σ is preserved)
@@ -369,9 +385,8 @@ func contextKey(kind Kind, name string, tags []string) string {
 // Flush emits every bucket that has closed by now (end <= now) and forgets
 // contexts idle for longer than the expiry. With final set it also emits the
 // open buckets — used once, at shutdown, when there is no later flush to wait
-// for. (If the agent restarts within the same interval, the restarted agent's
-// point for that bucket replaces this one in the store; losing a partial
-// bucket on restart is the accepted cost.)
+// for. A restarted agent does not write that bucket again: it stamps
+// nothing before its first whole bucket (Options.Started).
 func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.SketchSeries) {
 	began := time.Now()
 	nowS := now.Unix()

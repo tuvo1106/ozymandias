@@ -21,7 +21,7 @@ import (
 // POSTs to a real ozyd; the query API returns the value. Every layer is
 // the production code — only the clock and the ports are the test's.
 func TestEndToEnd_StatsdToQuery(t *testing.T) {
-	clk := testutil.NewFakeClock(time.Unix(1790000001, 0))
+	clk := testutil.NewFakeClock(time.Unix(1790000000, 0)) // a bucket boundary: an agent writes no bucket that began before it started
 
 	srv, err := New(testConfig(t), Options{Logger: quiet, Clock: clk})
 	if err != nil {

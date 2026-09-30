@@ -617,3 +617,25 @@ func flushSeries(a *Aggregator, now time.Time, final bool) []wire.Series {
 	series, _ := a.Flush(now, final)
 	return series
 }
+
+// A restarted agent must not write the bucket it started in: its
+// predecessor's final flush may have, and the store would refuse the second
+// point. Samples from before the first whole bucket move into it.
+func TestAggregator_NothingBeforeTheFirstWholeBucket(t *testing.T) {
+	a := newAgg(t, Options{Started: at(3)})
+	a.Add(Sample{Name: "hits", Kind: Counter, Value: 2}, at(4))  // the partial bucket 0
+	a.Add(Sample{Name: "hits", Kind: Counter, Value: 5}, at(12)) // bucket 10
+	if s := find(flushSeries(a, at(10), false), "hits"); s != nil {
+		t.Fatalf("bucket 0 written: %s", points(s))
+	}
+	if s := find(flushSeries(a, at(20), false), "hits"); points(s) != "10:7" {
+		t.Fatalf("got %s, want 10:7: the early sample counted, a bucket late", points(s))
+	}
+
+	// Started on a boundary, to the second: that bucket is the first.
+	b := newAgg(t, Options{Started: at(10)})
+	b.Add(Sample{Name: "hits", Kind: Counter, Value: 1}, at(10))
+	if s := find(flushSeries(b, at(20), false), "hits"); points(s) != "10:1" {
+		t.Fatalf("got %s", points(s))
+	}
+}
