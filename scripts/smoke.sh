@@ -621,7 +621,15 @@ print(sum(p[1] for s in json.load(sys.stdin).get("series", []) for p in s["point
 # the same window: zero errors from runs that happened, not from silence.
 no_errors() { # <collector>
   local runs errs
-  runs=$(sum_window "sum:ozy.agent.collector.runs{collector:$1}" 90) || return 1
+  # A collector that just started (a discovered check) may have run before
+  # its self-metrics were next reported: wait for the runs to arrive. Runs
+  # and errors are reported together, so once runs are there, so are errors.
+  local i
+  for ((i = 0; i < 30; i++)); do
+    runs=$(sum_window "sum:ozy.agent.collector.runs{collector:$1}" 90) || return 1
+    python3 -c "import sys; sys.exit(0 if float('$runs') > 0 else 1)" && break
+    sleep 1
+  done
   python3 -c "import sys; sys.exit(0 if float('$runs') > 0 else 1)" || { echo "$1: no runs reported in 90s" >&2; return 1; }
   errs=$(sum_window "sum:ozy.agent.collector.errors{collector:$1}" 90) || return 1
   python3 -c "import sys; sys.exit(0 if float('$errs') == 0 else 1)" || { echo "$1: $errs errors in 90s" >&2; return 1; }
@@ -649,8 +657,8 @@ wait_since() { # <query> <seconds> — until the section's sum is positive
   return 1
 }
 smoke_ct=ozy-smoke
-docker rm -f "$smoke_ct-long" "$smoke_ct-short" >/dev/null 2>&1 || true
-trap 'docker rm -f "$smoke_ct-long" "$smoke_ct-short" >/dev/null 2>&1 || true' EXIT
+docker rm -f "$smoke_ct-long" "$smoke_ct-short" "$smoke_ct-redis" >/dev/null 2>&1 || true
+trap 'docker rm -f "$smoke_ct-long" "$smoke_ct-short" "$smoke_ct-redis" >/dev/null 2>&1 || true' EXIT
 docker_since=$(ozyd_now 2>/dev/null) || docker_since=$(date +%s)
 # Started under check, so a failure (no busybox offline, no daemon) is a ✗
 # with its reason, not set -e ending smoke without a summary.
@@ -661,5 +669,16 @@ check "a container too brief to poll still counts" wait_since "sum:container.exi
 docker stop -t 0 "$smoke_ct-long" >/dev/null 2>&1 || true
 check "and so does a stopped one"              wait_since "sum:container.exits{container_name:$smoke_ct-long}" 30
 docker rm -f "$smoke_ct-long" >/dev/null 2>&1 || true
+
+# Checks by autodiscovery: a Redis container that asks for the redis check
+# with labels, on the agent's network so %%host%% is reachable. The check is
+# named redis:<container>, and its metrics carry the container's tags.
+docker run -d --rm --name "$smoke_ct-redis" --network ozymandias \
+  --label 'ozy.check.redis.host=%%host%%' --label 'ozy.check.redis.port=%%port%%' \
+  redis:7-alpine >/dev/null
+check "a labelled container gets its check"    wait_since "max:redis.can_connect{container_name:$smoke_ct-redis}" 45
+check "which reads the server"                 wait_since "max:redis.net.clients{container_name:$smoke_ct-redis}" 30
+check "and runs without errors"                no_errors "redis:$smoke_ct-redis"
+docker stop -t 1 "$smoke_ct-redis" >/dev/null 2>&1 || true
 
 echo "smoke: $pass checks passed"
