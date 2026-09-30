@@ -75,6 +75,18 @@ func (r *Rates) Prune(cutoff time.Time) {
 	}
 }
 
+// Forget drops every key for which drop returns true: for a collector that
+// knows exactly which keys are gone (a container that left the list, one
+// restarted in place whose counters began again) rather than inferring it
+// from time, which [Rates.Prune] does on the readings' own clock.
+func (r *Rates) Forget(drop func(key string) bool) {
+	for k := range r.last {
+		if drop(k) {
+			delete(r.last, k)
+		}
+	}
+}
+
 // ForgetAfter is how long [Rates.Sweep] keeps a key that stopped
 // appearing, at the least. Long enough to survive a few failed runs, short
 // enough that a laptop's churn of tunnels and USB disks, or a host's churn

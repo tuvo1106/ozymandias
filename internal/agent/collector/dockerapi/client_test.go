@@ -412,3 +412,21 @@ func TestNew_IdleConnectionsFollowTheCaller(t *testing.T) {
 		}
 	}
 }
+
+// A linked container lists its link aliases too, in no promised order; the
+// name is the one without a further "/", as the event stream reports it.
+func TestContainer_NameSkipsLinkAliases(t *testing.T) {
+	for _, tc := range []struct {
+		names []string
+		want  string
+	}{
+		{[]string{"/web/db", "/db"}, "db"},
+		{[]string{"/db", "/web/db"}, "db"},
+		{[]string{"/web/db"}, "web/db"}, // only an alias: better than the id
+		{[]string{"/"}, ShortID(apiID)},
+	} {
+		if got := (Container{ID: apiID, Names: tc.names}).Name(); got != tc.want {
+			t.Errorf("%v: Name() = %q, want %q", tc.names, got, tc.want)
+		}
+	}
+}

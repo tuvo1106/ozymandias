@@ -117,7 +117,7 @@ func (f *fakeAPI) Events(ctx context.Context, since time.Time, fn func(dockerapi
 // stats builds a sampled stats answer with cumulative counters scaled by n.
 func stats(n uint64) dockerapi.Stats {
 	var s dockerapi.Stats
-	s.Read = t0.Add(time.Duration(n) * 1500 * time.Millisecond) // 10 steps of n are the tests' 15s
+	s.Read = t0.Add(time.Duration(n-1) * 1500 * time.Millisecond) // stats(1) is read at t0; 10 steps of n are the tests' 15s
 	s.CPUStats.CPUUsage.TotalUsage = 100*n + 50
 	s.CPUStats.SystemUsage = 10_000*n + 1000
 	s.CPUStats.OnlineCPUs = 4
@@ -532,4 +532,64 @@ func TestDocker_RatesAreTimedByTheSample(t *testing.T) {
 	if v := g.one(t, "container.net.rx_bytes").Value; v != 750 {
 		t.Fatalf("rx = %v, want 15000 bytes / 20s = 750", v)
 	}
+}
+
+// The daemon's clock need not agree with the agent's (a VM's clock after
+// the host sleeps). Rates are timed on the daemon's, so their readings must
+// not be pruned by the agent's: an hour of skew still gives rates, and
+// uptime is measured on the daemon's clock too.
+func TestDocker_AnHourOfClockSkew(t *testing.T) {
+	skew := -time.Hour
+	st := func(n uint64) dockerapi.Stats {
+		s := stats(n)
+		s.Read = s.Read.Add(skew)
+		return s
+	}
+	api := &fakeAPI{
+		list:    []dockerapi.Container{ctr(idAPI, "api", "x", nil)},
+		stats:   map[string]dockerapi.Stats{idAPI: st(1)},
+		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0.Add(skew - time.Minute)}}},
+	}
+	fc := testutil.NewFakeClock(t0)
+	c := New(Options{API: api, Clock: fc})
+	g, _ := collect(t, c)
+	if v := g.one(t, "container.uptime").Value; v != 60 {
+		t.Errorf("uptime = %v, want 60 on the daemon's clock", v)
+	}
+	fc.Advance(15 * time.Second)
+	api.mu.Lock()
+	api.stats[idAPI] = st(11)
+	api.mu.Unlock()
+	g, _ = collect(t, c)
+	if v := g.one(t, "container.net.rx_bytes").Value; v != 1000 {
+		t.Fatalf("rx = %v, want 1000", v)
+	}
+}
+
+// A container restarted in place keeps its id, but its counters begin
+// again: the run after the restart differences nothing, rather than the new
+// life's counters against the old life's.
+func TestDocker_ARestartDropsTheBaselines(t *testing.T) {
+	api := &fakeAPI{list: []dockerapi.Container{ctr(idAPI, "api", "x", nil)}, stats: map[string]dockerapi.Stats{idAPI: stats(1)}}
+	fc := testutil.NewFakeClock(t0)
+	c := New(Options{API: api, Clock: fc})
+	next := func(n uint64) got {
+		fc.Advance(15 * time.Second)
+		api.mu.Lock()
+		api.stats[idAPI] = stats(n)
+		api.mu.Unlock()
+		g, _ := collect(t, c)
+		return g
+	}
+	_, _ = collect(t, c)
+	c.ContainerStarted(idAPI)
+	g := next(11) // counters grew past the old life's: no check would catch it
+	for _, name := range []string{"container.cpu.usage", "container.net.rx_bytes", "container.cpu.throttled"} {
+		if len(g[name]) != 0 {
+			t.Errorf("%s = %+v across a restart", name, g[name])
+		}
+	}
+	g = next(21)
+	g.one(t, "container.cpu.usage")
+	g.one(t, "container.net.rx_bytes")
 }

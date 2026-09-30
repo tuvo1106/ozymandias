@@ -20,13 +20,25 @@ type Container struct {
 	Labels map[string]string `json:"Labels"`
 }
 
-// Name returns the container's first name without the leading "/", or its
-// short id if it somehow has none.
+// Name returns the container's name without the leading "/", or its
+// short id if it somehow has none. The daemon also lists legacy link
+// aliases ("/web/db": db as web sees it), in no promised order; like the
+// docker CLI, Name skips those for the one name with no further "/" — the
+// name the event stream reports, so polled and event metrics agree.
 func (c Container) Name() string {
+	alias := ""
 	for _, n := range c.Names {
-		if n = strings.TrimPrefix(n, "/"); n != "" {
+		n = strings.TrimPrefix(n, "/")
+		switch {
+		case n == "":
+		case !strings.Contains(n, "/"):
 			return n
+		case alias == "":
+			alias = n
 		}
+	}
+	if alias != "" {
+		return alias
 	}
 	return ShortID(c.ID)
 }
@@ -46,9 +58,10 @@ type ContainerState struct {
 	StartedAt time.Time `json:"StartedAt"`
 }
 
-// Stats is one GET /containers/{id}/stats?stream=false answer. The counters
-// are cumulative since the container started; see the package doc for how
-// CPUStats and PreCPUStats combine into a percentage.
+// Stats is one GET /containers/{id}/stats?stream=false&one-shot=true
+// answer: one sample. The counters are cumulative since the container
+// started; see the package doc for how two answers' CPUStats make a
+// percentage.
 type Stats struct {
 	// Read is when the daemon sampled. It is the zero time when the
 	// container was not running by the time the daemon looked, and then
@@ -74,7 +87,7 @@ type CPUStats struct {
 	// nanoseconds. The denominator of the percentage.
 	SystemUsage uint64 `json:"system_cpu_usage"`
 	// OnlineCPUs is the number of cores the host has online. Old daemons
-	// omit it; [CPUPercent] then counts PercpuUsage instead.
+	// omit it; [CPUPercentBetween] then counts PercpuUsage instead.
 	OnlineCPUs     uint32         `json:"online_cpus"`
 	ThrottlingData ThrottlingData `json:"throttling_data"`
 }

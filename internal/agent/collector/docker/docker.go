@@ -49,9 +49,15 @@ type Collector struct {
 	clock clock.Clock
 	rates *collector.Rates
 	// prev is each container's previous CPU sample: one-shot stats carry
-	// one sample, and CPU % needs two. Only CPUStats is kept; the rest of a
-	// sample (memory breakdown, networks, block io) is not needed again.
-	prev map[string]dockerapi.Stats
+	// one sample, and CPU % needs two.
+	prev map[string]dockerapi.CPUStats
+	// base is the restart generation (restarts) each container's baselines
+	// — prev and its rate readings — were taken in. A container restarted
+	// in place keeps its id but its counters begin again, and a difference
+	// across the restart is not usage; when the generation has moved, the
+	// baselines are dropped and the next run starts afresh. Guarded, like
+	// prev and rates, by the run's lock.
+	base map[string]uint64
 	// images are the images counted last run, so one whose last container
 	// stopped reads 0 once rather than just stopping.
 	images map[string]bool
@@ -95,7 +101,7 @@ func New(opts Options) *Collector {
 		api: opts.API, iv: opts.Interval, conc: opts.MaxConcurrency,
 		tag: tagger{rewrites: opts.Rewrites}, clock: opts.Clock,
 		rates: collector.NewRates(), started: map[string]time.Time{}, restarts: map[string]uint64{},
-		prev: map[string]dockerapi.Stats{}, images: map[string]bool{},
+		prev: map[string]dockerapi.CPUStats{}, base: map[string]uint64{}, images: map[string]bool{},
 	}
 }
 
@@ -154,7 +160,6 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 		return err
 	}
 	now := c.clock.Now()
-	defer c.rates.Sweep(now)
 
 	res := &run{out: map[string]*collector.Metric{}}
 	perImage := map[string]int{}
@@ -218,11 +223,23 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 		}
 	}
 	c.startedMu.Unlock()
+	// Baselines are forgotten when their container leaves the list, not by
+	// age: rate readings carry the daemon's clock, which need not agree
+	// with the agent's (a VM's clock after the host sleeps).
 	for id := range c.prev {
 		if !live[id] {
 			delete(c.prev, id)
 		}
 	}
+	for id := range c.base {
+		if !live[id] {
+			delete(c.base, id)
+		}
+	}
+	c.rates.Forget(func(key string) bool {
+		id, _, _ := strings.Cut(key, "\x00")
+		return !live[id]
+	})
 	for _, k := range res.keys {
 		emit(*res.out[k])
 	}
@@ -283,6 +300,11 @@ func (c *Collector) startedAt(ctx context.Context, id string) (time.Time, error)
 // tracker is not safe for concurrent use, so rates are computed under res's
 // lock.
 func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started time.Time, known bool, now time.Time, res *run) error {
+	// The restart generation before the sample: a restart during the call
+	// then shows as a moved generation on the next run, not this one.
+	c.startedMu.Lock()
+	gen := c.restarts[ct.ID]
+	c.startedMu.Unlock()
 	s, err := c.api.Stats(ctx, ct.ID)
 	if errors.Is(err, dockerapi.ErrNotFound) {
 		return nil
@@ -301,10 +323,12 @@ func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started tim
 	gauge := func(name string, v float64) {
 		res.add(collector.Metric{Name: name, Kind: collector.Gauge, Value: v, Tags: tags}, tagKey)
 	}
-	// Rates are timed by when the daemon took the sample, not by when the
-	// run began: calls queue behind MaxConcurrency, so on a busy daemon a
-	// container late in the list is sampled seconds after the run's start,
-	// and by a different amount each run.
+	// Rates and uptime are timed by when the daemon took the sample, not by
+	// when the run began: calls queue behind MaxConcurrency, so on a busy
+	// daemon a container late in the list is sampled seconds after the
+	// run's start, by a different amount each run. The daemon's clock is
+	// also the one its start times are in, so uptime does not carry the
+	// skew between the daemon and the agent.
 	at := now
 	if !s.Read.IsZero() {
 		at = s.Read
@@ -321,11 +345,17 @@ func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started tim
 		}
 	}
 	res.mu.Lock()
+	if b, seen := c.base[ct.ID]; seen && b != gen {
+		delete(c.prev, ct.ID)
+		prefix := ct.ID + "\x00"
+		c.rates.Forget(func(key string) bool { return strings.HasPrefix(key, prefix) })
+	}
+	c.base[ct.ID] = gen
 	prev, hasPrev := c.prev[ct.ID]
-	c.prev[ct.ID] = dockerapi.Stats{CPUStats: s.CPUStats}
+	c.prev[ct.ID] = s.CPUStats
 	res.mu.Unlock()
 	if hasPrev {
-		if pct, ok := dockerapi.CPUPercentBetween(prev, s); ok {
+		if pct, ok := dockerapi.CPUPercentBetween(dockerapi.Stats{CPUStats: prev}, s); ok {
 			gauge("container.cpu.usage", pct)
 		}
 	}
@@ -347,8 +377,8 @@ func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started tim
 		// sent no pids_stats (no pids cgroup controller): unknown, not none.
 		gauge("container.pids", float64(s.PidsStats.Current))
 	}
-	if known && !now.Before(started) {
-		gauge("container.uptime", now.Sub(started).Seconds())
+	if known && !at.Before(started) {
+		gauge("container.uptime", at.Sub(started).Seconds())
 	}
 	return nil
 }

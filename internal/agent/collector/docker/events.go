@@ -236,7 +236,7 @@ func (w *Watcher) died(ctx context.Context, ev dockerapi.Event) {
 		cancel()
 		if err == nil {
 			oom = oom || j.State.OOMKilled
-			if !seen && !j.State.StartedAt.IsZero() {
+			if !j.State.StartedAt.IsZero() {
 				start, seen = j.State.StartedAt, true
 			}
 		}

@@ -44,17 +44,19 @@
 // a hundred containers takes over ten seconds to read. With one-shot=true
 // (API 1.41) it answers at once with one sample, and the caller keeps the
 // previous one ([CPUPercentBetween]); the collector polls every 15s anyway,
-// so its window is simply the interval. Either way
+// so its window is simply the interval (ADR-0030). This package uses
+// one-shot only and does not decode precpu_stats. With prev the previous
+// answer and cur this one:
 //
-//	cpu_delta    = cpu_stats.cpu_usage.total_usage - precpu_stats.cpu_usage.total_usage
-//	system_delta = cpu_stats.system_cpu_usage    - precpu_stats.system_cpu_usage
+//	cpu_delta    = cur.cpu_stats.cpu_usage.total_usage - prev.cpu_stats.cpu_usage.total_usage
+//	system_delta = cur.cpu_stats.system_cpu_usage    - prev.cpu_stats.system_cpu_usage
 //	cpu %        = cpu_delta / system_delta × online_cpus × 100
 //
 // system_cpu_usage is the host's total CPU time summed over all cores, so
 // cpu_delta/system_delta is "this container's share of the whole machine".
 // Multiplying by online_cpus turns that into "% of one core", the unit
 // `docker stats` uses: a container spinning two cores on an eight-core host
-// reads 200%, not 25%. [CPUPercent] and [CPUPercentBetween] do this and say
+// reads 200%, not 25%. [CPUPercentBetween] does this and says
 // when they cannot: with no earlier sample, or a zero or backwards delta
 // (the container restarted), there is no meaningful ratio.
 //

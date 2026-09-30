@@ -63,7 +63,7 @@ interval's increase.
 | `ozy.agent.collector.tags_dropped` | counter | tags | `collector` | agent | Tags that could not be normalized; the point is kept without them |
 | `ozy.agent.collector.duration_ms` | gauge | ms | `collector` | agent | How long the last run took |
 | `ozy.agent.docker.events` | counter | events | — | agent | Container events read from the daemon's stream (start, oom, die) |
-| `ozy.agent.docker.events_reconnects` | counter | reconnects | — | agent | Times the event stream ended and was reopened. Steady growth means the daemon keeps dropping it |
+| `ozy.agent.docker.events_reconnects` | counter | reconnects | — | agent | Times the event stream ended, or failed to open, and was tried again (at most every 30s). Steady growth means the daemon keeps dropping the stream, or is not there: check the agent's log |
 | `ozy.agent.docker.events_skipped` | counter | lines | — | agent | Event lines the agent could not decode (or over 1 MiB) and skipped; the stream carries on. Non-zero means a daemon speaking a format the agent does not know |
 | `ozy.runtime.goroutines` | gauge | goroutines | `component` | agent | Live goroutines. One that climbs and never falls is a leak |
 | `ozy.runtime.heap_bytes` | gauge | bytes | `component` | agent | Heap occupied by live and not-yet-swept objects |
