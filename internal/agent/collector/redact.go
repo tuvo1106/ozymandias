@@ -2,8 +2,23 @@ package collector
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 )
+
+// ParseCheckURL parses a check's target URL, which must be absolute http or
+// https with a host: a relative URL or another scheme would fail on every
+// run rather than at startup. Its error names the URL redacted
+// ([RedactURL]), since startup errors are logged too. Every check that
+// takes a URL uses it, so they accept the same URLs and hide the same
+// parts.
+func ParseCheckURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, fmt.Errorf("url %s: want an absolute http or https URL", RedactURL(raw))
+	}
+	return u, nil
+}
 
 // RedactURL renders a URL for a log line or an error: the password becomes
 // "xxxxx" (as url.URL.Redacted does) and the query and fragment are cut,
@@ -48,6 +63,22 @@ func RedactURLError(err error) error {
 	var ue *url.Error
 	for e := err; errors.As(e, &ue); e = ue.Err {
 		ue.URL = RedactURL(ue.URL)
+	}
+	return err
+}
+
+// RequestError is err, a request to the check's URL failing, made fit for a
+// message that already names that URL as shown ([RedactURL] of it): every
+// URL in the chain is redacted, and the outermost *url.Error, which only
+// repeats the method and URL, is dropped when its URL is the one shown. A
+// request that failed elsewhere, after a redirect, keeps its wrapper, so
+// the log says which URL failed — redacted like the rest.
+func RequestError(shown string, err error) error {
+	err = RedactURLError(err)
+	// The outermost error only: a *url.Error deeper in the chain is inside
+	// some other message, which cannot be unwrapped around it.
+	if ue, ok := err.(*url.Error); ok && ue.URL == shown { //nolint:errorlint // outermost only, on purpose
+		return ue.Err
 	}
 	return err
 }

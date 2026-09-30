@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
-	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -90,9 +89,9 @@ func New(inst collector.Instance) (collector.Collector, error) {
 }
 
 func newCheck(cfg Config, clk clock.Clock, log *slog.Logger) (*Check, error) {
-	u, err := url.Parse(cfg.URL)
-	if cfg.URL == "" || err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("url %s: want an absolute http(s) URL", collector.RedactURL(cfg.URL))
+	_, err := collector.ParseCheckURL(cfg.URL)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.Timeout < 0 || cfg.MaxBody < 0 || cfg.MaxSeries < 0 {
 		return nil, errors.New("timeout, max_body and max_series must not be negative")
@@ -185,12 +184,12 @@ func (e *emitter) add(m collector.Metric) {
 func (c *Check) scrape(ctx context.Context) ([]om.Family, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("scrape %s: %w", c.shown, collector.RedactURLError(err))
+		return nil, fmt.Errorf("scrape %s: %w", c.shown, collector.RequestError(c.shown, err))
 	}
 	req.Header.Set("Accept", "application/openmetrics-text;version=1.0.0,text/plain;version=0.0.4;q=0.5,*/*;q=0.1")
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("scrape %s: %w", c.shown, collector.RedactURLError(err))
+		return nil, fmt.Errorf("scrape %s: %w", c.shown, collector.RequestError(c.shown, err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -201,7 +200,7 @@ func (c *Check) scrape(ctx context.Context) ([]om.Family, error) {
 		Limits: om.Limits{MaxBytes: c.cfg.MaxBody},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("scrape %s: %w", c.shown, collector.RedactURLError(err))
+		return nil, fmt.Errorf("scrape %s: %w", c.shown, collector.RequestError(c.shown, err))
 	}
 	return fams, nil
 }

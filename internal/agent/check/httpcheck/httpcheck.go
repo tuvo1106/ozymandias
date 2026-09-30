@@ -3,7 +3,6 @@ package httpcheck
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -78,9 +77,9 @@ func New(inst collector.Instance) (collector.Collector, error) {
 // build validates cfg and makes the check. tlsBase, if not nil, is the TLS
 // configuration to start from (tests pass one trusting their server).
 func build(cfg Config, clk clock.Clock, tlsBase *tls.Config) (*Check, error) {
-	u, err := url.Parse(cfg.URL)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("url %s: want an absolute http or https URL", collector.RedactURL(cfg.URL))
+	u, err := collector.ParseCheckURL(cfg.URL)
+	if err != nil {
+		return nil, err
 	}
 	if cfg.Method == "" {
 		cfg.Method = DefaultMethod
@@ -150,7 +149,7 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, c.cfg.Method, c.cfg.URL, nil)
 	if err != nil {
-		return down(0, fmt.Errorf("%s: %w", c.shown, unwrapURL(err)))
+		return down(0, fmt.Errorf("%s: %w", c.shown, collector.RequestError(c.shown, err)))
 	}
 	for k, v := range c.cfg.Headers {
 		// net/http sends req.Host, never a Host header, so the override has
@@ -165,7 +164,7 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	start := c.clock.Now()
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return down(0, fmt.Errorf("%s: %w", c.shown, unwrapURL(err)))
+		return down(0, fmt.Errorf("%s: %w", c.shown, collector.RequestError(c.shown, err)))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBody))
@@ -221,15 +220,4 @@ func (c *Check) wantStatus() string {
 		s[i] = strconv.Itoa(n)
 	}
 	return strings.Join(s, " or ")
-}
-
-// unwrapURL drops the *url.Error wrapper, whose message repeats the method
-// and URL the caller already names — and names unredacted: net/http strips
-// the password from it but keeps the query.
-func unwrapURL(err error) error {
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		return ue.Err
-	}
-	return err
 }
