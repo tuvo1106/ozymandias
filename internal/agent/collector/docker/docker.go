@@ -48,8 +48,9 @@ type Collector struct {
 	tag   tagger
 	clock clock.Clock
 	rates *collector.Rates
-	// prev is each container's previous stats sample: one-shot stats carry
-	// one sample, and CPU % needs two.
+	// prev is each container's previous CPU sample: one-shot stats carry
+	// one sample, and CPU % needs two. Only CPUStats is kept; the rest of a
+	// sample (memory breakdown, networks, block io) is not needed again.
 	prev map[string]dockerapi.Stats
 	// images are the images counted last run, so one whose last container
 	// stopped reads 0 once rather than just stopping.
@@ -63,6 +64,9 @@ type Collector struct {
 	// first time it is seen, and again after the watcher reports it started
 	// (a restart in place keeps the id).
 	started map[string]time.Time
+	// restarts counts start events per container, so an inspect already in
+	// flight when one arrives does not cache the start time it replaced.
+	restarts map[string]uint64
 }
 
 // ContainerStarted forgets a container's cached start time, so the next
@@ -74,6 +78,7 @@ func (c *Collector) ContainerStarted(id string) {
 	c.startedMu.Lock()
 	defer c.startedMu.Unlock()
 	delete(c.started, id)
+	c.restarts[id]++
 }
 
 var _ collector.Collector = (*Collector)(nil)
@@ -89,7 +94,7 @@ func New(opts Options) *Collector {
 	return &Collector{
 		api: opts.API, iv: opts.Interval, conc: opts.MaxConcurrency,
 		tag: tagger{rewrites: opts.Rewrites}, clock: opts.Clock,
-		rates: collector.NewRates(), started: map[string]time.Time{},
+		rates: collector.NewRates(), started: map[string]time.Time{}, restarts: map[string]uint64{},
 		prev: map[string]dockerapi.Stats{}, images: map[string]bool{},
 	}
 }
@@ -172,7 +177,12 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 		emit(collector.Metric{Name: "docker.containers.running", Value: float64(n), Tags: []string{"image_name:" + img}})
 	}
 
+	// Every listed container is live, including any a timed-out run did
+	// not reach: their previous samples must survive to the next run.
 	live := make(map[string]bool, len(list))
+	for _, ct := range list {
+		live[ct.ID] = true
+	}
 	var (
 		wg   sync.WaitGroup
 		sem  = make(chan struct{}, c.conc)
@@ -180,7 +190,6 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 		errs []error
 	)
 	for _, ct := range list {
-		live[ct.ID] = true
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
@@ -203,6 +212,11 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 	for id := range c.started {
 		if !live[id] {
 			delete(c.started, id)
+		}
+	}
+	for id := range c.restarts {
+		if !live[id] {
+			delete(c.restarts, id)
 		}
 	}
 	c.startedMu.Unlock()
@@ -236,6 +250,7 @@ func summarize(errs []error) error {
 func (c *Collector) startTime(ctx context.Context, id string) (time.Time, bool) {
 	c.startedMu.Lock()
 	st, ok := c.started[id]
+	gen := c.restarts[id]
 	c.startedMu.Unlock()
 	if ok {
 		return st, true
@@ -245,8 +260,13 @@ func (c *Collector) startTime(ctx context.Context, id string) (time.Time, bool) 
 		return time.Time{}, false
 	}
 	c.startedMu.Lock()
+	defer c.startedMu.Unlock()
+	if c.restarts[id] != gen {
+		// It restarted while being inspected: st may be the old start.
+		// Leave the cache empty so the next run inspects again.
+		return time.Time{}, false
+	}
 	c.started[id] = st
-	c.startedMu.Unlock()
 	return st, true
 }
 
@@ -292,7 +312,7 @@ func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started tim
 	}
 	res.mu.Lock()
 	prev, hasPrev := c.prev[ct.ID]
-	c.prev[ct.ID] = s
+	c.prev[ct.ID] = dockerapi.Stats{CPUStats: s.CPUStats}
 	res.mu.Unlock()
 	if hasPrev {
 		if pct, ok := dockerapi.CPUPercentBetween(prev, s); ok {
@@ -312,7 +332,11 @@ func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started tim
 	rd, wr, ioOK := s.BlockIO()
 	rate("container.io.read_bytes", rd, ioOK)
 	rate("container.io.write_bytes", wr, ioOK)
-	gauge("container.pids", float64(s.PidsStats.Current))
+	if s.PidsStats.Current > 0 {
+		// A running container has at least one process; 0 means the daemon
+		// sent no pids_stats (no pids cgroup controller): unknown, not none.
+		gauge("container.pids", float64(s.PidsStats.Current))
+	}
 	if known && !now.Before(started) {
 		gauge("container.uptime", now.Sub(started).Seconds())
 	}

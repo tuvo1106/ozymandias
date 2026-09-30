@@ -32,6 +32,7 @@ type fakeAPI struct {
 	inFlight  atomic.Int32
 	maxFlight atomic.Int32
 	statsWait time.Duration
+	onInspect func(id string) // called during Inspect, without f.mu held
 
 	// events: each Events call takes the next script entry, delivers its
 	// events, then returns its error.
@@ -39,6 +40,9 @@ type fakeAPI struct {
 	errs    []error
 	sinces  []time.Time
 	skips   int // lines each Events call reports as undecodable first
+	// onEvents, if set, is called at the start of each Events call with
+	// its index, without f.mu held.
+	onEvents func(call int)
 }
 
 func (f *fakeAPI) ListContainers(context.Context) ([]dockerapi.Container, error) {
@@ -66,6 +70,9 @@ func (f *fakeAPI) Stats(_ context.Context, id string) (dockerapi.Stats, error) {
 }
 
 func (f *fakeAPI) Inspect(_ context.Context, id string) (dockerapi.ContainerJSON, error) {
+	if f.onInspect != nil {
+		f.onInspect(id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.inspected == nil {
@@ -80,6 +87,12 @@ func (f *fakeAPI) Inspect(_ context.Context, id string) (dockerapi.ContainerJSON
 }
 
 func (f *fakeAPI) Events(ctx context.Context, since time.Time, fn func(dockerapi.Event) error, skipped func(error)) error {
+	if f.onEvents != nil {
+		f.mu.Lock()
+		n := len(f.sinces)
+		f.mu.Unlock()
+		f.onEvents(n)
+	}
 	f.mu.Lock()
 	f.sinces = append(f.sinces, since)
 	for range f.skips {
@@ -445,5 +458,60 @@ func TestDocker_TagsThatNormalizeAlikeAreCombined(t *testing.T) {
 	g, _ := collect(t, c)
 	if m := g.one(t, "container.memory.usage"); m.Value != 1800 {
 		t.Fatalf("memory = %v, want 2 × 900", m.Value)
+	}
+}
+
+// A restart that lands while its container is being inspected: the answer
+// may be the old start, so it is not cached, and the next run asks again.
+func TestDocker_ARestartDuringInspectIsNotCached(t *testing.T) {
+	api := &fakeAPI{
+		list:    []dockerapi.Container{ctr(idAPI, "api", "x", nil)},
+		stats:   map[string]dockerapi.Stats{idAPI: stats(1)},
+		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Hour)}}},
+	}
+	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0)})
+	api.onInspect = func(id string) {
+		api.onInspect = nil // once
+		c.ContainerStarted(id)
+		api.mu.Lock()
+		api.inspect[id] = dockerapi.ContainerJSON{State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Minute)}}
+		api.mu.Unlock()
+	}
+	g, _ := collect(t, c)
+	if len(g["container.uptime"]) != 0 {
+		t.Errorf("uptime %+v from an inspect a restart overtook", g["container.uptime"])
+	}
+	g, _ = collect(t, c)
+	if v := g.one(t, "container.uptime").Value; v != 60 {
+		t.Fatalf("uptime = %v, want 60 from the restart", v)
+	}
+}
+
+// A run that runs out of time before reaching a container must not forget
+// that container's previous sample and start time: it is still running.
+func TestDocker_ATimedOutRunKeepsWhatItDidNotReach(t *testing.T) {
+	other := "b" + idAPI[1:]
+	api := &fakeAPI{
+		list:    []dockerapi.Container{ctr(idAPI, "a", "x", nil), ctr(other, "b", "x", nil)},
+		stats:   map[string]dockerapi.Stats{idAPI: stats(1), other: stats(1)},
+		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0}}, other: {State: dockerapi.ContainerState{StartedAt: t0}}},
+	}
+	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0)})
+	_, _ = collect(t, c)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = c.Collect(ctx, func(collector.Metric) {})
+	if len(c.prev) != 2 || len(c.started) != 2 {
+		t.Fatalf("prev %d, started %d after a timed-out run; want both kept", len(c.prev), len(c.started))
+	}
+}
+
+func TestDocker_NoPidsStatsIsNotZeroPids(t *testing.T) {
+	st := stats(1)
+	st.PidsStats.Current = 0
+	api := &fakeAPI{list: []dockerapi.Container{ctr(idAPI, "api", "x", nil)}, stats: map[string]dockerapi.Stats{idAPI: st}}
+	g, _ := collect(t, New(Options{API: api, Clock: testutil.NewFakeClock(t0)}))
+	if len(g["container.pids"]) != 0 {
+		t.Fatalf("pids = %+v, want nothing", g["container.pids"])
 	}
 }

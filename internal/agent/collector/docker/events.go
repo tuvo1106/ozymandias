@@ -143,9 +143,11 @@ func (w *Watcher) Run(ctx context.Context) {
 			lastErr = err.Error()
 		}
 		// A stream that stayed up a while was healthy: start the backoff
-		// over rather than waiting 30s after a routine daemon restart.
+		// over rather than waiting 30s after a routine daemon restart, and
+		// forget the last error, so the same failure days later is logged.
 		if w.clock.Now().Sub(connected) > maxBackoff {
 			backoff = minBackoff
+			lastErr = ""
 		}
 		t := w.clock.NewTimer(backoff)
 		select {

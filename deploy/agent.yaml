@@ -113,9 +113,9 @@ collectors:
     socket: /var/run/docker.sock
     # 0 means collectors.interval.
     interval: 0s
-    # Stats requests in flight at once. Each takes the daemon about a second
-    # (it samples CPU twice), so this bounds both the run's length and the
-    # load on the daemon.
+    # Stats requests in flight at once: the load one run puts on the daemon.
+    # Stats are one-shot (one sample each; CPU % is taken between runs), so
+    # a request is quick and a run's length grows only with a busy daemon.
     max_concurrency: 8
     # Rename matching containers before the name becomes a tag, and drop
     # their container_id: for containers that are many and short-lived by

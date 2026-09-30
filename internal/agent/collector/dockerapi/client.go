@@ -19,9 +19,8 @@ import (
 // Defaults for [Options].
 const (
 	DefaultSocket = "/var/run/docker.sock"
-	// DefaultTimeout bounds one non-streaming request. Well above a second,
-	// because a stats call with stream=false is held by the daemon for about
-	// a second while it takes its second sample.
+	// DefaultTimeout bounds one non-streaming request. Stats are one-shot
+	// and answer at once; the headroom is for a daemon under load.
 	DefaultTimeout = 10 * time.Second
 	// DefaultMaxBodyBytes bounds a non-streaming response. A container
 	// list of a few hundred containers is well under 1 MiB; this is a guard
@@ -103,8 +102,11 @@ func New(opts Options) *Client {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", socket)
 		},
-		MaxIdleConns:        4,
-		MaxIdleConnsPerHost: 16, // above the collector's stats concurrency
+		// Both at least the collector's stats concurrency, so a run's
+		// connections are kept for the next rather than re-dialled.
+		// MaxIdleConns caps the whole transport, so it must not be lower.
+		MaxIdleConns:        16,
+		MaxIdleConnsPerHost: 16,
 		IdleConnTimeout:     90 * time.Second,
 	}
 	// No http.Client.Timeout: it would also cut the event stream. Each
@@ -127,9 +129,9 @@ func (c *Client) ListContainers(ctx context.Context) ([]Container, error) {
 }
 
 // Stats returns one snapshot of a container's resource usage
-// (GET /containers/{id}/stats?stream=false). See the package doc for why
-// the call takes about a second, and [Stats.Sampled] for the answer a
-// container that stopped mid-call gets.
+// (GET /containers/{id}/stats?stream=false&one-shot=true: one sample, so
+// the call answers at once; see the package doc), and [Stats.Sampled] for
+// the answer a container that stopped mid-call gets.
 func (c *Client) Stats(ctx context.Context, id string) (Stats, error) {
 	var s Stats
 	if err := checkID(id); err != nil {

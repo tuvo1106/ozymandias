@@ -265,3 +265,32 @@ func (s *syncBuf) String() string {
 	defer s.mu.Unlock()
 	return s.b.String()
 }
+
+// An error logged once, then a long healthy stream, then the same error:
+// it is logged again, days later being news.
+func TestWatcher_TheSameErrorAfterAHealthyStreamIsLoggedAgain(t *testing.T) {
+	down := errors.New("permission denied")
+	api := &fakeAPI{
+		scripts: [][]dockerapi.Event{nil, nil, nil},
+		errs:    []error{down, dockerapi.ErrStreamClosed, down},
+	}
+	var fc *testutil.FakeClock
+	var once sync.Once
+	ready := make(chan struct{})
+	api.onEvents = func(call int) {
+		<-ready
+		if call == 1 {
+			once.Do(func() { fc.Advance(maxBackoff + time.Second) }) // the stream stays up
+		}
+	}
+	var buf syncBuf
+	_, fc, _ = watch(t, api, WatcherOptions{Logger: slog.New(slog.NewTextHandler(&buf, nil))})
+	close(ready)
+	for range 2 {
+		testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "backoff")
+		fc.Advance(minBackoff)
+	}
+	testutil.Eventually(t, time.Second, func() bool {
+		return strings.Count(buf.String(), "docker event stream failed") == 2
+	}, "logged %d times, want 2:\n%s", strings.Count(buf.String(), "docker event stream failed"), buf.String())
+}

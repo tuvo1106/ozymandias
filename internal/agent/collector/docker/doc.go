@@ -28,9 +28,11 @@
 //
 // # Choices worth knowing
 //
-//   - Stats are read with stream=false, which the daemon answers after
-//     sampling CPU twice, about a second apart. That second is why the calls
-//     run in parallel, bounded by MaxConcurrency.
+//   - Stats are read one-shot: one sample, answered at once, where the
+//     default makes the daemon sample CPU twice a second apart. CPU % is
+//     therefore taken between this run's sample and the last, so it first
+//     appears on a container's second run. Calls run in parallel, bounded
+//     by MaxConcurrency, which bounds the load on the daemon.
 //   - A container that stops between the list and its stats call is skipped
 //     silently: that race is normal, not an error.
 //   - Rates (network, I/O, throttled periods) are per second, sent as gauges

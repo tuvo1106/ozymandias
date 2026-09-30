@@ -82,8 +82,8 @@ type DockerCollector struct {
 	Socket string `yaml:"socket"`
 	// Interval overrides collectors.interval; zero means use it.
 	Interval time.Duration `yaml:"interval"`
-	// MaxConcurrency bounds stats requests in flight; each takes the daemon
-	// about a second.
+	// MaxConcurrency bounds stats (and inspect) requests in flight, which
+	// bounds the load one run puts on the daemon.
 	MaxConcurrency int `yaml:"max_concurrency"`
 	// ContainerNameRewrite renames matching containers before the name
 	// becomes a tag, and drops their container_id: for containers that are
