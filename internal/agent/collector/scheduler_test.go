@@ -137,11 +137,10 @@ func TestScheduler_RunsOnItsIntervalAfterJitter(t *testing.T) {
 // source does not stop another from running on time.
 func TestScheduler_ASlowCollectorDoesNotDelayAnother(t *testing.T) {
 	release := make(chan struct{})
-	slow := &fake{name: "slow", iv: time.Second, collect: func(ctx context.Context, _ Emit) error {
-		select {
-		case <-release:
-		case <-ctx.Done():
-		}
+	// Stuck for good: it ignores its context, so even its timeout (its
+	// interval, 1s) does not free it.
+	slow := &fake{name: "slow", iv: time.Second, collect: func(context.Context, Emit) error {
+		<-release
 		return nil
 	}}
 	quick := &fake{name: "quick", iv: time.Second, collect: func(context.Context, Emit) error { return nil }}
@@ -170,10 +169,35 @@ func TestScheduler_TimeoutCancelsTheRunAndKeepsWhatWasEmitted(t *testing.T) {
 	fc, sk, reg := start(t, Options{Collectors: []Collector{c}, Timeout: 20 * time.Millisecond})
 	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "not armed")
 	fc.Advance(time.Second)
+	// Running: the ticker and the run's timeout, both on the fake clock.
+	testutil.Eventually(t, time.Second, func() bool { return c.calls.Load() == 1 && fc.Waiters() == 2 }, "run not started")
+	fc.Advance(19 * time.Millisecond)
+	time.Sleep(20 * time.Millisecond)
+	if counter(reg, "ozy.agent.collector.timeouts", "hang") != 0 {
+		t.Fatal("timed out before the limit")
+	}
+	fc.Advance(time.Millisecond)
 	testutil.Eventually(t, 2*time.Second, func() bool { return counter(reg, "ozy.agent.collector.timeouts", "hang") == 1 }, "timeout not counted")
 	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 1 }, "the partial batch was not sent")
 	if n := counter(reg, "ozy.agent.collector.errors", "hang"); n != 1 {
 		t.Fatalf("errors = %d, want 1", n)
+	}
+}
+
+// A run that returns before its limit is not a timeout, however close.
+func TestScheduler_ARunJustInsideTheLimitIsNotATimeout(t *testing.T) {
+	var fc *testutil.FakeClock
+	c := &fake{name: "close", iv: time.Second, collect: func(context.Context, Emit) error {
+		fc.Advance(999 * time.Millisecond) // the run takes 999ms of its 1s
+		return nil
+	}}
+	var reg *selfmetrics.Registry
+	fc, _, reg = start(t, Options{Collectors: []Collector{c}, Timeout: time.Second})
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "not armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return counter(reg, "ozy.agent.collector.runs", "close") == 1 }, "ran")
+	if n := counter(reg, "ozy.agent.collector.timeouts", "close"); n != 0 {
+		t.Fatalf("timeouts = %d for a run inside its limit", n)
 	}
 }
 

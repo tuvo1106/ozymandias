@@ -2,7 +2,7 @@ package collector
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"math/rand/v2"
@@ -78,7 +78,9 @@ type Scheduler struct {
 	// shut down, and would queue what it was given where nothing sends it.
 	// sinkMu makes the check and the send one step, so a run that finishes
 	// just as Run gives up either sends before Run returns or not at all.
-	sinkMu  sync.Mutex
+	// Runs hold it shared, so collectors still send (encode, gzip) in
+	// parallel; only Run's stop takes it exclusively.
+	sinkMu  sync.RWMutex
 	stopped bool
 }
 
@@ -116,11 +118,7 @@ func New(opts Options) *Scheduler {
 		}
 		seen[c.Name()] = true
 	}
-	for _, t := range opts.Tags {
-		if n, ok := wire.NormalizeTag(t); ok {
-			s.tags = append(s.tags, n)
-		}
-	}
+	s.tags = agenttags.Normalize(opts.Tags)
 	return s
 }
 
@@ -247,8 +245,32 @@ type runState struct {
 func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, st *runState) {
 	start := s.opts.Clock.Now()
 	ts := start.Unix()
-	cctx, cancel := context.WithTimeout(ctx, min(s.opts.Timeout, iv))
-	defer cancel()
+	// The timeout runs on the injected clock, like everything else here, so
+	// the duration gauge and the timeout agree on how long a run took. It is
+	// a timeout only if it fires before Collect returns: a run that
+	// finished at 9.999s of 10 succeeded.
+	limit := min(s.opts.Timeout, iv)
+	cctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	var (
+		tmu               sync.Mutex
+		finished, expired bool
+	)
+	timer := s.opts.Clock.NewTimer(limit)
+	watching := make(chan struct{})
+	go func() {
+		defer close(watching)
+		select {
+		case <-timer.C():
+			tmu.Lock()
+			if !finished {
+				expired = true
+				cancel(context.DeadlineExceeded)
+			}
+			tmu.Unlock()
+		case <-cctx.Done():
+		}
+	}()
 
 	var (
 		mu    sync.Mutex
@@ -272,6 +294,16 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 		}
 	}
 	err := c.Collect(cctx, emit)
+	tmu.Lock()
+	finished = true
+	timedOut := expired
+	tmu.Unlock()
+	timer.Stop()
+	cancel(nil)
+	<-watching
+	if timedOut && err != nil {
+		err = fmt.Errorf("timed out after %v: %w", limit, err)
+	}
 	mu.Lock()
 	open = false
 	out := batch
@@ -280,12 +312,12 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 	st.runs.Inc()
 	st.dur.Set(float64(s.opts.Clock.Now().Sub(start)) / float64(time.Millisecond))
 	st.pts.Add(int64(len(out)))
-	if errors.Is(cctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+	if timedOut && ctx.Err() == nil {
 		st.tout.Inc()
 	}
 	s.report(ctx, st, err)
-	s.sinkMu.Lock()
-	defer s.sinkMu.Unlock()
+	s.sinkMu.RLock()
+	defer s.sinkMu.RUnlock()
 	switch {
 	case s.stopped:
 		st.drop.Add(int64(len(out)))
