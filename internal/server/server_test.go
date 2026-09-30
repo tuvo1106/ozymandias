@@ -280,3 +280,16 @@ func TestNew_SelfMetricsHostTag(t *testing.T) {
 		})
 	}
 }
+
+func TestNew_RefusesAConfiguredHostnameThatCannotBeATag(t *testing.T) {
+	// Only an absent name falls back to host:ozyd. A configured one the
+	// operator mistyped must not be replaced silently, even for a caller that
+	// skipped config.Load's validation.
+	cfg := testConfig(t)
+	cfg.Hostname = "mac,mini"
+	s, err := New(cfg, Options{Logger: quiet})
+	if err == nil {
+		_ = s.Close()
+		t.Fatal(`New with hostname "mac,mini": want an error`)
+	}
+}
