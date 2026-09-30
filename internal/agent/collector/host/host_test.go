@@ -314,3 +314,95 @@ func TestHost_RealMachine(t *testing.T) {
 		}
 	}
 }
+
+// A Mac: one APFS container with five volumes that each report its size,
+// plus an HFS+ USB disk with two real partitions.
+func TestHost_APFSVolumesAreOneDisk(t *testing.T) {
+	src := machine()
+	src.parts = []disk.PartitionStat{
+		{Device: "/dev/disk3s1s1", Mountpoint: "/", Fstype: "apfs"},
+		{Device: "/dev/disk3s5", Mountpoint: "/System/Volumes/Data", Fstype: "apfs"},
+		{Device: "/dev/disk3s6", Mountpoint: "/System/Volumes/VM", Fstype: "apfs"},
+		{Device: "/dev/disk3s2", Mountpoint: "/System/Volumes/Preboot", Fstype: "apfs"},
+		{Device: "/dev/disk3s4", Mountpoint: "/System/Volumes/Update", Fstype: "apfs"},
+		{Device: "/dev/disk5s1", Mountpoint: "/Volumes/A", Fstype: "hfs"},
+		{Device: "/dev/disk5s2", Mountpoint: "/Volumes/B", Fstype: "hfs"},
+	}
+	container := func(used uint64) *disk.UsageStat {
+		return &disk.UsageStat{Total: 1000, Free: 600, Used: used, UsedPercent: float64(used) / 10}
+	}
+	src.usage = map[string]*disk.UsageStat{
+		"/": container(10), "/System/Volumes/Data": container(300), "/System/Volumes/VM": container(50),
+		"/System/Volumes/Preboot": container(20), "/System/Volumes/Update": container(20),
+		"/Volumes/A": {Total: 100, Used: 10, Free: 90, UsedPercent: 10},
+		"/Volumes/B": {Total: 200, Used: 20, Free: 180, UsedPercent: 10},
+	}
+	g, _ := run(t, newCollector(src, testutil.NewFakeClock(t0)))
+	byDev := map[string]float64{}
+	for _, m := range g["system.disk.total"] {
+		byDev[m.Tags[0]] += m.Value
+	}
+	want := map[string]float64{"device:/dev/disk3": 1000, "device:/dev/disk5s1": 100, "device:/dev/disk5s2": 200}
+	if len(byDev) != len(want) {
+		t.Fatalf("disk.total by device = %v, want %v", byDev, want)
+	}
+	for k, v := range want {
+		if byDev[k] != v {
+			t.Errorf("%s total = %v, want %v", k, byDev[k], v)
+		}
+	}
+	for _, m := range g["system.disk.used"] {
+		if m.Tags[0] == "device:/dev/disk3" && m.Value != 400 {
+			t.Errorf("container used = %v, want 400 (total - free, not one volume's used)", m.Value)
+		}
+	}
+	for _, m := range g["system.disk.in_use"] {
+		if m.Tags[0] == "device:/dev/disk3" && m.Value != 0.4 {
+			t.Errorf("container in_use = %v, want 0.4", m.Value)
+		}
+	}
+}
+
+// A device whose first mount cannot be read but whose second can is
+// reported, and is not an error.
+func TestHost_AnUnreadableMountOfAReadableDeviceIsNotAnError(t *testing.T) {
+	src := machine()
+	src.parts = []disk.PartitionStat{
+		{Device: "/dev/vda1", Mountpoint: "/root-only", Fstype: "ext4"},
+		{Device: "/dev/vda1", Mountpoint: "/etc/hosts", Fstype: "ext4"},
+	}
+	src.usage = map[string]*disk.UsageStat{"/etc/hosts": {Total: 10, Used: 1, Free: 9, UsedPercent: 10}}
+	g, err := run(t, newCollector(src, testutil.NewFakeClock(t0)))
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if m := g.one(t, "system.disk.total"); m.Tags[0] != "device:/dev/vda1" {
+		t.Fatalf("%+v", m)
+	}
+}
+
+func TestHost_IOIsPerWholePhysicalDisk(t *testing.T) {
+	src := machine()
+	fc := testutil.NewFakeClock(t0)
+	c := newCollector(src, fc)
+	src.io = map[string]disk.IOCountersStat{}
+	for _, n := range []string{"sda", "sda1", "sda2", "nvme0n1", "nvme0n1p1", "mmcblk0", "mmcblk0p2", "vda",
+		"loop0", "loop12", "ram0", "zram0", "sr0", "dm-0", "md127", "disk0"} {
+		src.io[n] = disk.IOCountersStat{ReadCount: 1}
+	}
+	_, _ = run(t, c)
+	fc.Advance(10 * time.Second)
+	for n, s := range src.io {
+		s.ReadCount += 10
+		src.io[n] = s
+	}
+	g, _ := run(t, c)
+	var got []string
+	for _, m := range g["system.io.r_s"] {
+		got = append(got, strings.TrimPrefix(m.Tags[0], "device:"))
+	}
+	slices.Sort(got)
+	if want := []string{"disk0", "mmcblk0", "nvme0n1", "sda", "vda"}; !slices.Equal(got, want) {
+		t.Fatalf("io devices = %v, want %v", got, want)
+	}
+}

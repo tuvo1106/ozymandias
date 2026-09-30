@@ -109,9 +109,9 @@ reported as a spike.
 | `system.mem.pct_usable` | gauge | fraction | — | `usable / total`, 0–1 |
 | `system.swap.total` / `.used` / `.free` | gauge | bytes | — | Swap space |
 | `system.swap.pct_free` | gauge | fraction | — | `free / total`, 0–1; absent without swap |
-| `system.disk.total` / `.used` / `.free` | gauge | bytes | `device` | Space on each block device (`/dev/...`), once however many places it is mounted. In a container: the Docker VM's data disk, seen through the container's bind mounts. Network mounts and folders shared from the Mac are not disks and are skipped |
+| `system.disk.total` / `.used` / `.free` | gauge | bytes | `device` | Space on each block device (`/dev/...`), once however many places it is mounted. On macOS, APFS volumes are one container and are reported once as `/dev/diskN`, with used = total − free. In a container: the Docker VM's data disk, seen through the container's bind mounts. Network mounts and folders shared from the Mac are not disks and are skipped |
 | `system.disk.in_use` | gauge | fraction | `device` | Used share, 0–1, counting space reserved for root as used |
-| `system.io.r_s` / `.w_s` | rate | operations/s | `device` | Read and write operations completed |
+| `system.io.r_s` / `.w_s` | rate | operations/s | `device` | Read and write operations completed, per whole physical disk: partitions (whose I/O the disk already counts), loop, ram, device-mapper and RAID devices are left out, so a sum over devices counts each write once |
 | `system.io.rkb_s` / `.wkb_s` | rate | KiB/s | `device` | Read and written |
 | `system.net.bytes_rcvd` / `.bytes_sent` | rate | bytes/s | `interface` | Traffic per interface. Interfaces that never moved a packet, and those matching `collectors.host.exclude_interfaces`, are skipped |
 | `system.net.packets_in.count` / `packets_out.count` | rate | packets/s | `interface` | Packets |

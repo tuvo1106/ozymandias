@@ -236,27 +236,99 @@ func (c *Collector) disk(ctx context.Context, emit collector.Emit, _ time.Time) 
 		return err
 	}
 	seen := map[string]bool{}
-	var errs []error
+	failed := map[string]error{} // by device; cleared if another mount of it reads
+	var order []string
 	for _, p := range parts {
-		if !strings.HasPrefix(p.Device, "/dev/") || seen[p.Device] || pseudoFS[p.Fstype] {
+		if !strings.HasPrefix(p.Device, "/dev/") || pseudoFS[p.Fstype] {
+			continue
+		}
+		dev, apfs := p.Device, false
+		if p.Fstype == "apfs" {
+			dev, apfs = apfsContainer(p.Device), true
+		}
+		if seen[dev] {
 			continue
 		}
 		u, err := c.src.DiskUsage(ctx, p.Mountpoint)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", p.Mountpoint, err))
+			if _, ok := failed[dev]; !ok {
+				order = append(order, dev)
+			}
+			failed[dev] = fmt.Errorf("%s: %w", p.Mountpoint, err)
 			continue
 		}
 		if u.Total == 0 {
 			continue
 		}
-		seen[p.Device] = true
-		tag := "device:" + p.Device
+		seen[dev] = true
+		delete(failed, dev)
+		used, inUse := float64(u.Used), u.UsedPercent/100
+		if apfs {
+			// Every volume reports the container's total and free, but only
+			// its own used; the container's used is what is not free.
+			used = float64(u.Total - min(u.Free, u.Total))
+			inUse = used / float64(u.Total)
+		}
+		tag := "device:" + dev
 		gauge(emit, "system.disk.total", float64(u.Total), tag)
-		gauge(emit, "system.disk.used", float64(u.Used), tag)
+		gauge(emit, "system.disk.used", used, tag)
 		gauge(emit, "system.disk.free", float64(u.Free), tag)
-		gauge(emit, "system.disk.in_use", u.UsedPercent/100, tag)
+		gauge(emit, "system.disk.in_use", inUse, tag)
+	}
+	var errs []error
+	for _, dev := range order {
+		if err, ok := failed[dev]; ok {
+			errs = append(errs, err)
+		}
 	}
 	return errors.Join(errs...)
+}
+
+// apfsVolume matches an APFS volume's device, /dev/diskNsM or
+// /dev/diskNsMsK (a snapshot of a volume).
+var apfsVolume = regexp.MustCompile(`^(/dev/disk[0-9]+)s[0-9]+(s[0-9]+)?$`)
+
+// apfsContainer maps an APFS volume to its container, /dev/diskN. On macOS
+// every volume — /, /System/Volumes/Data, Preboot, VM, Update — lives in one
+// container and reports the container's size and free space, so reporting
+// each volume would count the same disk half a dozen times in any sum over
+// devices. Only APFS is grouped: on HFS+ or FAT, diskNsM are real partitions
+// with space of their own.
+func apfsContainer(device string) string {
+	if m := apfsVolume.FindStringSubmatch(device); m != nil {
+		return m[1]
+	}
+	return device
+}
+
+// virtualBlock are Linux block devices that are not disks, or are built on
+// disks that are reported themselves: loop (images, snaps), ram and zram
+// (memory), sr (optical), fd (floppy), dm (device-mapper: LVM, dm-crypt)
+// and md (software RAID). Reporting dm and md as well as the disks under
+// them would count each write twice.
+var virtualBlock = regexp.MustCompile(`^(loop|ram|zram|sr|fd|dm-|md)[0-9]+$`)
+
+// partitionOf reports whether name is a partition of a whole disk that is
+// also in the set: sda1 of sda, nvme0n1p1 of nvme0n1, mmcblk0p1 of mmcblk0.
+// The kernel counts a partition's I/O on its disk too, so reporting both
+// doubles every sum.
+func partitionOf(name string, all map[string]disk.IOCountersStat) bool {
+	i := len(name)
+	for i > 0 && name[i-1] >= '0' && name[i-1] <= '9' {
+		i--
+	}
+	if i == len(name) || i == 0 {
+		return false
+	}
+	parent := name[:i]
+	if _, ok := all[parent]; ok {
+		return true
+	}
+	if strings.HasSuffix(parent, "p") {
+		_, ok := all[parent[:len(parent)-1]]
+		return ok
+	}
+	return false
 }
 
 // rate emits the per-second rate of a cumulative counter, if there is one.
@@ -266,13 +338,17 @@ func (c *Collector) rate(emit collector.Emit, key, name string, v float64, at ti
 	}
 }
 
-// io reports disk operations and kilobytes per second, per device.
+// io reports disk operations and kilobytes per second, per whole physical
+// disk. See virtualBlock and partitionOf for what is left out, and why.
 func (c *Collector) io(ctx context.Context, emit collector.Emit, now time.Time) error {
 	counters, err := c.src.DiskIO(ctx)
 	if err != nil {
 		return err
 	}
 	for dev, s := range counters {
+		if virtualBlock.MatchString(dev) || partitionOf(dev, counters) {
+			continue
+		}
 		tag, key := "device:"+dev, "io:"+dev
 		c.rate(emit, key, "system.io.r_s", float64(s.ReadCount), now, tag)
 		c.rate(emit, key, "system.io.w_s", float64(s.WriteCount), now, tag)
