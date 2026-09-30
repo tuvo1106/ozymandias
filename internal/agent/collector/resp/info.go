@@ -76,62 +76,6 @@ func (i Info) Number(field string) (float64, bool) {
 	return f, true
 }
 
-// FieldKind says how a numeric INFO field reads over time.
-type FieldKind int
-
-const (
-	// Gauge is a level at this instant; report it as it is.
-	Gauge FieldKind = iota
-	// Counter is a running total since the server started; only its rate
-	// between two scrapes means anything, and a decrease is a restart.
-	Counter
-)
-
-func (k FieldKind) String() string {
-	if k == Counter {
-		return "counter"
-	}
-	return "gauge"
-}
-
-// Field is one numeric INFO field the redis check reports.
-type Field struct {
-	Name string
-	Kind FieldKind
-}
-
-// Fields are the INFO fields the redis check reports, and how to read each.
-// Memory, clients and replication are levels; commands, keyspace hits and
-// misses, evictions, expirations and rejected connections are running
-// totals. instantaneous_ops_per_sec is Redis's own short sample, reported as
-// the gauge it is; the ops/s that agrees with the scrape interval is the rate
-// of total_commands_processed.
-var Fields = []Field{
-	{"used_memory", Gauge},
-	{"used_memory_rss", Gauge},
-	{"maxmemory", Gauge},
-	{"mem_fragmentation_ratio", Gauge},
-	{"connected_clients", Gauge},
-	{"blocked_clients", Gauge},
-	{"instantaneous_ops_per_sec", Gauge},
-	{"connected_slaves", Gauge},
-	{"uptime_in_seconds", Gauge},
-	{"total_commands_processed", Counter},
-	{"total_connections_received", Counter},
-	{"rejected_connections", Counter},
-	{"keyspace_hits", Counter},
-	{"keyspace_misses", Counter},
-	{"evicted_keys", Counter},
-	{"expired_keys", Counter},
-}
-
-// Role returns the replication role ("master" or "slave"), or "" when INFO
-// did not include the replication section.
-func (i Info) Role() string {
-	v, _ := i.Get("role")
-	return strings.TrimSpace(v)
-}
-
 // DBStats is one line of INFO's keyspace section.
 type DBStats struct {
 	DB      int

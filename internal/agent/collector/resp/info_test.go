@@ -56,18 +56,12 @@ func TestParseInfo_Goldens(t *testing.T) {
 		},
 	} {
 		info := golden(t, tc.file)
-		for _, f := range Fields {
-			got, ok := info.Number(f.Name)
-			want, listed := tc.want[f.Name]
-			if !listed {
-				t.Errorf("%s: test does not list %s", tc.file, f.Name)
-				continue
-			}
-			if !ok || got != want {
-				t.Errorf("%s: %s = %v (found %v), want %v", tc.file, f.Name, got, ok, want)
+		for name, want := range tc.want {
+			if got, ok := info.Number(name); !ok || got != want {
+				t.Errorf("%s: %s = %v (found %v), want %v", tc.file, name, got, ok, want)
 			}
 		}
-		if r := info.Role(); r != tc.role {
+		if r, _ := info.Get("role"); r != tc.role {
 			t.Errorf("%s: role = %q", tc.file, r)
 		}
 		if got := info.Keyspace(); !reflect.DeepEqual(got, tc.dbs) {
@@ -133,34 +127,8 @@ func TestParseInfo_Tolerance(t *testing.T) {
 	if got := info.Keyspace(); !reflect.DeepEqual(got, want) {
 		t.Errorf("keyspace = %+v, want %+v", got, want)
 	}
-	if ParseInfo("").Role() != "" || len(ParseInfo("").Keyspace()) != 0 {
+	if _, ok := ParseInfo("").Get("role"); ok || len(ParseInfo("").Keyspace()) != 0 {
 		t.Error("an empty INFO has no role and no databases")
-	}
-}
-
-func TestFields_KindsAreStated(t *testing.T) {
-	seen := map[string]bool{}
-	for _, f := range Fields {
-		if seen[f.Name] {
-			t.Errorf("%s listed twice", f.Name)
-		}
-		seen[f.Name] = true
-	}
-	// The ones a rate is computed from, pinned: reporting a running total as
-	// a gauge would chart a line that only ever climbs.
-	for _, name := range []string{"total_commands_processed", "keyspace_hits", "keyspace_misses", "evicted_keys", "expired_keys", "rejected_connections"} {
-		found := false
-		for _, f := range Fields {
-			if f.Name == name {
-				found = f.Kind == Counter
-			}
-		}
-		if !found {
-			t.Errorf("%s must be a counter", name)
-		}
-	}
-	if Gauge.String() != "gauge" || Counter.String() != "counter" {
-		t.Error("FieldKind names")
 	}
 }
 
@@ -175,10 +143,9 @@ func FuzzParseInfo(f *testing.F) {
 	f.Add("# Keyspace\ndb0:keys=1,expires=0,avg_ttl=0\ndb1:keys=-,x\n")
 	f.Fuzz(func(t *testing.T, s string) {
 		info := ParseInfo(s)
-		for _, f := range Fields {
-			info.Number(f.Name)
+		for _, name := range []string{"used_memory", "mem_fragmentation_ratio", "role", "keyspace_hits"} {
+			info.Number(name)
 		}
-		info.Role()
 		dbs := info.Keyspace()
 		for i := 1; i < len(dbs); i++ {
 			if dbs[i-1].DB >= dbs[i].DB {

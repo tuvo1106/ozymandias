@@ -53,7 +53,8 @@
 // # Counters and gauges in INFO
 //
 // INFO mixes two kinds of number, and the check must treat them differently
-// ([Fields] records which is which):
+// (the redis check's gauges and rates tables, in internal/agent/check/redis,
+// record which is which; this package only parses):
 //
 //   - gauges are levels at this instant — used_memory, connected_clients,
 //     mem_fragmentation_ratio — and are reported as they are;
