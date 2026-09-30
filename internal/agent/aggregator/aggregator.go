@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/agent/agenttags"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/internal/sketch"
@@ -349,17 +350,9 @@ func (a *Aggregator) contextTags(raw []string) []string {
 			a.tagsDropped.Inc()
 		}
 	}
-	tags = append(tags, a.agentTags...)
-	if a.hostTag != "" && !wire.HasTagKey(tags, "host") {
-		tags = append(tags, a.hostTag)
-	}
-	tags = wire.CanonicalTags(tags)
-	if len(tags) > wire.MaxTagsPerPoint {
-		// Deterministic (the set is sorted), so a context keeps one identity.
-		a.tagsDropped.Add(int64(len(tags) - wire.MaxTagsPerPoint))
-		tags = tags[:wire.MaxTagsPerPoint]
-	}
-	return slices.Clip(tags)
+	tags, dropped := agenttags.Decorate(tags, a.agentTags, a.hostTag)
+	a.tagsDropped.Add(int64(dropped))
+	return tags
 }
 
 func contextKey(kind Kind, name string, tags []string) string {
