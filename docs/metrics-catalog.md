@@ -171,7 +171,9 @@ From configured or autodiscovered checks (`collectors.checks`, docs/operations.m
 metric of an instance carries that instance's `tags` and, when autodiscovered, the
 container's tags. A configured instance with a name, or one of several unnamed ones, also
 carries `instance:<name>` (or `instance:<position>`), so two instances of a check never
-write the same series.
+write the same series. For the same reason, containers that `container_name_rewrite` folds
+into one name carry `replica:<n>` on their autodiscovered checks' metrics: the lowest
+number free among that name's running replicas.
 
 | Metric | Type | Unit | Tags | Meaning |
 |---|---|---|---|---|
