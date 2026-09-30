@@ -599,7 +599,16 @@ only_block_devices() { local d; d=$(newest_devices); [[ -n $d ]] && ! grep -qv '
 check "and only block devices"                 only_block_devices
 check "the collector reports on itself"        wait_positive "sum:ozy.agent.collector.runs{collector:host}"
 # Zero increase may arrive as 0 or not at all, depending on the reporter.
-no_errors() { local v; v=$(latest_value "$1"); [[ $v == none ]] || python3 -c "import sys; sys.exit(0 if float('$v') == 0 else 1)"; }
+sum_window() { # <query> — the sum of every point over the last 5 minutes (0 if none)
+  local now; now=$(ozyd_now 2>/dev/null); [[ -n $now ]] || now=$(date +%s)
+  curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" --data-urlencode "q=$1" \
+    --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 60))" 2>/dev/null |
+    python3 -c 'import json,sys
+print(sum(p[1] for s in json.load(sys.stdin).get("series", []) for p in s["points"] if p[1] is not None))'
+}
+# Errors are a count: one failing run in five minutes is a single point, which
+# the newest value would miss. Sum the window instead.
+no_errors() { local v; v=$(sum_window "$1") || return 1; python3 -c "import sys; sys.exit(0 if float('$v') == 0 else 1)" || { echo "$1: $v errors in 5m" >&2; return 1; }; }
 check "without errors"                         no_errors 'sum:ozy.agent.collector.errors{collector:host}'
 
 echo "smoke: $pass checks passed"
