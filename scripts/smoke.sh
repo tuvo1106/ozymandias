@@ -563,7 +563,7 @@ check "the sketch survived a real restart"  wait_agg smoke.latency p95 95 0.01
 # after a random start within its first interval. The agent was restarted
 # near the top of this script, long enough ago for its first run to be in.
 latest_value() { # <query> — the newest non-null point over the last 5 minutes
-  local now; now=$(date +%s)
+  local now; now=$(ozyd_now 2>/dev/null); [[ -n $now ]] || now=$(date +%s) # the VM clock, see ozyd_now
   curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" --data-urlencode "q=$1" \
     --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 60))" 2>/dev/null |
     python3 -c 'import json,sys
@@ -587,7 +587,7 @@ check "and disk space, per device"             wait_positive "max:system.disk.to
 # path would be a tag value. Read from the newest bucket, so a series left by
 # an older build does not count.
 newest_devices() {
-  local now; now=$(date +%s)
+  local now; now=$(ozyd_now 2>/dev/null); [[ -n $now ]] || now=$(date +%s) # the VM clock, see ozyd_now
   curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" --data-urlencode "q=max:system.disk.total$host_q by {device}" \
     --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 60))" 2>/dev/null |
     python3 -c 'import json,sys

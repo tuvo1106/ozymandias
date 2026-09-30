@@ -12,12 +12,13 @@ MODULE   := $(shell go list -m 2>/dev/null)
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -s -w -X $(MODULE)/internal/buildinfo.Version=$(VERSION)
 # The host tag for both services, from scripts/hostname.sh like dev.sh and
-# smoke.sh. `:=`, not `?=`: the script already honours an exported
-# OZY_HOSTNAME, and `?=` would pass an exported *empty* one through, which
-# compose turns into ozymandias-host while smoke expects the machine's name.
-# `make OZY_HOSTNAME=x up` still overrides it.
-OZY_HOSTNAME := $(shell scripts/hostname.sh)
-COMPOSE  := OZY_VERSION=$(VERSION) OZY_HOSTNAME=$(OZY_HOSTNAME) docker compose -f deploy/docker-compose.yml
+# smoke.sh. Not `?=`: the script already honours an exported OZY_HOSTNAME,
+# and `?=` would pass an exported *empty* one through, which compose turns
+# into ozymandias-host while smoke expects the machine's name. Recursive
+# (`=`), so the script runs only for the targets that use it, not for
+# `make help`. `make OZY_HOSTNAME=x up` still overrides it.
+OZY_HOSTNAME = $(shell scripts/hostname.sh)
+COMPOSE  = OZY_VERSION=$(VERSION) OZY_HOSTNAME=$(OZY_HOSTNAME) docker compose -f deploy/docker-compose.yml
 FUZZTIME ?= 30s
 CI_FUZZTIME ?= 10s
 
