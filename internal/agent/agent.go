@@ -133,13 +133,9 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		collectors = append(collectors, hostcoll.New(hostcoll.Options{Interval: h.Interval, ExcludeInterfaces: exclude, Clock: a.clock}))
 	}
 	if d := cfg.Collectors.Docker; d.Enabled {
-		matches, err := d.Matches()
+		rewrites, err := d.Rewrites()
 		if err != nil {
 			return nil, err
-		}
-		rewrites := make([]docker.Rewrite, len(matches))
-		for i, rx := range matches {
-			rewrites[i] = docker.Rewrite{Match: rx, Replace: d.ContainerNameRewrite[i].Replace}
 		}
 		api := opts.DockerAPI
 		if api == nil {

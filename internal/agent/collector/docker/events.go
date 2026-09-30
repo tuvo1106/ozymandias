@@ -244,6 +244,11 @@ func (w *Watcher) handle(ctx context.Context, ev dockerapi.Event) error {
 			w.onStart(id)
 		}
 	case "oom":
+		// Emptied on die; bounded on its own too, for an oom whose die
+		// never arrives (lost in a long disconnect).
+		if len(w.oom) >= maxTracked {
+			clear(w.oom)
+		}
 		w.oom[id] = true
 	case "die":
 		w.died(ctx, ev)

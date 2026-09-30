@@ -67,6 +67,7 @@ of now may be the next agent's first. Those buckets are dropped. They hold:
   would misstate the others.
 - An agent stopped within its first interval loses what it received, and
   a fast client clock loses its future-stamped samples at shutdown. Both
-  are rare, and neither is counted: the loss happens as the process exits,
-  after its last self-metrics report.
+  are rare. Neither can be a self-metric, because the loss happens as the
+  process exits, after its last report. The agent logs it instead: "final
+  flush held back buckets that had not begun", with the number of buckets.
 - Supersede this when ozyd accepts a second point at a timestamp.

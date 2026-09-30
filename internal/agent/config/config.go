@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -94,10 +95,11 @@ type DockerCollector struct {
 	ContainerNameRewrite []NameRewrite `yaml:"container_name_rewrite"`
 }
 
-// Matches compiles each ContainerNameRewrite rule's Match, in order: the
-// one place a rule is checked, used by Validate and by the agent.
-func (d DockerCollector) Matches() ([]*regexp.Regexp, error) {
-	out := make([]*regexp.Regexp, len(d.ContainerNameRewrite))
+// Rewrites compiles each ContainerNameRewrite rule, in order: the one
+// place a rule is checked (used by Validate and by the agent), so the
+// pattern and its replacement cannot come apart.
+func (d DockerCollector) Rewrites() ([]docker.Rewrite, error) {
+	out := make([]docker.Rewrite, len(d.ContainerNameRewrite))
 	for i, r := range d.ContainerNameRewrite {
 		if r.Match == "" {
 			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d]: match is empty", i)
@@ -111,9 +113,63 @@ func (d DockerCollector) Matches() ([]*regexp.Regexp, error) {
 		if err != nil {
 			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d] %q: %w", i, r.Match, err)
 		}
-		out[i] = rx
+		if err := checkTemplate(rx, r.Replace); err != nil {
+			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d] %q: replace %q: %w", i, r.Match, r.Replace, err)
+		}
+		out[i] = docker.Rewrite{Match: rx, Replace: r.Replace}
 	}
 	return out, nil
+}
+
+// checkTemplate refuses a replacement that names a group the pattern does
+// not have. Go's regexp template expands such a reference to nothing, with
+// no error: `$1_sandbox` is the group named "1_sandbox", and `${2}` of a
+// one-group pattern is empty, so the rule would quietly misname every
+// container it matches. The syntax is regexp.Expand's: $$ is a literal $,
+// and $name or ${name} a group by number or name.
+func checkTemplate(rx *regexp.Regexp, tmpl string) error {
+	isName := func(c byte) bool {
+		return c == '_' || '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+	}
+	for i := 0; i < len(tmpl); i++ {
+		if tmpl[i] != '$' || i+1 == len(tmpl) {
+			continue
+		}
+		rest := tmpl[i+1:]
+		var name string
+		switch rest[0] {
+		case '$':
+			i++
+			continue
+		case '{':
+			end := strings.IndexByte(rest, '}')
+			if end < 0 {
+				continue // not a reference: Expand writes it as it stands
+			}
+			name = rest[1:end]
+			i += end + 1
+		default:
+			n := 0
+			for n < len(rest) && isName(rest[n]) {
+				n++
+			}
+			name = rest[:n]
+			i += n
+		}
+		if name == "" {
+			continue
+		}
+		if num, err := strconv.Atoi(name); err == nil {
+			if num > rx.NumSubexp() {
+				return fmt.Errorf("$%s: the pattern has %d groups", name, rx.NumSubexp())
+			}
+			continue
+		}
+		if rx.SubexpIndex(name) < 0 {
+			return fmt.Errorf("$%s: the pattern has no group of that name (write ${1}, not $1, before letters, digits or _)", name)
+		}
+	}
+	return nil
 }
 
 // NameRewrite is one container_name_rewrite rule: a regular expression and
@@ -247,7 +303,7 @@ func (c Collectors) validate() error {
 	if c.Docker.Enabled && (c.Docker.Socket == "" || c.Docker.MaxConcurrency < 1) {
 		errs = append(errs, errors.New("collectors.docker: socket must be set and max_concurrency at least 1"))
 	}
-	if _, err := c.Docker.Matches(); err != nil {
+	if _, err := c.Docker.Rewrites(); err != nil {
 		errs = append(errs, err)
 	}
 	if _, err := c.Host.Excludes(); err != nil {

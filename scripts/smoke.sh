@@ -652,8 +652,10 @@ smoke_ct=ozy-smoke
 docker rm -f "$smoke_ct-long" "$smoke_ct-short" >/dev/null 2>&1 || true
 trap 'docker rm -f "$smoke_ct-long" "$smoke_ct-short" >/dev/null 2>&1 || true' EXIT
 docker_since=$(ozyd_now 2>/dev/null) || docker_since=$(date +%s)
-docker run -d --name "$smoke_ct-long" busybox sh -c 'sleep 45; exit 3' >/dev/null
-docker run --rm --name "$smoke_ct-short" busybox sh -c 'exit 7' >/dev/null || true
+# Started under check, so a failure (no busybox offline, no daemon) is a ✗
+# with its reason, not set -e ending smoke without a summary.
+check "a long-running test container starts"   docker run -d --name "$smoke_ct-long" busybox sh -c 'sleep 45; exit 3'
+check "a test container that exits at once runs" sh -c "docker run --rm --name $smoke_ct-short busybox sh -c 'exit 7'; test \$? -eq 7"
 check "a running container is polled"          wait_since "max:container.memory.usage{container_name:$smoke_ct-long}" 45
 check "a container too brief to poll still counts" wait_since "sum:container.exits{container_name:$smoke_ct-short,exit_code:7}" 30
 docker stop -t 0 "$smoke_ct-long" >/dev/null 2>&1 || true

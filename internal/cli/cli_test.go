@@ -65,6 +65,8 @@ func envFor(t *testing.T, name string) []string {
 		"OZY_AGENT_STATSD_ADDR=127.0.0.1:0",
 		"OZY_AGENT_INTAKE_URL=http://127.0.0.1:1",
 		"OZY_AGENT_FORWARDER_SHUTDOWN_TIMEOUT=1s",
+		// Nor the machine's Docker daemon.
+		"OZY_AGENT_COLLECTORS_DOCKER_ENABLED=false",
 	}
 }
 

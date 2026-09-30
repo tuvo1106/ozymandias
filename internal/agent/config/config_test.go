@@ -187,6 +187,12 @@ func TestAgent_ValidateDocker(t *testing.T) {
 		"empty rewrite match": func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Replace: "x"}} },
 		"bad rewrite match":   func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "(", Replace: "x"}} },
 		"empty replace":       func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "^judge-"}} },
+		"replace names a missing group": func(a *Agent) {
+			a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "^judge-(.*)$", Replace: "$1_sandbox"}}
+		},
+		"replace numbers a missing group": func(a *Agent) {
+			a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "^judge-(.*)$", Replace: "${2}"}}
+		},
 		"no socket":           func(a *Agent) { a.Collectors.Docker.Socket = "" },
 		"zero concurrency":    func(a *Agent) { a.Collectors.Docker.MaxConcurrency = 0 },
 		"fractional interval": func(a *Agent) { a.Collectors.Docker.Interval = 1500 * time.Millisecond },
@@ -201,5 +207,21 @@ func TestAgent_ValidateDocker(t *testing.T) {
 	a.Collectors.Docker.Enabled, a.Collectors.Docker.Socket = false, ""
 	if err := a.Validate(); err != nil {
 		t.Errorf("a disabled collector needs no socket: %v", err)
+	}
+}
+
+// Replacements that reference only groups the pattern has are accepted.
+func TestRewrites_AcceptsGoodTemplates(t *testing.T) {
+	for _, r := range []NameRewrite{
+		{Match: "^judge-", Replace: "judge"},
+		{Match: "^(ozy-smoke-[a-z]+)$", Replace: "${1}"},
+		{Match: "^(?P<app>[a-z]+)-[0-9]+$", Replace: "${app}"},
+		{Match: "^(a)(b)$", Replace: "$1-$2"},
+		{Match: "^x$", Replace: "cost$$"},
+	} {
+		d := DockerCollector{ContainerNameRewrite: []NameRewrite{r}}
+		if rw, err := d.Rewrites(); err != nil || len(rw) != 1 || rw[0].Replace != r.Replace {
+			t.Errorf("%+v: %v, %v", r, rw, err)
+		}
 	}
 }
