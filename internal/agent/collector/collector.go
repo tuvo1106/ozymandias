@@ -80,7 +80,11 @@ type Emit func(Metric)
 //     keep state between runs (previous counter readings) without locking.
 type Collector interface {
 	// Name identifies the collector in logs and on its self-metrics
-	// (collector:<name>). Stable, lower-case, short.
+	// (collector:<name>). Stable, lower-case, short, and unique among the
+	// scheduler's collectors: two with one name would share one set of
+	// counters, and a failing instance could not be told from a healthy
+	// one. Several instances of one check name themselves apart
+	// (redis:cache, redis:queue).
 	Name() string
 	// Interval is how often to run. Zero means the scheduler's default.
 	Interval() time.Duration

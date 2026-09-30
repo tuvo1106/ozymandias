@@ -273,11 +273,16 @@ func (a *Agent) Run(ctx context.Context, ln net.Listener) error {
 	// Collectors stop at SIGTERM itself, in parallel with the HTTP drain,
 	// not after it: they are reads, nothing is waiting on them, and their
 	// bounded wait for a stuck one (collector.DefaultShutdownTimeout) then
-	// overlaps the drain instead of adding to the stop grace period.
-	wg.Go(func() { a.sched.Run(ctx) })
+	// overlaps the drain instead of adding to the stop grace period. Their
+	// context is also cancelled when Serve returns for any other reason (the
+	// listener failed), or the agent would wait for them forever.
+	collectors, stopCollectors := context.WithCancel(ctx)
+	defer stopCollectors()
+	wg.Go(func() { a.sched.Run(collectors) })
 
 	err := httpserve.Serve(ctx, srv, ln, a.cfg.HTTP.ShutdownTimeout)
 
+	stopCollectors()
 	stopInputs()
 	wg.Wait()
 	stopAgg()

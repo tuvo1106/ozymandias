@@ -264,7 +264,8 @@ func TestScheduler_StopsCleanly(t *testing.T) {
 	}}
 	idle := &fake{name: "idle", iv: time.Hour, collect: func(context.Context, Emit) error { return nil }}
 	fc := testutil.NewFakeClock(t0)
-	s := New(Options{Collectors: []Collector{block, idle}, Clock: fc, Timeout: time.Hour, Logger: slog.New(slog.DiscardHandler)})
+	reg := selfmetrics.NewRegistry()
+	s := New(Options{Collectors: []Collector{block, idle}, Clock: fc, Timeout: time.Hour, Registry: reg, Logger: slog.New(slog.DiscardHandler)})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { s.Run(ctx); close(done) }()
@@ -276,6 +277,11 @@ func TestScheduler_StopsCleanly(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return: a collector in Collect or waiting on jitter held it")
+	}
+	// The run shutdown cut short returned ctx's error; that is not a failure,
+	// and counting it would chart an error at every restart.
+	if n := counter(reg, "ozy.agent.collector.errors", "block"); n != 0 || counter(reg, "ozy.agent.collector.runs", "block") != 1 {
+		t.Errorf("errors = %d after a run cancelled by shutdown, want 0", n)
 	}
 }
 

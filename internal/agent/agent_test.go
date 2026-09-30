@@ -330,15 +330,45 @@ func TestRun_CollectorsToIntake(t *testing.T) {
 	}
 }
 
-func TestNew_HostCollectorFollowsConfig(t *testing.T) {
+// A listener that fails ends Run with its error, collectors or not: they
+// must not wait for a SIGTERM that is not coming.
+func TestRun_AListenerFailureStopsTheCollectors(t *testing.T) {
+	testutil.CheckGoroutines(t)
 	cfg := testConfig()
-	cfg.Collectors.Host.Enabled = true
-	a, err := newAgent(t, cfg, Options{Logger: quiet})
+	cfg.Statsd.Enabled = false
+	a, err := newAgent(t, cfg, Options{Logger: quiet, Clock: testutil.NewFakeClock(time.Unix(1790000001, 0)), Collectors: []collector.Collector{stubCollector{}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.sched == nil {
-		t.Fatal("no scheduler")
+	ln, _ := httpserve.Listen("127.0.0.1:0")
+	_ = ln.Close()
+	done := make(chan error, 1)
+	go func() { done <- a.Run(context.Background(), ln) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Run returned nil for a closed listener")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after its listener failed")
+	}
+}
+
+func TestNew_HostCollectorFollowsConfig(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		cfg := testConfig()
+		cfg.Collectors.Host.Enabled = on
+		a, err := newAgent(t, cfg, Options{Logger: quiet})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, c := range a.sched.Collectors() {
+			names = append(names, c.Name())
+		}
+		if slices.Contains(names, "host") != on {
+			t.Errorf("enabled=%v: collectors %v", on, names)
+		}
 	}
 }
 

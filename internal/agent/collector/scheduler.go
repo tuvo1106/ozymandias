@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -75,7 +76,10 @@ type Scheduler struct {
 	// stopped is set when Run returns. A run still in progress then — a
 	// collector abandoned at shutdown — sends nothing: its sink is being
 	// shut down, and would queue what it was given where nothing sends it.
-	stopped atomic.Bool
+	// sinkMu makes the check and the send one step, so a run that finishes
+	// just as Run gives up either sends before Run returns or not at all.
+	sinkMu  sync.Mutex
+	stopped bool
 }
 
 // New returns a Scheduler. Call Run to start it.
@@ -105,6 +109,13 @@ func New(opts Options) *Scheduler {
 		opts.Sink = func([]wire.Series) {}
 	}
 	s := &Scheduler{opts: opts, log: opts.Logger.With("component", "collector"), hostTag: opts.HostTag}
+	seen := map[string]bool{}
+	for _, c := range opts.Collectors {
+		if seen[c.Name()] {
+			s.log.Warn("two collectors share a name; their self-metrics are combined", "collector", c.Name())
+		}
+		seen[c.Name()] = true
+	}
 	for _, t := range opts.Tags {
 		if n, ok := wire.NormalizeTag(t); ok {
 			s.tags = append(s.tags, n)
@@ -112,6 +123,9 @@ func New(opts Options) *Scheduler {
 	}
 	return s
 }
+
+// Collectors returns the collectors the scheduler runs.
+func (s *Scheduler) Collectors() []Collector { return slices.Clone(s.opts.Collectors) }
 
 // Run starts every collector and blocks until ctx is cancelled and every
 // collector's goroutine has returned — or, after cancellation, until
@@ -125,11 +139,20 @@ func New(opts Options) *Scheduler {
 // aggregator's final flush — every statsd bucket still open — would never
 // run. A collector still running past the bound is abandoned (logged); its
 // goroutine ends with the process, and whatever it collects is dropped.
+//
+// Abandoned means leaked: Go cannot stop a goroutine from outside, and one
+// that ignores its context — which is what being abandoned means — runs
+// until it returns or the process exits. Its loop then sees ctx cancelled
+// and ends, as does the goroutine waiting for it. In the agent the process
+// exits moments later; an embedder that outlives Run should expect up to
+// two goroutines per stuck collector.
 func (s *Scheduler) Run(ctx context.Context) {
-	defer s.stopped.Store(true)
+	defer func() {
+		s.sinkMu.Lock()
+		s.stopped = true
+		s.sinkMu.Unlock()
+	}()
 	var wg sync.WaitGroup
-	// A slice, not a map by name: several instances of one check share a
-	// name.
 	alive := make([]atomic.Bool, len(s.opts.Collectors))
 	for i, c := range s.opts.Collectors {
 		alive := &alive[i]
@@ -261,12 +284,13 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 		st.tout.Inc()
 	}
 	s.report(ctx, st, err)
-	if s.stopped.Load() {
+	s.sinkMu.Lock()
+	defer s.sinkMu.Unlock()
+	switch {
+	case s.stopped:
 		st.drop.Add(int64(len(out)))
-		return
-	}
-	if len(out) > 0 {
-		s.opts.Sink(out)
+	case len(out) > 0:
+		s.opts.Sink(out) // must not block: Run's return waits for sinkMu
 	}
 }
 
@@ -276,10 +300,12 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 // for as long as it is down; the errors counter still records every run.
 func (s *Scheduler) report(ctx context.Context, st *runState, err error) {
 	if err != nil {
-		st.errs.Inc()
 		if ctx.Err() != nil {
-			return // shutting down; not the collector's fault
+			// Shutting down: the run was cut short, not failed. Counting it
+			// would put an error on the graph at every restart.
+			return
 		}
+		st.errs.Inc()
 		if msg := err.Error(); msg != st.lastErr {
 			s.log.Warn("collector failed", "collector", st.name, "error", err)
 			st.lastErr = msg
@@ -301,7 +327,7 @@ func (s *Scheduler) series(m Metric, ts int64, iv time.Duration) (se wire.Series
 	if !ok || math.IsNaN(m.Value) || math.IsInf(m.Value, 0) {
 		return wire.Series{}, 0, false
 	}
-	tags := make([]string, 0, len(m.Tags)+len(s.tags))
+	tags := make([]string, 0, len(m.Tags)+len(s.tags)+1)
 	for _, t := range m.Tags {
 		if n, ok := wire.NormalizeTag(t); ok {
 			tags = append(tags, n)
