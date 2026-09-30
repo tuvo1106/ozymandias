@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"math"
 	"math/rand/v2"
-	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/clock"
@@ -60,10 +60,11 @@ type Options struct {
 // the period is fixed, so the spacing between two readings (the denominator
 // of every rate) stays the interval.
 type Scheduler struct {
-	opts   Options
-	log    *slog.Logger
-	tags   []string // HostTag + Tags, normalized once
-	randMu sync.Mutex
+	opts    Options
+	log     *slog.Logger
+	hostTag string
+	tags    []string // Tags, normalized once
+	randMu  sync.Mutex
 }
 
 // New returns a Scheduler. Call Run to start it.
@@ -89,10 +90,7 @@ func New(opts Options) *Scheduler {
 	if opts.Sink == nil {
 		opts.Sink = func([]wire.Series) {}
 	}
-	s := &Scheduler{opts: opts, log: opts.Logger.With("component", "collector")}
-	if opts.HostTag != "" {
-		s.tags = append(s.tags, opts.HostTag)
-	}
+	s := &Scheduler{opts: opts, log: opts.Logger.With("component", "collector"), hostTag: opts.HostTag}
 	for _, t := range opts.Tags {
 		if n, ok := wire.NormalizeTag(t); ok {
 			s.tags = append(s.tags, n)
@@ -102,15 +100,48 @@ func New(opts Options) *Scheduler {
 }
 
 // Run starts every collector and blocks until ctx is cancelled and every
-// collector's goroutine has returned. A Collect in progress at cancellation
-// sees its context cancelled and its partial batch is still sent, so
-// shutdown loses at most the run that was interrupted.
+// collector's goroutine has returned — or, after cancellation, until
+// Options.Timeout has passed, whichever is first. A Collect in progress at
+// cancellation sees its context cancelled and its partial batch is still
+// sent, so shutdown loses at most the run that was interrupted.
+//
+// The bound is there because cancellation cannot interrupt everything: a
+// statfs on a hung disk ignores its context. Without it, one stuck mount
+// would hold the agent's shutdown until the container was killed, and the
+// aggregator's final flush — every statsd bucket still open — would never
+// run. A collector still running past the bound is abandoned (logged); its
+// goroutine ends with the process, and anything it emits late is dropped.
 func (s *Scheduler) Run(ctx context.Context) {
 	var wg sync.WaitGroup
-	for _, c := range s.opts.Collectors {
-		wg.Go(func() { s.loop(ctx, c) })
+	// A slice, not a map by name: several instances of one check share a
+	// name.
+	alive := make([]atomic.Bool, len(s.opts.Collectors))
+	for i, c := range s.opts.Collectors {
+		alive := &alive[i]
+		alive.Store(true)
+		wg.Go(func() {
+			defer alive.Store(false)
+			s.loop(ctx, c)
+		})
 	}
-	wg.Wait()
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return
+	case <-ctx.Done():
+	}
+	t := time.NewTimer(s.opts.Timeout)
+	defer t.Stop()
+	select {
+	case <-done:
+	case <-t.C:
+		for i := range alive {
+			if alive[i].Load() {
+				s.log.Warn("collector did not stop in time; abandoning it", "collector", s.opts.Collectors[i].Name(), "waited", s.opts.Timeout)
+			}
+		}
+	}
 }
 
 // interval is c's period, rounded up to whole seconds (a rate's interval is
@@ -259,13 +290,14 @@ func (s *Scheduler) series(m Metric, ts int64, iv time.Duration) (se wire.Series
 			badTags++
 		}
 	}
-	tags = append(tags, s.tags...)
-	// Sorted and de-duplicated, as the aggregator sends statsd series: the
-	// intake would canonicalize anyway, but one order on the wire makes the
-	// agent's output comparable, and a collector that sets host: itself does
-	// not send it twice.
-	slices.Sort(tags)
-	tags = slices.Compact(tags)
+	// The agent's host only when the collector did not name one: a check
+	// that measures another machine (a database elsewhere) says host:db1,
+	// and the series belongs to that host — the aggregator's rule for statsd
+	// tags too.
+	if s.hostTag != "" && !wire.HasTagKey(tags, "host") {
+		tags = append(tags, s.hostTag)
+	}
+	tags = wire.CanonicalTags(append(tags, s.tags...))
 	se = wire.Series{Metric: name, Tags: tags, Points: []wire.Point{{Timestamp: ts, Value: m.Value}}}
 	switch m.Kind {
 	case Rate:

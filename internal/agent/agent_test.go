@@ -341,3 +341,12 @@ func TestNew_HostCollectorFollowsConfig(t *testing.T) {
 		t.Fatal("no scheduler")
 	}
 }
+
+func TestNew_ABadInterfacePatternIsAnErrorNotAPanic(t *testing.T) {
+	cfg := testConfig()
+	cfg.Collectors.Host.Enabled = true
+	cfg.Collectors.Host.ExcludeInterfaces = []string{"("}
+	if _, err := newAgent(t, cfg, Options{Logger: quiet}); err == nil || !strings.Contains(err.Error(), "exclude_interfaces") {
+		t.Fatalf("err = %v", err)
+	}
+}

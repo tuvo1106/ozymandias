@@ -43,9 +43,16 @@ func NewRates() *Rates { return &Rates{last: map[string]reading{}} }
 // is no usable previous reading: the first time a key is seen, after a reset,
 // when no time has passed, or when either value is not finite.
 func (r *Rates) Observe(key string, value float64, at time.Time) (rate float64, ok bool) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		// Not a reading. Forgetting the key, rather than storing it, means
+		// the next finite value starts afresh instead of being subtracted
+		// from NaN — which would lose that interval too.
+		delete(r.last, key)
+		return 0, false
+	}
 	prev, seen := r.last[key]
 	r.last[key] = reading{value: value, at: at}
-	if !seen || math.IsNaN(value) || math.IsInf(value, 0) {
+	if !seen {
 		return 0, false
 	}
 	dt := at.Sub(prev.at).Seconds()

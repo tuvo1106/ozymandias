@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -114,10 +115,15 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 
 	collectors := slices.Clone(opts.Collectors)
 	if h := cfg.Collectors.Host; h.Enabled {
-		// Validate compiled these already; a failure here is a bug.
+		// Validate refuses a bad pattern, but New does not require that
+		// Validate ran, so this is an error, not a panic.
 		exclude := make([]*regexp.Regexp, 0, len(h.ExcludeInterfaces))
 		for _, re := range h.ExcludeInterfaces {
-			exclude = append(exclude, regexp.MustCompile(re))
+			rx, err := regexp.Compile(re)
+			if err != nil {
+				return nil, fmt.Errorf("collectors.host.exclude_interfaces %q: %w", re, err)
+			}
+			exclude = append(exclude, rx)
 		}
 		collectors = append(collectors, hostcoll.New(hostcoll.Options{Interval: h.Interval, ExcludeInterfaces: exclude, Clock: a.clock}))
 	}

@@ -296,3 +296,54 @@ func (s *syncBuffer) String() string {
 	defer s.mu.Unlock()
 	return s.b.String()
 }
+
+// A collector measuring another machine names its host; the agent's is not
+// added alongside it.
+func TestScheduler_ACollectorsOwnHostWins(t *testing.T) {
+	c := &fake{name: "remote", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+		emit(Metric{Name: "db.up", Value: 1, Tags: []string{"host:db1"}})
+		emit(Metric{Name: "local.up", Value: 1})
+		return nil
+	}}
+	fc, sk, _ := start(t, Options{Collectors: []Collector{c}, HostTag: "host:mac", Tags: []string{"env:dev"}})
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 2 }, "batch")
+	got := sk.all()
+	if !slices.Equal(got[0].Tags, []string{"env:dev", "host:db1"}) {
+		t.Errorf("db.up tags = %v, want host:db1 alone", got[0].Tags)
+	}
+	if !slices.Equal(got[1].Tags, []string{"env:dev", "host:mac"}) {
+		t.Errorf("local.up tags = %v", got[1].Tags)
+	}
+}
+
+// A collector stuck where cancellation cannot reach it (statfs on a hung
+// disk) must not hold shutdown past the timeout.
+func TestScheduler_AbandonsACollectorThatIgnoresCancellation(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	stuck := &fake{name: "stuck", iv: time.Second, collect: func(context.Context, Emit) error {
+		<-release // ignores ctx
+		return nil
+	}}
+	fc := testutil.NewFakeClock(t0)
+	var buf syncBuffer
+	s := New(Options{Collectors: []Collector{stuck}, Clock: fc, Timeout: 50 * time.Millisecond,
+		Logger: slog.New(slog.NewTextHandler(&buf, nil))})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return stuck.calls.Load() == 1 }, "running")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run waited for a collector that ignores cancellation")
+	}
+	if !strings.Contains(buf.String(), "abandoning") || !strings.Contains(buf.String(), "stuck") {
+		t.Errorf("abandonment not logged: %s", buf.String())
+	}
+}

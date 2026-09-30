@@ -27,6 +27,10 @@ func TestRates_Observe(t *testing.T) {
 		{"no time passed", 90, 60 * time.Second, 0, false},
 		{"a clock step backwards", 95, 50 * time.Second, 0, false},
 		{"NaN is not a reading", math.NaN(), 70 * time.Second, 0, false},
+		{"and the reading after it starts afresh, not NaN", 100, 80 * time.Second, 0, false},
+		{"after which rates resume", 130, 95 * time.Second, 2, true},
+		{"+Inf is not a reading either", math.Inf(1), 100 * time.Second, 0, false},
+		{"nor is the one after it a rate from +Inf", 140, 110 * time.Second, 0, false},
 	}
 	for _, s := range steps {
 		got, ok := r.Observe("k", s.value, t0.Add(s.at))
