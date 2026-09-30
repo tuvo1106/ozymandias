@@ -53,10 +53,10 @@ func TestSnapshot_SortedAndTyped(t *testing.T) {
 	r.GaugeFunc("ozy.c", func() float64 { return 9 })
 
 	want := []Point{
-		{"ozy.a", TypeGauge, []string{}, 7},
-		{"ozy.b", TypeCounter, []string{"x:1"}, 1},
-		{"ozy.b", TypeCounter, []string{"x:2"}, 3},
-		{"ozy.c", TypeGauge, []string{}, 9},
+		{"ozy.a", TypeGauge, []string{}, 7, false},
+		{"ozy.b", TypeCounter, []string{"x:1"}, 1, false},
+		{"ozy.b", TypeCounter, []string{"x:2"}, 3, false},
+		{"ozy.c", TypeGauge, []string{}, 9, false},
 	}
 	if got := r.Snapshot(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Snapshot =\n%v\nwant\n%v", got, want)

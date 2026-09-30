@@ -83,6 +83,12 @@ func (r *Reporter) Collect(now time.Time) []wire.Series {
 	for _, p := range snap {
 		tags := wire.CanonicalTags(append(append([]string{}, p.Tags...), r.tags...))
 		s := wire.Series{Metric: p.Name, Tags: tags, Points: []wire.Point{{Timestamp: ts, Value: p.Value}}}
+		// A released instrument's last report: the registry forgets it,
+		// and so does prev, so a later instrument of the same identity
+		// starts from zero. Taken back since the snapshot, it stays, and so
+		// must prev, or its whole total would be counted again. One
+		// Reporter per registry, which is how both binaries use it.
+		dropped := p.released && r.reg.drop(p)
 		switch p.Type {
 		case TypeCounter:
 			if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
@@ -90,7 +96,11 @@ func (r *Reporter) Collect(now time.Time) []wire.Series {
 			}
 			key := p.Name + "|" + strings.Join(tags, ",")
 			delta := p.Value - r.prev[key]
-			r.prev[key] = p.Value
+			if dropped {
+				delete(r.prev, key)
+			} else {
+				r.prev[key] = p.Value
+			}
 			s.Type, s.Interval, s.Points[0].Value = wire.KindCount, r.interval, delta
 		default:
 			if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
