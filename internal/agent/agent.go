@@ -93,7 +93,7 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 	a.agg = aggregator.New(aggregator.Options{
 		Clock:               a.clock,
 		Registry:            a.reg,
-		Hostname:            host,
+		HostTag:             hostTag,
 		Tags:                cfg.Tags,
 		FlushInterval:       cfg.Aggregator.FlushInterval,
 		ContextExpiry:       cfg.Aggregator.ContextExpiry,

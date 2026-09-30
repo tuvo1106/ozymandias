@@ -57,8 +57,11 @@ const TimestampTolerance = 60 * time.Second
 type Options struct {
 	Clock    clock.Clock           // default clock.Real()
 	Registry *selfmetrics.Registry // default: a new registry
-	// Hostname becomes the host tag on every context that doesn't carry one.
-	Hostname string
+	// HostTag ("host:<name>", as config.ResolveHostname returns it) is added
+	// to every context that doesn't carry a host tag. Resolved once by the
+	// caller rather than normalized again here, so the agent's self-metrics
+	// and its forwarded data cannot disagree about the rule.
+	HostTag string
 	// Tags (agent-level, e.g. env:dev) are added to every context. They are
 	// normalized like any other tag; invalid ones are dropped.
 	Tags []string
@@ -192,11 +195,7 @@ func New(opts Options) *Aggregator {
 		flushDuration:  opts.Registry.Gauge("ozy.agent.aggregator.flush_duration_ms"),
 	}
 	opts.Registry.GaugeFunc("ozy.agent.aggregator.contexts", func() float64 { return float64(a.nContexts.Load()) })
-	if opts.Hostname != "" {
-		if t, ok := wire.NormalizeTag("host:" + opts.Hostname); ok {
-			a.hostTag = t
-		}
-	}
+	a.hostTag = opts.HostTag
 	for _, t := range opts.Tags {
 		if n, ok := wire.NormalizeTag(t); ok {
 			a.agentTags = append(a.agentTags, n)
