@@ -58,7 +58,13 @@ of now may be the next agent's first. Those buckets are dropped. They hold:
 - Restarts no longer produce refused points. Smoke's zero-drop check holds
   through an agent restart with container churn running.
 - A sample that reaches a new agent in its first partial interval is
-  stamped up to one interval late.
+  stamped up to one interval late. For a counter, the floor bucket
+  therefore holds up to two intervals' increments under one interval's
+  width, and a per-second view of it reads up to twice the true rate for
+  that one bucket after each restart. That is accepted: the total is
+  right, the alternative is to lose the samples, and a series' interval
+  is shared by all its points in a flush, so stretching it for one bucket
+  would misstate the others.
 - An agent stopped within its first interval loses what it received, and
   a fast client clock loses its future-stamped samples at shutdown. Both
   are rare, and neither is counted: the loss happens as the process exits,
