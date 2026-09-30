@@ -617,7 +617,15 @@ print(sum(p[1] for s in json.load(sys.stdin).get("series", []) for p in s["point
 # Errors are a count: one failing run is a single point, which the newest
 # value would miss, so sum a window. 90s: several runs of this agent, but not
 # the one before `make up` replaced it.
-no_errors() { local v; v=$(sum_window "$1" 90) || return 1; python3 -c "import sys; sys.exit(0 if float('$v') == 0 else 1)" || { echo "$1: $v errors in 90s" >&2; return 1; }; }
-check "without errors"                         no_errors 'sum:ozy.agent.collector.errors{collector:host}'
+# No series at all also sums to 0, so the collector's runs must be there in
+# the same window: zero errors from runs that happened, not from silence.
+no_errors() { # <collector>
+  local runs errs
+  runs=$(sum_window "sum:ozy.agent.collector.runs{collector:$1}" 90) || return 1
+  python3 -c "import sys; sys.exit(0 if float('$runs') > 0 else 1)" || { echo "$1: no runs reported in 90s" >&2; return 1; }
+  errs=$(sum_window "sum:ozy.agent.collector.errors{collector:$1}" 90) || return 1
+  python3 -c "import sys; sys.exit(0 if float('$errs') == 0 else 1)" || { echo "$1: $errs errors in 90s" >&2; return 1; }
+}
+check "without errors"                         no_errors host
 
 echo "smoke: $pass checks passed"
