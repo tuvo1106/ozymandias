@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 )
@@ -19,31 +17,17 @@ const MaxRelations = 100
 
 // Config is one instance's settings.
 type Config struct {
-	Host     string `yaml:"host"`
-	Port     Port   `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	DBName   string `yaml:"dbname"`
-	SSLMode  string `yaml:"sslmode"`
+	Host     string         `yaml:"host"`
+	Port     collector.Port `yaml:"port"`
+	User     string         `yaml:"user"`
+	Password string         `yaml:"password"`
+	DBName   string         `yaml:"dbname"`
+	SSLMode  string         `yaml:"sslmode"`
 	// Timeout bounds the whole run: connecting and every query.
-	Timeout string `yaml:"timeout"`
+	Timeout time.Duration `yaml:"timeout"`
 	// Relations are tables whose table and index sizes are reported. A name
 	// matches that table in every schema.
 	Relations []string `yaml:"relations"`
-}
-
-// Port is a TCP port that accepts a number or a numeric string, because
-// settings from container labels (autodiscovery) are always strings.
-type Port int
-
-// UnmarshalYAML implements yaml.Unmarshaler.
-func (p *Port) UnmarshalYAML(n *yaml.Node) error {
-	v, err := strconv.Atoi(n.Value)
-	if err != nil || n.Kind != yaml.ScalarNode || v < 1 || v > 65535 {
-		return fmt.Errorf("port %q: want a number from 1 to 65535", n.Value)
-	}
-	*p = Port(v)
-	return nil
 }
 
 var sslModes = map[string]bool{
@@ -68,7 +52,7 @@ func New(inst collector.Instance) (collector.Collector, error) {
 }
 
 func newCollector(inst collector.Instance, dial dialer) (*Collector, error) {
-	cfg := Config{Port: 5432, DBName: "postgres", SSLMode: "disable", Timeout: "5s"}
+	cfg := Config{Port: 5432, DBName: "postgres", SSLMode: "disable", Timeout: 5 * time.Second}
 	if err := inst.Decode(&cfg); err != nil {
 		return nil, err
 	}
@@ -78,9 +62,8 @@ func newCollector(inst collector.Instance, dial dialer) (*Collector, error) {
 	if !sslModes[cfg.SSLMode] {
 		return nil, fmt.Errorf("sslmode %q: want disable, allow, prefer, require, verify-ca or verify-full", cfg.SSLMode)
 	}
-	timeout, err := time.ParseDuration(cfg.Timeout)
-	if err != nil || timeout <= 0 {
-		return nil, fmt.Errorf("timeout %q: want a positive duration, like 5s", cfg.Timeout)
+	if cfg.Timeout <= 0 {
+		return nil, fmt.Errorf("timeout %v: want a positive duration, like 5s", cfg.Timeout)
 	}
 	if len(cfg.Relations) > MaxRelations {
 		return nil, fmt.Errorf("relations: %d listed, at most %d", len(cfg.Relations), MaxRelations)
@@ -90,7 +73,7 @@ func newCollector(inst collector.Instance, dial dialer) (*Collector, error) {
 		clk = clock.Real()
 	}
 	return &Collector{
-		cfg: cfg, timeout: timeout, dial: dial, clock: clk, rates: collector.NewRates(),
+		cfg: cfg, timeout: cfg.Timeout, dial: dial, clock: clk, rates: collector.NewRates(),
 		tags: []string{"server:" + cfg.Host, "port:" + strconv.Itoa(int(cfg.Port))},
 	}, nil
 }

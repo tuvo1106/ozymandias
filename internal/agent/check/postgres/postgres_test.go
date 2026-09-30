@@ -127,7 +127,7 @@ func TestNew_Refuses(t *testing.T) {
 		"port not a num": {map[string]any{"host": "h", "port": "http"}, "port"},
 		"port too big":   {map[string]any{"host": "h", "port": 70000}, "port"},
 		"bad sslmode":    {map[string]any{"host": "h", "sslmode": "sometimes"}, "sslmode"},
-		"bad timeout":    {map[string]any{"host": "h", "timeout": "soon"}, "timeout"},
+		"bad timeout":    {map[string]any{"host": "h", "timeout": "soon"}, "`soon` into time.Duration"},
 		"zero timeout":   {map[string]any{"host": "h", "timeout": "0s"}, "timeout"},
 		"too many rels":  {map[string]any{"host": "h", "relations": many}, "at most"},
 		"misspelt key":   {map[string]any{"host": "h", "passwrod": "x"}, "passwrod"},

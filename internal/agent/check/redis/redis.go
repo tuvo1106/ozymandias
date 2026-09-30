@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/resp"
 	"github.com/tuvo1106/ozymandias/internal/clock"
@@ -22,32 +20,16 @@ type Config struct {
 	Host string `yaml:"host"`
 	// Port defaults to 6379. A number or a numeric string, because an
 	// autodiscovery label's value is always a string.
-	Port Number `yaml:"port"`
+	Port collector.Port `yaml:"port"`
 	// Username and Password authenticate (Username needs Redis 6 ACLs).
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
 	// DB is selected after connecting. It does not change what INFO reports
 	// (INFO is server-wide), but a server whose ACL allows only one database
 	// may refuse the connection otherwise.
-	DB Number `yaml:"db"`
+	DB collector.Int `yaml:"db"`
 	// Timeout bounds the connection and INFO. Default 5s.
 	Timeout time.Duration `yaml:"timeout"`
-}
-
-// Number is an integer setting that also accepts a numeric string.
-type Number int
-
-// UnmarshalYAML implements yaml.Unmarshaler.
-func (n *Number) UnmarshalYAML(v *yaml.Node) error {
-	if v.Kind != yaml.ScalarNode {
-		return fmt.Errorf("line %d: want a number", v.Line)
-	}
-	i, err := strconv.Atoi(v.Value)
-	if err != nil {
-		return fmt.Errorf("line %d: %q is not a whole number", v.Line, v.Value)
-	}
-	*n = Number(i)
-	return nil
 }
 
 // Check reports one Redis server.
@@ -71,9 +53,6 @@ func New(inst collector.Instance) (collector.Collector, error) {
 	}
 	if cfg.Port == 0 {
 		cfg.Port = 6379
-	}
-	if cfg.Port < 1 || cfg.Port > 65535 {
-		return nil, fmt.Errorf("port %d out of range", cfg.Port)
 	}
 	if cfg.DB < 0 {
 		return nil, fmt.Errorf("db %d is negative", cfg.DB)
