@@ -131,7 +131,7 @@ the code (test-first for parsers, encoders and state machines).
 | `github.com/shirou/gopsutil/v4` | host metrics |
 | `github.com/oklog/ulid/v2` | block ids |
 | `pgregory.net/rapid` | property tests |
-| `github.com/jackc/pgx/v5` | agent `postgres` check only (M3; recommended, needs its ADR) |
+| `github.com/jackc/pgx/v5` | agent `postgres` check only (ADR-0031) |
 | `google.golang.org/protobuf` | **test-only** oracle for the hand-written OTLP decoder (M8; recommended) |
 
 Deliberately **not** allowed, because writing them is the point: Prometheus
