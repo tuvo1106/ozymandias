@@ -59,6 +59,9 @@ type Check struct {
 	client  *http.Client
 	clock   clock.Clock
 	tags    []string
+	// shown is the URL as errors print it: redacted, since they are
+	// logged ([collector.RedactURL]).
+	shown string
 }
 
 var _ collector.Collector = (*Check)(nil)
@@ -77,7 +80,7 @@ func New(inst collector.Instance) (collector.Collector, error) {
 func build(cfg Config, clk clock.Clock, tlsBase *tls.Config) (*Check, error) {
 	u, err := url.Parse(cfg.URL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("url %q: want an absolute http or https URL", cfg.URL)
+		return nil, fmt.Errorf("url %s: want an absolute http or https URL", collector.RedactURL(cfg.URL))
 	}
 	if cfg.Method == "" {
 		cfg.Method = DefaultMethod
@@ -94,7 +97,7 @@ func build(cfg Config, clk clock.Clock, tlsBase *tls.Config) (*Check, error) {
 			return nil, fmt.Errorf("expected_status %d is not an HTTP status", s)
 		}
 	}
-	c := &Check{cfg: cfg, clock: clk}
+	c := &Check{cfg: cfg, clock: clk, shown: collector.RedactURL(cfg.URL)}
 	if c.clock == nil {
 		c.clock = clock.Real()
 	}
@@ -147,7 +150,7 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, c.cfg.Method, c.cfg.URL, nil)
 	if err != nil {
-		return down(0, fmt.Errorf("%s: %w", c.cfg.URL, err))
+		return down(0, fmt.Errorf("%s: %w", c.shown, unwrapURL(err)))
 	}
 	for k, v := range c.cfg.Headers {
 		req.Header.Set(k, v)
@@ -158,13 +161,13 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	start := c.clock.Now()
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return down(0, fmt.Errorf("%s: %w", c.cfg.URL, unwrapURL(err)))
+		return down(0, fmt.Errorf("%s: %w", c.shown, unwrapURL(err)))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	elapsed := c.clock.Now().Sub(start)
 	if readErr != nil {
-		return down(0, fmt.Errorf("%s: reading the body: %w", c.cfg.URL, readErr))
+		return down(0, fmt.Errorf("%s: reading the body: %w", c.shown, readErr))
 	}
 
 	gauge("network.http.can_connect", 1)
@@ -178,9 +181,9 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	var why error
 	switch {
 	case !c.statusOK(resp.StatusCode):
-		why = fmt.Errorf("%s: status %d, want %s", c.cfg.URL, resp.StatusCode, c.wantStatus())
+		why = fmt.Errorf("%s: status %d, want %s", c.shown, resp.StatusCode, c.wantStatus())
 	case c.content != nil && !c.content.Match(body):
-		why = fmt.Errorf("%s: the body does not match %q", c.cfg.URL, c.cfg.ContentMatch)
+		why = fmt.Errorf("%s: the body does not match %q", c.shown, c.cfg.ContentMatch)
 	}
 	if why != nil {
 		gauge("network.http.up", 0)
@@ -214,7 +217,8 @@ func (c *Check) wantStatus() string {
 }
 
 // unwrapURL drops the *url.Error wrapper, whose message repeats the method
-// and URL the caller already names.
+// and URL the caller already names — and names unredacted: net/http strips
+// the password from it but keeps the query.
 func unwrapURL(err error) error {
 	var ue *url.Error
 	if errors.As(err, &ue) {

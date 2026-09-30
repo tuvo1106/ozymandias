@@ -38,7 +38,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `%%host%%` / `%%port%%` resolved from the container); the check starts and
   stops with it and is tagged like its container.
   `collectors.docker.autodiscovery_network` names the network `%%host%%`
-  resolves on.
+  resolves on. A check's errors, which are logged, name its URL with the
+  password and query redacted.
 - **Go runtime metrics for the agent**: `ozy.runtime.goroutines`,
   `ozy.runtime.heap_bytes`, `ozy.runtime.gc_runs`.
 

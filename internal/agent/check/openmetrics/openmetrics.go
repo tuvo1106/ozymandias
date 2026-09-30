@@ -61,6 +61,7 @@ type Config struct {
 type Check struct {
 	cfg           Config
 	url           string
+	shown         string // url as errors print it (collector.RedactURL): they are logged
 	allow, deny   []*regexp.Regexp
 	excludeLabels map[string]bool
 	client        *http.Client
@@ -91,7 +92,7 @@ func New(inst collector.Instance) (collector.Collector, error) {
 func newCheck(cfg Config, clk clock.Clock, log *slog.Logger) (*Check, error) {
 	u, err := url.Parse(cfg.URL)
 	if cfg.URL == "" || err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("url %q: want an absolute http(s) URL", cfg.URL)
+		return nil, fmt.Errorf("url %s: want an absolute http(s) URL", collector.RedactURL(cfg.URL))
 	}
 	if cfg.Timeout < 0 || cfg.MaxBody < 0 || cfg.MaxSeries < 0 {
 		return nil, errors.New("timeout, max_body and max_series must not be negative")
@@ -106,7 +107,7 @@ func newCheck(cfg Config, clk clock.Clock, log *slog.Logger) (*Check, error) {
 		cfg.MaxSeries = DefaultMaxSeries
 	}
 	c := &Check{
-		cfg: cfg, url: cfg.URL, excludeLabels: map[string]bool{},
+		cfg: cfg, url: cfg.URL, shown: collector.RedactURL(cfg.URL), excludeLabels: map[string]bool{},
 		client: &http.Client{Timeout: cfg.Timeout}, clock: clk, log: log,
 		rates: collector.NewRates(), counts: newDeltas(), buckets: map[string]bucketState{},
 	}
@@ -184,23 +185,23 @@ func (e *emitter) add(m collector.Metric) {
 func (c *Check) scrape(ctx context.Context) ([]om.Family, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("scrape %s: %w", c.url, err)
+		return nil, fmt.Errorf("scrape %s: %w", c.shown, collector.RedactURLError(err))
 	}
 	req.Header.Set("Accept", "application/openmetrics-text;version=1.0.0,text/plain;version=0.0.4;q=0.5,*/*;q=0.1")
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("scrape %s: %w", c.url, err)
+		return nil, fmt.Errorf("scrape %s: %w", c.shown, collector.RedactURLError(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("scrape %s: status %s", c.url, resp.Status)
+		return nil, fmt.Errorf("scrape %s: status %s", c.shown, resp.Status)
 	}
 	fams, err := om.Parse(resp.Body, om.Options{
 		Format: om.FormatFromContentType(resp.Header.Get("Content-Type")),
 		Limits: om.Limits{MaxBytes: c.cfg.MaxBody},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("scrape %s: %w", c.url, err)
+		return nil, fmt.Errorf("scrape %s: %w", c.shown, collector.RedactURLError(err))
 	}
 	return fams, nil
 }

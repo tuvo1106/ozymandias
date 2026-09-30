@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -438,5 +439,42 @@ func TestCheck_HistogramsAsDistributions(t *testing.T) {
 	}
 	if second.one(t, "latency_seconds.count").Value != 5 {
 		t.Error(".count is still sent as a count")
+	}
+}
+
+// Errors are logged, so the URL they name is redacted: a basic-auth
+// password or a token in the query must not reach the log.
+func TestCheck_ErrorsHideSecrets(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	closed := ln.Addr().String()
+	_ = ln.Close()
+	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer unavailable.Close()
+	// A redirect to a dead address: net/http's *url.Error then names the
+	// redirect target, password stripped but query kept.
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://u:secret@"+closed+"/cb?token=abc", http.StatusFound)
+	}))
+	defer redirect.Close()
+	for name, base := range map[string]string{
+		"status": unavailable.URL, "dial": "http://" + closed, "redirect": redirect.URL,
+	} {
+		t.Run(name, func(t *testing.T) {
+			u := strings.Replace(base, "http://", "http://admin:secret@", 1) + "/metrics?token=abc"
+			c, _ := check(t, map[string]any{"url": u})
+			err := c.Collect(context.Background(), func(collector.Metric) {})
+			if err == nil {
+				t.Fatal("no error")
+			}
+			if msg := err.Error(); strings.Contains(msg, "secret") || strings.Contains(msg, "abc") {
+				t.Fatalf("a secret reached the error: %s", msg)
+			}
+		})
+	}
+	_, err := New(collector.Instance{Name: "openmetrics", Settings: map[string]any{"url": "ftp://admin:secret@host/?token=abc"}})
+	if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "abc") {
+		t.Fatalf("config error: %v", err)
 	}
 }

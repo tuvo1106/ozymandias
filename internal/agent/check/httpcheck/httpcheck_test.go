@@ -285,3 +285,40 @@ func TestNew_UntaggableURL(t *testing.T) {
 		t.Errorf("%q %v", c.Name(), c.Interval())
 	}
 }
+
+// Errors are logged, so the URL they name is redacted: a basic-auth
+// password or a token in the query must not reach the log.
+func TestCheck_ErrorsHideSecrets(t *testing.T) {
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	closed := ln.Addr().String()
+	_ = ln.Close()
+	unavailable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer unavailable.Close()
+	// A redirect to a dead address: the client's error then names the
+	// redirect target, which carries its own token.
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://u:secret@"+closed+"/cb?token=abc", http.StatusFound)
+	}))
+	defer redirect.Close()
+	for name, base := range map[string]string{
+		"status": unavailable.URL, "dial": "http://" + closed, "redirect": redirect.URL,
+	} {
+		t.Run(name, func(t *testing.T) {
+			u := strings.Replace(base, "http://", "http://admin:secret@", 1) + "/health?token=abc"
+			c := newCheck(t, map[string]any{"url": u}, nil)
+			_, err := run(t, c)
+			if err == nil {
+				t.Fatal("no error")
+			}
+			if msg := err.Error(); strings.Contains(msg, "secret") || strings.Contains(msg, "abc") {
+				t.Fatalf("a secret reached the error: %s", msg)
+			}
+		})
+	}
+	_, err := New(collector.Instance{Name: Name, Settings: map[string]any{"url": "ftp://admin:secret@host/?token=abc"}})
+	if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "abc") {
+		t.Fatalf("config error: %v", err)
+	}
+}
