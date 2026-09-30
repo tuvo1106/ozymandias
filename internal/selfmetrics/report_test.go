@@ -102,3 +102,16 @@ func TestReporter_NotBeforeTheFirstWholeBucket(t *testing.T) {
 		t.Fatalf("collect at 110 = %+v, want the 2 events at 110", got)
 	}
 }
+
+func TestFirstBucket(t *testing.T) {
+	for _, tc := range []struct{ started, want int64 }{
+		{100, 110}, // a boundary: that bucket may be the predecessor's
+		{101, 110},
+		{109, 110},
+		{-5, 0}, // before the epoch, still floored down
+	} {
+		if got := FirstBucket(time.Unix(tc.started, 0), 10); got != tc.want {
+			t.Errorf("FirstBucket(%d) = %d, want %d", tc.started, got, tc.want)
+		}
+	}
+}

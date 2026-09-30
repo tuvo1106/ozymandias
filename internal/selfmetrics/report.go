@@ -25,6 +25,17 @@ type Reporter struct {
 	first  int64              // no snapshot is stamped before this (NotBefore)
 }
 
+// FirstBucket is the first bucket (unix seconds, interval wide) a process
+// started at started may stamp: the one after the second it started in,
+// even when that second is a boundary, since the process before it may have
+// stopped in the same second and reported that bucket. The one rule for
+// the agent's aggregator and this reporter (ADR-0029), which must agree or
+// one of them is refused again after a restart.
+func FirstBucket(started time.Time, interval int64) int64 {
+	s := started.Unix()
+	return s - (s%interval+interval)%interval + interval
+}
+
 // NotBefore stops the reporter stamping any bucket that began at or before
 // started: the process before this one (a restart) may have reported that
 // bucket, and the store refuses a second point at a timestamp it has. The
@@ -33,7 +44,7 @@ type Reporter struct {
 func (r *Reporter) NotBefore(started time.Time) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.first = started.Unix()/r.interval*r.interval + r.interval
+	r.first = FirstBucket(started, r.interval)
 }
 
 // NewReporter reports reg's instruments with tags added to each (typically

@@ -654,6 +654,9 @@ func TestAggregator_FinalFlushWritesNoFutureBucket(t *testing.T) {
 	if got := flushSeries(a, at(6), true); len(got) != 0 {
 		t.Fatalf("final flush at 6 wrote %+v: bucket 10 is the next agent's too", got)
 	}
+	if n := a.HeldBack(); n != 2 {
+		t.Errorf("HeldBack = %d, want 2 (one bucket per context)", n)
+	}
 
 	// A client clock running ahead puts a sample in a later bucket. That is
 	// held back too: the next agent, started at 31, would begin in bucket 40

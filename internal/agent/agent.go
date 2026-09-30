@@ -337,6 +337,10 @@ func (a *Agent) Run(ctx context.Context, ln net.Listener) error {
 	wg.Wait()
 	stopAgg()
 	<-aggDone
+	if n := a.agg.HeldBack(); n > 0 {
+		a.log.Info("final flush held back buckets that had not begun (ADR-0029): their samples are lost",
+			"buckets", n)
+	}
 	if a.dockerClient != nil {
 		a.dockerClient.Close()
 	}

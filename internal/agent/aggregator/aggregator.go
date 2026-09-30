@@ -120,6 +120,7 @@ type Aggregator struct {
 	first int64
 
 	nContexts      atomic.Int64
+	heldBack       atomic.Int64 // buckets the final flush did not emit (HeldBack)
 	samplesDropped *selfmetrics.Counter
 	tagsDropped    *selfmetrics.Counter
 	lateSamples    *selfmetrics.Counter
@@ -218,7 +219,7 @@ func New(opts Options) *Aggregator {
 		// Strictly after the start second, even when that second is a
 		// boundary: the agent before this one may have stopped in that same
 		// second and flushed the bucket it opens.
-		a.first = floorTo(opts.Started.Unix(), a.interval) + a.interval
+		a.first = selfmetrics.FirstBucket(opts.Started, a.interval)
 	}
 	return a
 }
@@ -439,10 +440,20 @@ func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.Ske
 	return out, sketches
 }
 
+// HeldBack is how many buckets (one per context) the final flush did not
+// emit because they had not begun (ADR-0029). It is reported by the caller
+// after the final flush — too late for a self-metric, which would need a
+// flush of its own — so an operator can see what a short-lived agent lost.
+func (a *Aggregator) HeldBack() int64 { return a.heldBack.Load() }
+
 func (a *Aggregator) flushContext(out []wire.Series, sketches []wire.SketchSeries, c *aggContext, cutoff int64, final bool, nowS int64) ([]wire.Series, []wire.SketchSeries) {
 	starts := make([]int64, 0, len(c.buckets))
 	for s := range c.buckets {
-		if s < cutoff || final && s <= nowS {
+		if final && s >= cutoff && s > nowS {
+			a.heldBack.Add(1)
+			continue
+		}
+		if s < cutoff || final {
 			starts = append(starts, s)
 		}
 	}
