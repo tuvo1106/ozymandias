@@ -166,7 +166,8 @@ func TestScheduler_TimeoutCancelsTheRunAndKeepsWhatWasEmitted(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	}}
-	fc, sk, reg := start(t, Options{Collectors: []Collector{c}, Timeout: 20 * time.Millisecond})
+	var logs syncBuffer
+	fc, sk, reg := start(t, Options{Collectors: []Collector{c}, Timeout: 20 * time.Millisecond, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
 	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "not armed")
 	fc.Advance(time.Second)
 	// Running: the ticker and the run's timeout, both on the fake clock.
@@ -181,6 +182,10 @@ func TestScheduler_TimeoutCancelsTheRunAndKeepsWhatWasEmitted(t *testing.T) {
 	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 1 }, "the partial batch was not sent")
 	if n := counter(reg, "ozy.agent.collector.errors", "hang"); n != 1 {
 		t.Fatalf("errors = %d, want 1", n)
+	}
+	// The collector returned context.Canceled; the report says what it was.
+	if !strings.Contains(logs.String(), "timed out after 20ms: context deadline exceeded") {
+		t.Errorf("log:\n%s", logs.String())
 	}
 }
 

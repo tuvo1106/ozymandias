@@ -57,7 +57,7 @@ interval's increase.
 | `ozy.agent.forwarder.queue_bytes` | gauge | bytes | — | agent | Compressed payloads waiting to be sent or retried |
 | `ozy.agent.collector.runs` | counter | runs | `collector` | agent | Completed runs of a collector, successful or not |
 | `ozy.agent.collector.errors` | counter | runs | `collector` | agent | Runs that returned an error (logged once per distinct error, and on recovery) |
-| `ozy.agent.collector.timeouts` | counter | runs | `collector` | agent | Runs cancelled at `collectors.timeout` |
+| `ozy.agent.collector.timeouts` | counter | runs | `collector` | agent | Runs cancelled at their limit: `collectors.timeout`, or the collector's interval if that is shorter |
 | `ozy.agent.collector.points` | counter | points | `collector` | agent | Points sent to the forwarder |
 | `ozy.agent.collector.dropped` | counter | points | `collector` | agent | Points that could not be sent: a name the intake would refuse, a non-finite value, or emitted after the run ended |
 | `ozy.agent.collector.tags_dropped` | counter | tags | `collector` | agent | Tags that could not be normalized; the point is kept without them |

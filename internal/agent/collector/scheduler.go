@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -125,9 +126,10 @@ func New(opts Options) *Scheduler {
 // Collectors returns the collectors the scheduler runs.
 func (s *Scheduler) Collectors() []Collector { return slices.Clone(s.opts.Collectors) }
 
-// Run starts every collector and blocks until ctx is cancelled and every
-// collector's goroutine has returned — or, after cancellation, until
-// Options.ShutdownTimeout has passed, whichever is first. A Collect in progress at
+// Run is called once. It starts every collector and blocks until ctx is
+// cancelled and every collector's goroutine has returned — or, after
+// cancellation, until Options.ShutdownTimeout has passed, whichever is
+// first. A Collect in progress at
 // cancellation sees its context cancelled and its partial batch is still
 // sent, so shutdown loses at most the run that was interrupted.
 //
@@ -302,7 +304,14 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 	cancel(nil)
 	<-watching
 	if timedOut && err != nil {
-		err = fmt.Errorf("timed out after %v: %w", limit, err)
+		// The collector saw its context cancelled (the timer is the
+		// injected clock's, so the context has no deadline of its own);
+		// the error says what happened, and matches DeadlineExceeded.
+		if errors.Is(err, context.Canceled) {
+			err = fmt.Errorf("timed out after %v: %w", limit, context.DeadlineExceeded)
+		} else {
+			err = fmt.Errorf("timed out after %v: %w", limit, err)
+		}
 	}
 	mu.Lock()
 	open = false

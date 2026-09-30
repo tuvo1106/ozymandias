@@ -73,6 +73,9 @@ type Emit func(Metric)
 //     and at shutdown, and cannot stop a goroutine that ignores it: a collector
 //     that blocks past its deadline delays only itself, but it does delay the
 //     agent's shutdown.
+//     Either way ctx.Err() is context.Canceled; context.Cause(ctx) is
+//     context.DeadlineExceeded for a timeout, and the scheduler reports a
+//     timed-out run's error as one.
 //   - An error means "this run failed". What was emitted before it is still
 //     sent — a disk that cannot be read should not hide the CPU numbers read
 //     a moment earlier. The error is logged and counted, never fatal.
