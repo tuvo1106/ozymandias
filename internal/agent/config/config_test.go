@@ -133,3 +133,30 @@ func TestAgent_Validate(t *testing.T) {
 		t.Errorf("host.interval 1m: %v", err)
 	}
 }
+
+// The default interface exclusions: virtual interfaces of macOS and of
+// Docker on Linux, but never a real NIC or loopback.
+func TestDefaultExcludeInterfaces(t *testing.T) {
+	rx, err := HostCollector{ExcludeInterfaces: DefaultExcludeInterfaces}.Excludes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	excluded := func(name string) bool {
+		for _, r := range rx {
+			if r.MatchString(name) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, n := range []string{"utun3", "awdl0", "llw0", "anpi1", "gif0", "stf0", "veth1a2b3c4", "docker0", "br-9f8e7d6c5b4a"} {
+		if !excluded(n) {
+			t.Errorf("%s is reported", n)
+		}
+	}
+	for _, n := range []string{"eth0", "en0", "lo", "lo0", "wlan0", "enp3s0", "bridge0"} {
+		if excluded(n) {
+			t.Errorf("%s is skipped", n)
+		}
+	}
+}

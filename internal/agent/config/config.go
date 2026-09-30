@@ -85,12 +85,20 @@ type HostCollector struct {
 	ExcludeInterfaces []string `yaml:"exclude_interfaces"`
 }
 
-// DefaultExcludeInterfaces are macOS's virtual interfaces: VPN and system
-// tunnels (utun), Apple Wireless Direct Link (awdl, llw), the Apple Silicon
-// internal NICs (anpi) and the legacy IPv6 tunnels (gif, stf). A Mac has a
-// dozen, each worth eight series of near-zero rates. Loopback and real NICs
-// are kept, and no Linux interface name matches.
-var DefaultExcludeInterfaces = []string{`^(utun|awdl|llw|anpi|gif|stf)[0-9]+$`}
+// DefaultExcludeInterfaces are virtual interfaces that would each be eight
+// series and say nothing a real one does not:
+//
+//   - macOS's VPN and system tunnels (utun), Apple Wireless Direct Link
+//     (awdl, llw), the Apple Silicon internal NICs (anpi) and the legacy
+//     IPv6 tunnels (gif, stf) — a Mac has a dozen;
+//   - Docker's on Linux: a veth per container, with a random name, so a
+//     host that starts a hundred containers a day would gain eight hundred
+//     series a day that stop the moment each container does; and the
+//     docker0 and br-* bridges, whose traffic the real NIC already counts.
+//     container.net.* reports each container's traffic by name.
+//
+// Loopback and real NICs are kept.
+var DefaultExcludeInterfaces = []string{`^(utun|awdl|llw|anpi|gif|stf)[0-9]+$`, `^(veth[0-9a-f]+|docker0|br-[0-9a-f]+)$`}
 
 // Agent is the agent's configuration.
 type Agent struct {

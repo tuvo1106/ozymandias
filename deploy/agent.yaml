@@ -93,12 +93,15 @@ collectors:
     interval: 0s
     # Network interfaces not to report, as regular expressions. The default
     # skips macOS's virtual interfaces (VPN tunnels, AirDrop, the internal
-    # Apple Silicon NICs), each worth eight series of near-zero rates. Setting
+    # Apple Silicon NICs), each worth eight series of near-zero rates, and
+    # Docker's on Linux (a randomly named veth per container, and the bridges,
+    # whose traffic the real NIC counts already). Setting
     # this replaces the default; conf.d fragments append to it. Set it here,
     # not in the environment, which splits lists on commas and would cut a
     # {m,n} quantifier in two.
     exclude_interfaces:
       - ^(utun|awdl|llw|anpi|gif|stf)[0-9]+$
+      - ^(veth[0-9a-f]+|docker0|br-[0-9a-f]+)$
 
 # Value of the `host` tag on everything this agent sends. Empty means the OS
 # hostname — set it explicitly in a container, where that is a random id. The
