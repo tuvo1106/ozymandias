@@ -169,6 +169,9 @@ func TestLoad_ShippedFragments(t *testing.T) {
 	if err != nil || len(warnings) != 0 {
 		t.Fatalf("err=%v warnings=%v", err, warnings)
 	}
+	if n := cfg.Collectors.Docker.AutodiscoveryNetwork; n != "ozymandias" {
+		t.Errorf("autodiscovery_network = %q, want the stack's network", n)
+	}
 	rules := cfg.Collectors.Docker.ContainerNameRewrite
 	if len(rules) != 2 || rules[1].Match != "^judge-.*" || rules[1].Replace != "judge" {
 		t.Fatalf("container_name_rewrite = %+v", rules)

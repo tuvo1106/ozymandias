@@ -113,12 +113,25 @@ services:
 
 The agent lists containers every 10s; the check starts as
 `redis:<container name>`, tagged like the container's metrics, and stops
-with it. `%%host%%` is the container's IP, so **the agent must share a
-Docker network with the container** — in compose, list the app's network on
-the agent service (or the app joins `ozymandias`). A label value is read as
-YAML, so `"6379"` is a number and `"[200, 301]"` a list. Labels that do not
-make a valid check are logged once and counted in
-`ozy.agent.autodiscovery.errors`.
+with it. The name is the one after `container_name_rewrite`, so containers
+folded into one name share one set of `ozy.agent.collector.*` self-metrics
+(each is still checked), and a recreated container's check carries on
+under the same name.
+
+`%%host%%` is the container's IP address on a network, so **the agent must
+share a Docker network with the container** — in compose, list the app's
+network on the agent service (or the app joins `ozymandias`).
+`collectors.docker.autodiscovery_network` names that network (the shipped
+config says `ozymandias`); unset, a container must be on exactly one
+network, and one on several is refused, since its other addresses may have
+no route from the agent.
+
+A label value is read as YAML where the setting wants a number, list or
+boolean (`"6379"`, `"[200, 301]"`), and reaches a text setting exactly as
+written: a password `0123` stays `0123`. Labels that do not make a valid
+check are logged once and counted in `ozy.agent.autodiscovery.errors`;
+they are not retried while the container lives, so a network connected
+later needs the container restarted.
 
 #### Check: openmetrics
 
@@ -181,7 +194,8 @@ collectors:
 ```
 
 With autodiscovery, a container labelled `ozy.check.redis.host=%%host%%`
-gets an instance named `redis:<container name>`.
+gets an instance named `redis:<container name>` (after
+`container_name_rewrite`).
 
 #### Check: postgres
 

@@ -138,10 +138,14 @@ collectors:
     #   ozy.check.<check>.<setting>=<value>
     # e.g. ozy.check.redis.port=6379. In a value, %%host%% is the container's
     # IP address and %%port%% its lowest exposed port. The instance is named
-    # <check>:<container name> and tagged like the container's metrics; it
-    # stops when the container does. Label settings are strings; each check
-    # says which of its settings can be set that way.
+    # <check>:<container name, after container_name_rewrite> and tagged like
+    # the container's metrics; it stops when the container does. A value is
+    # read as YAML for number, list and boolean settings, and reaches a text
+    # setting exactly as written.
     autodiscovery: true
+    # The network %%host%% takes the address on: one the agent shares with
+    # the container. Unset, a container on several networks is refused.
+    autodiscovery_network: ozymandias
 
   # Checks: collectors you configure, one per instance. Every instance takes
   # the common settings `name` (instances of one check need distinct names;

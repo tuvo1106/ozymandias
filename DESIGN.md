@@ -448,9 +448,15 @@ Collector.Collect ──emit(Metric)──▶ Scheduler ──[]wire.Series─�
 - **Autodiscovery** lists containers every 10s and turns
   `ozy.check.<check>.<setting>` labels into instances, added to and removed
   from the running scheduler (`Scheduler.Add` returns the removal). Label
-  values are read as YAML scalars after `%%host%%`/`%%port%%` substitution,
-  so a port label is a number. Configuration then lives with the container,
-  the model Datadog's autodiscovery and Prometheus's docker_sd share.
+  values are handed to the check as YAML nodes after `%%host%%`/`%%port%%`
+  substitution, so a port label decodes as a number and a password as the
+  text written. `%%host%%` is the address on the network the agent shares
+  (`autodiscovery_network`), never a guess among several. An instance is
+  named after its container's rewritten name: collectors may share a name,
+  and share its self-metrics, which the registry frees once the last one
+  stops (`Registry.Release`), so names that come and go do not accumulate.
+  Configuration then lives with the container, the model Datadog's
+  autodiscovery and Prometheus's docker_sd share.
 - **Distributions from collectors.** A collector may emit a `Distribution`
   carrying a DDSketch; the scheduler sends it to the forwarder's sketch
   endpoint. The openmetrics check uses it for histograms, so a scraped

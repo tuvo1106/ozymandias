@@ -26,6 +26,9 @@ type probeConfig struct {
 	Statuses []int  `yaml:"statuses"`
 	Verify   bool   `yaml:"verify"`
 	URL      string `yaml:"url"`
+	Password string `yaml:"password"`
+	DB       string `yaml:"db"`
+	Note     string `yaml:"note"`
 }
 
 type probe struct{ cfg probeConfig }
@@ -63,35 +66,44 @@ func (l *lister) ListContainers(context.Context) ([]dockerapi.Container, error) 
 	return slices.Clone(l.list), l.err
 }
 
-// sched records what is running.
+// sched records what is running. Like the real scheduler, it runs
+// collectors that share a name side by side.
 type sched struct {
 	mu      sync.Mutex
-	running map[string]collector.Collector
+	running []*collector.Collector
 }
 
 func (s *sched) Add(c collector.Collector) func() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.running[c.Name()] = c
+	p := &c
+	s.running = append(s.running, p)
 	return func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		delete(s.running, c.Name())
+		if i := slices.Index(s.running, p); i >= 0 {
+			s.running = slices.Delete(s.running, i, i+1)
+		}
 	}
 }
 
 func (s *sched) get(name string) collector.Collector {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.running[name]
+	for _, c := range s.running {
+		if (*c).Name() == name {
+			return *c
+		}
+	}
+	return nil
 }
 
 func (s *sched) names() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []string
-	for n := range s.running {
-		out = append(out, n)
+	for _, c := range s.running {
+		out = append(out, (*c).Name())
 	}
 	slices.Sort(out)
 	return out
@@ -102,14 +114,22 @@ func container(id, name string, labels map[string]string) dockerapi.Container {
 		ID: id + strings.Repeat("0", 64-len(id)), Names: []string{"/" + name}, Image: "redis:7", Labels: labels,
 		Ports: []dockerapi.Port{{PrivatePort: 16379}, {PrivatePort: 6379}},
 		NetworkSettings: dockerapi.NetworkSettings{Networks: map[string]dockerapi.EndpointSettings{
-			"zeta": {IPAddress: "10.0.0.9"}, "alpha": {IPAddress: "172.18.0.4"},
+			"alpha": {IPAddress: "172.18.0.4"},
 		}},
 	}
 }
 
+// twoNets is c on a second network too.
+func twoNets(c dockerapi.Container) dockerapi.Container {
+	c.NetworkSettings.Networks = map[string]dockerapi.EndpointSettings{
+		"zeta": {IPAddress: "10.0.0.9"}, "alpha": {IPAddress: "172.18.0.4"}, "none": {},
+	}
+	return c
+}
+
 func setup(t *testing.T, opts Options) (*Discovery, *lister, *sched, *bytes.Buffer, *selfmetrics.Registry) {
 	t.Helper()
-	l, s := &lister{}, &sched{running: map[string]collector.Collector{}}
+	l, s := &lister{}, &sched{}
 	var logs bytes.Buffer
 	reg := selfmetrics.NewRegistry()
 	opts.API, opts.Scheduler, opts.Checks, opts.Registry = l, s, checks, reg
@@ -179,13 +199,66 @@ func TestInstance_ResolvesAndTypes(t *testing.T) {
 	}
 }
 
-func TestTyped(t *testing.T) {
-	for in, want := range map[string]any{
-		"6379": 6379, "true": true, "text": "text", "a: b": "a: b", "": "", "[x": "[x",
-	} {
-		if got := typed(in); got != want {
-			t.Errorf("typed(%q) = %#v, want %#v", in, got, want)
+// A label value reaches a string setting exactly as written. Read as YAML
+// first and handed on as a Go value, 0123 was octal 83, 1e3 was 1000 and a
+// date a timestamp: a password or a database name changed on the way.
+func TestInstance_StringSettingsKeepTheirText(t *testing.T) {
+	d, _, _, _, _ := setup(t, Options{})
+	var seen probeConfig
+	var name string
+	d.opts.Checks = collector.Registry{"probe": func(inst collector.Instance) (collector.Collector, error) {
+		name = inst.Name
+		return &probe{}, inst.Decode(&seen)
+	}}
+	for _, v := range []string{"0123", "007", "1e3", "0x1F", "1_000", "2024-01-01", "null", "~", "yes", "3.10", "a: b", "[x", ""} {
+		_, err := d.instance(container("a1", "r", nil), "probe", map[string]string{"password": v, "db": v, "name": "007"})
+		if err != nil {
+			t.Errorf("%q: %v", v, err)
+			continue
 		}
+		if seen.Password != v || seen.DB != v {
+			t.Errorf("label %q reached the check as password %q, db %q", v, seen.Password, seen.DB)
+		}
+		if name != "probe:007" {
+			t.Errorf("a name label of 007 made instance %q", name)
+		}
+	}
+	for in, want := range map[string]int{"6379": 6379, "0x1F": 31} {
+		if _, err := d.instance(container("a1", "r", nil), "probe", map[string]string{"port": in}); err != nil || seen.Port != want {
+			t.Errorf("port %q = %d, %v; want %d", in, seen.Port, err, want)
+		}
+	}
+	if _, err := d.instance(container("a1", "r", nil), "probe", map[string]string{"port": "0123x"}); err == nil {
+		t.Error("a port that is not a number was accepted")
+	}
+}
+
+// %%host%% is the address on the network the agent shares: the configured
+// one, or the container's only one. On several with none configured, any
+// pick might be unreachable, so the labels are refused and the log says
+// what to set.
+func TestInstance_HostIsOnTheSharedNetwork(t *testing.T) {
+	var seen probeConfig
+	checks := collector.Registry{"probe": func(inst collector.Instance) (collector.Collector, error) {
+		return &probe{}, inst.Decode(&seen)
+	}}
+	labels := map[string]string{"host": "%%host%%"}
+	d, _, _, _, _ := setup(t, Options{})
+	d.opts.Checks = checks
+	if _, err := d.instance(twoNets(container("a1", "r", nil)), "probe", labels); err == nil ||
+		!strings.Contains(err.Error(), "autodiscovery_network") || !strings.Contains(err.Error(), "alpha, zeta") {
+		t.Fatalf("two networks, none configured: %v", err)
+	}
+	d.opts.Network = "zeta"
+	if _, err := d.instance(twoNets(container("a1", "r", nil)), "probe", labels); err != nil || seen.Host != "10.0.0.9" {
+		t.Fatalf("configured zeta: host %q, %v", seen.Host, err)
+	}
+	if _, err := d.instance(container("a1", "r", nil), "probe", labels); err == nil || !strings.Contains(err.Error(), `"zeta"`) {
+		t.Fatalf("not on the configured network: %v", err)
+	}
+	d.opts.Network = ""
+	if _, err := d.instance(container("a1", "r", nil), "probe", labels); err != nil || seen.Host != "172.18.0.4" {
+		t.Fatalf("one network: host %q, %v", seen.Host, err)
 	}
 }
 
@@ -242,22 +315,38 @@ func TestSync_AFailedListChangesNothing(t *testing.T) {
 	}
 }
 
-// A name rewrite applies to the tags, not the instance name, which must
-// stay unique per container.
-func TestSync_RewritesTagsNotNames(t *testing.T) {
+// A name rewrite applies to the instance name as to the tags: containers
+// with a name each would otherwise mint self-metric series (tagged with the
+// instance name) per container, however the rewrite folds their metrics.
+// Folded, each container is still checked; their instances share a name.
+func TestSync_RewrittenNamesFoldInstances(t *testing.T) {
 	d, l, s, _, _ := setup(t, Options{Rewrites: []docker.Rewrite{{Match: regexp.MustCompile(`^job-.*`), Replace: "job"}}})
 	l.set([]dockerapi.Container{
 		container("a1", "job-1", map[string]string{"ozy.check.probe.port": "1"}),
 		container("b2", "job-2", map[string]string{"ozy.check.probe.port": "1"}),
 	}, nil)
 	d.Sync(context.Background())
-	if got := s.names(); !slices.Equal(got, []string{"probe:job-1", "probe:job-2"}) {
+	if got := s.names(); !slices.Equal(got, []string{"probe:job", "probe:job"}) {
 		t.Fatalf("running %v", got)
 	}
 	var m collector.Metric
-	_ = s.get("probe:job-1").Collect(context.Background(), func(x collector.Metric) { m = x })
+	_ = s.get("probe:job").Collect(context.Background(), func(x collector.Metric) { m = x })
 	if !slices.Contains(m.Tags, "container_name:job") {
 		t.Fatalf("tags %v", m.Tags)
+	}
+}
+
+// A container recreated under its name (compose up) is a new id: its check
+// is started for the new container and the old one's stopped, in one sync.
+func TestSync_ARecreatedContainerKeepsItsCheck(t *testing.T) {
+	d, l, s, _, _ := setup(t, Options{})
+	l.set([]dockerapi.Container{container("a1", "redis", map[string]string{"ozy.check.probe.port": "1"})}, nil)
+	d.Sync(context.Background())
+	old := s.get("probe:redis")
+	l.set([]dockerapi.Container{container("b2", "redis", map[string]string{"ozy.check.probe.port": "2"})}, nil)
+	d.Sync(context.Background())
+	if got := s.names(); !slices.Equal(got, []string{"probe:redis"}) || s.get("probe:redis") == old {
+		t.Fatalf("after the recreate: running %v (the old instance: %v)", got, s.get("probe:redis") == old)
 	}
 }
 

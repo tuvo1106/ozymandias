@@ -46,6 +46,11 @@ type Options struct {
 	// Rewrites are the Docker collector's name rewrites, so an instance is
 	// tagged like its container's metrics.
 	Rewrites []docker.Rewrite
+	// Network is the Docker network %%host%% takes a container's address
+	// on: the one the agent shares with the containers it checks. Empty,
+	// a container on one network uses that one, and one on several is
+	// refused, since any choice might be an address the agent cannot reach.
+	Network  string
 	Interval time.Duration         // default DefaultInterval
 	Clock    clock.Clock           // default clock.Real()
 	Logger   *slog.Logger          // default slog.Default()
@@ -177,27 +182,48 @@ func groups(labels map[string]string) map[string]map[string]string {
 }
 
 // instance builds the collector for one check on one container.
+//
+// Unnamed, the instance takes its container's name after
+// container_name_rewrite, the name its container's metrics carry. The
+// instance name is the collector tag on its self-metrics, so containers
+// with a name each (job-1, job-2, …) would otherwise mint a set of
+// self-metric series per container, however the rewrite folds their
+// container metrics. Folded containers' instances share one name, and so
+// one set of self-metrics (the scheduler allows that); each is still
+// checked.
 func (d *Discovery) instance(ct dockerapi.Container, check string, labels map[string]string) (collector.Collector, error) {
+	tags := docker.Tags(ct, d.opts.Rewrites)
 	settings := make(map[string]any, len(labels)+1)
 	for _, k := range slices.Sorted(maps.Keys(labels)) {
-		v, err := resolve(labels[k], ct)
+		v, err := d.resolve(labels[k], ct)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", k, err)
 		}
-		settings[k] = typed(v)
+		settings[k] = typed(k, v)
 	}
 	if _, ok := settings["name"]; !ok {
-		settings["name"] = ct.Name()
+		settings["name"] = containerName(ct, tags)
 	}
-	return d.opts.Checks.NewInstance(check, 0, 1, settings, docker.Tags(ct, d.opts.Rewrites), d.opts.Clock, d.opts.Logger)
+	return d.opts.Checks.NewInstance(check, 0, 1, settings, tags, d.opts.Clock, d.opts.Logger)
+}
+
+// containerName is the container_name tag Tags gave ct: its name after
+// the rewrites.
+func containerName(ct dockerapi.Container, tags []string) string {
+	for _, t := range tags {
+		if n, ok := strings.CutPrefix(t, "container_name:"); ok {
+			return n
+		}
+	}
+	return ct.Name()
 }
 
 // resolve substitutes the template variables in one label value.
-func resolve(v string, ct dockerapi.Container) (string, error) {
+func (d *Discovery) resolve(v string, ct dockerapi.Container) (string, error) {
 	if strings.Contains(v, "%%host%%") {
-		host, ok := address(ct)
-		if !ok {
-			return "", fmt.Errorf("%%%%host%%%%: the container has no network address")
+		host, err := address(ct, d.opts.Network)
+		if err != nil {
+			return "", fmt.Errorf("%%%%host%%%%: %w", err)
 		}
 		v = strings.ReplaceAll(v, "%%host%%", host)
 	}
@@ -211,15 +237,34 @@ func resolve(v string, ct dockerapi.Container) (string, error) {
 	return v, nil
 }
 
-// address is the container's IP on the first of its networks, by name.
-func address(ct dockerapi.Container) (string, bool) {
+// address is the container's IP on network, or, with no network given, on
+// its only network. A container on several networks has an address on
+// each, and only the ones the agent shares reach it; picking one by any
+// rule the agent cannot check (the first by name, say) would dial an
+// address with no route, and the check would report the container down
+// forever.
+func address(ct dockerapi.Container, network string) (string, error) {
 	nets := ct.NetworkSettings.Networks
+	if network != "" {
+		if ip := nets[network].IPAddress; ip != "" {
+			return ip, nil
+		}
+		return "", fmt.Errorf("the container has no address on network %q, the one autodiscovery_network names", network)
+	}
+	var names []string
 	for _, n := range slices.Sorted(maps.Keys(nets)) {
-		if ip := nets[n].IPAddress; ip != "" {
-			return ip, true
+		if nets[n].IPAddress != "" {
+			names = append(names, n)
 		}
 	}
-	return "", false
+	switch len(names) {
+	case 0:
+		return "", fmt.Errorf("the container has no network address")
+	case 1:
+		return nets[names[0]].IPAddress, nil
+	}
+	return "", fmt.Errorf("the container is on several networks (%s); set collectors.docker.autodiscovery_network to the one the agent shares with it",
+		strings.Join(names, ", "))
 }
 
 // lowestPort is the smallest port the container exposes. A container
@@ -235,16 +280,34 @@ func lowestPort(ct dockerapi.Container) (int, bool) {
 	return best, best > 0
 }
 
-// typed reads a label value as YAML, so "6379" is a number and
-// "[200, 301]" a list; text that is not valid YAML, or is a YAML mapping
+// typed makes a label value a setting. A check's own settings get the value
+// as a YAML node, which the check's config struct then decodes: "6379"
+// becomes a number for an int field, "[200, 301]" a list, and for a string
+// field the text exactly as written. Decoding the text to a Go value here
+// instead would lose that: YAML reads 0123 as octal 83, 1e3 as 1000,
+// 2024-01-01 as a timestamp, and a password or database name would reach
+// the check changed. The common settings are read here: name and interval
+// are text, tags a list. Text that is not valid YAML, or is a mapping
 // (settings do not nest in a label), stays text.
-func typed(v string) any {
-	var out any
-	if err := yaml.Unmarshal([]byte(v), &out); err != nil || out == nil {
+func typed(key, v string) any {
+	switch key {
+	case "name", "interval":
 		return v
 	}
-	if _, isMap := out.(map[string]any); isMap {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(v), &doc); err != nil || len(doc.Content) == 0 {
 		return v
 	}
-	return out
+	n := doc.Content[0]
+	switch {
+	case n.Kind == yaml.MappingNode, n.Tag == "!!null": // "null", "~"
+		return v
+	case key == "tags":
+		var out any
+		if err := n.Decode(&out); err != nil {
+			return v
+		}
+		return out
+	}
+	return n
 }

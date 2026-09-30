@@ -117,6 +117,10 @@ type DockerCollector struct {
 	// Autodiscovery runs checks for containers that ask for them with
 	// ozy.check.<check>.<setting> labels. It needs the Docker collector.
 	Autodiscovery bool `yaml:"autodiscovery"`
+	// AutodiscoveryNetwork is the Docker network %%host%% takes a
+	// container's address on: one the agent is on too. Empty, a container
+	// must be on a single network.
+	AutodiscoveryNetwork string `yaml:"autodiscovery_network"`
 }
 
 // Rewrites compiles each ContainerNameRewrite rule, in order: the one

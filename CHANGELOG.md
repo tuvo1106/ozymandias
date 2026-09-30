@@ -37,6 +37,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   A container can ask for a check with labels (`ozy.check.redis.port=6379`,
   `%%host%%` / `%%port%%` resolved from the container); the check starts and
   stops with it and is tagged like its container.
+  `collectors.docker.autodiscovery_network` names the network `%%host%%`
+  resolves on.
 - **Go runtime metrics for the agent**: `ozy.runtime.goroutines`,
   `ozy.runtime.heap_bytes`, `ozy.runtime.gc_runs`.
 
