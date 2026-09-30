@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/cpu"
@@ -47,12 +48,10 @@ type Options struct {
 	Clock  clock.Clock // default clock.Real()
 }
 
-// pseudoFS are filesystem types with no disk behind them, which physical
-// partition listing still returns on some platforms (devfs on macOS).
-var pseudoFS = map[string]bool{
-	"devfs": true, "autofs": true, "devtmpfs": true, "tmpfs": true, "proc": true,
-	"sysfs": true, "cgroup": true, "cgroup2": true, "nsfs": true, "squashfs": true,
-}
+// pseudoFS are filesystem types that can have a path for a device but no
+// disk worth reporting: squashfs is a read-only image (a snap on Ubuntu),
+// devtmpfs is memory.
+var pseudoFS = map[string]bool{"devtmpfs": true, "squashfs": true}
 
 // Collector reports the machine the agent runs on: CPU, load, memory, swap,
 // disks, disk I/O, network and uptime (docs/metrics-catalog.md, system.*).
@@ -211,11 +210,26 @@ func (c *Collector) swap(ctx context.Context, emit collector.Emit, _ time.Time) 
 	return nil
 }
 
-// disk reports space per device. A device mounted in several places (bind
-// mounts, macOS's firmlinked volumes, a container's view of the host disk)
-// is reported once, at its first mount point, so its bytes are not counted
-// twice by a sum over devices. A partition that cannot be read (permission,
-// a stale network mount) is skipped, and the error returned after the rest.
+// disk reports space per device: every mount whose device is a block device
+// (/dev/sda1, /dev/disk3s1), once per device at its first mount point, so a
+// sum over devices does not count a disk twice.
+//
+// "The device is under /dev/" is the whole filter, and it is deliberate. It
+// drops proc, tmpfs, overlay, devfs and autofs (their "device" is a word),
+// network mounts (host:/export), whose statfs can hang on a dead server, and
+// folders shared into a VM (virtiofs, 9p), whose "device" is the host-side
+// path — a Mac directory is not a disk of the VM, and its path would become
+// a tag value that changes with wherever the stack was started from. ZFS
+// datasets (pool/data) are dropped too; add them if a ZFS host appears.
+// gopsutil's own physical-only listing is not used because it also drops
+// bind mounts — and inside a container the real disk is only visible
+// through bind mounts (/etc/hosts, /etc/resolv.conf, the volumes): the root
+// filesystem is overlay. With it, a containerised agent reported no disks at
+// all; with this rule it reports the Docker VM's data disk, the one that
+// fills up.
+//
+// A mount that cannot be read (permission) is skipped and its error
+// returned after the rest.
 func (c *Collector) disk(ctx context.Context, emit collector.Emit, _ time.Time) error {
 	parts, err := c.src.Partitions(ctx)
 	if err != nil {
@@ -224,7 +238,7 @@ func (c *Collector) disk(ctx context.Context, emit collector.Emit, _ time.Time) 
 	seen := map[string]bool{}
 	var errs []error
 	for _, p := range parts {
-		if p.Device == "" || seen[p.Device] || pseudoFS[p.Fstype] {
+		if !strings.HasPrefix(p.Device, "/dev/") || seen[p.Device] || pseudoFS[p.Fstype] {
 			continue
 		}
 		u, err := c.src.DiskUsage(ctx, p.Mountpoint)
@@ -233,7 +247,7 @@ func (c *Collector) disk(ctx context.Context, emit collector.Emit, _ time.Time) 
 			continue
 		}
 		if u.Total == 0 {
-			continue // pseudo filesystems (devfs, autofs) have no size
+			continue
 		}
 		seen[p.Device] = true
 		tag := "device:" + p.Device
@@ -358,10 +372,10 @@ func (gopsutil) SwapMemory(ctx context.Context) (*mem.SwapMemoryStat, error) {
 	return supported(mem.SwapMemoryWithContext(ctx))
 }
 
-// Partitions lists physical partitions only (all=false): no proc, sysfs,
-// tmpfs and the like.
+// Partitions lists every mount (all=true); the collector filters. See
+// Collector.disk for why gopsutil's physical-only listing is not enough.
 func (gopsutil) Partitions(ctx context.Context) ([]disk.PartitionStat, error) {
-	return supported(disk.PartitionsWithContext(ctx, false))
+	return supported(disk.PartitionsWithContext(ctx, true))
 }
 
 func (gopsutil) DiskUsage(ctx context.Context, path string) (*disk.UsageStat, error) {

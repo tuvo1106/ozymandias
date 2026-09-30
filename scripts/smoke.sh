@@ -583,6 +583,20 @@ wait_positive() { # <query>
 host_q="{host:$(scripts/hostname.sh | tr '[:upper:]' '[:lower:]')}"
 check "the host collector reports memory"      wait_positive "max:system.mem.total$host_q"
 check "and disk space, per device"             wait_positive "max:system.disk.total$host_q by {device}"
+# Only block devices: a folder shared in from the Mac is not a disk, and its
+# path would be a tag value. Read from the newest bucket, so a series left by
+# an older build does not count.
+newest_devices() {
+  local now; now=$(date +%s)
+  curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" --data-urlencode "q=max:system.disk.total$host_q by {device}" \
+    --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 60))" 2>/dev/null |
+    python3 -c 'import json,sys
+seen = {(s["tags"].get("device", "<none>"), p[0]) for s in json.load(sys.stdin).get("series", []) for p in s["points"] if p[1] is not None}
+newest = max((t for _, t in seen), default=None)
+print(" ".join(sorted(d for d, t in seen if t == newest)))'
+}
+only_block_devices() { local d; d=$(newest_devices); [[ -n $d ]] && ! grep -qv '^/dev/' <<<"${d// /$'\n'}" || { echo "devices: '$d'" >&2; return 1; }; }
+check "and only block devices"                 only_block_devices
 check "the collector reports on itself"        wait_positive "sum:ozy.agent.collector.runs{collector:host}"
 # Zero increase may arrive as 0 or not at all, depending on the reporter.
 no_errors() { local v; v=$(latest_value "$1"); [[ $v == none ]] || python3 -c "import sys; sys.exit(0 if float('$v') == 0 else 1)"; }

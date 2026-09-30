@@ -67,16 +67,26 @@ func machine() *canned {
 		load: load.AvgStat{Load1: 1.5, Load5: 1, Load15: 0.5},
 		mem:  mem.VirtualMemoryStat{Total: 1000, Used: 600, Free: 100, Available: 300},
 		swap: mem.SwapMemoryStat{Total: 200, Used: 50, Free: 150},
+		// What a container sees: an overlay root, pseudo filesystems, and
+		// the real disk only through bind mounts.
 		parts: []disk.PartitionStat{
-			{Device: "/dev/sda1", Mountpoint: "/", Fstype: "ext4"},
-			{Device: "/dev/sda1", Mountpoint: "/var/lib/docker", Fstype: "ext4"}, // bind mount: counted once
+			{Device: "overlay", Mountpoint: "/", Fstype: "overlay"},
+			{Device: "proc", Mountpoint: "/proc", Fstype: "proc"},
 			{Device: "devfs", Mountpoint: "/dev", Fstype: "devfs"},
+			{Device: "/dev/sda1", Mountpoint: "/etc/hosts", Fstype: "ext4", Opts: []string{"rw", "bind"}},
+			{Device: "/dev/sda1", Mountpoint: "/etc/resolv.conf", Fstype: "ext4", Opts: []string{"rw", "bind"}}, // counted once
+			{Device: "nas:/export", Mountpoint: "/mnt/nas", Fstype: "nfs"},                                      // a network mount: never statfs'd
+			{Device: "/Users/me/app/conf", Mountpoint: "/etc/app", Fstype: "virtiofs"},                          // a Mac folder shared into the VM
+			{Device: "/dev/loop3", Mountpoint: "/snap/core/1", Fstype: "squashfs"},
 			{Device: "/dev/sdb1", Mountpoint: "/secret", Fstype: "ext4"}, // unreadable
 		},
 		usage: map[string]*disk.UsageStat{
-			"/":               {Total: 1000, Used: 250, Free: 750, UsedPercent: 25},
-			"/var/lib/docker": {Total: 1000, Used: 250, Free: 750, UsedPercent: 25},
-			"/dev":            {Total: 10, Used: 10, UsedPercent: 100},
+			"/":                {Total: 5000, Used: 5000, UsedPercent: 100},
+			"/etc/hosts":       {Total: 1000, Used: 250, Free: 750, UsedPercent: 25},
+			"/etc/resolv.conf": {Total: 1000, Used: 250, Free: 750, UsedPercent: 25},
+			"/dev":             {Total: 10, Used: 10, UsedPercent: 100},
+			"/snap/core/1":     {Total: 10, Used: 10, UsedPercent: 100},
+			"/etc/app":         {Total: 900, Used: 9, UsedPercent: 1},
 		},
 		io: map[string]disk.IOCountersStat{"sda": {ReadCount: 100, WriteCount: 200, ReadBytes: 1024 * 100, WriteBytes: 1024 * 300}},
 		net: []net.IOCountersStat{
@@ -132,8 +142,9 @@ func TestHost_FirstRunHasGaugesButNoRatesOrCPU(t *testing.T) {
 	if v := g.one(t, "system.uptime").Value; v != 3600 {
 		t.Errorf("uptime = %v", v)
 	}
-	// One device, once: not the bind mount again, not devfs, not the
-	// unreadable one.
+	// One device, once, found through its bind mount: not the overlay root,
+	// not the pseudo filesystems, not the network mount (whose statfs
+	// DiskUsage would have failed), not the unreadable one.
 	if m := g.one(t, "system.disk.in_use"); m.Value != 0.25 || !slices.Equal(m.Tags, []string{"device:/dev/sda1"}) {
 		t.Errorf("disk.in_use = %+v", m)
 	}

@@ -109,7 +109,7 @@ reported as a spike.
 | `system.mem.pct_usable` | gauge | fraction | — | `usable / total`, 0–1 |
 | `system.swap.total` / `.used` / `.free` | gauge | bytes | — | Swap space |
 | `system.swap.pct_free` | gauge | fraction | — | `free / total`, 0–1; absent without swap |
-| `system.disk.total` / `.used` / `.free` | gauge | bytes | `device` | Space on each physical device, once per device however many places it is mounted |
+| `system.disk.total` / `.used` / `.free` | gauge | bytes | `device` | Space on each block device (`/dev/...`), once however many places it is mounted. In a container: the Docker VM's data disk, seen through the container's bind mounts. Network mounts and folders shared from the Mac are not disks and are skipped |
 | `system.disk.in_use` | gauge | fraction | `device` | Used share, 0–1, counting space reserved for root as used |
 | `system.io.r_s` / `.w_s` | rate | operations/s | `device` | Read and write operations completed |
 | `system.io.rkb_s` / `.wkb_s` | rate | KiB/s | `device` | Read and written |
