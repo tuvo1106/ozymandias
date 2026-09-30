@@ -1,0 +1,47 @@
+{
+  "name": "/shop-api-1",
+  "id": "8dfafdbc3a40c7b5f8e2a9c4d1e6b0a3f7c2d9e8b1a4c6f0e3d7b2a9c5e8f1d4",
+  "read": "2026-09-29T17:00:01.512345678Z",
+  "preread": "2026-09-29T17:00:00.498765432Z",
+  "pids_stats": {"current": 23, "limit": 18446744073709551615},
+  "blkio_stats": {
+    "io_service_bytes_recursive": [
+      {"major": 254, "minor": 0, "op": "read", "value": 10485760},
+      {"major": 254, "minor": 0, "op": "write", "value": 4194304},
+      {"major": 254, "minor": 16, "op": "read", "value": 1048576},
+      {"major": 254, "minor": 16, "op": "write", "value": 0}
+    ],
+    "io_serviced_recursive": null
+  },
+  "num_procs": 0,
+  "storage_stats": {},
+  "cpu_stats": {
+    "cpu_usage": {"total_usage": 2500000000, "usage_in_kernelmode": 400000000, "usage_in_usermode": 2100000000},
+    "system_cpu_usage": 1000000000000,
+    "online_cpus": 4,
+    "throttling_data": {"periods": 120, "throttled_periods": 6, "throttled_time": 90000000}
+  },
+  "precpu_stats": {
+    "cpu_usage": {"total_usage": 2000000000, "usage_in_kernelmode": 300000000, "usage_in_usermode": 1700000000},
+    "system_cpu_usage": 996000000000,
+    "online_cpus": 4,
+    "throttling_data": {"periods": 110, "throttled_periods": 5, "throttled_time": 80000000}
+  },
+  "memory_stats": {
+    "usage": 157286400,
+    "limit": 536870912,
+    "stats": {
+      "anon": 94371840,
+      "file": 52428800,
+      "inactive_file": 31457280,
+      "active_file": 20971520,
+      "kernel_stack": 376832,
+      "pgfault": 51234,
+      "pgmajfault": 12
+    }
+  },
+  "networks": {
+    "eth0": {"rx_bytes": 1234567, "rx_packets": 9876, "rx_errors": 0, "rx_dropped": 0, "tx_bytes": 7654321, "tx_packets": 8765, "tx_errors": 0, "tx_dropped": 0},
+    "eth1": {"rx_bytes": 1000, "tx_bytes": 2000}
+  }
+}

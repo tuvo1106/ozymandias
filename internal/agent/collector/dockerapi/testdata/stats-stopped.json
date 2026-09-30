@@ -1,0 +1,9 @@
+{
+  "read": "0001-01-01T00:00:00Z",
+  "preread": "0001-01-01T00:00:00Z",
+  "pids_stats": {},
+  "blkio_stats": {"io_service_bytes_recursive": null},
+  "cpu_stats": {"cpu_usage": {"total_usage": 0}, "throttling_data": {}},
+  "precpu_stats": {"cpu_usage": {"total_usage": 0}, "throttling_data": {}},
+  "memory_stats": {}
+}
