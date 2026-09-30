@@ -40,6 +40,9 @@ type WatcherOptions struct {
 	API      API
 	Sink     func(Sample)
 	Rewrites []Rewrite
+	// OnStart, if set, is called with each started container's id: the
+	// collector forgets its cached start time (Collector.ContainerStarted).
+	OnStart  func(id string)
 	Clock    clock.Clock           // default clock.Real()
 	Registry *selfmetrics.Registry // default: a new registry
 	Logger   *slog.Logger          // default slog.Default()
@@ -60,7 +63,8 @@ type Watcher struct {
 	clock clock.Clock
 	log   *slog.Logger
 
-	reconnects, events *selfmetrics.Counter
+	onStart                     func(id string)
+	reconnects, events, skipped *selfmetrics.Counter
 
 	// started and oom are keyed by container id and emptied on die; a
 	// container whose die was missed (the agent was down) is forgotten
@@ -68,6 +72,10 @@ type Watcher struct {
 	started map[string]time.Time
 	oom     map[string]bool
 	last    dockerapi.Event // for resuming, and for dropping the replayed one
+	// began is when the first connection was attempted: the resume point
+	// until an event has been seen, so a disconnect before the first event
+	// still replays what happened meanwhile.
+	began time.Time
 }
 
 // maxTracked bounds the started map against dies that never arrive.
@@ -89,6 +97,8 @@ func NewWatcher(opts WatcherOptions) *Watcher {
 		clock: opts.Clock, log: opts.Logger.With("component", "collector", "collector", "docker-events"),
 		reconnects: opts.Registry.Counter("ozy.agent.docker.events_reconnects"),
 		events:     opts.Registry.Counter("ozy.agent.docker.events"),
+		skipped:    opts.Registry.Counter("ozy.agent.docker.events_skipped"),
+		onStart:    opts.OnStart,
 		started:    map[string]time.Time{}, oom: map[string]bool{},
 	}
 }
@@ -110,12 +120,20 @@ func (w *Watcher) Run(ctx context.Context) {
 	backoff := minBackoff
 	var lastErr string
 	for {
-		since := time.Time{}
-		if w.last.Action != "" {
-			since = w.last.At()
-		}
 		connected := w.clock.Now()
-		err := w.api.Events(ctx, since, w.handle)
+		// The first attempt asks for events from now (zero); every later one
+		// resumes from the last event seen, or, if none was, from the first
+		// attempt, so what happened while disconnected is replayed.
+		var since time.Time
+		switch {
+		case w.last.Action != "":
+			since = w.last.At()
+		case !w.began.IsZero():
+			since = w.began
+		default:
+			w.began = connected
+		}
+		err := w.api.Events(ctx, since, func(ev dockerapi.Event) error { return w.handle(ctx, ev) }, w.skip)
 		if ctx.Err() != nil {
 			return
 		}
@@ -147,7 +165,13 @@ func (w *Watcher) replayOf(ev dockerapi.Event) bool {
 	return l.Action != "" && ev.Action == l.Action && ev.Actor.ID == l.Actor.ID && ev.At().Equal(l.At())
 }
 
-func (w *Watcher) handle(ev dockerapi.Event) error {
+// skip counts an event line the client could not decode and skipped.
+func (w *Watcher) skip(err error) {
+	w.skipped.Inc()
+	w.log.Debug("skipped an undecodable docker event", "error", err)
+}
+
+func (w *Watcher) handle(ctx context.Context, ev dockerapi.Event) error {
 	if w.replayOf(ev) {
 		return nil
 	}
@@ -161,10 +185,13 @@ func (w *Watcher) handle(ev dockerapi.Event) error {
 			clear(w.oom)
 		}
 		w.started[id] = ev.At()
+		if w.onStart != nil {
+			w.onStart(id)
+		}
 	case "oom":
 		w.oom[id] = true
 	case "die":
-		w.died(ev)
+		w.died(ctx, ev)
 	}
 	return nil
 }
@@ -172,7 +199,7 @@ func (w *Watcher) handle(ev dockerapi.Event) error {
 // died reports one container's exit. Its tags come from the event, which
 // carries the container's name, image and labels as attributes — the
 // container itself may already be gone (--rm).
-func (w *Watcher) died(ev dockerapi.Event) {
+func (w *Watcher) died(ctx context.Context, ev dockerapi.Event) {
 	id := ev.Actor.ID
 	attrs := ev.Actor.Attributes
 	tags := w.tag.tags(attrs["name"], id, attrs["image"], attrs)
@@ -181,12 +208,15 @@ func (w *Watcher) died(ev dockerapi.Event) {
 		code = strconv.Itoa(n)
 	}
 	// The kernel's OOM kill arrives as an oom event just before the die.
-	// Without one the answer is "no" only if we were connected to hear it;
-	// an OOM flag from inspect covers a die replayed after a reconnect.
+	// When the start was seen on this stream, so was any oom, and the maps
+	// are the whole answer — no call to the daemon, which matters when
+	// short-lived containers exit several times a second and each inspect
+	// holds the stream. Otherwise (connected after the start, or a die
+	// replayed after a reconnect) inspect supplies the start and the flag.
 	oom := w.oom[id]
 	start, seen := w.started[id]
-	if !seen || !oom {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	if !seen {
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		j, err := w.api.Inspect(ctx, id)
 		cancel()
 		if err == nil {

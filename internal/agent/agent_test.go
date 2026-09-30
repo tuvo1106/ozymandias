@@ -199,9 +199,7 @@ func TestRun_StatsdToIntake(t *testing.T) {
 	}))
 	defer intake.Close()
 
-	// On a bucket boundary: an agent writes no bucket that began before it
-	// started (aggregator.Options.Started).
-	clk := testutil.NewFakeClock(time.Unix(1790000000, 0))
+	clk := testutil.NewFakeClock(time.Unix(1789999999, 0))
 	cfg := testConfig()
 	cfg.Hostname = "box"
 	cfg.Tags = []string{"env:test"}
@@ -210,6 +208,7 @@ func TestRun_StatsdToIntake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	clk.Advance(time.Second) // onto the boundary, a second after the agent started: its first whole bucket (aggregator.Options.Started)
 	ln, _ := httpserve.Listen("127.0.0.1:0")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -401,7 +400,7 @@ func (*eventsAPI) Stats(context.Context, string) (dockerapi.Stats, error) {
 func (*eventsAPI) Inspect(context.Context, string) (dockerapi.ContainerJSON, error) {
 	return dockerapi.ContainerJSON{}, dockerapi.ErrNotFound
 }
-func (e *eventsAPI) Events(ctx context.Context, _ time.Time, fn func(dockerapi.Event) error) error {
+func (e *eventsAPI) Events(ctx context.Context, _ time.Time, fn func(dockerapi.Event) error, _ func(error)) error {
 	e.once.Do(func() {
 		for _, ev := range e.evs {
 			_ = fn(ev)
@@ -434,7 +433,7 @@ func TestRun_DockerEventsToIntake(t *testing.T) {
 	}))
 	defer intake.Close()
 
-	at := time.Unix(1790000000, 0) // a bucket boundary: see aggregator.Options.Started
+	at := time.Unix(1790000000, 0)
 	id := strings.Repeat("ab", 32)
 	ev := func(action string, t time.Time, attrs map[string]string) dockerapi.Event {
 		a := map[string]string{"name": "judge-42", "image": "sandbox:1"}
@@ -445,7 +444,7 @@ func TestRun_DockerEventsToIntake(t *testing.T) {
 		evs:       []dockerapi.Event{ev("start", at.Add(-3*time.Second), nil), ev("die", at, map[string]string{"exitCode": "3"})},
 		delivered: make(chan struct{}),
 	}
-	clk := testutil.NewFakeClock(at)
+	clk := testutil.NewFakeClock(at.Add(-time.Second))
 	cfg := testConfig()
 	cfg.Hostname = "box"
 	cfg.Tags = []string{"env:test"}
@@ -457,6 +456,7 @@ func TestRun_DockerEventsToIntake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	clk.Advance(time.Second) // onto the boundary, a second after the agent started: its first whole bucket (aggregator.Options.Started)
 	ln, _ := httpserve.Listen("127.0.0.1:0")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

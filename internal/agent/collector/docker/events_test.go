@@ -194,6 +194,35 @@ func TestWatcher_AnUnreachableDaemonIsLoggedOnce(t *testing.T) {
 	if n := strings.Count(buf.String(), "docker event stream failed"); n != 1 {
 		t.Fatalf("logged %d times:\n%s", n, buf.String())
 	}
+	// No event was ever seen, so every retry replays from the first
+	// attempt: a container that died while the daemon was away is counted.
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if !api.sinces[0].IsZero() || !api.sinces[1].Equal(t0) || !api.sinces[3].Equal(t0) {
+		t.Fatalf("since = %v, want zero, then %v", api.sinces, t0)
+	}
+}
+
+// An undecodable line is counted and the stream goes on.
+func TestWatcher_CountsSkippedLines(t *testing.T) {
+	api := &fakeAPI{
+		scripts: [][]dockerapi.Event{{event("die", idAPI, t0, map[string]string{"exitCode": "0"})}},
+		errs:    []error{nil},
+		skips:   2,
+	}
+	sk, _, reg := watch(t, api, WatcherOptions{})
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.named("container.exits")) == 1 }, "exit")
+	if n := reg.Counter("ozy.agent.docker.events_skipped").Value(); n != 2 {
+		t.Fatalf("skipped = %d, want 2", n)
+	}
+}
+
+func TestWatcher_OnStart(t *testing.T) {
+	var mu sync.Mutex
+	var ids []string
+	api := &fakeAPI{scripts: [][]dockerapi.Event{{event("start", idAPI, t0, nil)}}, errs: []error{nil}}
+	watch(t, api, WatcherOptions{OnStart: func(id string) { mu.Lock(); ids = append(ids, id); mu.Unlock() }})
+	testutil.Eventually(t, time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return len(ids) == 1 && ids[0] == idAPI }, "OnStart not called")
 }
 
 func TestWatcher_Rewrites(t *testing.T) {
@@ -213,7 +242,7 @@ func TestWatcher_Rewrites(t *testing.T) {
 func TestWatcher_BoundsWhatItTracks(t *testing.T) {
 	w := NewWatcher(WatcherOptions{API: &fakeAPI{}, Sink: func(Sample) {}})
 	for i := range maxTracked + 5 {
-		_ = w.handle(event("start", strings.Repeat("0", 60)+string(rune('a'+i%26))+time.Duration(i).String(), t0.Add(time.Duration(i)), nil))
+		_ = w.handle(context.Background(), event("start", strings.Repeat("0", 60)+string(rune('a'+i%26))+time.Duration(i).String(), t0.Add(time.Duration(i)), nil))
 	}
 	if len(w.started) > maxTracked {
 		t.Fatalf("tracking %d starts", len(w.started))

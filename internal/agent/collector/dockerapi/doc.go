@@ -24,22 +24,27 @@
 //
 //   - [Client.ListContainers]: GET /containers/json. The running
 //     containers, their names, images and labels: discovery.
-//   - [Client.Stats]: GET /containers/{id}/stats?stream=false. One
-//     snapshot of a container's cgroup counters.
+//   - [Client.Stats]: GET /containers/{id}/stats?stream=false&one-shot=true.
+//     One snapshot of a container's cgroup counters, answered at once.
 //   - [Client.Inspect]: GET /containers/{id}/json. State that stats
 //     does not carry: exit code, OOM kill, start and finish times.
 //   - [Client.Events]: GET /events. A long-lived stream of lifecycle events
 //     (start, die), the only way to see a container that lives for less
 //     than a polling interval.
 //
-// # stream=false, and where CPU % comes from
+// # One-shot stats, and where CPU % comes from
 //
 // A container's CPU counter is cumulative nanoseconds of CPU time used
 // since it started (cpu_stats.cpu_usage.total_usage). A percentage needs two
 // samples: how much the container used between them, over how much CPU time
-// the whole machine had in the same window. The daemon provides both halves
-// in one response: with stream=false it samples the cgroup twice about a
-// second apart and returns the earlier sample as precpu_stats. So
+// the whole machine had in the same window. With stream=false alone the
+// daemon provides both halves in one response — it samples the cgroup
+// twice, a second apart, and returns the earlier sample as precpu_stats —
+// but holds every request for that second: at eight in flight, a host with
+// a hundred containers takes over ten seconds to read. With one-shot=true
+// (API 1.41) it answers at once with one sample, and the caller keeps the
+// previous one ([CPUPercentBetween]); the collector polls every 15s anyway,
+// so its window is simply the interval. Either way
 //
 //	cpu_delta    = cpu_stats.cpu_usage.total_usage - precpu_stats.cpu_usage.total_usage
 //	system_delta = cpu_stats.system_cpu_usage    - precpu_stats.system_cpu_usage
@@ -49,14 +54,9 @@
 // cpu_delta/system_delta is "this container's share of the whole machine".
 // Multiplying by online_cpus turns that into "% of one core", the unit
 // `docker stats` uses: a container spinning two cores on an eight-core host
-// reads 200%, not 25%. [CPUPercent] does this and says when it cannot: on
-// a first sample precpu is empty, and a zero or backwards delta has no
-// meaningful ratio.
-//
-// The cost of stream=false is that the daemon holds each request for about
-// a second while it takes the second sample. That is why the collector
-// bounds how many stats calls it has in flight, and why [Options.Timeout]
-// defaults well above a second.
+// reads 200%, not 25%. [CPUPercent] and [CPUPercentBetween] do this and say
+// when they cannot: with no earlier sample, or a zero or backwards delta
+// (the container restarted), there is no meaningful ratio.
 //
 // # Memory: cgroup v1 and v2
 //

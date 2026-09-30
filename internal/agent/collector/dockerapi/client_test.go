@@ -261,7 +261,7 @@ func TestEvents_StreamThenDaemonCloses(t *testing.T) {
 		_, _ = fmt.Fprintf(w, "%s\n\n%s\n%s\n", lines[0], lines[1], lines[2])
 	}), Options{})
 	var got []Event
-	err := c.Events(context.Background(), time.Time{}, func(e Event) error { got = append(got, e); return nil })
+	err := c.Events(context.Background(), time.Time{}, func(e Event) error { got = append(got, e); return nil }, nil)
 	if !errors.Is(err, ErrStreamClosed) {
 		t.Fatalf("err = %v, want ErrStreamClosed so the caller reconnects", err)
 	}
@@ -317,7 +317,7 @@ func TestEvents_ResumeAfterDisconnect(t *testing.T) {
 			got = append(got, e)
 			since = e.At()
 			return nil
-		})
+		}, nil)
 		if !errors.Is(err, ErrStreamClosed) {
 			t.Fatalf("attempt %d: %v", attempt, err)
 		}
@@ -341,7 +341,7 @@ func TestEvents_Stops(t *testing.T) {
 	t.Run("context cancelled", func(t *testing.T) {
 		c := fakeDaemon(t, open, Options{})
 		ctx, cancel := context.WithCancel(context.Background())
-		err := c.Events(ctx, time.Time{}, func(Event) error { cancel(); return nil })
+		err := c.Events(ctx, time.Time{}, func(Event) error { cancel(); return nil }, nil)
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("err = %v, want context.Canceled", err)
 		}
@@ -349,46 +349,52 @@ func TestEvents_Stops(t *testing.T) {
 	t.Run("callback error", func(t *testing.T) {
 		c := fakeDaemon(t, open, Options{})
 		stop := errors.New("stop")
-		if err := c.Events(context.Background(), time.Time{}, func(Event) error { return stop }); !errors.Is(err, stop) {
+		if err := c.Events(context.Background(), time.Time{}, func(Event) error { return stop }, nil); !errors.Is(err, stop) {
 			t.Fatalf("err = %v, want the callback's error", err)
 		}
 	})
-	t.Run("malformed event", func(t *testing.T) {
-		c := fakeDaemon(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = fmt.Fprintln(w, `{"Type":"container","Action":`)
-		}), Options{})
-		err := c.Events(context.Background(), time.Time{}, func(Event) error { return nil })
-		if err == nil || !strings.Contains(err.Error(), "decoding event") {
-			t.Fatalf("err = %v", err)
-		}
-	})
-	t.Run("oversized event", func(t *testing.T) {
-		c := fakeDaemon(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			bw := bufio.NewWriter(w)
-			_, _ = bw.WriteString(`{"Actor":{"Attributes":{"x":"`)
-			_, _ = bw.Write(bytes.Repeat([]byte("a"), MaxEventBytes+1))
-			_, _ = bw.WriteString("\"}}}\n")
-			_ = bw.Flush()
-		}), Options{})
-		err := c.Events(context.Background(), time.Time{}, func(Event) error { return nil })
-		if err == nil || errors.Is(err, ErrStreamClosed) {
-			t.Fatalf("err = %v, want a read error, not a clean close", err)
-		}
-	})
+	// A bad line is skipped and reported, and the events after it still
+	// arrive: ending the stream would reconnect, and the daemon would
+	// replay the same line forever.
+	good := `{"Type":"container","Action":"die","Actor":{"ID":"` + apiID + `"},"time":1790000000,"timeNano":1790000000000000000}`
+	for name, bad := range map[string]func(w *bufio.Writer){
+		"malformed event": func(w *bufio.Writer) { _, _ = w.WriteString(`{"Type":"container","Action":` + "\n") },
+		"oversized event": func(w *bufio.Writer) {
+			_, _ = w.WriteString(`{"Actor":{"Attributes":{"x":"`)
+			_, _ = w.Write(bytes.Repeat([]byte("a"), MaxEventBytes+1))
+			_, _ = w.WriteString("\"}}}\n")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := fakeDaemon(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				bw := bufio.NewWriter(w)
+				bad(bw)
+				_, _ = bw.WriteString(good + "\n")
+				_ = bw.Flush()
+			}), Options{})
+			var got []Event
+			var skipped []error
+			err := c.Events(context.Background(), time.Time{}, func(e Event) error { got = append(got, e); return nil },
+				func(err error) { skipped = append(skipped, err) })
+			if !errors.Is(err, ErrStreamClosed) || len(skipped) != 1 || len(got) != 1 || got[0].Action != "die" {
+				t.Fatalf("err %v, skipped %v, got %+v", err, skipped, got)
+			}
+		})
+	}
 	t.Run("daemon refuses", func(t *testing.T) {
 		c := fakeDaemon(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(`{"message":"invalid filter"}`))
 		}), Options{})
 		var apiErr *APIError
-		err := c.Events(context.Background(), time.Time{}, func(Event) error { return nil })
+		err := c.Events(context.Background(), time.Time{}, func(Event) error { return nil }, nil)
 		if !errors.As(err, &apiErr) || apiErr.Message != "invalid filter" {
 			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("daemon down", func(t *testing.T) {
 		c := New(Options{Socket: filepath.Join(os.TempDir(), "no-such-docker.sock")})
-		if err := c.Events(context.Background(), time.Time{}, func(Event) error { return nil }); err == nil {
+		if err := c.Events(context.Background(), time.Time{}, func(Event) error { return nil }, nil); err == nil {
 			t.Fatal("want a dial error")
 		}
 	})

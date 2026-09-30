@@ -88,7 +88,11 @@ func (m MemoryStats) Breakdown() (mem Memory, ok bool) {
 // BlockIO sums the container's cumulative bytes read and written over all
 // devices. Only the read and write operations count; v1 also reports
 // "Total", "Sync" and "Async", which would count the same bytes twice.
-func (s Stats) BlockIO() (read, write uint64) {
+//
+// ok is false when the daemon reported no entries at all (cgroup v2 without
+// the io controller): that is "unknown", not "nothing read".
+func (s Stats) BlockIO() (read, write uint64, ok bool) {
+	ok = len(s.BlkioStats.IoServiceBytesRecursive) > 0
 	for _, e := range s.BlkioStats.IoServiceBytesRecursive {
 		switch strings.ToLower(e.Op) {
 		case "read":
@@ -97,17 +101,19 @@ func (s Stats) BlockIO() (read, write uint64) {
 			write += e.Value
 		}
 	}
-	return read, write
+	return read, write, ok
 }
 
 // NetworkBytes sums cumulative bytes received and sent over every
-// interface of the container. A container on host networking has none.
-func (s Stats) NetworkBytes() (rx, tx uint64) {
+// interface of the container. A container on host networking has none, and
+// ok is false: its traffic is unknown here, not zero.
+func (s Stats) NetworkBytes() (rx, tx uint64, ok bool) {
+	ok = len(s.Networks) > 0
 	for _, n := range s.Networks {
 		rx += n.RxBytes
 		tx += n.TxBytes
 	}
-	return rx, tx
+	return rx, tx, ok
 }
 
 // ShortID is the first 12 characters of an id, the form `docker ps` shows.

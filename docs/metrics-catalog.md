@@ -64,6 +64,7 @@ interval's increase.
 | `ozy.agent.collector.duration_ms` | gauge | ms | `collector` | agent | How long the last run took |
 | `ozy.agent.docker.events` | counter | events | — | agent | Container events read from the daemon's stream (start, oom, die) |
 | `ozy.agent.docker.events_reconnects` | counter | reconnects | — | agent | Times the event stream ended and was reopened. Steady growth means the daemon keeps dropping it |
+| `ozy.agent.docker.events_skipped` | counter | lines | — | agent | Event lines the agent could not decode (or over 1 MiB) and skipped; the stream carries on. Non-zero means a daemon speaking a format the agent does not know |
 | `ozy.runtime.goroutines` | gauge | goroutines | `component` | agent | Live goroutines. One that climbs and never falls is a leak |
 | `ozy.runtime.heap_bytes` | gauge | bytes | `component` | agent | Heap occupied by live and not-yet-swept objects |
 | `ozy.runtime.gc_runs` | counter | cycles | `component` | agent | Garbage collections. A rising rate with a flat heap means allocation churn |
@@ -139,7 +140,7 @@ first run has none.
 
 | Metric | Type | Unit | Tags | Meaning |
 |---|---|---|---|---|
-| `container.cpu.usage` | gauge | % | container | CPU used over the daemon's ~1s sample, in % of one core (a busy 4-core container reads 400) |
+| `container.cpu.usage` | gauge | % | container | CPU used between this run's reading and the last, in % of one core (a busy 4-core container reads 400). Absent on a container's first run |
 | `container.cpu.throttled` | gauge | periods/s | container | CFS periods in which the container hit its CPU quota. Non-zero means the limit, not the host, is slowing it |
 | `container.memory.usage` | gauge | bytes | container | Memory charged to the container minus inactive file cache, which the kernel reclaims first (what `docker stats` shows) |
 | `container.memory.limit` | gauge | bytes | container | The container's memory limit, or the host's memory if it has none |
@@ -148,7 +149,7 @@ first run has none.
 | `container.net.rx_bytes` / `.tx_bytes` | gauge | bytes/s | container | Received and sent, over all the container's interfaces. None on host networking |
 | `container.io.read_bytes` / `.write_bytes` | gauge | bytes/s | container | Read from and written to block devices |
 | `container.pids` | gauge | processes | container | Processes and threads in the container |
-| `container.uptime` | gauge | seconds | container | Time since the container last started |
+| `container.uptime` | gauge | seconds | container | Time since the container last started; back to 0 when it restarts in place |
 | `docker.containers.running` | gauge | containers | `image_name` | Running containers per image |
 | `container.exits` | count | exits | container, `exit_code`, `oom_killed` | Containers that stopped, from the event stream, so a container too short-lived for any poll is still counted. `exit_code:unknown` when the daemon did not say |
 | `container.lifetime` | distribution | seconds | container | Start to exit, per exit; percentiles at query time. Missing when the start was neither seen nor could be inspected |

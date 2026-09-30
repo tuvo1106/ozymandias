@@ -38,6 +38,7 @@ type fakeAPI struct {
 	scripts [][]dockerapi.Event
 	errs    []error
 	sinces  []time.Time
+	skips   int // lines each Events call reports as undecodable first
 }
 
 func (f *fakeAPI) ListContainers(context.Context) ([]dockerapi.Container, error) {
@@ -78,9 +79,12 @@ func (f *fakeAPI) Inspect(_ context.Context, id string) (dockerapi.ContainerJSON
 	return j, nil
 }
 
-func (f *fakeAPI) Events(ctx context.Context, since time.Time, fn func(dockerapi.Event) error) error {
+func (f *fakeAPI) Events(ctx context.Context, since time.Time, fn func(dockerapi.Event) error, skipped func(error)) error {
 	f.mu.Lock()
 	f.sinces = append(f.sinces, since)
+	for range f.skips {
+		skipped(errors.New("undecodable line"))
+	}
 	if len(f.scripts) == 0 {
 		f.mu.Unlock()
 		<-ctx.Done()
@@ -163,8 +167,7 @@ func TestDocker_TagsAndGauges(t *testing.T) {
 		t.Errorf("tags = %s\nwant   %s", sortedTags(m.Tags), want)
 	}
 	for name, w := range map[string]float64{
-		"container.cpu.usage":    50.0 / 1000 * 4 * 100, // cpu_delta / system_delta × cpus × 100
-		"container.memory.usage": 900,                   // minus inactive file cache
+		"container.memory.usage": 900, // minus inactive file cache
 		"container.memory.limit": 4000,
 		"container.memory.rss":   600,
 		"container.memory.cache": 300,
@@ -178,10 +181,23 @@ func TestDocker_TagsAndGauges(t *testing.T) {
 	if r := g.one(t, "docker.containers.running"); r.Value != 1 || r.Tags[0] != "image_name:ghcr.io/acme/api" {
 		t.Errorf("running = %+v", r)
 	}
-	for _, rate := range []string{"container.net.rx_bytes", "container.io.read_bytes", "container.cpu.throttled"} {
+	for _, rate := range []string{"container.cpu.usage", "container.net.rx_bytes", "container.io.read_bytes", "container.cpu.throttled"} {
 		if len(g[rate]) != 0 {
-			t.Errorf("%s on the first run: a rate needs two readings", rate)
+			t.Errorf("%s on the first run: it needs two readings", rate)
 		}
+	}
+	// One-shot stats carry no previous sample, so CPU is measured between
+	// this run's reading and the last one.
+	api.mu.Lock()
+	api.stats[idAPI] = stats(2)
+	api.mu.Unlock()
+	g, err = collect(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// (250-150) / (21000-11000) × 4 cpus × 100
+	if v := g.one(t, "container.cpu.usage").Value; math.Abs(v-4) > 1e-9 {
+		t.Errorf("cpu = %v, want 4", v)
 	}
 }
 
@@ -350,4 +366,84 @@ func sortedTags(tags []string) string {
 	t := slices.Clone(tags)
 	slices.Sort(t)
 	return strings.Join(t, ",")
+}
+
+// A container restarted in place keeps its id; its uptime starts again.
+func TestDocker_AStartForgetsTheCachedStartTime(t *testing.T) {
+	api := &fakeAPI{
+		list:    []dockerapi.Container{ctr(idAPI, "api", "x", nil)},
+		stats:   map[string]dockerapi.Stats{idAPI: stats(1)},
+		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Hour)}}},
+	}
+	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0)})
+	_, _ = collect(t, c)
+	api.mu.Lock()
+	api.inspect[idAPI] = dockerapi.ContainerJSON{State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Minute)}}
+	api.mu.Unlock()
+	c.ContainerStarted(idAPI)
+	g, _ := collect(t, c)
+	if v := g.one(t, "container.uptime").Value; v != 60 {
+		t.Fatalf("uptime = %v, want 60: the restart's start time", v)
+	}
+}
+
+// An image whose last container stopped reports 0 once, then nothing.
+func TestDocker_AVanishedImageReportsZeroOnce(t *testing.T) {
+	api := &fakeAPI{
+		list:  []dockerapi.Container{ctr(idAPI, "api", "api:1", nil)},
+		stats: map[string]dockerapi.Stats{idAPI: stats(1)},
+	}
+	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0)})
+	_, _ = collect(t, c)
+	api.mu.Lock()
+	api.list = nil
+	api.mu.Unlock()
+	g, _ := collect(t, c)
+	if r := g.one(t, "docker.containers.running"); r.Value != 0 || r.Tags[0] != "image_name:api" {
+		t.Fatalf("running = %+v, want 0 for api", r)
+	}
+	if g, _ = collect(t, c); len(g["docker.containers.running"]) != 0 {
+		t.Fatalf("still reporting %+v", g["docker.containers.running"])
+	}
+}
+
+// A container with no network (--network none) or no block-io entries has
+// no such counters: unknown, not a rate of 0.
+func TestDocker_MissingCountersAreNotZero(t *testing.T) {
+	st := func(n uint64) dockerapi.Stats {
+		s := stats(n)
+		s.Networks, s.BlkioStats.IoServiceBytesRecursive = nil, nil
+		return s
+	}
+	api := &fakeAPI{list: []dockerapi.Container{ctr(idAPI, "api", "x", nil)}, stats: map[string]dockerapi.Stats{idAPI: st(1)}}
+	fc := testutil.NewFakeClock(t0)
+	c := New(Options{API: api, Clock: fc})
+	_, _ = collect(t, c)
+	fc.Advance(15 * time.Second)
+	api.mu.Lock()
+	api.stats[idAPI] = st(2)
+	api.mu.Unlock()
+	g, _ := collect(t, c)
+	for _, name := range []string{"container.net.rx_bytes", "container.net.tx_bytes", "container.io.read_bytes", "container.io.write_bytes"} {
+		if len(g[name]) != 0 {
+			t.Errorf("%s = %+v, want nothing", name, g[name])
+		}
+	}
+	g.one(t, "container.cpu.throttled")
+}
+
+// Two containers whose tags differ only in case are one series after
+// normalization, so they are combined, not sent as two points for one
+// series (the last would win).
+func TestDocker_TagsThatNormalizeAlikeAreCombined(t *testing.T) {
+	other := "b" + idAPI[1:]
+	api := &fakeAPI{
+		list:  []dockerapi.Container{ctr(idAPI, "Job", "x", nil), ctr(other, "job", "x", nil)},
+		stats: map[string]dockerapi.Stats{idAPI: stats(1), other: stats(1)},
+	}
+	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0), Rewrites: []Rewrite{{Match: regexp.MustCompile(`(?i)^job$`), Replace: "${0}"}}})
+	g, _ := collect(t, c)
+	if m := g.one(t, "container.memory.usage"); m.Value != 1800 {
+		t.Fatalf("memory = %v, want 2 × 900", m.Value)
+	}
 }

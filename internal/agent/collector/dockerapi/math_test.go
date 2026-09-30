@@ -120,9 +120,9 @@ func TestBlockIOAndNetwork(t *testing.T) {
 		{"stats-cgroupv1.json", 2048, 4096, 500, 700, 5, 0},
 	} {
 		s := loadStats(t, tc.file)
-		r, w := s.BlockIO()
-		rx, tx := s.NetworkBytes()
-		if r != tc.read || w != tc.write || rx != tc.rx || tx != tc.tx {
+		r, w, ioOK := s.BlockIO()
+		rx, tx, netOK := s.NetworkBytes()
+		if r != tc.read || w != tc.write || rx != tc.rx || tx != tc.tx || !ioOK || !netOK {
 			t.Errorf("%s: io %d/%d net %d/%d, want %d/%d %d/%d", tc.file, r, w, rx, tx, tc.read, tc.write, tc.rx, tc.tx)
 		}
 		if s.PidsStats.Current != tc.pids || s.CPUStats.ThrottlingData.ThrottledPeriods != tc.throttledCount {

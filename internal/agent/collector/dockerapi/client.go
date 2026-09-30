@@ -104,7 +104,7 @@ func New(opts Options) *Client {
 			return d.DialContext(ctx, "unix", socket)
 		},
 		MaxIdleConns:        4,
-		MaxIdleConnsPerHost: 4,
+		MaxIdleConnsPerHost: 16, // above the collector's stats concurrency
 		IdleConnTimeout:     90 * time.Second,
 	}
 	// No http.Client.Timeout: it would also cut the event stream. Each
@@ -135,7 +135,7 @@ func (c *Client) Stats(ctx context.Context, id string) (Stats, error) {
 	if err := checkID(id); err != nil {
 		return s, err
 	}
-	q := url.Values{"stream": {"false"}}
+	q := url.Values{"stream": {"false"}, "one-shot": {"true"}}
 	err := c.getJSON(ctx, "/containers/"+url.PathEscape(id)+"/stats", q, &s)
 	if errors.Is(err, errEmptyBody) {
 		// A container that stops while the daemon takes its second CPU
@@ -176,7 +176,12 @@ const eventFilters = `{"type":["container"],"event":["start","oom","die"]}`
 //
 // fn runs on the calling goroutine, one event at a time. A slow fn holds
 // the stream; the daemon buffers, and past its buffer, drops the client.
-func (c *Client) Events(ctx context.Context, since time.Time, fn func(Event) error) error {
+//
+// A line that cannot be decoded, or is longer than MaxEventBytes, is
+// skipped and reported to skipped (if not nil), not treated as the end of
+// the stream: ending it would reconnect from the last good event, and the
+// daemon would replay the same bad line, forever.
+func (c *Client) Events(ctx context.Context, since time.Time, fn func(Event) error, skipped func(error)) error {
 	q := url.Values{"filters": {eventFilters}}
 	if !since.IsZero() {
 		q.Set("since", formatSince(since))
@@ -193,28 +198,66 @@ func (c *Client) Events(ctx context.Context, since time.Time, fn func(Event) err
 	if resp.StatusCode != http.StatusOK {
 		return c.apiError(resp, http.MethodGet, "/events")
 	}
-	sc := bufio.NewScanner(resp.Body)
-	sc.Buffer(make([]byte, 0, 4096), MaxEventBytes)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(strings.TrimSpace(string(line))) == 0 {
+	skip := func(err error) {
+		if skipped != nil {
+			skipped(err)
+		}
+	}
+	br := bufio.NewReaderSize(resp.Body, 4096)
+	for {
+		line, tooLong, err := readLine(br, MaxEventBytes)
+		if err != nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return cerr
+			}
+			if errors.Is(err, io.EOF) {
+				return ErrStreamClosed
+			}
+			return fmt.Errorf("dockerapi: reading /events: %w", err)
+		}
+		if tooLong {
+			skip(fmt.Errorf("dockerapi: an event longer than %d bytes", MaxEventBytes))
+			continue
+		}
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		ev, err := DecodeEvent(line)
 		if err != nil {
-			return err
+			skip(err)
+			continue
 		}
 		if err := fn(ev); err != nil {
 			return err
 		}
 	}
-	if err := ctx.Err(); err != nil {
-		return err
+}
+
+// readLine reads one newline-terminated line, keeping at most limit bytes:
+// a longer line is read to its end and discarded (tooLong), so one huge
+// event costs no more memory than the limit. A final line without a
+// newline is returned with io.EOF only if it is empty.
+func readLine(br *bufio.Reader, limit int) (line []byte, tooLong bool, err error) {
+	for {
+		chunk, err := br.ReadSlice('\n')
+		if !tooLong {
+			if len(line)+len(chunk) > limit {
+				tooLong, line = true, nil
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		switch {
+		case err == nil:
+			return line, tooLong, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF) && (len(line) > 0 || tooLong):
+			return line, tooLong, nil
+		default:
+			return nil, false, err
+		}
 	}
-	if err := sc.Err(); err != nil {
-		return fmt.Errorf("dockerapi: reading /events: %w", err)
-	}
-	return ErrStreamClosed
 }
 
 // formatSince writes t as the daemon's since parameter: unix seconds with

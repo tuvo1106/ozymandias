@@ -29,7 +29,7 @@ import (
 // within 1% of the p95 computed from the raw values the test sent — which it
 // still has, and the rest of the pipeline never did.
 func TestEndToEnd_DistributionToPercentile(t *testing.T) {
-	clk := testutil.NewFakeClock(time.Unix(1790000000, 0)) // a bucket boundary: an agent writes no bucket that began before it started
+	clk := testutil.NewFakeClock(time.Unix(1789999999, 0))
 
 	srv, err := New(testConfig(t), Options{Logger: quiet, Clock: clk})
 	if err != nil {
@@ -45,11 +45,13 @@ func TestEndToEnd_DistributionToPercentile(t *testing.T) {
 	acfg.Intake.URL = ts.URL
 	acfg.Statsd.Addr = "127.0.0.1:0"
 	acfg.HTTP.ShutdownTimeout = time.Second
+	acfg.Collectors.Docker.Enabled = false // not this machine's containers
 	areg := selfmetrics.NewRegistry()
 	a, err := agent.New(acfg, agent.Options{Logger: quiet, Clock: clk, Registry: areg})
 	if err != nil {
 		t.Fatal(err)
 	}
+	clk.Advance(time.Second) // onto the boundary, a second after the agent started: its first whole bucket (aggregator.Options.Started)
 	ln, _ := httpserve.Listen("127.0.0.1:0")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
