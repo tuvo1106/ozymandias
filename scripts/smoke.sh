@@ -172,29 +172,41 @@ check "its tag keys are counted"           body_has "$OZY_URL/api/v1/tags/cardin
 # would be the container id, and every `make up` would add a host value (and a
 # copy of every self-metric series) to the store. The volume keeps old values,
 # so listing tag values proves nothing; ask which hosts ozyd reported from in
-# its newest bucket, which must be the Mac's name alone. The window is wide
-# because ozyd stamps points with the VM's clock, which can drift from the
-# Mac's after a sleep. Tag values are lower-cased on the wire.
-latest_ozyd_hosts() {
-  local now body; now=$(date +%s)
+# the last 25s, which must be the Mac's name alone.
+#
+# "Now" is ozyd's, from its Date header, not the Mac's: ozyd stamps points
+# with the VM's clock, which can drift from the Mac's after a sleep, and
+# neither "the newest bucket" nor a wide window survives the VM clock being
+# corrected backwards (old points would then be the newest for a while).
+# Right after a recreate the old container's last bucket is still in the
+# window; the retries outlast it. Tag values are lower-cased on the wire.
+ozyd_now() {
+  curl -fsS --max-time 2 -o /dev/null -D - "$OZY_URL/healthz" | tr -d '\r' |
+    python3 -c 'import sys, email.utils
+for line in sys.stdin:
+    if line.lower().startswith("date:"):
+        print(int(email.utils.parsedate_to_datetime(line[5:].strip()).timestamp()))'
+}
+recent_ozyd_hosts() {
+  local now body
+  now=$(ozyd_now 2>/dev/null) && [[ -n $now ]] || { echo "(ozyd unreachable)"; return; }
   body=$(curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" \
     --data-urlencode 'q=max:ozy.build.info{component:ozyd} by {host}' \
-    --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 300))" 2>/dev/null) ||
+    --data-urlencode "from=$((now - 25))" --data-urlencode "to=$now" 2>/dev/null) ||
     { echo "(query failed)"; return; }
   # A group without the by-key has no "host" in its tags (docs/api.md).
   printf '%s' "$body" | python3 -c 'import json,sys
 series = json.load(sys.stdin).get("series", [])
-seen = {(s["tags"].get("host", "<none>"), p[0]) for s in series for p in s["points"] if p[1] is not None}
-newest = max((t for _, t in seen), default=None)
-print(",".join(sorted(h for h, t in seen if t == newest)))'
+print(",".join(sorted({s["tags"].get("host", "<none>") for s in series
+                       if any(p[1] is not None for p in s["points"])})))'
 }
 ozyd_host_is_the_macs() {
   local want; want=$(printf '%s' "$(scripts/hostname.sh)" | tr '[:upper:]' '[:lower:]')
-  for _ in $(seq 1 15); do
-    [[ "$(latest_ozyd_hosts)" == "$want" ]] && return 0
+  for _ in $(seq 1 25); do
+    [[ "$(recent_ozyd_hosts)" == "$want" ]] && return 0
     sleep 1
   done
-  echo "ozyd's newest self-metrics are from host(s) '$(latest_ozyd_hosts)', expected '$want'" >&2
+  echo "ozyd's self-metrics in the last 25s are from host(s) '$(recent_ozyd_hosts)', expected '$want'" >&2
   return 1
 }
 check "ozyd tags its own metrics with the Mac's name" ozyd_host_is_the_macs
