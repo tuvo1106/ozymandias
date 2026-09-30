@@ -160,27 +160,19 @@ func (s *Scheduler) Collectors() []Collector {
 // stops it again. Stopping cancels its context; a run in progress finishes
 // and is sent. After Run has begun shutting down, Add does nothing.
 //
-// A collector whose name is already scheduled is refused (logged): two
-// would share one set of self-metrics. Those self-metrics outlive a removed
-// collector — the registry has no removal — so their number is bounded by
-// the distinct names ever added, which for autodiscovery is container names.
+// Collectors that share a name share its self-metrics: counts add up, and
+// the duration is the latest run's. That is what autodiscovery wants when
+// several containers fold into one name (container_name_rewrite), and what
+// makes a recreated container's check start at once rather than wait for
+// its predecessor's goroutine to wind down. Configured instances cannot
+// share a name; the registry refuses that at startup. A collector's
+// self-metrics are released when its loop ends, so they last as long as
+// some collector of that name runs, plus one report.
 func (s *Scheduler) Add(c Collector) (remove func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closing {
 		return func() {}
-	}
-	for _, t := range s.pending {
-		if t.c.Name() == c.Name() {
-			s.log.Warn("a collector with this name is already scheduled; not adding another", "collector", c.Name())
-			return func() {}
-		}
-	}
-	for t := range s.running {
-		if t.c.Name() == c.Name() {
-			s.log.Warn("a collector with this name is already scheduled; not adding another", "collector", c.Name())
-			return func() {}
-		}
 	}
 	t := &task{c: c}
 	if s.ctx == nil {
@@ -297,19 +289,36 @@ func (s *Scheduler) jitter(iv time.Duration) time.Duration {
 	return time.Duration(s.opts.Rand.Int64N(int64(iv)))
 }
 
+// The self-metrics every collector has, each tagged collector:<name>.
+var (
+	selfCounters = []string{
+		"ozy.agent.collector.runs", "ozy.agent.collector.errors",
+		"ozy.agent.collector.timeouts", "ozy.agent.collector.points",
+		"ozy.agent.collector.dropped", "ozy.agent.collector.tags_dropped",
+	}
+	selfGauge = "ozy.agent.collector.duration_ms"
+)
+
 // loop runs one collector until ctx is done.
 func (s *Scheduler) loop(ctx context.Context, c Collector) {
 	iv := s.interval(c)
+	reg, tag := s.opts.Registry, "collector:"+c.Name()
 	st := &runState{
 		name: c.Name(),
-		runs: s.opts.Registry.Counter("ozy.agent.collector.runs", "collector:"+c.Name()),
-		errs: s.opts.Registry.Counter("ozy.agent.collector.errors", "collector:"+c.Name()),
-		tout: s.opts.Registry.Counter("ozy.agent.collector.timeouts", "collector:"+c.Name()),
-		pts:  s.opts.Registry.Counter("ozy.agent.collector.points", "collector:"+c.Name()),
-		drop: s.opts.Registry.Counter("ozy.agent.collector.dropped", "collector:"+c.Name()),
-		tags: s.opts.Registry.Counter("ozy.agent.collector.tags_dropped", "collector:"+c.Name()),
-		dur:  s.opts.Registry.Gauge("ozy.agent.collector.duration_ms", "collector:"+c.Name()),
+		runs: reg.Counter(selfCounters[0], tag),
+		errs: reg.Counter(selfCounters[1], tag),
+		tout: reg.Counter(selfCounters[2], tag),
+		pts:  reg.Counter(selfCounters[3], tag),
+		drop: reg.Counter(selfCounters[4], tag),
+		tags: reg.Counter(selfCounters[5], tag),
+		dur:  reg.Gauge(selfGauge, tag),
 	}
+	defer func() {
+		for _, n := range selfCounters {
+			reg.Release(n, tag)
+		}
+		reg.Release(selfGauge, tag)
+	}()
 
 	first := s.opts.Clock.NewTimer(s.jitter(iv))
 	select {

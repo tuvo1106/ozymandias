@@ -57,7 +57,10 @@ func (s *sink) all() []wire.Series {
 	return out
 }
 
+// counter reads a collector's self-metric counter without keeping a hold
+// on it, so reading does not keep it alive past its collectors.
 func counter(reg *selfmetrics.Registry, name, coll string) int64 {
+	defer reg.Release(name, "collector:"+coll)
 	return reg.Counter(name, "collector:"+coll).Value()
 }
 
@@ -403,7 +406,10 @@ func TestScheduler_AbandonsACollectorThatIgnoresCancellation(t *testing.T) {
 }
 
 // Autodiscovery's path: a collector added while Run runs is started, one
-// removed stops, and a second with a name already running is refused.
+// removed stops, and a second of the same name runs beside it, sharing its
+// self-metrics — a recreated container's check starts at once, and folded
+// replicas are all checked. Once none of that name runs, its self-metrics
+// are reported a last time and then forgotten.
 func TestScheduler_AddAndRemoveWhileRunning(t *testing.T) {
 	testutil.CheckGoroutines(t)
 	emitting := func(name string) *fake {
@@ -414,8 +420,8 @@ func TestScheduler_AddAndRemoveWhileRunning(t *testing.T) {
 	}
 	fc := testutil.NewFakeClock(t0)
 	sk := &sink{}
-	var logs syncBuffer
-	s := New(Options{Clock: fc, Sink: sk.send, Rand: rand.New(rand.NewPCG(1, 2)), Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	reg := selfmetrics.NewRegistry()
+	s := New(Options{Clock: fc, Sink: sk.send, Rand: rand.New(rand.NewPCG(1, 2)), Registry: reg, Logger: slog.New(slog.DiscardHandler)})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { s.Run(ctx); close(done) }()
@@ -424,27 +430,43 @@ func TestScheduler_AddAndRemoveWhileRunning(t *testing.T) {
 	a := emitting("a")
 	testutil.Eventually(t, time.Second, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.ctx != nil }, "Run started")
 	removeA := s.Add(a)
-	s.Add(emitting("a")) // same name: refused
-	if !strings.Contains(logs.String(), "already scheduled") || len(s.Collectors()) != 1 {
-		t.Fatalf("a duplicate name was scheduled: %v\n%s", s.Collectors(), logs.String())
-	}
-	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "a armed")
+	a2 := emitting("a")
+	removeA2 := s.Add(a2) // same name: runs too
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 2 }, "both armed")
 	fc.Advance(time.Second)
-	testutil.Eventually(t, time.Second, func() bool { return a.calls.Load() == 1 }, "a ran")
+	testutil.Eventually(t, time.Second, func() bool { return a.calls.Load() == 1 && a2.calls.Load() == 1 }, "both ran")
+	testutil.Eventually(t, time.Second, func() bool { return counter(reg, "ozy.agent.collector.runs", "a") == 2 }, "runs shared")
 
 	removeA()
-	testutil.Eventually(t, time.Second, func() bool { return len(s.Collectors()) == 0 }, "a stopped")
+	testutil.Eventually(t, time.Second, func() bool { return len(s.Collectors()) == 1 }, "a stopped")
 	fc.Advance(5 * time.Second)
-	time.Sleep(20 * time.Millisecond)
+	testutil.Eventually(t, time.Second, func() bool { return a2.calls.Load() >= 2 }, "a2 still runs")
 	if n := a.calls.Load(); n != 1 {
 		t.Fatalf("a ran %d times after removal", n-1)
 	}
-	// Its name is free again.
-	b := emitting("a")
-	s.Add(b)
-	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "b armed")
-	fc.Advance(time.Second)
-	testutil.Eventually(t, time.Second, func() bool { return b.calls.Load() == 1 }, "b ran")
+	rep := selfmetrics.NewReporter(reg, 10*time.Second)
+	rep.Collect(t0)
+	if !reported(rep.Collect(t0.Add(10*time.Second)), "collector:a") {
+		t.Fatal("a2's self-metrics went with a")
+	}
+	removeA2()
+	testutil.Eventually(t, time.Second, func() bool { return len(s.Collectors()) == 0 }, "a2 stopped")
+	if !reported(rep.Collect(t0.Add(20*time.Second)), "collector:a") {
+		t.Fatal("the last report of a's self-metrics was skipped")
+	}
+	if reported(rep.Collect(t0.Add(30*time.Second)), "collector:a") {
+		t.Fatal("self-metrics of a name nothing runs under were kept")
+	}
+}
+
+// reported says whether any series in out carries tag.
+func reported(out []wire.Series, tag string) bool {
+	for _, s := range out {
+		if slices.Contains(s.Tags, tag) {
+			return true
+		}
+	}
+	return false
 }
 
 // Removing a collector that has not started yet (Run has not been called)
