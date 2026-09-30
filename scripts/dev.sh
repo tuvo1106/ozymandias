@@ -30,10 +30,12 @@ cleanup() {
 trap cleanup INT TERM EXIT
 
 # One name for both, so ozyd's own metrics and the agent's share a host tag
-# (the OS hostname on macOS is "name.local", `hostname -s` is "name").
-host=${OZY_HOSTNAME:-$(hostname -s)}
+# (ozyd's OS hostname on macOS is "name.local" or a DHCP name; see
+# scripts/hostname.sh). An OZY_AGENT_HOSTNAME left over from older advice
+# still counts, for both.
+host=${OZY_HOSTNAME:-${OZY_AGENT_HOSTNAME:-$(scripts/hostname.sh)}}
 OZY_HOSTNAME=$host ./bin/ozyd -config deploy/ozyd.yaml & pids+=($!)
-OZY_AGENT_HOSTNAME=${OZY_AGENT_HOSTNAME:-$host} \
+OZY_AGENT_HOSTNAME=$host \
   ./bin/agent -config deploy/agent.yaml & pids+=($!)
 # exec: the tracked pid is vite itself, not an npm wrapper that would
 # swallow the signal and leave vite running.

@@ -13,10 +13,12 @@ troubleshoot it. The design behind each piece is in [../DESIGN.md](../DESIGN.md)
 
 `make up` builds the image, creates the external `ozymandias` Docker network if
 it's missing, starts both services, and waits until both are healthy. It
-stamps the image with `git describe`, and passes the machine's short hostname
-as `OZY_HOSTNAME`: it becomes the `host` tag on the agent's data and on ozyd's
-own metrics, so both processes agree and neither tag changes when a container
-is recreated. `make dev` does the same. `make down-v` also deletes the data
+stamps the image with `git describe`, and passes the machine's name as
+`OZY_HOSTNAME` ([scripts/hostname.sh](../scripts/hostname.sh): an exported
+value, else on macOS the LocalHostName, which unlike `hostname -s` does not
+change with the network). It becomes the `host` tag on the agent's data and
+on ozyd's own metrics, so both processes agree and neither tag changes when a
+container is recreated. `make dev` does the same. `make down-v` also deletes the data
 volume.
 
 | Port | Service | Purpose |
@@ -235,7 +237,7 @@ TCP (the UI, `/healthz`, trace intake on 8126) is unaffected.
 | Exit code 2 | Configuration or usage error. The message names the file, line or key |
 | Exit code 1 | Runtime failure: port in use, unusable `data_dir`, no hostname. See the `exiting` log line |
 | `/` says "built without the web UI" | Run `make web && make build`. The image build does this for you |
-| `host` tag is `ozymandias-host` | Compose was started without `make up`, which exports `OZY_HOSTNAME`. Export it and recreate: `OZY_HOSTNAME=$(hostname -s) docker compose -f deploy/docker-compose.yml up -d` |
+| `host` tag is `ozymandias-host` | Compose was started without `make up`, which exports `OZY_HOSTNAME`. Export it and recreate: `OZY_HOSTNAME=$(scripts/hostname.sh) docker compose -f deploy/docker-compose.yml up -d` |
 | ozyd's `host` tag differs from the agent's, or is a container id | Run natively without `make dev`, ozyd uses the OS hostname (`name.local` on macOS). Set `hostname` in `ozyd.yaml`, or `OZY_HOSTNAME`, to the agent's name |
 | A metric never appears | Walk the path in order, stopping at the first zero: `statsd.packets_received` → `messages_received` → `aggregator.contexts` → `forwarder.payloads_sent` → the metric in `/api/v1/metrics`. Each stage below names what a zero there means |
 | `packets_received` is 0 | Nothing arrived. From the Mac to a containerized agent this is the Colima UDP limitation above. Otherwise check the app's `OZY_AGENT_HOST`/`PORT` and that the app and agent share a network |

@@ -11,7 +11,10 @@ SHELL := /bin/bash
 MODULE   := $(shell go list -m 2>/dev/null)
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS  := -s -w -X $(MODULE)/internal/buildinfo.Version=$(VERSION)
-COMPOSE  := OZY_VERSION=$(VERSION) OZY_HOSTNAME=$(shell hostname -s) docker compose -f deploy/docker-compose.yml
+# The host tag for both services (scripts/hostname.sh: an exported
+# OZY_HOSTNAME wins, as in dev.sh and smoke.sh, else a network-stable name).
+OZY_HOSTNAME ?= $(shell scripts/hostname.sh)
+COMPOSE  := OZY_VERSION=$(VERSION) OZY_HOSTNAME=$(OZY_HOSTNAME) docker compose -f deploy/docker-compose.yml
 FUZZTIME ?= 30s
 CI_FUZZTIME ?= 10s
 

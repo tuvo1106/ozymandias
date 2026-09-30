@@ -39,7 +39,7 @@ check "ozyd /healthz"                 body_has "$OZY_URL/healthz" '"component":"
 check "agent /healthz"                     body_has "$AGENT_URL/healthz" '"component":"agent"'
 check "ozyd container healthy"        healthy ozyd
 check "agent container healthy"            healthy agent
-check "agent tags data with the Mac's name" body_has "$AGENT_URL/healthz" "\"hostname\":\"${OZY_HOSTNAME:-$(hostname -s)}\""
+check "agent tags data with the Mac's name" body_has "$AGENT_URL/healthz" "\"hostname\":\"$(scripts/hostname.sh)\""
 check "agent forwards to ozyd by name" body_has "$AGENT_URL/healthz" '"intake_url":"http://ozyd:9400"'
 check "ozyd self-metrics"             body_has "$OZY_URL/debug/vars" 'ozy.build.info'
 check "UI index served"                    body_has "$OZY_URL/" '<div id="root">'
@@ -176,18 +176,20 @@ check "its tag keys are counted"           body_has "$OZY_URL/api/v1/tags/cardin
 # because ozyd stamps points with the VM's clock, which can drift from the
 # Mac's after a sleep. Tag values are lower-cased on the wire.
 latest_ozyd_hosts() {
-  local now; now=$(date +%s)
-  curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" \
+  local now body; now=$(date +%s)
+  body=$(curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" \
     --data-urlencode 'q=max:ozy.build.info{component:ozyd} by {host}' \
-    --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 300))" |
-    python3 -c 'import json,sys
+    --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 300))" 2>/dev/null) ||
+    { echo "(query failed)"; return; }
+  # A group without the by-key has no "host" in its tags (docs/api.md).
+  printf '%s' "$body" | python3 -c 'import json,sys
 series = json.load(sys.stdin).get("series", [])
-seen = {(s["tags"]["host"], p[0]) for s in series for p in s["points"] if p[1] is not None}
+seen = {(s["tags"].get("host", "<none>"), p[0]) for s in series for p in s["points"] if p[1] is not None}
 newest = max((t for _, t in seen), default=None)
 print(",".join(sorted(h for h, t in seen if t == newest)))'
 }
 ozyd_host_is_the_macs() {
-  local want; want=$(printf '%s' "${OZY_HOSTNAME:-$(hostname -s)}" | tr '[:upper:]' '[:lower:]')
+  local want; want=$(printf '%s' "$(scripts/hostname.sh)" | tr '[:upper:]' '[:lower:]')
   for _ in $(seq 1 15); do
     [[ "$(latest_ozyd_hosts)" == "$want" ]] && return 0
     sleep 1
@@ -477,7 +479,7 @@ wait_service() {
     [[ "$(json_field "$OZY_URL/api/v1/dashboards/services" "'$1' in d[\"services\"]")" == "True" ]] && return 0
     sleep 1
   done
-  echo "  $1 is not in $(curl -fsS --max-time 5 "$OZY_URL/api/v1/dashboards/services")" >&2
+  echo "$1 is not in $(curl -fsS --max-time 5 "$OZY_URL/api/v1/dashboards/services")" >&2
   return 1
 }
 check "the service template was provisioned" \
