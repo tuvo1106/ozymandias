@@ -387,10 +387,13 @@ func contextKey(kind Kind, name string, tags []string) string {
 // contexts idle for longer than the expiry. With final set it also emits the
 // open buckets — used once, at shutdown, when there is no later flush to wait
 // for. A restarted agent does not write that bucket again: it stamps
-// nothing before its first whole bucket (Options.Started). A bucket that
-// starts after now is not emitted even then: it holds samples an agent
-// stopped within its first interval moved forward to its floor, and the
-// next agent, started before that boundary, has the same floor.
+// nothing before its first whole bucket (Options.Started). The one open
+// bucket not emitted even then is that first bucket while it is still in
+// the future: it holds the samples of an agent stopped within its first
+// interval, moved forward to its floor, and the next agent, started before
+// that boundary, has the same floor and would be refused. Those samples are
+// the cost of never having a point refused; any other bucket ahead of now
+// (a client clock running fast, within TimestampTolerance) is emitted.
 func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.SketchSeries) {
 	began := time.Now()
 	nowS := now.Unix()
@@ -439,7 +442,7 @@ func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.Ske
 func (a *Aggregator) flushContext(out []wire.Series, sketches []wire.SketchSeries, c *aggContext, cutoff int64, final bool, nowS int64) ([]wire.Series, []wire.SketchSeries) {
 	starts := make([]int64, 0, len(c.buckets))
 	for s := range c.buckets {
-		if s < cutoff || final && s <= nowS {
+		if s < cutoff || final && (s <= nowS || s != a.first) {
 			starts = append(starts, s)
 		}
 	}
