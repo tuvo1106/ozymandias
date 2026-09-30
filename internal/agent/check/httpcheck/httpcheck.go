@@ -170,10 +170,11 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	defer func() { _ = resp.Body.Close() }()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	elapsed := c.clock.Now().Sub(start)
-	if readErr != nil {
-		return down(0, fmt.Errorf("%s: reading the body: %w", c.shown, readErr))
-	}
 
+	// The server accepted the connection and answered: can_connect is 1
+	// even when the body then fails (a stall past the timeout, a reset
+	// mid-body). Reporting 0 would chart a server that answered as one
+	// nobody could reach; up says the check failed.
 	gauge("network.http.can_connect", 1)
 	gauge("network.http.response_time", elapsed.Seconds())
 	gauge("network.http.status_code", float64(resp.StatusCode))
@@ -184,6 +185,8 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 
 	var why error
 	switch {
+	case readErr != nil:
+		why = fmt.Errorf("%s: reading the body: %w", c.shown, readErr)
 	case !c.statusOK(resp.StatusCode):
 		why = fmt.Errorf("%s: status %d, want %s", c.shown, resp.StatusCode, c.wantStatus())
 	case c.content != nil && !c.content.Match(body):

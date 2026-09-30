@@ -327,3 +327,22 @@ func TestCheck_ErrorsHideSecrets(t *testing.T) {
 		t.Fatalf("config error: %v", err)
 	}
 }
+
+// A server that answers and then fails mid-body was reached: can_connect 1
+// with the status it sent, and up 0 with the read error.
+func TestCheck_ABodyThatFailsWasStillReached(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("short")) // then the handler returns: the body ends early
+	}))
+	defer srv.Close()
+	g, err := run(t, newCheck(t, map[string]any{"url": srv.URL}, nil))
+	if err == nil || !strings.Contains(err.Error(), "reading the body") {
+		t.Fatalf("err = %v", err)
+	}
+	if g.value(t, "network.http.can_connect") != 1 || g.value(t, "network.http.up") != 0 || g.value(t, "network.http.status_code") != 200 {
+		t.Fatalf("got %v", g)
+	}
+	g.value(t, "network.http.response_time")
+}

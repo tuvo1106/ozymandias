@@ -239,8 +239,8 @@ the instance's `tags`.
 
 | Metric | Type | Unit | Tags | Meaning |
 |---|---|---|---|---|
-| `network.http.can_connect` | gauge | 0/1 | `url` | A response arrived: 0 for refused, DNS failure, timeout or an untrusted certificate |
-| `network.http.up` | gauge | 0/1 | `url` | Connected, with an expected status, and a body matching `content_match` if set. The one to alert on |
+| `network.http.can_connect` | gauge | 0/1 | `url` | A response arrived: 0 for refused, DNS failure, timeout before the headers or an untrusted certificate; 1 even if the body then fails |
+| `network.http.up` | gauge | 0/1 | `url` | Connected, with an expected status, a body read in full and matching `content_match` if set. The one to alert on |
 | `network.http.status_code` | gauge | status | `url` | The response's status (after redirects, unless `follow_redirects: false`) |
 | `network.http.response_time` | gauge | seconds | `url` | From sending the request to reading the body (up to 64 KiB) on a new connection: DNS, connect, TLS and transfer |
 | `network.http.ssl.days_left` | gauge | days | `url` | Until the server certificate's NotAfter (https only; fractional) |
