@@ -157,4 +157,8 @@ first run has none.
 "container" in the Tags column means the container tags above. When a
 rewrite folds several containers into one name, their amounts are summed
 into one series, and `container.uptime` and `container.memory.limit` take the
-largest.
+largest. CPU % and the rates need two samples of a container, so a folded
+series counts only the containers seen on the previous run too: with
+sandboxes that live less than an interval, `container.cpu.usage` and the
+`net`/`io` rates of the folded name undercount, and `container.memory.*`
+and `container.exits` are the figures to trust.

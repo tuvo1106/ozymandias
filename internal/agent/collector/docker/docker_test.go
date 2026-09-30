@@ -15,7 +15,6 @@ import (
 
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
-	"github.com/tuvo1106/ozymandias/internal/testutil"
 )
 
 var t0 = time.Unix(1_790_000_000, 0)
@@ -180,7 +179,7 @@ func TestDocker_TagsAndGauges(t *testing.T) {
 		stats:   map[string]dockerapi.Stats{idAPI: stats(1)},
 		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Hour)}}},
 	}
-	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0)})
+	c := New(Options{API: api})
 	g, err := collect(t, c)
 	if err != nil {
 		t.Fatal(err)
@@ -230,10 +229,8 @@ func TestDocker_RatesOnTheSecondRun(t *testing.T) {
 		list:  []dockerapi.Container{ctr(idAPI, "api", "api", nil)},
 		stats: map[string]dockerapi.Stats{idAPI: stats(1)},
 	}
-	fc := testutil.NewFakeClock(t0)
-	c := New(Options{API: api, Clock: fc})
+	c := New(Options{API: api})
 	_, _ = collect(t, c)
-	fc.Advance(15 * time.Second)
 	api.stats[idAPI] = stats(11) // +10 units of everything
 	g, _ := collect(t, c)
 	for name, w := range map[string]float64{
@@ -263,7 +260,7 @@ func TestDocker_RewrittenContainersAreOneSeries(t *testing.T) {
 		insp[id] = dockerapi.ContainerJSON{State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Duration(i+1) * time.Minute)}}
 	}
 	api := &fakeAPI{list: list, stats: st, inspect: insp}
-	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0), Rewrites: []Rewrite{{Match: regexp.MustCompile(`^judge-.*`), Replace: "judge"}}})
+	c := New(Options{API: api, Rewrites: []Rewrite{{Match: regexp.MustCompile(`^judge-.*`), Replace: "judge"}}})
 	g, _ := collect(t, c)
 	m := g.one(t, "container.memory.usage")
 	if m.Value != 2700 {
@@ -294,7 +291,7 @@ func TestDocker_AContainerThatStopsIsNotAnError(t *testing.T) {
 			broken: errors.New("daemon hiccup"),
 		},
 	}
-	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0)})
+	c := New(Options{API: api})
 	g, err := collect(t, c)
 	if err == nil || !strings.Contains(err.Error(), "broken: daemon hiccup") || strings.Contains(err.Error(), "gone") {
 		t.Fatalf("err = %v, want only the broken one", err)
@@ -311,7 +308,7 @@ func TestDocker_ManyFailuresMakeOneBoundedError(t *testing.T) {
 		api.list = append(api.list, ctr(id, fmt.Sprintf("c%d", i), "x", nil))
 		api.statsErr[id] = errors.New("overloaded")
 	}
-	_, err := collect(t, New(Options{API: api, Clock: testutil.NewFakeClock(t0)}))
+	_, err := collect(t, New(Options{API: api}))
 	if err == nil || !strings.Contains(err.Error(), "and 19 more containers") {
 		t.Fatalf("err = %v", err)
 	}
@@ -331,7 +328,7 @@ func TestDocker_BoundedConcurrency(t *testing.T) {
 		api.list = append(api.list, ctr(id, fmt.Sprintf("c%d", i), "x", nil))
 		api.stats[id] = stats(1)
 	}
-	_, _ = collect(t, New(Options{API: api, MaxConcurrency: 4, Clock: testutil.NewFakeClock(t0)}))
+	_, _ = collect(t, New(Options{API: api, MaxConcurrency: 4}))
 	if m := api.maxFlight.Load(); m > 4 || m < 2 {
 		t.Fatalf("max in flight = %d, want 2..4", m)
 	}
@@ -344,7 +341,7 @@ func TestDocker_StartTimesAreCachedAndForgotten(t *testing.T) {
 		stats:   map[string]dockerapi.Stats{idAPI: stats(1)},
 		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0}}},
 	}
-	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0)})
+	c := New(Options{API: api})
 	for range 3 {
 		_, _ = collect(t, c)
 	}
@@ -390,6 +387,15 @@ func TestTags_ARewriteReplacesTheWholeName(t *testing.T) {
 	}
 }
 
+// A replacement that expands to nothing keeps the container's own name and
+// id rather than leaving it with neither.
+func TestTags_AnEmptyExpansionKeepsTheName(t *testing.T) {
+	tg := tagger{rewrites: []Rewrite{{Match: regexp.MustCompile(`^judge-(\w*)`), Replace: "${2}"}}}
+	if got := sortedTags(tg.tags("judge-1", idAPI, "x", nil)); got != "container_id:aaaaaaaaaaaa,container_name:judge-1,image_name:x,image_tag:latest" {
+		t.Fatalf("got %s", got)
+	}
+}
+
 func TestDocker_NameAndInterval(t *testing.T) {
 	c := New(Options{Interval: 30 * time.Second})
 	if c.Name() != "docker" || c.Interval() != 30*time.Second || c.conc != DefaultMaxConcurrency {
@@ -411,7 +417,7 @@ func TestDocker_AStartForgetsTheCachedStartTime(t *testing.T) {
 		stats:   map[string]dockerapi.Stats{idAPI: stats(1)},
 		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Hour)}}},
 	}
-	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0)})
+	c := New(Options{API: api})
 	_, _ = collect(t, c)
 	api.mu.Lock()
 	api.inspect[idAPI] = dockerapi.ContainerJSON{State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Minute)}}
@@ -429,7 +435,7 @@ func TestDocker_AVanishedImageReportsZeroOnce(t *testing.T) {
 		list:  []dockerapi.Container{ctr(idAPI, "api", "api:1", nil)},
 		stats: map[string]dockerapi.Stats{idAPI: stats(1)},
 	}
-	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0)})
+	c := New(Options{API: api})
 	_, _ = collect(t, c)
 	api.mu.Lock()
 	api.list = nil
@@ -452,10 +458,8 @@ func TestDocker_MissingCountersAreNotZero(t *testing.T) {
 		return s
 	}
 	api := &fakeAPI{list: []dockerapi.Container{ctr(idAPI, "api", "x", nil)}, stats: map[string]dockerapi.Stats{idAPI: st(1)}}
-	fc := testutil.NewFakeClock(t0)
-	c := New(Options{API: api, Clock: fc})
+	c := New(Options{API: api})
 	_, _ = collect(t, c)
-	fc.Advance(15 * time.Second)
 	api.mu.Lock()
 	api.stats[idAPI] = st(2)
 	api.mu.Unlock()
@@ -477,7 +481,7 @@ func TestDocker_TagsThatNormalizeAlikeAreCombined(t *testing.T) {
 		list:  []dockerapi.Container{ctr(idAPI, "Job", "x", nil), ctr(other, "job", "x", nil)},
 		stats: map[string]dockerapi.Stats{idAPI: stats(1), other: stats(1)},
 	}
-	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0), Rewrites: []Rewrite{{Match: regexp.MustCompile(`(?i)^job$`), Replace: "${0}"}}})
+	c := New(Options{API: api, Rewrites: []Rewrite{{Match: regexp.MustCompile(`(?i)^job$`), Replace: "${0}"}}})
 	g, _ := collect(t, c)
 	if m := g.one(t, "container.memory.usage"); m.Value != 1800 {
 		t.Fatalf("memory = %v, want 2 × 900", m.Value)
@@ -492,7 +496,7 @@ func TestDocker_ARestartDuringInspectIsNotCached(t *testing.T) {
 		stats:   map[string]dockerapi.Stats{idAPI: stats(1)},
 		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Hour)}}},
 	}
-	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0)})
+	c := New(Options{API: api})
 	api.onInspect = func(id string) {
 		api.onInspect = nil // once
 		c.ContainerStarted(id)
@@ -519,7 +523,7 @@ func TestDocker_ATimedOutRunKeepsWhatItDidNotReach(t *testing.T) {
 		stats:   map[string]dockerapi.Stats{idAPI: stats(1), other: stats(1)},
 		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0}}, other: {State: dockerapi.ContainerState{StartedAt: t0}}},
 	}
-	c := New(Options{API: api, Clock: testutil.NewFakeClock(t0)})
+	c := New(Options{API: api})
 	_, _ = collect(t, c)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -533,7 +537,7 @@ func TestDocker_NoPidsStatsIsNotZeroPids(t *testing.T) {
 	st := stats(1)
 	st.PidsStats.Current = 0
 	api := &fakeAPI{list: []dockerapi.Container{ctr(idAPI, "api", "x", nil)}, stats: map[string]dockerapi.Stats{idAPI: st}}
-	g, _ := collect(t, New(Options{API: api, Clock: testutil.NewFakeClock(t0)}))
+	g, _ := collect(t, New(Options{API: api}))
 	if len(g["container.pids"]) != 0 {
 		t.Fatalf("pids = %+v, want nothing", g["container.pids"])
 	}
@@ -544,12 +548,10 @@ func TestDocker_NoPidsStatsIsNotZeroPids(t *testing.T) {
 // each run.
 func TestDocker_RatesAreTimedByTheSample(t *testing.T) {
 	first, second := stats(1), stats(11)
-	first.Read, second.Read = t0, t0.Add(20*time.Second) // the run gap is 15s
+	first.Read, second.Read = t0, t0.Add(20*time.Second) // not the 15s the fixture would say
 	api := &fakeAPI{list: []dockerapi.Container{ctr(idAPI, "api", "x", nil)}, stats: map[string]dockerapi.Stats{idAPI: first}}
-	fc := testutil.NewFakeClock(t0)
-	c := New(Options{API: api, Clock: fc})
+	c := New(Options{API: api})
 	_, _ = collect(t, c)
-	fc.Advance(15 * time.Second)
 	api.mu.Lock()
 	api.stats[idAPI] = second
 	api.mu.Unlock()
@@ -575,13 +577,11 @@ func TestDocker_AnHourOfClockSkew(t *testing.T) {
 		stats:   map[string]dockerapi.Stats{idAPI: st(1)},
 		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0.Add(skew - time.Minute)}}},
 	}
-	fc := testutil.NewFakeClock(t0)
-	c := New(Options{API: api, Clock: fc})
+	c := New(Options{API: api})
 	g, _ := collect(t, c)
 	if v := g.one(t, "container.uptime").Value; v != 60 {
 		t.Errorf("uptime = %v, want 60 on the daemon's clock", v)
 	}
-	fc.Advance(15 * time.Second)
 	api.mu.Lock()
 	api.stats[idAPI] = st(11)
 	api.mu.Unlock()
@@ -596,10 +596,8 @@ func TestDocker_AnHourOfClockSkew(t *testing.T) {
 // life's counters against the old life's.
 func TestDocker_ARestartDropsTheBaselines(t *testing.T) {
 	api := &fakeAPI{list: []dockerapi.Container{ctr(idAPI, "api", "x", nil)}, stats: map[string]dockerapi.Stats{idAPI: stats(1)}}
-	fc := testutil.NewFakeClock(t0)
-	c := New(Options{API: api, Clock: fc})
+	c := New(Options{API: api})
 	next := func(n uint64) got {
-		fc.Advance(15 * time.Second)
 		api.mu.Lock()
 		api.stats[idAPI] = stats(n)
 		api.mu.Unlock()
@@ -628,10 +626,8 @@ func TestDocker_ARestartDuringStatsSkipsTheSample(t *testing.T) {
 		stats:   map[string]dockerapi.Stats{idAPI: stats(1)},
 		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Hour)}}},
 	}
-	fc := testutil.NewFakeClock(t0)
-	c := New(Options{API: api, Clock: fc})
+	c := New(Options{API: api})
 	_, _ = collect(t, c)
-	fc.Advance(15 * time.Second)
 	api.mu.Lock()
 	api.stats[idAPI] = stats(11)
 	api.inspect[idAPI] = dockerapi.ContainerJSON{State: dockerapi.ContainerState{StartedAt: t0.Add(10 * time.Second)}}
@@ -661,5 +657,59 @@ func TestSummarize_IsStable(t *testing.T) {
 	a, b := errors.New("a: timeout"), errors.New("b: timeout")
 	if x, y := summarize([]error{a, b}), summarize([]error{b, a}); x.Error() != y.Error() {
 		t.Fatalf("%q != %q", x, y)
+	}
+}
+
+// A restart the watcher never saw (the daemon restarted; its empty event
+// buffer replays nothing): the CPU counter going backwards gives it away,
+// and the container is treated as started — no sample across it, and the
+// start time is read again.
+func TestDocker_AnUnseenRestartIsCaughtByTheCounter(t *testing.T) {
+	api := &fakeAPI{
+		list:    []dockerapi.Container{ctr(idAPI, "api", "x", nil)},
+		stats:   map[string]dockerapi.Stats{idAPI: stats(11)},
+		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Hour)}}},
+	}
+	c := New(Options{API: api})
+	_, _ = collect(t, c)
+	api.mu.Lock()
+	api.stats[idAPI] = stats(2) // counters began again
+	api.inspect[idAPI] = dockerapi.ContainerJSON{State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Second)}}
+	api.mu.Unlock()
+	g, _ := collect(t, c)
+	if len(g["container.uptime"]) != 0 || len(g["container.cpu.usage"]) != 0 {
+		t.Fatalf("uptime %+v, cpu %+v from the sample that revealed the restart", g["container.uptime"], g["container.cpu.usage"])
+	}
+	api.mu.Lock()
+	api.stats[idAPI] = stats(3)
+	api.mu.Unlock()
+	g, _ = collect(t, c)
+	if v := g.one(t, "container.uptime").Value; v != 4 {
+		t.Errorf("uptime = %v, want 4: the new start (t0-1s) to the sample (t0+3s)", v)
+	}
+}
+
+// Tags follow a rename, and the image as the container was started from
+// it (the inspect's), not the list's, which turns into the image id once
+// the tag is re-pointed: the event watcher tags by the reference too.
+func TestDocker_TagsFollowRenameAndTheStartedImage(t *testing.T) {
+	j := dockerapi.ContainerJSON{State: dockerapi.ContainerState{StartedAt: t0}}
+	j.Config.Image = "app:latest"
+	api := &fakeAPI{
+		list:    []dockerapi.Container{ctr(idAPI, "web", "sha256:"+strings.Repeat("b", 64), nil)},
+		stats:   map[string]dockerapi.Stats{idAPI: stats(1)},
+		inspect: map[string]dockerapi.ContainerJSON{idAPI: j},
+	}
+	c := New(Options{API: api})
+	g, _ := collect(t, c)
+	if m := g.one(t, "container.memory.usage"); !slices.Contains(m.Tags, "image_name:app") || !slices.Contains(m.Tags, "image_tag:latest") {
+		t.Errorf("tags %v, want the started reference app:latest", m.Tags)
+	}
+	api.mu.Lock()
+	api.list = []dockerapi.Container{ctr(idAPI, "web-old", "sha256:"+strings.Repeat("b", 64), nil)}
+	api.mu.Unlock()
+	g, _ = collect(t, c)
+	if m := g.one(t, "container.memory.usage"); !slices.Contains(m.Tags, "container_name:web-old") {
+		t.Errorf("tags %v after docker rename, want container_name:web-old", m.Tags)
 	}
 }

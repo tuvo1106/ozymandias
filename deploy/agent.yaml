@@ -122,7 +122,8 @@ collectors:
     # their container_id: for containers that are many and short-lived by
     # design (a sandbox per job), which would otherwise be a series each.
     # Same-named containers become one series: amounts summed, uptime and
-    # memory limit the largest. First match wins; conf.d fragments append.
+    # memory limit the largest (CPU and rates only over containers seen on
+    # the previous run too; docs/metrics-catalog.md). First match wins; conf.d fragments append.
     # This stack's own throwaway containers (make up's socket-group probe,
     # smoke's test containers) keep their names but drop container_id, so
     # each run adds to the same series instead of minting new ones.

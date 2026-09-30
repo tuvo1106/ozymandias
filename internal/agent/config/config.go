@@ -102,6 +102,11 @@ func (d DockerCollector) Matches() ([]*regexp.Regexp, error) {
 		if r.Match == "" {
 			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d]: match is empty", i)
 		}
+		if strings.TrimSpace(r.Replace) == "" {
+			// An empty name is no name: the container would lose both its
+			// name and its id and merge with anything else of its image.
+			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d] %q: replace is empty", i, r.Match)
+		}
 		rx, err := regexp.Compile(r.Match)
 		if err != nil {
 			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d] %q: %w", i, r.Match, err)

@@ -13,7 +13,6 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/agent/agenttags"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
-	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
@@ -39,7 +38,8 @@ type Options struct {
 	Interval       time.Duration
 	MaxConcurrency int // default DefaultMaxConcurrency
 	Rewrites       []Rewrite
-	Clock          clock.Clock // default clock.Real()
+	// No Clock: every time the collector uses is the daemon's (a sample's
+	// read time, a container's start), so the agent's clock has no say.
 }
 
 // Collector reports every running container's resource use (container.*)
@@ -49,7 +49,6 @@ type Collector struct {
 	iv    time.Duration
 	conc  int
 	tag   tagger
-	clock clock.Clock
 	rates *collector.Rates
 	// images are the images counted last run, so one whose last container
 	// stopped reads 0 once rather than just stopping.
@@ -72,19 +71,29 @@ type Collector struct {
 // place (restart: always, docker restart) keeps its id, so the event
 // watcher reports every start (ContainerStarted), which forgets the cached
 // time and moves gen on: a sample taken in one generation is not compared
-// with one from another, whose counters began again.
+// with one from another, whose counters began again. A start the watcher
+// misses (the daemon restarted, and its empty event buffer replays
+// nothing) shows up as the CPU counter going backwards, which is treated
+// the same way.
+//
+// The inspect also gives the image reference the container was started
+// from, as written (Config.Image). The list's Image says the same until
+// the tag is re-pointed at a new build, then gives the image id; the event
+// watcher tags by the reference as written, so the collector does too.
 type life struct {
 	started time.Time // zero until inspected
+	image   string    // Config.Image, from the same inspect
 	gen     uint64    // start events seen
 }
 
 // seen is what runs keep about one container between runs.
 type seen struct {
-	// tags and tagKey are computed once: a container's name, image and
-	// labels are fixed for its life. tagKey is the tags joined, as
-	// run.add combines on.
-	tags   []string
-	tagKey string
+	// tags and tagKey are computed once, and again only if the name or
+	// image they came from changes (docker rename; a first inspect that
+	// failed). tagKey is the tags joined, as run.add combines on.
+	tags        []string
+	tagKey      string
+	name, image string
 	// cpu is the previous CPU sample (one-shot stats carry one, and CPU %
 	// needs two), taken in restart generation gen, like the container's
 	// rate readings.
@@ -133,12 +142,9 @@ func New(opts Options) *Collector {
 	if opts.MaxConcurrency <= 0 {
 		opts.MaxConcurrency = DefaultMaxConcurrency
 	}
-	if opts.Clock == nil {
-		opts.Clock = clock.Real()
-	}
 	return &Collector{
 		api: opts.API, iv: opts.Interval, conc: opts.MaxConcurrency,
-		tag: tagger{rewrites: opts.Rewrites}, clock: opts.Clock,
+		tag:   tagger{rewrites: opts.Rewrites},
 		rates: collector.NewRates(), images: map[string]bool{},
 		seen: map[string]*seen{}, lives: map[string]*life{},
 	}
@@ -198,7 +204,6 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 	if err != nil {
 		return err
 	}
-	now := c.clock.Now()
 
 	res := &run{out: map[string]*collector.Metric{}}
 	perImage := map[string]int{}
@@ -241,8 +246,8 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 		}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			started, known, gen := c.startTime(ctx, ct.ID)
-			if err := c.one(ctx, ct, started, known, gen, now, res); err != nil {
+			started, image, gen := c.inspected(ctx, ct.ID)
+			if err := c.one(ctx, ct, started, image, gen, res); err != nil {
 				emu.Lock()
 				errs = append(errs, err)
 				emu.Unlock()
@@ -283,49 +288,40 @@ func summarize(errs []error) error {
 	return fmt.Errorf("%w (and %d more containers)", errs[0], len(errs)-1)
 }
 
-// startTime is a container's start time, from the cache or, the first time
-// (and after a restart), from inspect — inside the caller's concurrency
-// bound, so a run that meets fifty new containers does not inspect them one
-// at a time first. gen is the restart generation the answer belongs to,
-// read with it: the caller measures in that generation.
-func (c *Collector) startTime(ctx context.Context, id string) (started time.Time, known bool, gen uint64) {
+// inspected is a container's start time and image reference, from the
+// cache or, the first time (and after a restart), from inspect — inside the
+// caller's concurrency bound, so a run that meets fifty new containers does
+// not inspect them one at a time first. A zero started means unknown. gen
+// is the restart generation the answer belongs to, read with it: the
+// caller measures in that generation.
+func (c *Collector) inspected(ctx context.Context, id string) (started time.Time, image string, gen uint64) {
 	c.livesMu.Lock()
 	l := c.life(id)
-	started, gen = l.started, l.gen
+	started, image, gen = l.started, l.image, l.gen
 	c.livesMu.Unlock()
 	if !started.IsZero() {
-		return started, true, gen
+		return started, image, gen
 	}
-	st, err := c.startedAt(ctx, id)
-	if err != nil {
-		return time.Time{}, false, gen
+	j, err := c.api.Inspect(ctx, id)
+	if err != nil || j.State.StartedAt.IsZero() {
+		return time.Time{}, image, gen
 	}
 	c.livesMu.Lock()
 	defer c.livesMu.Unlock()
-	if l := c.lives[id]; l == nil || l.gen != gen {
-		// It restarted while being inspected: st may be the old start.
-		// Leave the cache empty so the next run inspects again.
-		return time.Time{}, false, gen
+	l = c.lives[id]
+	if l == nil || l.gen != gen {
+		// It restarted while being inspected: the answer may be the old
+		// start. Leave the cache empty so the next run inspects again.
+		return time.Time{}, image, gen
 	}
-	c.lives[id].started = st
-	return st, true, gen
-}
-
-func (c *Collector) startedAt(ctx context.Context, id string) (time.Time, error) {
-	j, err := c.api.Inspect(ctx, id)
-	if err != nil {
-		return time.Time{}, err
-	}
-	if j.State.StartedAt.IsZero() {
-		return time.Time{}, errors.New("no start time")
-	}
-	return j.State.StartedAt, nil
+	l.started, l.image = j.State.StartedAt, j.Config.Image
+	return l.started, l.image, gen
 }
 
 // one reads a container's stats and adds its metrics to res. The rates
 // tracker is not safe for concurrent use, so rates are computed under res's
 // lock.
-func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started time.Time, known bool, gen uint64, now time.Time, res *run) error {
+func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started time.Time, image string, gen uint64, res *run) error {
 	s, err := c.api.Stats(ctx, ct.ID)
 	if errors.Is(err, dockerapi.ErrNotFound) {
 		return nil
@@ -341,16 +337,34 @@ func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started tim
 		// either life. Skip it; the next run starts from new baselines.
 		return nil
 	}
+	if image == "" {
+		image = ct.Image // not inspected (yet): the list's reference
+	}
 	res.mu.Lock()
 	sn := c.seen[ct.ID]
 	if sn == nil {
-		// Normalized and canonical once, for all of this container's
-		// metrics and every run: the key run.add combines on, and a slice
-		// they can share (the scheduler copies tags before it decorates
-		// them).
-		tags := wire.CanonicalTags(agenttags.Normalize(c.tag.tags(ct.Name(), ct.ID, ct.Image, ct.Labels)))
-		sn = &seen{tags: tags, tagKey: strings.Join(tags, ","), gen: gen}
+		sn = &seen{gen: gen}
 		c.seen[ct.ID] = sn
+	}
+	if sn.tags == nil || sn.name != ct.Name() || sn.image != image {
+		// Normalized and canonical once, for all of this container's
+		// metrics and every run it keeps its name: the key run.add
+		// combines on, and a slice they can share (the scheduler copies
+		// tags before it decorates them).
+		sn.name, sn.image = ct.Name(), image
+		sn.tags = wire.CanonicalTags(agenttags.Normalize(c.tag.tags(sn.name, ct.ID, image, ct.Labels)))
+		sn.tagKey = strings.Join(sn.tags, ",")
+	}
+	if sn.hasCPU && sn.gen == gen && s.CPUStats.CPUUsage.TotalUsage < sn.cpu.CPUUsage.TotalUsage {
+		// The CPU counter went backwards: the container restarted and the
+		// watcher did not see the start (the daemon restarted and replays
+		// nothing). Treat it as a start — forget the start time, new
+		// baselines — and skip this sample, whose uptime would count from
+		// the old start.
+		sn.hasCPU = false
+		res.mu.Unlock()
+		c.ContainerStarted(ct.ID)
+		return nil
 	}
 	if sn.gen != gen {
 		// Restarted in place since the last sample: its counters began
@@ -366,16 +380,14 @@ func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started tim
 	gauge := func(name string, v float64) {
 		res.add(collector.Metric{Name: name, Kind: collector.Gauge, Value: v, Tags: tags}, tagKey)
 	}
-	// Rates and uptime are timed by when the daemon took the sample, not by
-	// when the run began: calls queue behind MaxConcurrency, so on a busy
-	// daemon a container late in the list is sampled seconds after the
-	// run's start, by a different amount each run. The daemon's clock is
-	// also the one its start times are in, so uptime does not carry the
-	// skew between the daemon and the agent.
-	at := now
-	if !s.Read.IsZero() {
-		at = s.Read
-	}
+	// Rates and uptime are timed by when the daemon took the sample (a
+	// sampled answer always has one), not by when the run began: calls
+	// queue behind MaxConcurrency, so on a busy daemon a container late in
+	// the list is sampled seconds after the run's start, by a different
+	// amount each run. The daemon's clock is also the one its start times
+	// are in, so uptime does not carry the skew between the daemon and the
+	// agent.
+	at := s.Read
 	rate := func(name string, v uint64, ok bool) {
 		if !ok {
 			return // the daemon has no such counter for it: unknown, not 0
@@ -410,7 +422,7 @@ func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started tim
 		// sent no pids_stats (no pids cgroup controller): unknown, not none.
 		gauge("container.pids", float64(s.PidsStats.Current))
 	}
-	if known && !at.Before(started) {
+	if !started.IsZero() && !at.Before(started) {
 		gauge("container.uptime", at.Sub(started).Seconds())
 	}
 	return nil

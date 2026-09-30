@@ -45,7 +45,13 @@ func (c Container) Name() string {
 
 // ContainerJSON is the part of GET /containers/{id}/json the agent uses.
 type ContainerJSON struct {
-	State ContainerState `json:"State"`
+	State  ContainerState `json:"State"`
+	Config struct {
+		// Image is the reference the container was started from, as
+		// written ("app:latest"), even after that tag has been re-pointed
+		// at a newer build — when the list's Image turns into the image id.
+		Image string `json:"Image"`
+	} `json:"Config"`
 }
 
 // ContainerState is the part of a container's lifecycle state the agent

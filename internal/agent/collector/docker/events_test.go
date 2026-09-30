@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"regexp"
 	"slices"
@@ -221,8 +222,9 @@ func TestWatcher_ResumesOnTheDaemonsClock(t *testing.T) {
 	}, "reconnect")
 	api.mu.Lock()
 	defer api.mu.Unlock()
-	if !api.sinces[0].IsZero() || !api.sinces[1].Equal(daemon) {
-		t.Fatalf("since = %v, want zero then the daemon's %v", api.sinces, daemon)
+	// Rounded up a second: the daemon's Date header is truncated.
+	if !api.sinces[0].IsZero() || !api.sinces[1].Equal(daemon.Add(time.Second)) {
+		t.Fatalf("since = %v, want zero then the daemon's %v, rounded up", api.sinces, daemon)
 	}
 }
 
@@ -276,6 +278,17 @@ func TestWatcher_BoundsWhatItTracks(t *testing.T) {
 		if _, ok := w.started[id]; !ok {
 			t.Fatalf("start %d, one of the newest, was forgotten (%d tracked)", i, len(w.started))
 		}
+	}
+}
+
+// Many starts at one timestamp: eviction still frees half.
+func TestWatcher_EvictsEvenWhenStartsShareATime(t *testing.T) {
+	w := NewWatcher(WatcherOptions{API: &fakeAPI{}, Sink: func(Sample) {}})
+	for i := range maxTracked + 5 {
+		_ = w.handle(context.Background(), event("start", fmt.Sprintf("%064d", i), t0, nil))
+	}
+	if n := len(w.started); n > maxTracked/2+10 {
+		t.Fatalf("tracking %d starts after eviction, want about half of %d", n, maxTracked)
 	}
 }
 

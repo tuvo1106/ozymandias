@@ -156,6 +156,9 @@ func TestInspect(t *testing.T) {
 	if st := got.State; !st.OOMKilled || st.StartedAt.IsZero() {
 		t.Errorf("state %+v", st)
 	}
+	if got.Config.Image != "judge-python:3.12" {
+		t.Errorf("Config.Image = %q", got.Config.Image)
+	}
 }
 
 func TestClient_Failures(t *testing.T) {

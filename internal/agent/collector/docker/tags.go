@@ -52,7 +52,12 @@ func (t tagger) tags(name, id, image string, labels map[string]string) []string 
 	rewritten := false
 	for _, r := range t.rewrites {
 		if m := r.Match.FindStringSubmatchIndex(name); m != nil {
-			name, rewritten = string(r.Match.ExpandString(nil, r.Replace, name, m)), true
+			// A replacement that expands to nothing (${2} of a pattern with
+			// one group, a group that matched empty) would leave the
+			// container with neither name nor id: keep the name instead.
+			if n := string(r.Match.ExpandString(nil, r.Replace, name, m)); n != "" {
+				name, rewritten = n, true
+			}
 			break
 		}
 	}

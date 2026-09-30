@@ -93,12 +93,16 @@ const maxTracked = 10_000
 // inspect. Clearing everything instead would also forget the churn of
 // short-lived containers running now, whose --rm dies inspect cannot
 // answer.
+//
+// The cut is by count, not by time, so it frees half even when many starts
+// share one timestamp (a daemon that sends whole seconds, a burst).
 func (w *Watcher) evictOldest() {
-	starts := slices.Collect(maps.Values(w.started))
-	slices.SortFunc(starts, func(a, b time.Time) int { return a.Compare(b) })
-	cut := starts[len(starts)/2]
-	maps.DeleteFunc(w.started, func(_ string, t time.Time) bool { return t.Before(cut) })
-	maps.DeleteFunc(w.oom, func(id string, _ bool) bool { _, ok := w.started[id]; return !ok })
+	ids := slices.Collect(maps.Keys(w.started))
+	slices.SortFunc(ids, func(a, b string) int { return w.started[a].Compare(w.started[b]) })
+	for _, id := range ids[:len(ids)/2] {
+		delete(w.started, id)
+		delete(w.oom, id)
+	}
 }
 
 // NewWatcher returns a Watcher. Call Run to start it.
@@ -157,7 +161,12 @@ func (w *Watcher) Run(ctx context.Context) {
 			since = w.began
 		default:
 			if t, err := w.api.Now(ctx); err == nil {
-				w.began = t
+				// The daemon's Date is whole seconds, truncated: the true
+				// time is up to a second later. Resuming from the truncated
+				// second could replay a die a previous agent already
+				// counted; rounding up can only skip what this stream
+				// would have delivered before it dropped.
+				w.began = t.Add(time.Second)
 			}
 		}
 		err := w.api.Events(ctx, since, func(ev dockerapi.Event) error { return w.handle(ctx, ev) }, w.skip)

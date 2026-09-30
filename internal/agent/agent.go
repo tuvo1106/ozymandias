@@ -147,7 +147,7 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 			api = a.dockerClient
 		}
 		dc := docker.New(docker.Options{
-			API: api, Interval: d.Interval, MaxConcurrency: d.MaxConcurrency, Rewrites: rewrites, Clock: a.clock,
+			API: api, Interval: d.Interval, MaxConcurrency: d.MaxConcurrency, Rewrites: rewrites,
 		})
 		collectors = append(collectors, dc)
 		a.watcher = docker.NewWatcher(docker.WatcherOptions{

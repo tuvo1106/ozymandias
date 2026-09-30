@@ -185,7 +185,8 @@ func TestLoad_ShippedFragments(t *testing.T) {
 func TestAgent_ValidateDocker(t *testing.T) {
 	for name, mutate := range map[string]func(*Agent){
 		"empty rewrite match": func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Replace: "x"}} },
-		"bad rewrite match":   func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "("}} },
+		"bad rewrite match":   func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "(", Replace: "x"}} },
+		"empty replace":       func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "^judge-"}} },
 		"no socket":           func(a *Agent) { a.Collectors.Docker.Socket = "" },
 		"zero concurrency":    func(a *Agent) { a.Collectors.Docker.MaxConcurrency = 0 },
 		"fractional interval": func(a *Agent) { a.Collectors.Docker.Interval = 1500 * time.Millisecond },
