@@ -3,9 +3,9 @@
 # group_add (ADR-0028). It is read from a throwaway container because the
 # VM's /var/run is not the Mac's.
 #
-# The container is named, because the agent reports every container's exit
-# by name, and an unnamed one gets a new random name (and so a new series)
-# every time. A second `make up` in another worktree can hold that name for
+# The container is named, and deploy/agent.yaml rewrites that name to drop
+# container_id, because the agent reports every container's exit: an
+# unnamed one would get a new random name (and so a new series) every time. A second `make up` in another worktree can hold that name for
 # a moment, so a name clash is retried. Any other failure (no daemon, no
 # busybox image while offline) prints nothing and says why on stderr:
 # compose then falls back to group 0, which is right on a host with no

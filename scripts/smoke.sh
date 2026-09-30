@@ -632,11 +632,12 @@ check "and no docker errors"                    no_errors docker
 # The Docker collector and the event watcher (ADR-0028). A container that
 # lives long enough to be polled shows up in container.*; one that exits at
 # once is never polled, and is counted only because the watcher saw its die.
-# The names are fixed, so every smoke run adds to the same few series rather
-# than minting new ones; the window starts when this section did (less one
+# The names are fixed, and deploy/agent.yaml rewrites them to drop
+# container_id, so every smoke run adds to the same few series rather than
+# minting new ones; the window starts when this section did (less one
 # bucket, since points are stamped at their bucket's start), so a previous
 # run's containers, minutes older, are not counted.
-wait_positive() { # <query> <seconds> — until the section's sum is positive
+wait_since() { # <query> <seconds> — until the section's sum is positive
   local v i now
   for ((i = 0; i < $2; i++)); do
     now=$(ozyd_now 2>/dev/null) || now=$(date +%s)
@@ -653,10 +654,10 @@ trap 'docker rm -f "$smoke_ct-long" "$smoke_ct-short" >/dev/null 2>&1 || true' E
 docker_since=$(ozyd_now 2>/dev/null) || docker_since=$(date +%s)
 docker run -d --name "$smoke_ct-long" busybox sh -c 'sleep 45; exit 3' >/dev/null
 docker run --rm --name "$smoke_ct-short" busybox sh -c 'exit 7' >/dev/null || true
-check "a running container is polled"          wait_positive "max:container.memory.usage{container_name:$smoke_ct-long}" 45
-check "a container too brief to poll still counts" wait_positive "sum:container.exits{container_name:$smoke_ct-short,exit_code:7}" 30
+check "a running container is polled"          wait_since "max:container.memory.usage{container_name:$smoke_ct-long}" 45
+check "a container too brief to poll still counts" wait_since "sum:container.exits{container_name:$smoke_ct-short,exit_code:7}" 30
 docker stop -t 0 "$smoke_ct-long" >/dev/null 2>&1 || true
-check "and so does a stopped one"              wait_positive "sum:container.exits{container_name:$smoke_ct-long}" 30
+check "and so does a stopped one"              wait_since "sum:container.exits{container_name:$smoke_ct-long}" 30
 docker rm -f "$smoke_ct-long" >/dev/null 2>&1 || true
 
 echo "smoke: $pass checks passed"

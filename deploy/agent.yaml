@@ -122,7 +122,12 @@ collectors:
     # design (a sandbox per job), which would otherwise be a series each.
     # Same-named containers become one series: amounts summed, uptime and
     # memory limit the largest. First match wins; conf.d fragments append.
-    container_name_rewrite: []
+    # This stack's own throwaway containers (make up's socket-group probe,
+    # smoke's test containers) keep their names but drop container_id, so
+    # each run adds to the same series instead of minting new ones.
+    container_name_rewrite:
+      - match: ^(ozymandias-gid-probe|ozy-smoke-[a-z]+)$
+        replace: ${1}
     # container_name_rewrite:
     #   -
     #     match: ^judge-.*
