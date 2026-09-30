@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 )
@@ -103,6 +104,14 @@ func TestAgent_Validate(t *testing.T) {
 		"bad log level":       func(a *Agent) { a.Log.Level = "chatty" },
 		"bad http addr":       func(a *Agent) { a.HTTP.Addr = "8126" },
 		"hostname with comma": func(a *Agent) { a.Hostname = "mac,mini" },
+		// A count's interval is whole seconds on the wire.
+		"fractional collectors.interval": func(a *Agent) { a.Collectors.Interval = 1500 * time.Millisecond },
+		"zero collectors.interval":       func(a *Agent) { a.Collectors.Interval = 0 },
+		"sub-second collectors.interval": func(a *Agent) { a.Collectors.Interval = 500 * time.Millisecond },
+		"zero collectors.timeout":        func(a *Agent) { a.Collectors.Timeout = 0 },
+		"negative collectors.timeout":    func(a *Agent) { a.Collectors.Timeout = -time.Second },
+		"fractional host.interval":       func(a *Agent) { a.Collectors.Host.Interval = 2500 * time.Millisecond },
+		"bad exclude pattern":            func(a *Agent) { a.Collectors.Host.ExcludeInterfaces = []string{"("} },
 	}
 	for name, mutate := range cases {
 		a := Default()
@@ -113,7 +122,14 @@ func TestAgent_Validate(t *testing.T) {
 	}
 	a := Default()
 	a.Tags = []string{"env:dev", "bare"}
+	a.Collectors.Interval = time.Second
+	a.Collectors.Host.Interval = 0 // 0 means collectors.interval
+	a.Collectors.Host.ExcludeInterfaces = []string{`^veth`}
 	if err := a.Validate(); err != nil {
 		t.Errorf("valid config: %v", err)
+	}
+	a.Collectors.Host.Interval = time.Minute
+	if err := a.Validate(); err != nil {
+		t.Errorf("host.interval 1m: %v", err)
 	}
 }
