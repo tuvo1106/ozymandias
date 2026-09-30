@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"regexp"
 	"slices"
@@ -409,6 +410,33 @@ func TestHost_AnUnreadableMountOfAReadableDeviceIsNotAnError(t *testing.T) {
 	}
 	if m := g.one(t, "system.disk.total"); m.Tags[0] != "device:/dev/vda1" {
 		t.Fatalf("%+v", m)
+	}
+}
+
+// The same, when the readable mount reports no size: the device answered,
+// so the other mount's failure is not the run's.
+func TestHost_AnUnreadableMountBesideASizelessOneIsNotAnError(t *testing.T) {
+	src := machine()
+	src.parts = []disk.PartitionStat{
+		{Device: "/dev/vda1", Mountpoint: "/root-only", Fstype: "ext4"},
+		{Device: "/dev/vda1", Mountpoint: "/etc/hosts", Fstype: "ext4"},
+	}
+	src.usage = map[string]*disk.UsageStat{"/etc/hosts": {}}
+	if _, err := run(t, newCollector(src, testutil.NewFakeClock(t0))); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// gopsutil's "not implemented yet", wrapped or not, is unsupported rather
+// than a failure.
+func TestSupported(t *testing.T) {
+	for _, err := range []error{errors.New(notImplemented), fmt.Errorf("iocounters: %w", errors.New(notImplemented))} {
+		if _, got := supported(0, err); !errors.Is(got, errors.ErrUnsupported) {
+			t.Errorf("%v: not unsupported", err)
+		}
+	}
+	if _, got := supported(0, errors.New("permission denied")); errors.Is(got, errors.ErrUnsupported) {
+		t.Error("an ordinary error became unsupported")
 	}
 }
 

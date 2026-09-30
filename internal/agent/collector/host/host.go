@@ -277,6 +277,9 @@ func (c *Collector) disk(ctx context.Context, emit collector.Emit, _ time.Time) 
 			continue
 		}
 		if u.Total == 0 {
+			// The device answered, with nothing to report (a size-less
+			// mount); an earlier mount's failure no longer stands.
+			delete(failed, dev)
 			continue
 		}
 		seen[dev] = true
@@ -435,13 +438,14 @@ type gopsutil struct{}
 
 // notImplemented is gopsutil's "not implemented yet" error. It lives in an
 // internal package, so it cannot be matched with errors.Is; its text is the
-// only handle there is.
+// only handle there is, matched as a substring so that a wrapped one
+// ("iocounters: not implemented yet") still counts.
 const notImplemented = "not implemented yet"
 
 // supported translates gopsutil's "this platform can't" into the standard
 // library's, so the collector does not depend on an error string.
 func supported[T any](v T, err error) (T, error) {
-	if err != nil && err.Error() == notImplemented {
+	if err != nil && strings.Contains(err.Error(), notImplemented) {
 		return v, fmt.Errorf("%w: %w", errors.ErrUnsupported, err)
 	}
 	return v, err
