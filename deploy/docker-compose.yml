@@ -30,6 +30,9 @@ services:
     command: ["-config", "/etc/ozy/ozyd.yaml"]
     environment:
       OZY_LOG_FORMAT: json
+      # The host tag on ozyd's own metrics. Unset, it would be the container
+      # id, new on every recreate. The same name the agent uses.
+      OZY_HOSTNAME: ${OZY_HOSTNAME:-ozymandias-host}
     ports:
       - "9400:9400"
     volumes:

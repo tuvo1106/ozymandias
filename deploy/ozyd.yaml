@@ -27,6 +27,17 @@ http:
 # must be writable. The container overrides this to /data (a named volume).
 data_dir: ./data/ozyd
 
+# Value of the `host` tag on ozyd's own metrics (ozy.*). Empty means the OS
+# hostname. Set it to the agent's hostname: in a container the OS hostname is
+# a random id, new on every recreate, and on macOS it can be "name.local" or
+# whatever the network's DHCP calls the machine. A name that cannot be a tag
+# (a comma, over 195 bytes) fails startup.
+#
+# `make up` and `make dev` always set OZY_HOSTNAME (scripts/hostname.sh,
+# unless you export it), and the environment beats this file, so under those
+# two a value here has no effect: export OZY_HOSTNAME instead.
+hostname: ""
+
 storage:
   # Which metric store to run. "tsdb" is the real engine (M2): a write-ahead
   # log, an in-memory head and immutable blocks under data_dir/tsdb/.

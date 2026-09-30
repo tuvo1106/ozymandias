@@ -3,12 +3,14 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -242,5 +244,39 @@ func TestNew_TSDBPublishesItsOwnCounters(t *testing.T) {
 		if !strings.Contains(vars, want) {
 			t.Errorf("%s is not published", want)
 		}
+	}
+}
+
+func TestNew_SelfMetricsHostTag(t *testing.T) {
+	// The config wins over the OS: in a container the OS answer is the
+	// container id, and every recreate would add a host value.
+	osName := func() (string, error) { return "0a1b2c3d4e5f", nil }
+	for _, tc := range []struct {
+		name, cfg string
+		os        func() (string, error)
+		want      string
+	}{
+		{"configured", "Mac-Mini", osName, "host:mac-mini"},
+		{"empty uses the OS", "", osName, "host:0a1b2c3d4e5f"},
+		{"no OS name falls back", "", func() (string, error) { return "", errors.New("none") }, "host:ozyd"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.Hostname = tc.cfg
+			s, err := New(cfg, Options{Logger: quiet, Hostname: tc.os})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = s.Close() })
+			series := s.self.Collect(time.Unix(1_700_000_000, 0))
+			if len(series) == 0 {
+				t.Fatal("no self-metrics collected")
+			}
+			for _, sr := range series {
+				if !slices.Contains(sr.Tags, tc.want) {
+					t.Fatalf("%s tags %v, want %s", sr.Metric, sr.Tags, tc.want)
+				}
+			}
+		})
 	}
 }

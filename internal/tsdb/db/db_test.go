@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/block"
@@ -33,14 +34,35 @@ func sm(t int64, v float64) tsdb.Sample { return tsdb.Sample{T: t, V: v} }
 
 // open returns a DB with a fake clock and a short block range, plus the
 // directory so a test can reopen it.
+//
+// The clock's tickers never fire, so the maintenance and sync goroutines
+// sleep and a test's own CutBlock, Compact and ApplyRetention calls are the
+// only maintenance there is. With one clock for both, every Advance also
+// woke maintain(), which then cut and expired blocks concurrently with the
+// test: TestDB_ThreeSimulatedDays counted 32 cuts instead of 35 under load,
+// and the retention tests can see a block appear or vanish between their
+// own calls. Tests of the background wiring itself use [openTicking].
 func open(t *testing.T, opts Options) (*DB, *testutil.FakeClock, string) {
+	t.Helper()
+	fake := testutil.NewFakeClock(epoch)
+	return openWith(t, opts, fake, handDriven{FakeClock: fake, idle: testutil.NewFakeClock(epoch)})
+}
+
+// openTicking is [open] with the background goroutines on the clock the
+// test advances, for the tests that are about those goroutines.
+func openTicking(t *testing.T, opts Options) (*DB, *testutil.FakeClock, string) {
+	t.Helper()
+	fake := testutil.NewFakeClock(epoch)
+	return openWith(t, opts, fake, fake)
+}
+
+func openWith(t *testing.T, opts Options, fake *testutil.FakeClock, c clock.Clock) (*DB, *testutil.FakeClock, string) {
 	t.Helper()
 	if opts.Dir == "" {
 		opts.Dir = t.TempDir()
 	}
-	fake := testutil.NewFakeClock(epoch)
 	if opts.Clock == nil {
-		opts.Clock = fake
+		opts.Clock = c
 	}
 	if opts.BlockRange == 0 {
 		opts.BlockRange = time.Minute
@@ -524,7 +546,7 @@ func TestDB_MaintenanceRunsOnTheClock(t *testing.T) {
 	// Retention off: these timestamps are near the unix epoch, and against a
 	// 2026 clock a real retention window would delete the block as fast as
 	// maintenance created it.
-	db, fake, _ := open(t, Options{
+	db, fake, _ := openTicking(t, Options{
 		BlockRange: time.Minute, SyncInterval: 50 * time.Millisecond, Retention: -1,
 	})
 	fill(t, db, ref("m", "env:prod"), 0, 1000, 95)
@@ -880,7 +902,7 @@ func TestDB_CompactionSurvivesASourceThatWillNotDelete(t *testing.T) {
 // Holding cutMu is what a long pass looks like from outside: the maintenance
 // goroutine wakes on its own ticker, reaches CutBlock and stops there.
 func TestDB_SyncsContinueWhileMaintenanceIsBusy(t *testing.T) {
-	db, fake, _ := open(t, Options{BlockRange: time.Minute, Retention: -1, SyncInterval: 10 * time.Millisecond})
+	db, fake, _ := openTicking(t, Options{BlockRange: time.Minute, Retention: -1, SyncInterval: 10 * time.Millisecond})
 	fill(t, db, ref("m", "env:prod"), 0, 1000, 91) // enough that a cut is due
 
 	// Both loops are armed before the clock moves (see FakeClock's doc).
@@ -986,3 +1008,14 @@ func TestDB_OpenReleasesTheBlocksItOpenedBeforeFailing(t *testing.T) {
 		t.Fatal("Open succeeded with a file where the log directory belongs")
 	}
 }
+
+// handDriven is a fake clock whose tickers never fire: Now and timers come
+// from FakeClock, tickers from idle, which nothing advances. The DB's
+// background goroutines still start, and Close still stops them, but they
+// never wake.
+type handDriven struct {
+	*testutil.FakeClock
+	idle *testutil.FakeClock
+}
+
+func (c handDriven) NewTicker(d time.Duration) clock.Ticker { return c.idle.NewTicker(d) }
