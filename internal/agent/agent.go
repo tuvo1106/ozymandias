@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/agent/aggregator"
+	"github.com/tuvo1106/ozymandias/internal/agent/autodiscovery"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/docker"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
@@ -47,6 +49,8 @@ type Options struct {
 	// DockerAPI replaces the Docker socket client, for tests. Nil means a
 	// client on collectors.docker.socket.
 	DockerAPI docker.API
+	// Checks is the check registry. Nil means DefaultChecks().
+	Checks collector.Registry
 }
 
 // Agent is a configured agent, ready to Run.
@@ -63,7 +67,10 @@ type Agent struct {
 	sched  *collector.Scheduler
 	// watcher follows Docker's event stream; nil when the docker collector
 	// is off. dockerClient is closed on shutdown when the agent made it.
-	watcher      *docker.Watcher
+	watcher *docker.Watcher
+	// discovery starts checks for labelled containers; nil when the docker
+	// collector or autodiscovery is off.
+	discovery    *autodiscovery.Discovery
 	dockerClient *dockerapi.Client
 	agg          *aggregator.Aggregator
 	fwd          *forwarder.Forwarder
@@ -132,6 +139,10 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		}
 		collectors = append(collectors, hostcoll.New(hostcoll.Options{Interval: h.Interval, ExcludeInterfaces: exclude, Clock: a.clock}))
 	}
+	var (
+		dockerAPI      docker.API
+		dockerRewrites []docker.Rewrite
+	)
 	if d := cfg.Collectors.Docker; d.Enabled {
 		rewrites, err := d.Rewrites()
 		if err != nil {
@@ -150,7 +161,17 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 			API: api, Sink: a.fromDockerEvent, Rewrites: rewrites, OnStart: dc.ContainerStarted,
 			Clock: a.clock, Registry: a.reg, Logger: a.log,
 		})
+		dockerAPI, dockerRewrites = api, rewrites
 	}
+	checks := opts.Checks
+	if checks == nil {
+		checks = DefaultChecks()
+	}
+	configured, err := checks.Configured(cfg.Collectors.Instances(), a.clock, a.log)
+	if err != nil {
+		return nil, fmt.Errorf("collectors.checks: %w", err)
+	}
+	collectors = append(collectors, configured...)
 	// Straight to the forwarder: collector output is one value per series
 	// per run already, which is what the aggregator would have produced.
 	a.sched = collector.New(collector.Options{
@@ -158,12 +179,19 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		Interval:   cfg.Collectors.Interval,
 		Timeout:    cfg.Collectors.Timeout,
 		Sink:       a.fwd.Submit,
+		SketchSink: a.fwd.SubmitSketches,
 		HostTag:    hostTag,
 		Tags:       cfg.Tags,
 		Clock:      a.clock,
 		Registry:   a.reg,
 		Logger:     a.log,
 	})
+	if dockerAPI != nil && cfg.Collectors.Docker.Autodiscovery {
+		a.discovery = autodiscovery.New(autodiscovery.Options{
+			API: dockerAPI, Checks: checks, Scheduler: a.sched, Rewrites: dockerRewrites,
+			Clock: a.clock, Logger: a.log, Registry: a.reg,
+		})
+	}
 
 	if cfg.Statsd.Enabled {
 		s, err := statsd.Listen(statsd.Options{
@@ -322,6 +350,9 @@ func (a *Agent) Run(ctx context.Context, ln net.Listener) error {
 	collectors, stopCollectors := context.WithCancel(ctx)
 	defer stopCollectors()
 	wg.Go(func() { a.sched.Run(collectors) })
+	if a.discovery != nil {
+		wg.Go(func() { a.discovery.Run(collectors) })
+	}
 	if a.watcher != nil {
 		wg.Go(func() { a.watcher.Run(inputs) })
 	}

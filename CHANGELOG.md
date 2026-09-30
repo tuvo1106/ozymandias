@@ -27,6 +27,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   short-lived containers into one name. In compose the agent reads the
   Docker VM's socket through the socket's group (ADR-0028: that access is
   root-equivalent).
+- **Checks and autodiscovery** (M3 §3, part 3). Configurable collectors
+  under `collectors.checks.<check>.instances`, each instance with a `name`,
+  `interval` and `tags`, and settings a misspelling of which fails startup:
+  `openmetrics` (scrape any Prometheus `/metrics` page: counters as rates,
+  histograms as bucket counts or as distributions for `p90:`), `http_check`
+  (`network.http.*`: status, latency, TLS days left), `redis` (INFO over
+  RESP), `postgres` (via pgx, ADR-0031) and `process` (`system.processes.*`).
+  A container can ask for a check with labels (`ozy.check.redis.port=6379`,
+  `%%host%%` / `%%port%%` resolved from the container); the check starts and
+  stops with it and is tagged like its container.
 - **Go runtime metrics for the agent**: `ozy.runtime.goroutines`,
   `ozy.runtime.heap_bytes`, `ozy.runtime.gc_runs`.
 

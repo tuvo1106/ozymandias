@@ -435,6 +435,23 @@ Collector.Collect ──emit(Metric)──▶ Scheduler ──[]wire.Series─�
   are many by design into one name, and same-tagged containers are combined
   (amounts summed) rather than sent as points that overwrite each other.
   Reading the socket is root-equivalent on the Docker host (ADR-0028).
+- **Checks** are collectors a user configures: a `collector.Check` is a
+  factory, and a `collector.Registry` (an explicit map the agent builds, not
+  init-time registration) names them. The registry applies the settings
+  every instance shares — name, interval, tags — and the check decodes the
+  rest strictly, so a misspelt key fails at startup. Each instance is its own
+  collector with its own goroutine and self-metrics, named `<check>:<name>`.
+- **Autodiscovery** lists containers every 10s and turns
+  `ozy.check.<check>.<setting>` labels into instances, added to and removed
+  from the running scheduler (`Scheduler.Add` returns the removal). Label
+  values are read as YAML scalars after `%%host%%`/`%%port%%` substitution,
+  so a port label is a number. Configuration then lives with the container,
+  the model Datadog's autodiscovery and Prometheus's docker_sd share.
+- **Distributions from collectors.** A collector may emit a `Distribution`
+  carrying a DDSketch; the scheduler sends it to the forwarder's sketch
+  endpoint. The openmetrics check uses it for histograms, so a scraped
+  histogram answers `p90:` like a statsd one — as precisely as its buckets
+  allow.
 
 ---
 

@@ -490,3 +490,121 @@ func TestRun_DockerEventsToIntake(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The shipped checks are in the default registry: configured instances
+// become collectors, and a misconfigured one fails startup.
+func TestNew_ShippedChecks(t *testing.T) {
+	cfg := testConfig()
+	cfg.Collectors.Checks = map[string]config.Check{
+		"http_check": {Instances: []map[string]any{{"name": "home", "url": "http://127.0.0.1:1/"}}},
+		"process":    {Instances: []map[string]any{{"process_name": "postgres"}}},
+	}
+	a, err := newAgent(t, cfg, Options{Logger: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, c := range a.sched.Collectors() {
+		names = append(names, c.Name())
+	}
+	if !slices.Contains(names, "http_check:home") || !slices.Contains(names, "process") {
+		t.Fatalf("collectors %v", names)
+	}
+	cfg.Collectors.Checks["http_check"] = config.Check{Instances: []map[string]any{{"url": "not a url"}}}
+	if _, err := newAgent(t, cfg, Options{Logger: quiet}); err == nil || !strings.Contains(err.Error(), "collectors.checks") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// labelledAPI is a daemon with one running container that asks for a check.
+type labelledAPI struct{ eventsAPI }
+
+func (*labelledAPI) ListContainers(context.Context) ([]dockerapi.Container, error) {
+	return []dockerapi.Container{{
+		ID: strings.Repeat("cd", 32), Names: []string{"/shop-cache-1"}, Image: "redis:7",
+		Labels: map[string]string{"ozy.check.stub.port": "%%port%%"},
+		Ports:  []dockerapi.Port{{PrivatePort: 6379}},
+	}}, nil
+}
+
+// Autodiscovery end to end: a container's labels start a check whose
+// output reaches the intake tagged like the container.
+func TestRun_AutodiscoveryToIntake(t *testing.T) {
+	testutil.CheckGoroutines(t)
+	var mu sync.Mutex
+	var got []wire.Series
+	intake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var p wire.SeriesPayload
+		_ = json.NewDecoder(zr).Decode(&p)
+		mu.Lock()
+		got = append(got, p.Series...)
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer intake.Close()
+
+	var port int
+	checks := collector.Registry{"stub": func(inst collector.Instance) (collector.Collector, error) {
+		var cfg struct {
+			Port int `yaml:"port"`
+		}
+		if err := inst.Decode(&cfg); err != nil {
+			return nil, err
+		}
+		port = cfg.Port
+		return stubCollector{}, nil
+	}}
+	clk := testutil.NewFakeClock(time.Unix(1790000001, 0))
+	cfg := testConfig()
+	cfg.Hostname = "box"
+	cfg.Intake.URL = intake.URL
+	cfg.Statsd.Enabled = false
+	cfg.Collectors.Docker.Enabled = true
+	a, err := newAgent(t, cfg, Options{Logger: quiet, Clock: clk, DockerAPI: &labelledAPI{eventsAPI{delivered: make(chan struct{})}}, Checks: checks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, _ := httpserve.Listen("127.0.0.1:0")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx, ln) }()
+
+	testutil.Eventually(t, 2*time.Second, func() bool {
+		for _, c := range a.sched.Collectors() {
+			if c.Name() == "stub:shop-cache-1" {
+				return true
+			}
+		}
+		return false
+	}, "the container's check was not started")
+	if port != 6379 {
+		t.Errorf("port = %d, want %%%%port%%%% resolved to 6379", port)
+	}
+	// Every timer armed (aggregator, docker, the stub's jitter, discovery),
+	// then past the stub's 1s jitter.
+	testutil.Eventually(t, 2*time.Second, func() bool { return clk.Waiters() >= 4 }, "not armed")
+	clk.Advance(time.Second)
+	testutil.Eventually(t, 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.ContainsFunc(got, func(s wire.Series) bool { return s.Metric == "stub.level" })
+	}, "the discovered check's output was not forwarded")
+	mu.Lock()
+	i := slices.IndexFunc(got, func(s wire.Series) bool { return s.Metric == "stub.level" })
+	tags := got[i].Tags
+	mu.Unlock()
+	for _, want := range []string{"container_name:shop-cache-1", "image_name:redis", "host:box", "k:v"} {
+		if !slices.Contains(tags, want) {
+			t.Errorf("tags %v lack %s", tags, want)
+		}
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
