@@ -179,7 +179,7 @@ func TestWatcher_ResumesWithoutDoubleCounting(t *testing.T) {
 // Docker not running: logged once, retried with growing backoff.
 func TestWatcher_AnUnreachableDaemonIsLoggedOnce(t *testing.T) {
 	down := errors.New("dial unix /var/run/docker.sock: connect: no such file or directory")
-	api := &fakeAPI{scripts: [][]dockerapi.Event{nil, nil, nil}, errs: []error{down, down, down}}
+	api := &fakeAPI{scripts: [][]dockerapi.Event{nil, nil, nil}, errs: []error{down, down, down}, nowErr: down}
 	var buf syncBuf
 	_, fc, _ := watch(t, api, WatcherOptions{Logger: slog.New(slog.NewTextHandler(&buf, nil))})
 	for _, wait := range []time.Duration{minBackoff, 2 * minBackoff, 4 * minBackoff} {
@@ -194,12 +194,35 @@ func TestWatcher_AnUnreachableDaemonIsLoggedOnce(t *testing.T) {
 	if n := strings.Count(buf.String(), "docker event stream failed"); n != 1 {
 		t.Fatalf("logged %d times:\n%s", n, buf.String())
 	}
-	// No event was ever seen, so every retry replays from the first
-	// attempt: a container that died while the daemon was away is counted.
+	// The daemon never answered, so there is no time of its to resume
+	// from: every attempt asks from now.
 	api.mu.Lock()
 	defer api.mu.Unlock()
-	if !api.sinces[0].IsZero() || !api.sinces[1].Equal(t0) || !api.sinces[3].Equal(t0) {
-		t.Fatalf("since = %v, want zero, then %v", api.sinces, t0)
+	for i, s := range api.sinces {
+		if !s.IsZero() {
+			t.Fatalf("since[%d] = %v, want zero: the daemon never answered", i, s)
+		}
+	}
+}
+
+// A stream that ends before any event resumes from the first attempt, on
+// the daemon's clock: three minutes behind the agent's here, and a resume
+// from the agent's time would skip what the daemon did in between.
+func TestWatcher_ResumesOnTheDaemonsClock(t *testing.T) {
+	daemon := t0.Add(-3 * time.Minute)
+	api := &fakeAPI{scripts: [][]dockerapi.Event{nil, nil}, errs: []error{dockerapi.ErrStreamClosed, nil}, daemonNow: daemon}
+	_, fc, _ := watch(t, api, WatcherOptions{})
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "backoff")
+	fc.Advance(minBackoff)
+	testutil.Eventually(t, time.Second, func() bool {
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		return len(api.sinces) == 2
+	}, "reconnect")
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if !api.sinces[0].IsZero() || !api.sinces[1].Equal(daemon) {
+		t.Fatalf("since = %v, want zero then the daemon's %v", api.sinces, daemon)
 	}
 }
 
@@ -246,6 +269,13 @@ func TestWatcher_BoundsWhatItTracks(t *testing.T) {
 	}
 	if len(w.started) > maxTracked {
 		t.Fatalf("tracking %d starts", len(w.started))
+	}
+	// The newest starts, the containers running now, are kept.
+	for i := maxTracked - 100; i < maxTracked+5; i++ {
+		id := strings.Repeat("0", 60) + string(rune('a'+i%26)) + time.Duration(i).String()
+		if _, ok := w.started[id]; !ok {
+			t.Fatalf("start %d, one of the newest, was forgotten (%d tracked)", i, len(w.started))
+		}
 	}
 }
 

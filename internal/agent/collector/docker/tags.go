@@ -14,8 +14,12 @@ const (
 	LabelService        = "ozy.service"
 )
 
-// Rewrite renames containers whose name matches Match to Replace (Go regexp
-// replacement syntax, so $1 works), before the name becomes a tag.
+// Rewrite renames containers whose name matches Match to Replace, before
+// the name becomes a tag. The whole name is replaced, whatever part of it
+// Match matched: `^judge-` with Replace `judge` renames judge-8f3a to judge.
+// Replace is a Go regexp template, so ${1} is the match's first group; that
+// is how a rule keeps a name (`^(ozy-smoke-[a-z]+)$` → `${1}`) while still
+// dropping its id.
 //
 // It exists for containers that are many and short-lived by design — a judge
 // sandbox per submission — where tagging each by its own name would create a
@@ -47,8 +51,8 @@ func (t tagger) tags(name, id, image string, labels map[string]string) []string 
 	}
 	rewritten := false
 	for _, r := range t.rewrites {
-		if r.Match.MatchString(name) {
-			name, rewritten = r.Match.ReplaceAllString(name, r.Replace), true
+		if m := r.Match.FindStringSubmatchIndex(name); m != nil {
+			name, rewritten = string(r.Match.ExpandString(nil, r.Replace, name, m)), true
 			break
 		}
 	}

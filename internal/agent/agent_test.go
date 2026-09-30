@@ -400,6 +400,8 @@ func (*eventsAPI) Stats(context.Context, string) (dockerapi.Stats, error) {
 func (*eventsAPI) Inspect(context.Context, string) (dockerapi.ContainerJSON, error) {
 	return dockerapi.ContainerJSON{}, dockerapi.ErrNotFound
 }
+func (e *eventsAPI) Now(context.Context) (time.Time, error) { return time.Time{}, nil }
+
 func (e *eventsAPI) Events(ctx context.Context, _ time.Time, fn func(dockerapi.Event) error, _ func(error)) error {
 	e.once.Do(func() {
 		for _, ev := range e.evs {

@@ -112,7 +112,8 @@ func (d DockerCollector) Matches() ([]*regexp.Regexp, error) {
 }
 
 // NameRewrite is one container_name_rewrite rule: a regular expression and
-// its replacement ($1 and friends work).
+// the name a matching container gets instead — the whole name, however
+// little of it match matched. ${1} and friends are the match's groups.
 type NameRewrite struct {
 	Match   string `yaml:"match"`
 	Replace string `yaml:"replace"`

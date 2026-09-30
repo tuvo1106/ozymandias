@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +24,7 @@ type API interface {
 	Stats(ctx context.Context, id string) (dockerapi.Stats, error)
 	Inspect(ctx context.Context, id string) (dockerapi.ContainerJSON, error)
 	Events(ctx context.Context, since time.Time, fn func(dockerapi.Event) error, skipped func(error)) error
+	Now(ctx context.Context) (time.Time, error)
 }
 
 // DefaultMaxConcurrency bounds stats (and first-sight inspect) requests in
@@ -48,43 +51,79 @@ type Collector struct {
 	tag   tagger
 	clock clock.Clock
 	rates *collector.Rates
-	// prev is each container's previous CPU sample: one-shot stats carry
-	// one sample, and CPU % needs two.
-	prev map[string]dockerapi.CPUStats
-	// base is the restart generation (restarts) each container's baselines
-	// — prev and its rate readings — were taken in. A container restarted
-	// in place keeps its id but its counters begin again, and a difference
-	// across the restart is not usage; when the generation has moved, the
-	// baselines are dropped and the next run starts afresh. Guarded, like
-	// prev and rates, by the run's lock.
-	base map[string]uint64
 	// images are the images counted last run, so one whose last container
 	// stopped reads 0 once rather than just stopping.
 	images map[string]bool
+	// seen is what runs keep about each listed container: its tags and the
+	// baselines rates and CPU % are measured from. Guarded by the run's
+	// lock; forgotten when the container leaves the list.
+	seen map[string]*seen
 
-	// startedMu guards started, which the event watcher also touches.
-	startedMu sync.Mutex
-	// started caches each container's start time, for container.uptime.
-	// The list endpoint gives only the creation time, which for a restarted
-	// container is not when it started; so a container is inspected the
-	// first time it is seen, and again after the watcher reports it started
-	// (a restart in place keeps the id).
-	started map[string]time.Time
-	// restarts counts start events per container, so an inspect already in
-	// flight when one arrives does not cache the start time it replaced.
-	restarts map[string]uint64
+	// livesMu guards lives, which the event watcher also touches.
+	livesMu sync.Mutex
+	lives   map[string]*life
 }
 
-// ContainerStarted forgets a container's cached start time, so the next
-// run inspects it again. The event watcher calls it on every start event:
-// a container restarted in place (restart: always, docker restart) keeps
-// its id, and its uptime would otherwise keep counting from the first
-// start — hiding exactly the crash loop uptime is read to find.
+// life is a container's lifecycle as the collector knows it.
+//
+// The list endpoint gives only a container's creation time, which for a
+// restarted container is not when it started; so a container is inspected
+// the first time it is seen, and its start cached. A container restarted in
+// place (restart: always, docker restart) keeps its id, so the event
+// watcher reports every start (ContainerStarted), which forgets the cached
+// time and moves gen on: a sample taken in one generation is not compared
+// with one from another, whose counters began again.
+type life struct {
+	started time.Time // zero until inspected
+	gen     uint64    // start events seen
+}
+
+// seen is what runs keep about one container between runs.
+type seen struct {
+	// tags and tagKey are computed once: a container's name, image and
+	// labels are fixed for its life. tagKey is the tags joined, as
+	// run.add combines on.
+	tags   []string
+	tagKey string
+	// cpu is the previous CPU sample (one-shot stats carry one, and CPU %
+	// needs two), taken in restart generation gen, like the container's
+	// rate readings.
+	cpu    dockerapi.CPUStats
+	hasCPU bool
+	gen    uint64
+}
+
+// ContainerStarted forgets a container's cached start time and moves its
+// generation on, so the next run inspects it again and measures from new
+// baselines. The event watcher calls it on every start event; without it,
+// uptime would keep counting from the first start — hiding exactly the
+// crash loop uptime is read to find.
 func (c *Collector) ContainerStarted(id string) {
-	c.startedMu.Lock()
-	defer c.startedMu.Unlock()
-	delete(c.started, id)
-	c.restarts[id]++
+	c.livesMu.Lock()
+	defer c.livesMu.Unlock()
+	l := c.life(id)
+	l.started = time.Time{}
+	l.gen++
+}
+
+// life returns id's entry, adding it. The caller holds livesMu.
+func (c *Collector) life(id string) *life {
+	l := c.lives[id]
+	if l == nil {
+		l = &life{}
+		c.lives[id] = l
+	}
+	return l
+}
+
+// generation is id's restart generation now.
+func (c *Collector) generation(id string) uint64 {
+	c.livesMu.Lock()
+	defer c.livesMu.Unlock()
+	if l := c.lives[id]; l != nil {
+		return l.gen
+	}
+	return 0
 }
 
 var _ collector.Collector = (*Collector)(nil)
@@ -100,8 +139,8 @@ func New(opts Options) *Collector {
 	return &Collector{
 		api: opts.API, iv: opts.Interval, conc: opts.MaxConcurrency,
 		tag: tagger{rewrites: opts.Rewrites}, clock: opts.Clock,
-		rates: collector.NewRates(), started: map[string]time.Time{}, restarts: map[string]uint64{},
-		prev: map[string]dockerapi.CPUStats{}, base: map[string]uint64{}, images: map[string]bool{},
+		rates: collector.NewRates(), images: map[string]bool{},
+		seen: map[string]*seen{}, lives: map[string]*life{},
 	}
 }
 
@@ -202,8 +241,8 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 		}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			started, known := c.startTime(ctx, ct.ID)
-			if err := c.one(ctx, ct, started, known, now, res); err != nil {
+			started, known, gen := c.startTime(ctx, ct.ID)
+			if err := c.one(ctx, ct, started, known, gen, now, res); err != nil {
 				emu.Lock()
 				errs = append(errs, err)
 				emu.Unlock()
@@ -211,31 +250,13 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 		})
 	}
 	wg.Wait()
-	c.startedMu.Lock()
-	for id := range c.started {
-		if !live[id] {
-			delete(c.started, id)
-		}
-	}
-	for id := range c.restarts {
-		if !live[id] {
-			delete(c.restarts, id)
-		}
-	}
-	c.startedMu.Unlock()
-	// Baselines are forgotten when their container leaves the list, not by
-	// age: rate readings carry the daemon's clock, which need not agree
-	// with the agent's (a VM's clock after the host sleeps).
-	for id := range c.prev {
-		if !live[id] {
-			delete(c.prev, id)
-		}
-	}
-	for id := range c.base {
-		if !live[id] {
-			delete(c.base, id)
-		}
-	}
+	// What is kept about a container is forgotten when it leaves the list,
+	// not by age: rate readings carry the daemon's clock, which need not
+	// agree with the agent's (a VM's clock after the host sleeps).
+	c.livesMu.Lock()
+	maps.DeleteFunc(c.lives, func(id string, _ *life) bool { return !live[id] })
+	c.livesMu.Unlock()
+	maps.DeleteFunc(c.seen, func(id string, _ *seen) bool { return !live[id] })
 	c.rates.Forget(func(key string) bool {
 		id, _, _ := strings.Cut(key, "\x00")
 		return !live[id]
@@ -247,7 +268,10 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 }
 
 // summarize keeps an error message bounded when every container fails the
-// same way (the daemon is overloaded): the first error and a count.
+// same way (the daemon is overloaded): one error and a count. The one is
+// the first in sorted order, not the first to finish, so the same failures
+// make the same message run after run — the scheduler logs a collector's
+// error only when its text changes.
 func summarize(errs []error) error {
 	switch len(errs) {
 	case 0:
@@ -255,34 +279,36 @@ func summarize(errs []error) error {
 	case 1:
 		return errs[0]
 	}
+	slices.SortFunc(errs, func(a, b error) int { return strings.Compare(a.Error(), b.Error()) })
 	return fmt.Errorf("%w (and %d more containers)", errs[0], len(errs)-1)
 }
 
 // startTime is a container's start time, from the cache or, the first time
 // (and after a restart), from inspect — inside the caller's concurrency
 // bound, so a run that meets fifty new containers does not inspect them one
-// at a time first.
-func (c *Collector) startTime(ctx context.Context, id string) (time.Time, bool) {
-	c.startedMu.Lock()
-	st, ok := c.started[id]
-	gen := c.restarts[id]
-	c.startedMu.Unlock()
-	if ok {
-		return st, true
+// at a time first. gen is the restart generation the answer belongs to,
+// read with it: the caller measures in that generation.
+func (c *Collector) startTime(ctx context.Context, id string) (started time.Time, known bool, gen uint64) {
+	c.livesMu.Lock()
+	l := c.life(id)
+	started, gen = l.started, l.gen
+	c.livesMu.Unlock()
+	if !started.IsZero() {
+		return started, true, gen
 	}
 	st, err := c.startedAt(ctx, id)
 	if err != nil {
-		return time.Time{}, false
+		return time.Time{}, false, gen
 	}
-	c.startedMu.Lock()
-	defer c.startedMu.Unlock()
-	if c.restarts[id] != gen {
+	c.livesMu.Lock()
+	defer c.livesMu.Unlock()
+	if l := c.lives[id]; l == nil || l.gen != gen {
 		// It restarted while being inspected: st may be the old start.
 		// Leave the cache empty so the next run inspects again.
-		return time.Time{}, false
+		return time.Time{}, false, gen
 	}
-	c.started[id] = st
-	return st, true
+	c.lives[id].started = st
+	return st, true, gen
 }
 
 func (c *Collector) startedAt(ctx context.Context, id string) (time.Time, error) {
@@ -299,12 +325,7 @@ func (c *Collector) startedAt(ctx context.Context, id string) (time.Time, error)
 // one reads a container's stats and adds its metrics to res. The rates
 // tracker is not safe for concurrent use, so rates are computed under res's
 // lock.
-func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started time.Time, known bool, now time.Time, res *run) error {
-	// The restart generation before the sample: a restart during the call
-	// then shows as a moved generation on the next run, not this one.
-	c.startedMu.Lock()
-	gen := c.restarts[ct.ID]
-	c.startedMu.Unlock()
+func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started time.Time, known bool, gen uint64, now time.Time, res *run) error {
 	s, err := c.api.Stats(ctx, ct.ID)
 	if errors.Is(err, dockerapi.ErrNotFound) {
 		return nil
@@ -315,11 +336,33 @@ func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started tim
 	if !s.Sampled() {
 		return nil // stopped between the list and the stats call
 	}
-	// Normalized and canonical once, for all of this container's metrics:
-	// the key run.add combines on, and a slice they can share (the
-	// scheduler copies tags before it decorates them).
-	tags := wire.CanonicalTags(agenttags.Normalize(c.tag.tags(ct.Name(), ct.ID, ct.Image, ct.Labels)))
-	tagKey := strings.Join(tags, ",")
+	if c.generation(ct.ID) != gen {
+		// A start event arrived while this was read: the sample may be from
+		// either life. Skip it; the next run starts from new baselines.
+		return nil
+	}
+	res.mu.Lock()
+	sn := c.seen[ct.ID]
+	if sn == nil {
+		// Normalized and canonical once, for all of this container's
+		// metrics and every run: the key run.add combines on, and a slice
+		// they can share (the scheduler copies tags before it decorates
+		// them).
+		tags := wire.CanonicalTags(agenttags.Normalize(c.tag.tags(ct.Name(), ct.ID, ct.Image, ct.Labels)))
+		sn = &seen{tags: tags, tagKey: strings.Join(tags, ","), gen: gen}
+		c.seen[ct.ID] = sn
+	}
+	if sn.gen != gen {
+		// Restarted in place since the last sample: its counters began
+		// again, so nothing is measured from the old life's readings.
+		sn.hasCPU, sn.gen = false, gen
+		prefix := ct.ID + "\x00"
+		c.rates.Forget(func(key string) bool { return strings.HasPrefix(key, prefix) })
+	}
+	prev, hasPrev := sn.cpu, sn.hasCPU
+	sn.cpu, sn.hasCPU = s.CPUStats, true
+	res.mu.Unlock()
+	tags, tagKey := sn.tags, sn.tagKey
 	gauge := func(name string, v float64) {
 		res.add(collector.Metric{Name: name, Kind: collector.Gauge, Value: v, Tags: tags}, tagKey)
 	}
@@ -344,16 +387,6 @@ func (c *Collector) one(ctx context.Context, ct dockerapi.Container, started tim
 			res.add(collector.Metric{Name: name, Kind: collector.Rate, Value: r, Tags: tags}, tagKey)
 		}
 	}
-	res.mu.Lock()
-	if b, seen := c.base[ct.ID]; seen && b != gen {
-		delete(c.prev, ct.ID)
-		prefix := ct.ID + "\x00"
-		c.rates.Forget(func(key string) bool { return strings.HasPrefix(key, prefix) })
-	}
-	c.base[ct.ID] = gen
-	prev, hasPrev := c.prev[ct.ID]
-	c.prev[ct.ID] = s.CPUStats
-	res.mu.Unlock()
 	if hasPrev {
 		if pct, ok := dockerapi.CPUPercentBetween(dockerapi.Stats{CPUStats: prev}, s); ok {
 			gauge("container.cpu.usage", pct)

@@ -117,7 +117,12 @@ func New(opts Options) *Client {
 		// whole transport, so the two are the same number.
 		MaxIdleConns:        opts.MaxIdleConns,
 		MaxIdleConnsPerHost: opts.MaxIdleConns,
-		IdleConnTimeout:     90 * time.Second,
+		// The event stream has no deadline (it is meant to stay open), so
+		// this is what bounds a daemon that accepts the connection and never
+		// answers: the watcher gets an error and reconnects, rather than
+		// waiting on the socket until shutdown.
+		ResponseHeaderTimeout: opts.Timeout,
+		IdleConnTimeout:       90 * time.Second,
 	}
 	// No http.Client.Timeout: it would also cut the event stream. Each
 	// non-streaming call gets a context deadline instead.
@@ -168,6 +173,35 @@ func (c *Client) Inspect(ctx context.Context, id string) (ContainerJSON, error) 
 	}
 	err := c.getJSON(ctx, "/containers/"+url.PathEscape(id)+"/json", nil, &out)
 	return out, err
+}
+
+// Now returns the daemon's clock (GET /_ping, whose Date header it sets),
+// to the second. The event stream's since is compared with the daemon's
+// clock, not the caller's, and the two need not agree: a VM's clock drifts
+// from its host's while the host sleeps.
+func (c *Client) Now(ctx context.Context) (time.Time, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/_ping", nil)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("dockerapi: GET /_ping: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("dockerapi: GET /_ping: %w", err)
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024)) // "OK": lets the connection be reused
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		return time.Time{}, c.apiError(resp, http.MethodGet, "/_ping")
+	}
+	t, err := http.ParseTime(resp.Header.Get("Date"))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("dockerapi: GET /_ping: Date header: %w", err)
+	}
+	return t, nil
 }
 
 // eventFilters asks the daemon for container start, oom and die events only,

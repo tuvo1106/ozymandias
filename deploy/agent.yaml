@@ -117,7 +117,8 @@ collectors:
     # Stats are one-shot (one sample each; CPU % is taken between runs), so
     # a request is quick and a run's length grows only with a busy daemon.
     max_concurrency: 8
-    # Rename matching containers before the name becomes a tag, and drop
+    # Rename matching containers (the whole name becomes replace, which may
+    # use the match's groups, ${1}) before the name becomes a tag, and drop
     # their container_id: for containers that are many and short-lived by
     # design (a sandbox per job), which would otherwise be a series each.
     # Same-named containers become one series: amounts summed, uptime and

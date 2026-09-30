@@ -33,6 +33,7 @@ type fakeAPI struct {
 	maxFlight atomic.Int32
 	statsWait time.Duration
 	onInspect func(id string) // called during Inspect, without f.mu held
+	onStats   func(id string) // called during Stats, without f.mu held
 
 	// events: each Events call takes the next script entry, delivers its
 	// events, then returns its error.
@@ -40,6 +41,9 @@ type fakeAPI struct {
 	errs    []error
 	sinces  []time.Time
 	skips   int // lines each Events call reports as undecodable first
+	// daemonNow and nowErr are what Now answers.
+	daemonNow time.Time
+	nowErr    error
 	// onEvents, if set, is called at the start of each Events call with
 	// its index, without f.mu held.
 	onEvents func(call int)
@@ -61,6 +65,9 @@ func (f *fakeAPI) Stats(_ context.Context, id string) (dockerapi.Stats, error) {
 		}
 	}
 	time.Sleep(f.statsWait)
+	if f.onStats != nil {
+		f.onStats(id)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.statsErr[id]; err != nil {
@@ -112,6 +119,12 @@ func (f *fakeAPI) Events(ctx context.Context, since time.Time, fn func(dockerapi
 		}
 	}
 	return err
+}
+
+func (f *fakeAPI) Now(context.Context) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.daemonNow, f.nowErr
 }
 
 // stats builds a sampled stats answer with cumulative counters scaled by n.
@@ -340,8 +353,8 @@ func TestDocker_StartTimesAreCachedAndForgotten(t *testing.T) {
 	}
 	api.list = nil
 	_, _ = collect(t, c)
-	if len(c.started) != 0 {
-		t.Fatalf("still tracking %v", c.started)
+	if len(c.lives) != 0 || len(c.seen) != 0 {
+		t.Fatalf("still tracking %v, %v", c.lives, c.seen)
 	}
 }
 
@@ -361,6 +374,18 @@ func TestTags(t *testing.T) {
 	} {
 		if got := sortedTags(tg.tags(tc.name, idAPI, tc.image, tc.labels)); got != tc.want {
 			t.Errorf("%s %s: %s\nwant %s", tc.name, tc.image, got, tc.want)
+		}
+	}
+}
+
+// A rule replaces the whole name, not only the part it matched: a prefix
+// rule folds every sandbox into one name rather than leaving each unique
+// (and, without its id, unidentifiable).
+func TestTags_ARewriteReplacesTheWholeName(t *testing.T) {
+	tg := tagger{rewrites: []Rewrite{{Match: regexp.MustCompile(`^judge-`), Replace: "judge"}}}
+	for _, name := range []string{"judge-8f3a", "judge-py-1"} {
+		if got := sortedTags(tg.tags(name, idAPI, "x", nil)); got != "container_name:judge,image_name:x,image_tag:latest" {
+			t.Errorf("%s: %s", name, got)
 		}
 	}
 }
@@ -499,8 +524,8 @@ func TestDocker_ATimedOutRunKeepsWhatItDidNotReach(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_ = c.Collect(ctx, func(collector.Metric) {})
-	if len(c.prev) != 2 || len(c.started) != 2 {
-		t.Fatalf("prev %d, started %d after a timed-out run; want both kept", len(c.prev), len(c.started))
+	if len(c.seen) != 2 || len(c.lives) != 2 {
+		t.Fatalf("seen %d, lives %d after a timed-out run; want both kept", len(c.seen), len(c.lives))
 	}
 }
 
@@ -592,4 +617,49 @@ func TestDocker_ARestartDropsTheBaselines(t *testing.T) {
 	g = next(21)
 	g.one(t, "container.cpu.usage")
 	g.one(t, "container.net.rx_bytes")
+}
+
+// A start event that lands while a container's stats are read: the sample
+// may be from either life, so the run reports nothing for it — not an
+// uptime from the old start against the new life's clock.
+func TestDocker_ARestartDuringStatsSkipsTheSample(t *testing.T) {
+	api := &fakeAPI{
+		list:    []dockerapi.Container{ctr(idAPI, "api", "x", nil)},
+		stats:   map[string]dockerapi.Stats{idAPI: stats(1)},
+		inspect: map[string]dockerapi.ContainerJSON{idAPI: {State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Hour)}}},
+	}
+	fc := testutil.NewFakeClock(t0)
+	c := New(Options{API: api, Clock: fc})
+	_, _ = collect(t, c)
+	fc.Advance(15 * time.Second)
+	api.mu.Lock()
+	api.stats[idAPI] = stats(11)
+	api.inspect[idAPI] = dockerapi.ContainerJSON{State: dockerapi.ContainerState{StartedAt: t0.Add(10 * time.Second)}}
+	api.mu.Unlock()
+	api.onStats = func(id string) {
+		api.onStats = nil
+		c.ContainerStarted(id)
+	}
+	g, _ := collect(t, c)
+	for _, name := range []string{"container.uptime", "container.cpu.usage", "container.net.rx_bytes", "container.memory.usage"} {
+		if len(g[name]) != 0 {
+			t.Errorf("%s = %+v from a sample taken across a restart", name, g[name])
+		}
+	}
+	g, _ = collect(t, c)
+	if v := g.one(t, "container.uptime").Value; v != 5 {
+		t.Errorf("uptime = %v, want 5: the new start, read at t0+15s", v)
+	}
+	if len(g["container.cpu.usage"]) != 0 {
+		t.Errorf("cpu = %+v on the first sample of the new life", g["container.cpu.usage"])
+	}
+}
+
+// The same failures make the same message, whatever order the calls end in:
+// the scheduler logs a collector's error only when its text changes.
+func TestSummarize_IsStable(t *testing.T) {
+	a, b := errors.New("a: timeout"), errors.New("b: timeout")
+	if x, y := summarize([]error{a, b}), summarize([]error{b, a}); x.Error() != y.Error() {
+		t.Fatalf("%q != %q", x, y)
+	}
 }

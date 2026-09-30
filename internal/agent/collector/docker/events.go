@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
+	"slices"
 	"strconv"
 	"time"
 
@@ -85,6 +87,20 @@ type Watcher struct {
 // maxTracked bounds the started map against dies that never arrive.
 const maxTracked = 10_000
 
+// evictOldest forgets the older half of the tracked starts: the entries a
+// missed die left behind are old, and the containers still running that
+// lose their entry are the long-lived ones, whose die falls back to
+// inspect. Clearing everything instead would also forget the churn of
+// short-lived containers running now, whose --rm dies inspect cannot
+// answer.
+func (w *Watcher) evictOldest() {
+	starts := slices.Collect(maps.Values(w.started))
+	slices.SortFunc(starts, func(a, b time.Time) int { return a.Compare(b) })
+	cut := starts[len(starts)/2]
+	maps.DeleteFunc(w.started, func(_ string, t time.Time) bool { return t.Before(cut) })
+	maps.DeleteFunc(w.oom, func(id string, _ bool) bool { _, ok := w.started[id]; return !ok })
+}
+
 // NewWatcher returns a Watcher. Call Run to start it.
 func NewWatcher(opts WatcherOptions) *Watcher {
 	if opts.Clock == nil {
@@ -115,8 +131,8 @@ const (
 
 // Run follows the stream until ctx is cancelled, reconnecting with backoff
 // when it ends. A reconnect asks for events since the last one seen, so a
-// daemon restart or a dropped connection loses nothing the daemon still
-// remembers; the one event the resume replays is recognised and skipped.
+// dropped connection loses nothing the daemon still remembers; the events
+// the resume replays are recognised and skipped.
 //
 // The daemon being unreachable (not running, socket not mounted) is logged
 // once, not on every retry, like a failing collector.
@@ -127,7 +143,12 @@ func (w *Watcher) Run(ctx context.Context) {
 		connected := w.clock.Now()
 		// The first attempt asks for events from now (zero); every later one
 		// resumes from the last event seen, or, if none was, from the first
-		// attempt, so what happened while disconnected is replayed.
+		// attempt, so what happened while disconnected is replayed. since is
+		// on the daemon's clock, so the first attempt's time is the
+		// daemon's too: taken from the agent's, a skewed VM clock would
+		// replay events from before the watcher began, or skip some after.
+		// Until the daemon has answered, there is no such time to resume
+		// from, and nothing it could have sent was missed.
 		var since time.Time
 		switch {
 		case w.last.Action != "":
@@ -135,7 +156,9 @@ func (w *Watcher) Run(ctx context.Context) {
 		case !w.began.IsZero():
 			since = w.began
 		default:
-			w.began = connected
+			if t, err := w.api.Now(ctx); err == nil {
+				w.began = t
+			}
 		}
 		err := w.api.Events(ctx, since, func(ev dockerapi.Event) error { return w.handle(ctx, ev) }, w.skip)
 		if ctx.Err() != nil {
@@ -196,8 +219,7 @@ func (w *Watcher) handle(ctx context.Context, ev dockerapi.Event) error {
 	switch ev.Action {
 	case "start":
 		if len(w.started) >= maxTracked {
-			clear(w.started)
-			clear(w.oom)
+			w.evictOldest()
 		}
 		w.started[id] = ev.At()
 		if w.onStart != nil {

@@ -430,3 +430,42 @@ func TestContainer_NameSkipsLinkAliases(t *testing.T) {
 		}
 	}
 }
+
+func TestNow_IsTheDaemonsDate(t *testing.T) {
+	want := time.Date(2026, 9, 30, 12, 0, 5, 0, time.UTC)
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /_ping", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Date", want.Format(http.TimeFormat))
+		_, _ = w.Write([]byte("OK"))
+	})
+	c := fakeDaemon(t, mux, Options{})
+	if got, err := c.Now(context.Background()); err != nil || !got.Equal(want) {
+		t.Fatalf("Now = %v, %v; want %v", got, err, want)
+	}
+
+	down := fakeDaemon(t, http.NotFoundHandler(), Options{})
+	if _, err := down.Now(context.Background()); err == nil {
+		t.Error("Now against a 404: no error")
+	}
+}
+
+// A daemon that accepts the event stream and never answers: the stream has
+// no deadline of its own, so the header timeout is what returns it to the
+// watcher, which reconnects, instead of waiting until shutdown.
+func TestEvents_ADaemonThatNeverAnswers(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /events", func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	c := fakeDaemon(t, mux, Options{Timeout: 100 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel) // before the server's Close (cleanups run last-first), or a hung stream holds it
+	done := make(chan error, 1)
+	go func() { done <- c.Events(ctx, time.Time{}, func(Event) error { return nil }, nil) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Events returned no error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Events still waiting on a daemon that never answers")
+	}
+}
