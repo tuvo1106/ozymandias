@@ -87,7 +87,7 @@ every run.
 
 | Collector | Config | Reports | Notes |
 |---|---|---|---|
-| `host` | `collectors.host` | `system.*` | In compose, the Docker VM's kernel, not the Mac's: its CPUs, memory and disks. `make dev` runs the agent natively and reports the Mac. Rates need two readings, so the first 15s after start have gauges only |
+| `host` | `collectors.host` | `system.*` | In compose, the Docker VM's kernel, not the Mac's: its CPUs, memory and disks — but network counters are per namespace, so `system.net.*` is the agent container's own traffic. `make dev` runs the agent natively and reports the Mac. Rates need two readings, so the first 15s after start have gauges only |
 
 ## Health and self-metrics
 

@@ -18,7 +18,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `deploy/agent.yaml`. In compose these describe the Docker VM; `make dev`
   reports the Mac.
 - **Go runtime metrics for the agent**: `ozy.runtime.goroutines`,
-  `ozy.runtime.heap_bytes`, `ozy.runtime.gc_cycles`.
+  `ozy.runtime.heap_bytes`, `ozy.runtime.gc_runs`.
 
 ### Changed
 

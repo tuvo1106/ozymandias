@@ -64,7 +64,7 @@ interval's increase.
 | `ozy.agent.collector.duration_ms` | gauge | ms | `collector` | agent | How long the last run took |
 | `ozy.runtime.goroutines` | gauge | goroutines | `component` | agent | Live goroutines. One that climbs and never falls is a leak |
 | `ozy.runtime.heap_bytes` | gauge | bytes | `component` | agent | Heap occupied by live and not-yet-swept objects |
-| `ozy.runtime.gc_cycles` | gauge | cycles | `component` | agent | Garbage collections since start (cumulative) |
+| `ozy.runtime.gc_runs` | counter | cycles | `component` | agent | Garbage collections. A rising rate with a flat heap means allocation churn |
 | `ozy.intake.series_accepted` | counter | series | — | ozyd | Series stored by `/v1/series` (and the self-report) |
 | `ozy.intake.series_rejected` | counter | series | — | ozyd | Series refused, per reason in the response's `errors` |
 | `ozy.intake.points_accepted` | counter | points | — | ozyd | Points stored |
@@ -89,7 +89,10 @@ interval's increase.
 From the agent's host collector (`collectors.host`), every 15s, tagged
 `host:<name>` like everything else the agent sends. They describe the kernel
 the agent runs on: in compose, the Docker VM (Colima, Docker Desktop), not the
-Mac; natively (`make dev`), the Mac. A unit ending in **/s** is a
+Mac; natively (`make dev`), the Mac. The exception is `system.net.*`: the
+kernel keeps interface counters per network namespace, and the agent's
+container has its own, so in compose they are the agent container's traffic,
+not the VM's (`container.net.*` has every container's). A unit ending in **/s** is a
 per-second rate the agent computed from two readings of a cumulative
 counter, stored as a gauge (ADR-0026) so that it averages correctly over any
 chart bucket; the first run after start has none, and a reading across a
@@ -114,7 +117,7 @@ counter reset is skipped rather than reported as a spike.
 | `system.disk.in_use` | gauge | fraction | `device` | `used / (used + free)`, 0–1: `df`'s Use%. Space reserved for root (5% on ext4) counts as neither, so `used + free` can be less than `total` |
 | `system.io.r_s` / `.w_s` | gauge | operations/s | `device` | Read and write operations completed, per whole physical disk: partitions (whose I/O the disk already counts), loop, ram, device-mapper and RAID devices are left out, so a sum over devices counts each write once |
 | `system.io.rkb_s` / `.wkb_s` | gauge | KiB/s | `device` | Read and written |
-| `system.net.bytes_rcvd` / `.bytes_sent` | gauge | bytes/s | `interface` | Traffic per interface. Interfaces that never moved a packet, and those matching `collectors.host.exclude_interfaces`, are skipped |
+| `system.net.bytes_rcvd` / `.bytes_sent` | gauge | bytes/s | `interface` | Traffic per interface, in the agent's network namespace (in compose, its container's). Interfaces that never moved a packet, and those matching `collectors.host.exclude_interfaces`, are skipped |
 | `system.net.packets_in.count` / `packets_out.count` | gauge | packets/s | `interface` | Packets |
 | `system.net.packets_in.error` / `packets_out.error` | gauge | packets/s | `interface` | Packets with errors |
 | `system.net.packets_in.drop` / `packets_out.drop` | gauge | packets/s | `interface` | Packets dropped |

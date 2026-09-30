@@ -83,7 +83,9 @@ collectors:
   timeout: 10s
 
   # The machine the agent runs on (system.*: CPU, load, memory, swap, disks,
-  # disk I/O, network, uptime). In compose that is the Docker VM, not the Mac;
+  # disk I/O, network, uptime). In compose that is the Docker VM, not the Mac
+  # — except network, which is per network namespace: there, system.net.* is
+  # the agent container's own traffic (container.net.* has each container's).
   # `make dev` runs the agent natively and reports the Mac.
   host:
     enabled: true
