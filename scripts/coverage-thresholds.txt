@@ -14,6 +14,7 @@ internal/agent/aggregator   90
 internal/agent/collector    90
 internal/agent/collector/host 90
 internal/agent/collector/dockerapi 90
+internal/agent/collector/docker 90
 internal/sketch             90
 internal/sketchstore        90
 internal/tsdb               90

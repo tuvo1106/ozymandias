@@ -73,7 +73,7 @@ type Watcher struct {
 	// after maxTracked.
 	started map[string]time.Time
 	oom     map[string]bool
-	last    dockerapi.Event // the newest event seen: where a resume starts
+	last    dockerapi.Event // the newest event seen, by time: where a resume starts
 	// atLast holds every event seen at last's time (action and container):
 	// since is inclusive, so a resume delivers them all again, and several
 	// can share a time — a daemon that sends only whole seconds, or a burst.
@@ -197,19 +197,28 @@ func (w *Watcher) Run(ctx context.Context) {
 }
 
 // replayOf reports whether ev is one a resume delivers again (since is
-// inclusive, so everything at the last event's time comes back), and
-// otherwise records it as seen.
+// inclusive, so everything at the resume time comes back), and otherwise
+// records it as seen.
+//
+// The resume point is the newest event by time, not the last delivered:
+// the daemon stamps an event before it publishes it, so concurrent events
+// (compose stopping several containers) can arrive out of order. An older
+// event is counted and leaves the resume point alone — a resume from the
+// newest time cannot deliver it again.
 func (w *Watcher) replayOf(ev dockerapi.Event) bool {
 	k := ev.Action + "\x00" + ev.Actor.ID
-	if w.last.Action != "" && ev.At().Equal(w.last.At()) {
+	switch {
+	case w.last.Action != "" && ev.At().Before(w.last.At()):
+		return false
+	case w.last.Action != "" && ev.At().Equal(w.last.At()):
 		if w.atLast[k] {
 			return true
 		}
-	} else {
+	default:
 		clear(w.atLast)
+		w.last = ev
 	}
 	w.atLast[k] = true
-	w.last = ev
 	return false
 }
 

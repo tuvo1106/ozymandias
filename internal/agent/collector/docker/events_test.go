@@ -292,6 +292,38 @@ func TestWatcher_EvictsEvenWhenStartsShareATime(t *testing.T) {
 	}
 }
 
+// Events arriving out of time order (the daemon stamps before it
+// publishes): the resume point is the newest, and the older one, which a
+// resume from there cannot deliver, is counted once.
+func TestWatcher_OutOfOrderEventsResumeFromTheNewest(t *testing.T) {
+	a, b := "a"+idAPI[1:], "b"+idAPI[1:]
+	dieA := event("die", a, t0.Add(6*time.Second), map[string]string{"exitCode": "0"})
+	dieB := event("die", b, t0.Add(5*time.Second), map[string]string{"exitCode": "0"})
+	api := &fakeAPI{
+		scripts: [][]dockerapi.Event{{dieA, dieB}, {dieA}}, // since=6 replays A only
+		errs:    []error{dockerapi.ErrStreamClosed, nil},
+	}
+	sk, fc, _ := watch(t, api, WatcherOptions{})
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.named("container.exits")) == 2 }, "both")
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "backoff")
+	fc.Advance(minBackoff)
+	testutil.Eventually(t, time.Second, func() bool {
+		api.mu.Lock()
+		defer api.mu.Unlock()
+		return len(api.sinces) == 2
+	}, "reconnect")
+	time.Sleep(20 * time.Millisecond)
+	api.mu.Lock()
+	since := api.sinces[1]
+	api.mu.Unlock()
+	if !since.Equal(dieA.At()) {
+		t.Errorf("resumed from %v, want the newest event's %v", since, dieA.At())
+	}
+	if n := len(sk.named("container.exits")); n != 2 {
+		t.Fatalf("%d exits, want 2", n)
+	}
+}
+
 type syncBuf struct {
 	mu sync.Mutex
 	b  bytes.Buffer

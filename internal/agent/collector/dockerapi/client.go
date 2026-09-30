@@ -256,7 +256,10 @@ func (c *Client) Events(ctx context.Context, since time.Time, fn func(Event) err
 			if cerr := ctx.Err(); cerr != nil {
 				return cerr
 			}
-			if errors.Is(err, io.EOF) {
+			// A daemon that exits mid-stream cuts the chunked body short:
+			// io.ErrUnexpectedEOF, not io.EOF. Both are the stream ending,
+			// which a restart does routinely and the watcher retries quietly.
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return ErrStreamClosed
 			}
 			return fmt.Errorf("dockerapi: reading /events: %w", err)

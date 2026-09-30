@@ -107,12 +107,17 @@ type seen struct {
 // baselines. The event watcher calls it on every start event; without it,
 // uptime would keep counting from the first start — hiding exactly the
 // crash loop uptime is read to find.
+//
+// Only a container a run has already met has anything to forget: a start
+// of one never seen adds nothing, so starts arriving while the list keeps
+// failing (and nothing is pruned) cannot grow the map.
 func (c *Collector) ContainerStarted(id string) {
 	c.livesMu.Lock()
 	defer c.livesMu.Unlock()
-	l := c.life(id)
-	l.started = time.Time{}
-	l.gen++
+	if l := c.lives[id]; l != nil {
+		l.started = time.Time{}
+		l.gen++
+	}
 }
 
 // life returns id's entry, adding it. The caller holds livesMu.
@@ -206,23 +211,6 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 	}
 
 	res := &run{out: map[string]*collector.Metric{}}
-	perImage := map[string]int{}
-	for _, ct := range list {
-		img, _ := dockerapi.ParseImage(ct.Image)
-		perImage[img]++
-	}
-	for img := range c.images {
-		if perImage[img] == 0 {
-			// Its last container stopped: say 0 once, rather than leave the
-			// last count standing until the series goes stale.
-			emit(collector.Metric{Name: "docker.containers.running", Value: 0, Tags: []string{"image_name:" + img}})
-		}
-	}
-	c.images = map[string]bool{}
-	for img, n := range perImage {
-		c.images[img] = true
-		emit(collector.Metric{Name: "docker.containers.running", Value: float64(n), Tags: []string{"image_name:" + img}})
-	}
 
 	// Every listed container is live, including any a timed-out run did
 	// not reach: their previous samples must survive to the next run.
@@ -255,6 +243,7 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 		})
 	}
 	wg.Wait()
+	c.countImages(list, emit)
 	// What is kept about a container is forgotten when it leaves the list,
 	// not by age: rate readings carry the daemon's clock, which need not
 	// agree with the agent's (a VM's clock after the host sleeps).
@@ -270,6 +259,35 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 		emit(*res.out[k])
 	}
 	return summarize(errs)
+}
+
+// countImages emits docker.containers.running per image, by the reference
+// each container was started from (the inspect's, as container.* is
+// tagged), falling back to the list's for one not inspected yet.
+func (c *Collector) countImages(list []dockerapi.Container, emit collector.Emit) {
+	perImage := map[string]int{}
+	c.livesMu.Lock()
+	for _, ct := range list {
+		ref := ct.Image
+		if l := c.lives[ct.ID]; l != nil && l.image != "" {
+			ref = l.image
+		}
+		img, _ := dockerapi.ParseImage(ref)
+		perImage[img]++
+	}
+	c.livesMu.Unlock()
+	for img := range c.images {
+		if perImage[img] == 0 {
+			// Its last container stopped: say 0 once, rather than leave the
+			// last count standing until the series goes stale.
+			emit(collector.Metric{Name: "docker.containers.running", Value: 0, Tags: []string{"image_name:" + img}})
+		}
+	}
+	c.images = map[string]bool{}
+	for img, n := range perImage {
+		c.images[img] = true
+		emit(collector.Metric{Name: "docker.containers.running", Value: float64(n), Tags: []string{"image_name:" + img}})
+	}
 }
 
 // summarize keeps an error message bounded when every container fails the

@@ -705,11 +705,26 @@ func TestDocker_TagsFollowRenameAndTheStartedImage(t *testing.T) {
 	if m := g.one(t, "container.memory.usage"); !slices.Contains(m.Tags, "image_name:app") || !slices.Contains(m.Tags, "image_tag:latest") {
 		t.Errorf("tags %v, want the started reference app:latest", m.Tags)
 	}
+	if r := g.one(t, "docker.containers.running"); r.Tags[0] != "image_name:app" {
+		t.Errorf("running tagged %v, want image_name:app like container.*", r.Tags)
+	}
 	api.mu.Lock()
 	api.list = []dockerapi.Container{ctr(idAPI, "web-old", "sha256:"+strings.Repeat("b", 64), nil)}
 	api.mu.Unlock()
 	g, _ = collect(t, c)
 	if m := g.one(t, "container.memory.usage"); !slices.Contains(m.Tags, "container_name:web-old") {
 		t.Errorf("tags %v after docker rename, want container_name:web-old", m.Tags)
+	}
+}
+
+// A start of a container no run has met adds nothing: while the list keeps
+// failing nothing is pruned, and starts must not grow the map.
+func TestDocker_AStartOfAnUnknownContainerAddsNothing(t *testing.T) {
+	c := New(Options{API: &fakeAPI{}})
+	for i := range 100 {
+		c.ContainerStarted(fmt.Sprintf("%064d", i))
+	}
+	if len(c.lives) != 0 {
+		t.Fatalf("tracking %d lives for containers never listed", len(c.lives))
 	}
 }

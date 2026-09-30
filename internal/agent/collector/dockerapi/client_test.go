@@ -472,3 +472,25 @@ func TestEvents_ADaemonThatNeverAnswers(t *testing.T) {
 		t.Fatal("Events still waiting on a daemon that never answers")
 	}
 }
+
+// A daemon that exits mid-stream cuts the chunked body short. That is the
+// stream ending (ErrStreamClosed, retried quietly), not a failure to log.
+func TestEvents_ADaemonThatDiesMidStream(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, _ *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n")
+		_, _ = buf.WriteString("5\r\n{\"typ\r\n") // then the daemon is gone: no final chunk
+		_ = buf.Flush()
+	})
+	c := fakeDaemon(t, mux, Options{})
+	err := c.Events(context.Background(), time.Time{}, func(Event) error { return nil }, nil)
+	if !errors.Is(err, ErrStreamClosed) {
+		t.Fatalf("err = %v, want ErrStreamClosed", err)
+	}
+}
