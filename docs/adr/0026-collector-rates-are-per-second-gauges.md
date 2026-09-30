@@ -49,3 +49,9 @@ bucket is the bucket's rate, at any width. Summing across devices or hosts
 - The wire's `rate` type remains, unused by the agent. Anything that sends
   one gets the engine's count-like rollup, as documented in
   docs/query-language.md.
+- A store that already saw one of these names as `rate` (only possible from
+  a build of this branch before this decision) refuses the gauge with a
+  metric type conflict, since a metric's type is fixed at first sight. The
+  fix is to re-type those rows in `metric_meta` with ozyd stopped; the
+  stored values were per-second all along, so they read correctly as
+  gauges. No release ever sent them.

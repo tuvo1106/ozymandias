@@ -135,8 +135,13 @@ Metadata tables: `dashboards(id, title, description, definition_json, created_at
 
 ## 3. Agent collectors — `internal/agent/collector`
 
-`Collector` interface: `Name() string; Interval() time.Duration; Collect(ctx, emit func(Series)) error`.
-Built-in collectors (host, docker, self) are always-on; **checks** are the
+`Collector` interface: `Name() string; Interval() time.Duration; Collect(ctx, emit func(Metric)) error`
+(*amended in PR #34:* a collector emits a name, kind, value and tags; the
+scheduler adds the timestamp, host and global tags, so no collector can get
+them wrong). Built-in collectors (host, docker, self) are on by default, each
+with an `enabled` switch (*amended:* the Docker VM of a machine without Docker
+has nothing for `docker` to read, and turning `host` off is how tests keep
+the real machine out); **checks** are the
 user-configurable kind: `Check` = a collector factory registered by name,
 instantiated once per `instances:` entry in `deploy/agent.d/<name>.yaml`, or
 via **autodiscovery** from container labels
@@ -144,7 +149,9 @@ via **autodiscovery** from container labels
 with `%%host%%` / `%%port%%` template variables resolved from the container.
 A scheduler runs each on its interval (default 15s) with jitter and a timeout;
 a failing collector is logged and counted, never fatal. Collector output goes
-straight to the forwarder as gauges/rates (bypassing statsd aggregation).
+straight to the forwarder (bypassing statsd aggregation) as gauges and
+counts; a per-second rate computed from counter deltas is sent as a gauge
+(*amended:* ADR-0026 — the engine sums `rate` points per bucket).
 
 - **host** (gopsutil): `system.cpu.{user,system,idle,iowait}` (%),
   `system.load.{1,5,15}`, `system.mem.{total,used,free,usable,pct_usable}`,
