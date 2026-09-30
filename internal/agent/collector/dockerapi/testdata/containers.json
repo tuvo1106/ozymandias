@@ -1,0 +1,45 @@
+[
+  {
+    "Id": "8dfafdbc3a40c7b5f8e2a9c4d1e6b0a3f7c2d9e8b1a4c6f0e3d7b2a9c5e8f1d4",
+    "Names": ["/shop-api-1"],
+    "Image": "shop/api:1.4.2",
+    "ImageID": "sha256:4f1c9e2b7a3d6c8e0f5b1a9d2c7e4b8f6a0d3c5e9b2f7a1c4d8e6b0f3a5c9e2d",
+    "Command": "uvicorn app.main:app --host 0.0.0.0",
+    "Created": 1790680000,
+    "Ports": [{"IP": "0.0.0.0", "PrivatePort": 8000, "PublicPort": 8000, "Type": "tcp"}],
+    "Labels": {
+      "com.docker.compose.project": "shop",
+      "com.docker.compose.service": "api",
+      "ozy.service": "shop-api"
+    },
+    "State": "running",
+    "Status": "Up 2 hours (healthy)",
+    "HostConfig": {"NetworkMode": "shop_default"},
+    "NetworkSettings": {"Networks": {"shop_default": {"IPAddress": "172.18.0.3"}}},
+    "Mounts": []
+  },
+  {
+    "Id": "c2e7a9d4b1f8e3c6a0d5b9f2e7c4a1d8b3f6e0c9a2d7b4f1e8c5a3d0b6f9e2c7",
+    "Names": ["/shop-redis-1"],
+    "Image": "redis:7.2-alpine",
+    "ImageID": "sha256:9a2d7b4f1e8c5a3d0b6f9e2c7c2e7a9d4b1f8e3c6a0d5b9f2e7c4a1d8b3f6e0c",
+    "Created": 1790679000,
+    "Labels": {
+      "com.docker.compose.project": "shop",
+      "com.docker.compose.service": "redis",
+      "ozy.check.redis.port": "6379"
+    },
+    "State": "running",
+    "Status": "Up 3 hours"
+  },
+  {
+    "Id": "f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0f",
+    "Names": [],
+    "Image": "sha256:0b6f9e2c7c2e7a9d4b1f8e3c6a0d5b9f2e7c4a1d8b3f6e0c9a2d7b4f1e8c5a3d",
+    "ImageID": "sha256:0b6f9e2c7c2e7a9d4b1f8e3c6a0d5b9f2e7c4a1d8b3f6e0c9a2d7b4f1e8c5a3d",
+    "Created": 1790681000,
+    "Labels": null,
+    "State": "running",
+    "Status": "Up 5 seconds"
+  }
+]

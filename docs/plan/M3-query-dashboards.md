@@ -169,10 +169,13 @@ counts; a per-second rate computed from counter deltas is sent as a gauge
   agent, or a socket proxy. Socket access is root-equivalent on the host
   whichever is chosen.
   Endpoints:
-  `GET /containers/json` for discovery (refreshed every 10s and on
-  `GET /events` stream `start`/`die`), `GET /containers/{id}/stats?stream=false`
-  per container, bounded concurrency. Metrics: `container.cpu.usage` (% of one
-  core: `cpu_delta/system_delta × online_cpus × 100`), `container.cpu.throttled`,
+  `GET /containers/json` for discovery (at the start of each run),
+  `GET /containers/{id}/stats?stream=false&one-shot=true` per container,
+  bounded concurrency, and the `GET /events` stream for exits. *Amended by
+  ADR-0030:* the spec had stats without one-shot (the daemon holds each call
+  a second) and a separate list refresh every 10s and on start/die.
+  Metrics: `container.cpu.usage` (% of one core between two runs' samples:
+  `cpu_delta/system_delta × online_cpus × 100`), `container.cpu.throttled`,
   `container.memory.{usage,limit,rss,cache}`, `container.net.{rx_bytes,tx_bytes}` (rates),
   `container.io.{read_bytes,write_bytes}` (rates), `container.pids`,
   `container.uptime`, plus `docker.containers.running` by `image_name`.

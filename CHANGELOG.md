@@ -17,11 +17,30 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (docs/metrics-catalog.md), every 15s, configured under `collectors:` in
   `deploy/agent.yaml`. In compose these describe the Docker VM; `make dev`
   reports the Mac.
+- **Container metrics from the agent** (M3 §3, part 2). A `docker`
+  collector reports each running container's CPU, throttling, memory,
+  network, block I/O, pids and uptime (`container.*`) and the running count
+  per image, tagged by name, image and compose service; an event watcher
+  turns every container exit into `container.exits` (with `exit_code` and
+  `oom_killed`) and `container.lifetime`, so containers too short-lived for
+  any poll are still counted. `container_name_rewrite` folds many
+  short-lived containers into one name. In compose the agent reads the
+  Docker VM's socket through the socket's group (ADR-0028: that access is
+  root-equivalent).
 - **Go runtime metrics for the agent**: `ozy.runtime.goroutines`,
   `ozy.runtime.heap_bytes`, `ozy.runtime.gc_runs`.
 
 ### Changed
 
+- **A restarted agent no longer has points refused** (ADR-0029). The new
+  agent wrote the bucket its predecessor's final flush had just written,
+  and ozyd refused the second point; with short-lived containers exiting,
+  that happened on every restart. An agent now stamps nothing before the
+  first whole bucket after it started (earlier samples are counted there,
+  up to one interval late), and its final flush leaves out buckets that
+  have not begun. Those hold what an agent stopped within its first
+  interval received, and samples from a client clock running fast: both
+  are now lost at shutdown.
 - **One machine is one `host` value** (ADR-0025). ozyd has a `hostname`
   setting (`OZY_HOSTNAME`) for the tag on its own metrics, and `make up`,
   `make dev` and `make smoke` give ozyd and the agent the same name from

@@ -14,6 +14,8 @@ import (
 
 	"github.com/tuvo1106/ozymandias/internal/agent/aggregator"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
+	"github.com/tuvo1106/ozymandias/internal/agent/collector/docker"
+	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
 	hostcoll "github.com/tuvo1106/ozymandias/internal/agent/collector/host"
 	"github.com/tuvo1106/ozymandias/internal/agent/config"
 	"github.com/tuvo1106/ozymandias/internal/agent/forwarder"
@@ -42,6 +44,9 @@ type Options struct {
 	// Collectors run alongside the configured ones — for tests, and for an
 	// embedder with a source the config has no section for.
 	Collectors []collector.Collector
+	// DockerAPI replaces the Docker socket client, for tests. Nil means a
+	// client on collectors.docker.socket.
+	DockerAPI docker.API
 }
 
 // Agent is a configured agent, ready to Run.
@@ -56,9 +61,13 @@ type Agent struct {
 
 	statsd *statsd.Server // nil when statsd is disabled
 	sched  *collector.Scheduler
-	agg    *aggregator.Aggregator
-	fwd    *forwarder.Forwarder
-	self   *selfmetrics.Reporter
+	// watcher follows Docker's event stream; nil when the docker collector
+	// is off. dockerClient is closed on shutdown when the agent made it.
+	watcher      *docker.Watcher
+	dockerClient *dockerapi.Client
+	agg          *aggregator.Aggregator
+	fwd          *forwarder.Forwarder
+	self         *selfmetrics.Reporter
 }
 
 // New resolves the hostname, binds the statsd socket and builds the
@@ -90,6 +99,7 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 	}, "component:"+Component)
 
 	a.agg = aggregator.New(aggregator.Options{
+		Started:             a.started,
 		Clock:               a.clock,
 		Registry:            a.reg,
 		HostTag:             hostTag,
@@ -109,6 +119,7 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		Logger:        a.log,
 	})
 	a.self = selfmetrics.NewReporter(a.reg, cfg.Aggregator.FlushInterval, hostTag)
+	a.self.NotBefore(a.started)
 	selfmetrics.RegisterRuntime(a.reg, "component:"+Component)
 
 	collectors := slices.Clone(opts.Collectors)
@@ -120,6 +131,25 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 			return nil, err
 		}
 		collectors = append(collectors, hostcoll.New(hostcoll.Options{Interval: h.Interval, ExcludeInterfaces: exclude, Clock: a.clock}))
+	}
+	if d := cfg.Collectors.Docker; d.Enabled {
+		rewrites, err := d.Rewrites()
+		if err != nil {
+			return nil, err
+		}
+		api := opts.DockerAPI
+		if api == nil {
+			a.dockerClient = dockerapi.New(dockerapi.Options{Socket: d.Socket, MaxIdleConns: d.MaxConcurrency})
+			api = a.dockerClient
+		}
+		dc := docker.New(docker.Options{
+			API: api, Interval: d.Interval, MaxConcurrency: d.MaxConcurrency, Rewrites: rewrites,
+		})
+		collectors = append(collectors, dc)
+		a.watcher = docker.NewWatcher(docker.WatcherOptions{
+			API: api, Sink: a.fromDockerEvent, Rewrites: rewrites, OnStart: dc.ContainerStarted,
+			Clock: a.clock, Registry: a.reg, Logger: a.log,
+		})
 	}
 	// Straight to the forwarder: collector output is one value per series
 	// per run already, which is what the aggregator would have produced.
@@ -198,6 +228,16 @@ func (a *Agent) fromStatsd(m *statsd.Message, now time.Time) {
 	a.agg.Add(s, now)
 }
 
+// fromDockerEvent records a container exit or lifetime in the aggregator,
+// which adds the host and global tags as it does for statsd samples.
+func (a *Agent) fromDockerEvent(s docker.Sample) {
+	kind := aggregator.Counter
+	if s.Kind == docker.DistributionSample {
+		kind = aggregator.Distribution
+	}
+	a.agg.Add(aggregator.Sample{Name: s.Name, Kind: kind, Value: s.Value, Tags: s.Tags}, a.clock.Now())
+}
+
 // flush hands one aggregator flush, plus the agent's own metrics, to the
 // forwarder.
 //
@@ -240,7 +280,8 @@ func (a *Agent) Close() error {
 //     cancelled and what it had read is still sent; one stuck in a syscall
 //     is abandoned after 2s), HTTP drains within http.shutdown_timeout, and
 //     the statsd socket closes after its queue is parsed;
-//  2. the aggregator does a final flush of every open bucket;
+//  2. the aggregator does a final flush of every open bucket that has
+//     begun (ADR-0029);
 //  3. the forwarder makes one last delivery attempt within
 //     forwarder.shutdown_timeout.
 func (a *Agent) Run(ctx context.Context, ln net.Listener) error {
@@ -275,10 +316,15 @@ func (a *Agent) Run(ctx context.Context, ln net.Listener) error {
 	// bounded wait for a stuck one (collector.DefaultShutdownTimeout) then
 	// overlaps the drain instead of adding to the stop grace period. Their
 	// context is also cancelled when Serve returns for any other reason (the
-	// listener failed), or the agent would wait for them forever.
+	// listener failed), or the agent would wait for them forever. The event
+	// watcher feeds the aggregator, so it runs until the inputs stop and a
+	// container that dies during the drain is still in the final flush.
 	collectors, stopCollectors := context.WithCancel(ctx)
 	defer stopCollectors()
 	wg.Go(func() { a.sched.Run(collectors) })
+	if a.watcher != nil {
+		wg.Go(func() { a.watcher.Run(inputs) })
+	}
 
 	err := httpserve.Serve(ctx, srv, ln, a.cfg.HTTP.ShutdownTimeout)
 
@@ -287,6 +333,13 @@ func (a *Agent) Run(ctx context.Context, ln net.Listener) error {
 	wg.Wait()
 	stopAgg()
 	<-aggDone
+	if n := a.agg.HeldBack(); n > 0 {
+		a.log.Info("final flush held back buckets that had not begun (ADR-0029): their samples are lost",
+			"buckets", n)
+	}
+	if a.dockerClient != nil {
+		a.dockerClient.Close()
+	}
 	fctx, cancel := context.WithTimeout(context.Background(), a.cfg.Forwarder.ShutdownTimeout)
 	defer cancel()
 	if ferr := a.fwd.Shutdown(fctx); ferr != nil {

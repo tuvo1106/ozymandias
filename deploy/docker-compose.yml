@@ -14,9 +14,11 @@
 # :8125/udp here. Run the agent natively (`make dev`) or switch Colima to
 # `portForwarder: grpc` — see docs/operations.md.
 #
-# The Docker socket mount the agent needs for container metrics and logs
-# arrives with those collectors in M3, together with the decision on how the
-# non-root agent is allowed to read it.
+# The agent reads the Docker daemon's socket for container metrics
+# (ADR-0028): mounted read-only, and reachable by the non-root agent through
+# group_add with the socket's group id, which `make up` looks up. Socket
+# access is root-equivalent on the Docker host whatever the mount says:
+# ":ro" stops the file being replaced, not API calls through it.
 
 name: ozymandias
 
@@ -64,6 +66,13 @@ services:
     volumes:
       # Per-app fragments, editable without rebuilding the image.
       - ./agent.d:/etc/ozy/agent.d:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    # The socket is root:<docker group>, mode 660; the agent runs as
+    # nonroot. The group's id differs per Docker host (991 under Colima), so
+    # `make up` reads it from the socket. 0 without make: root's group, which
+    # is the socket's group on hosts that have no docker group.
+    group_add:
+      - "${OZY_DOCKER_GID:-0}"
     healthcheck:
       test: ["CMD", "/usr/local/bin/agent", "healthcheck", "-config", "/etc/ozy/agent.yaml"]
       interval: 10s

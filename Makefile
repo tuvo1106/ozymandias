@@ -18,6 +18,10 @@ LDFLAGS  := -s -w -X $(MODULE)/internal/buildinfo.Version=$(VERSION)
 # (`=`), so the script runs only for the targets that use it, not for
 # `make help`. `make OZY_HOSTNAME=x up` still overrides it.
 OZY_HOSTNAME = $(shell scripts/hostname.sh)
+# The Docker socket's group inside the Docker VM, for the agent's group_add
+# (ADR-0028); see the script. Recursive, and passed only to `up`, so no other
+# target starts the probe container.
+OZY_DOCKER_GID = $(shell scripts/docker-gid.sh)
 COMPOSE  = OZY_VERSION=$(VERSION) OZY_HOSTNAME=$(OZY_HOSTNAME) docker compose -f deploy/docker-compose.yml
 FUZZTIME ?= 30s
 CI_FUZZTIME ?= 10s
@@ -115,7 +119,7 @@ ci-gate: lint test docs-check web-check sdk-check
 .PHONY: up
 up: ## Build the image and start the compose stack (waits until healthy)
 	docker network inspect ozymandias >/dev/null 2>&1 || docker network create ozymandias
-	$(COMPOSE) up -d --build --wait
+	OZY_DOCKER_GID=$(OZY_DOCKER_GID) $(COMPOSE) up -d --build --wait
 
 .PHONY: down
 down: ## Stop the compose stack (data volume kept; `make down-v` wipes it)

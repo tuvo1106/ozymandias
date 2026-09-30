@@ -56,6 +56,13 @@ const TimestampTolerance = 60 * time.Second
 
 // Options configures an Aggregator. Zero values get the documented defaults.
 type Options struct {
+	// Started is when the agent process started. No point is stamped in the
+	// bucket it started in, or any earlier: the agent before this one (a restart)
+	// may have written that bucket in its final flush, and the store
+	// refuses a second point at a timestamp it has. Samples from the first
+	// partial bucket are counted in the next instead — seconds late rather
+	// than refused (ADR-0029). Zero means no such floor.
+	Started  time.Time
 	Clock    clock.Clock           // default clock.Real()
 	Registry *selfmetrics.Registry // default: a new registry
 	// HostTag ("host:<name>", as config.ResolveHostname returns it) is added
@@ -108,8 +115,12 @@ type Aggregator struct {
 	// yet. A sample for an older bucket arrived too late: its bucket is gone,
 	// so it is counted in the current one instead (see Add).
 	watermark atomic.Int64
+	// first is the start of the first bucket that began at or after
+	// Options.Started; nothing is stamped earlier (see Started).
+	first int64
 
 	nContexts      atomic.Int64
+	heldBack       atomic.Int64 // buckets the final flush did not emit (HeldBack)
 	samplesDropped *selfmetrics.Counter
 	tagsDropped    *selfmetrics.Counter
 	lateSamples    *selfmetrics.Counter
@@ -203,6 +214,13 @@ func New(opts Options) *Aggregator {
 		a.shards[i] = &shard{contexts: map[string]*aggContext{}}
 	}
 	a.watermark.Store(math.MinInt64)
+	a.first = math.MinInt64
+	if !opts.Started.IsZero() {
+		// Strictly after the start second, even when that second is a
+		// boundary: the agent before this one may have stopped in that same
+		// second and flushed the bucket it opens.
+		a.first = selfmetrics.FirstBucket(opts.Started, a.interval)
+	}
 	return a
 }
 
@@ -246,7 +264,7 @@ func (a *Aggregator) Add(s Sample, now time.Time) {
 	// taking any shard lock, so either this sample lands in a bucket that
 	// flush is about to emit, or it sees the new watermark. It can never
 	// land in a bucket that was already emitted.
-	start := floorTo(ts, a.interval)
+	start := max(floorTo(ts, a.interval), a.first)
 	if wm := a.watermark.Load(); start < wm {
 		// The bucket this belongs to has been flushed. Counting it in the
 		// oldest open bucket keeps every counter increment (Σ is preserved)
@@ -369,9 +387,14 @@ func contextKey(kind Kind, name string, tags []string) string {
 // Flush emits every bucket that has closed by now (end <= now) and forgets
 // contexts idle for longer than the expiry. With final set it also emits the
 // open buckets — used once, at shutdown, when there is no later flush to wait
-// for. (If the agent restarts within the same interval, the restarted agent's
-// point for that bucket replaces this one in the store; losing a partial
-// bucket on restart is the accepted cost.)
+// for. A restarted agent does not write that bucket again: it stamps
+// nothing before its first whole bucket (Options.Started). No bucket that
+// starts after now is emitted even then: the next agent's first bucket is
+// the one after the second it starts in, which can be any bucket after now,
+// and it would be refused a second point there. Such buckets hold the
+// samples of an agent stopped within its first interval (moved forward to
+// its floor) or from a client clock running fast; losing them at shutdown
+// is the cost of never having a point refused (ADR-0029).
 func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.SketchSeries) {
 	began := time.Now()
 	nowS := now.Unix()
@@ -385,7 +408,7 @@ func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.Ske
 	for _, sh := range a.shards {
 		sh.mu.Lock()
 		for key, c := range sh.contexts {
-			out, sketches = a.flushContext(out, sketches, c, cutoff, final)
+			out, sketches = a.flushContext(out, sketches, c, cutoff, final, nowS)
 			if len(c.buckets) == 0 && nowS-c.lastSeen > a.expiry && (c.kind != Counter || c.next > c.lastData+a.expiry) {
 				delete(sh.contexts, key)
 				a.nContexts.Add(-1)
@@ -417,9 +440,19 @@ func (a *Aggregator) Flush(now time.Time, final bool) ([]wire.Series, []wire.Ske
 	return out, sketches
 }
 
-func (a *Aggregator) flushContext(out []wire.Series, sketches []wire.SketchSeries, c *aggContext, cutoff int64, final bool) ([]wire.Series, []wire.SketchSeries) {
+// HeldBack is how many buckets (one per context) the final flush did not
+// emit because they had not begun (ADR-0029). It is reported by the caller
+// after the final flush — too late for a self-metric, which would need a
+// flush of its own — so an operator can see what a short-lived agent lost.
+func (a *Aggregator) HeldBack() int64 { return a.heldBack.Load() }
+
+func (a *Aggregator) flushContext(out []wire.Series, sketches []wire.SketchSeries, c *aggContext, cutoff int64, final bool, nowS int64) ([]wire.Series, []wire.SketchSeries) {
 	starts := make([]int64, 0, len(c.buckets))
 	for s := range c.buckets {
+		if final && s >= cutoff && s > nowS {
+			a.heldBack.Add(1)
+			continue
+		}
 		if s < cutoff || final {
 			starts = append(starts, s)
 		}

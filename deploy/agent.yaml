@@ -103,6 +103,38 @@ collectors:
       - ^(utun|awdl|llw|anpi|gif|stf)[0-9]+$
       - ^(veth[0-9a-f]+|docker0|br-[0-9a-f]+)$
 
+  # Containers, through the Docker daemon's socket (container.*,
+  # docker.containers.running), plus its event stream for what polling
+  # misses: container.exits and container.lifetime for containers that live
+  # a few seconds. Compose mounts the socket read-only (ADR-0028); `make dev`
+  # points this at the socket the docker CLI uses.
+  docker:
+    enabled: true
+    socket: /var/run/docker.sock
+    # 0 means collectors.interval.
+    interval: 0s
+    # Stats requests in flight at once: the load one run puts on the daemon.
+    # Stats are one-shot (one sample each; CPU % is taken between runs), so
+    # a request is quick and a run's length grows only with a busy daemon.
+    max_concurrency: 8
+    # Rename matching containers (the whole name becomes replace, which may
+    # use the match's groups, ${1}) before the name becomes a tag, and drop
+    # their container_id: for containers that are many and short-lived by
+    # design (a sandbox per job), which would otherwise be a series each.
+    # Same-named containers become one series: amounts summed, uptime and
+    # memory limit the largest (CPU and rates only over containers seen on
+    # the previous run too; docs/metrics-catalog.md). First match wins; conf.d fragments append.
+    # This stack's own throwaway containers (make up's socket-group probe,
+    # smoke's test containers) keep their names but drop container_id, so
+    # each run adds to the same series instead of minting new ones.
+    container_name_rewrite:
+      - match: ^(ozymandias-gid-probe|ozy-smoke-[a-z]+)$
+        replace: ${1}
+    # container_name_rewrite:
+    #   -
+    #     match: ^judge-.*
+    #     replace: judge
+
 # Value of the `host` tag on everything this agent sends. Empty means the OS
 # hostname — set it explicitly in a container, where that is a random id. The
 # same rule as ozyd's `hostname`: a name that cannot be a tag (a comma,

@@ -10,5 +10,8 @@ file-name order. Only `.yaml`/`.yml` files are read; this README is ignored.
   `deploy/monitors/` are the only places app-specific configuration lives
   (docs/plan/extensibility.md §1).
 
-Nothing app-specific exists yet. In M0, `tags` is the only list a fragment can
-usefully extend. Checks, log sources and rewrite rules arrive in M3 and M4.
+| File | What it sets |
+|---|---|
+| `app-python.yaml` | `collectors.docker.container_name_rewrite`: its judge sandboxes are one container name |
+
+Checks and log sources arrive later in M3 and in M4.

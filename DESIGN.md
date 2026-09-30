@@ -265,7 +265,8 @@ pressure, and each stage is explicit about how.
    host and a gauge on another.
 
 Shutdown runs this pipeline in reverse: the statsd listener stops, the
-aggregator does a final flush of every open bucket, and the forwarder gets one
+aggregator does a final flush of every open bucket that has begun (ADR-0029:
+a bucket ahead of now may be the next agent's first), and the forwarder gets one
 last attempt within its budget. The agent must therefore stop *before*
 ozyd, or that final flush has nowhere to go — `make dev` and compose both
 encode that order.
@@ -421,6 +422,19 @@ Collector.Collect ──emit(Metric)──▶ Scheduler ──[]wire.Series─�
   vanished interface). CPU percentages are computed from its own total of
   the states, because gopsutil's includes guest time that Linux already
   counts inside user time.
+- **The Docker collector and the event watcher** split one source by shape.
+  Polling the daemon (list, then stats per container, at most
+  `max_concurrency` at once, which bounds the load a run puts on the daemon;
+  stats are one-shot, so CPU % is taken between runs) suits levels and rates. It cannot see a container that starts and
+  dies between two polls, so a watcher follows the event stream and turns
+  each die into `container.exits` and `container.lifetime`. Those samples
+  arrive one at a time, at any moment, several per interval: the statsd
+  aggregator's shape, so the watcher feeds it rather than the scheduler.
+  After a disconnect the watcher resumes from the last event seen and drops
+  the one the daemon replays. `container_name_rewrite` folds containers that
+  are many by design into one name, and same-tagged containers are combined
+  (amounts summed) rather than sent as points that overwrite each other.
+  Reading the socket is root-equivalent on the Docker host (ADR-0028).
 
 ---
 

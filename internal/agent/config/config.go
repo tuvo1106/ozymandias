@@ -7,9 +7,12 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/agent/collector/docker"
+	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
 	base "github.com/tuvo1106/ozymandias/internal/config"
 )
 
@@ -69,8 +72,112 @@ type Collectors struct {
 	// seconds: a count's interval is whole seconds on the wire.
 	Interval time.Duration `yaml:"interval"`
 	// Timeout bounds one run of one collector (capped at its interval).
-	Timeout time.Duration `yaml:"timeout"`
-	Host    HostCollector `yaml:"host"`
+	Timeout time.Duration   `yaml:"timeout"`
+	Host    HostCollector   `yaml:"host"`
+	Docker  DockerCollector `yaml:"docker"`
+}
+
+// DockerCollector configures the Docker collector (container.*) and the
+// event watcher behind container.exits and container.lifetime.
+type DockerCollector struct {
+	Enabled bool `yaml:"enabled"`
+	// Socket is the Docker daemon's unix socket.
+	Socket string `yaml:"socket"`
+	// Interval overrides collectors.interval; zero means use it.
+	Interval time.Duration `yaml:"interval"`
+	// MaxConcurrency bounds stats (and inspect) requests in flight, which
+	// bounds the load one run puts on the daemon.
+	MaxConcurrency int `yaml:"max_concurrency"`
+	// ContainerNameRewrite renames matching containers before the name
+	// becomes a tag, and drops their container_id: for containers that are
+	// many and short-lived by design. The first matching rule wins.
+	// Fragments append.
+	ContainerNameRewrite []NameRewrite `yaml:"container_name_rewrite"`
+}
+
+// Rewrites compiles each ContainerNameRewrite rule, in order: the one
+// place a rule is checked (used by Validate and by the agent), so the
+// pattern and its replacement cannot come apart.
+func (d DockerCollector) Rewrites() ([]docker.Rewrite, error) {
+	out := make([]docker.Rewrite, len(d.ContainerNameRewrite))
+	for i, r := range d.ContainerNameRewrite {
+		if r.Match == "" {
+			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d]: match is empty", i)
+		}
+		if strings.TrimSpace(r.Replace) == "" {
+			// An empty name is no name: the container would lose both its
+			// name and its id and merge with anything else of its image.
+			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d] %q: replace is empty", i, r.Match)
+		}
+		rx, err := regexp.Compile(r.Match)
+		if err != nil {
+			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d] %q: %w", i, r.Match, err)
+		}
+		if err := checkTemplate(rx, r.Replace); err != nil {
+			return nil, fmt.Errorf("collectors.docker.container_name_rewrite[%d] %q: replace %q: %w", i, r.Match, r.Replace, err)
+		}
+		out[i] = docker.Rewrite{Match: rx, Replace: r.Replace}
+	}
+	return out, nil
+}
+
+// checkTemplate refuses a replacement that names a group the pattern does
+// not have. Go's regexp template expands such a reference to nothing, with
+// no error: `$1_sandbox` is the group named "1_sandbox", and `${2}` of a
+// one-group pattern is empty, so the rule would quietly misname every
+// container it matches. The syntax is regexp.Expand's: $$ is a literal $,
+// and $name or ${name} a group by number or name.
+func checkTemplate(rx *regexp.Regexp, tmpl string) error {
+	isName := func(c byte) bool {
+		return c == '_' || '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+	}
+	for i := 0; i < len(tmpl); i++ {
+		if tmpl[i] != '$' || i+1 == len(tmpl) {
+			continue
+		}
+		rest := tmpl[i+1:]
+		var name string
+		switch rest[0] {
+		case '$':
+			i++
+			continue
+		case '{':
+			end := strings.IndexByte(rest, '}')
+			if end < 0 {
+				continue // not a reference: Expand writes it as it stands
+			}
+			name = rest[1:end]
+			i += end + 1
+		default:
+			n := 0
+			for n < len(rest) && isName(rest[n]) {
+				n++
+			}
+			name = rest[:n]
+			i += n
+		}
+		if name == "" {
+			continue
+		}
+		if num, err := strconv.Atoi(name); err == nil {
+			if num > rx.NumSubexp() {
+				return fmt.Errorf("$%s: the pattern has %d groups", name, rx.NumSubexp())
+			}
+			continue
+		}
+		if rx.SubexpIndex(name) < 0 {
+			return fmt.Errorf("$%s: the pattern has no group of that name (write ${1}, not $1, before letters, digits or _)", name)
+		}
+	}
+	return nil
+}
+
+// NameRewrite is one container_name_rewrite rule: a regular expression and
+// the name a matching container gets instead — the whole name, however
+// little of it match matched. ${1} and friends are the match's groups.
+type NameRewrite struct {
+	Match   string `yaml:"match"`
+	Replace string `yaml:"replace"`
 }
 
 // HostCollector configures the host collector (system.*).
@@ -134,7 +241,8 @@ func Default() Agent {
 		Forwarder:  Forwarder{Timeout: 10 * time.Second, MaxQueueBytes: 64 << 20, ShutdownTimeout: 5 * time.Second},
 		Collectors: Collectors{
 			Interval: 15 * time.Second, Timeout: 10 * time.Second,
-			Host: HostCollector{Enabled: true, ExcludeInterfaces: slices.Clone(DefaultExcludeInterfaces)},
+			Host:   HostCollector{Enabled: true, ExcludeInterfaces: slices.Clone(DefaultExcludeInterfaces)},
+			Docker: DockerCollector{Enabled: true, Socket: dockerapi.DefaultSocket, MaxConcurrency: docker.DefaultMaxConcurrency},
 		},
 		ConfdPath: "./deploy/agent.d",
 		Log:       base.Log{Level: "info", Format: "text"},
@@ -188,6 +296,15 @@ func (c Collectors) validate() error {
 	}
 	if iv := c.Host.Interval; iv != 0 && !wholeSeconds(iv) {
 		errs = append(errs, fmt.Errorf("collectors.host.interval %v: want 0 or a whole number of seconds", iv))
+	}
+	if iv := c.Docker.Interval; iv != 0 && !wholeSeconds(iv) {
+		errs = append(errs, fmt.Errorf("collectors.docker.interval %v: want 0 or a whole number of seconds", iv))
+	}
+	if c.Docker.Enabled && (c.Docker.Socket == "" || c.Docker.MaxConcurrency < 1) {
+		errs = append(errs, errors.New("collectors.docker: socket must be set and max_concurrency at least 1"))
+	}
+	if _, err := c.Docker.Rewrites(); err != nil {
+		errs = append(errs, err)
 	}
 	if _, err := c.Host.Excludes(); err != nil {
 		errs = append(errs, err)

@@ -2,6 +2,7 @@ package config
 
 import (
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -157,6 +158,70 @@ func TestDefaultExcludeInterfaces(t *testing.T) {
 	for _, n := range []string{"eth0", "en0", "lo", "lo0", "wlan0", "enp3s0", "bridge0"} {
 		if excluded(n) {
 			t.Errorf("%s is skipped", n)
+		}
+	}
+}
+
+// The shipped fragments load over the reference file, as compose runs them,
+// and the judge rule is in effect.
+func TestLoad_ShippedFragments(t *testing.T) {
+	cfg, warnings, err := Load("../../../deploy/agent.yaml", []string{"OZY_AGENT_CONFD_PATH=../../../deploy/agent.d"})
+	if err != nil || len(warnings) != 0 {
+		t.Fatalf("err=%v warnings=%v", err, warnings)
+	}
+	rules := cfg.Collectors.Docker.ContainerNameRewrite
+	if len(rules) != 2 || rules[1].Match != "^judge-.*" || rules[1].Replace != "judge" {
+		t.Fatalf("container_name_rewrite = %+v", rules)
+	}
+	// The stack's own rule keeps the name (it is there to drop the id).
+	stack := regexp.MustCompile(rules[0].Match)
+	for _, name := range []string{"ozymandias-gid-probe", "ozy-smoke-long", "ozy-smoke-redis"} {
+		if !stack.MatchString(name) || stack.ReplaceAllString(name, rules[0].Replace) != name {
+			t.Errorf("%s: matched %v, rewritten to %q", name, stack.MatchString(name), stack.ReplaceAllString(name, rules[0].Replace))
+		}
+	}
+}
+
+func TestAgent_ValidateDocker(t *testing.T) {
+	for name, mutate := range map[string]func(*Agent){
+		"empty rewrite match": func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Replace: "x"}} },
+		"bad rewrite match":   func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "(", Replace: "x"}} },
+		"empty replace":       func(a *Agent) { a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "^judge-"}} },
+		"replace names a missing group": func(a *Agent) {
+			a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "^judge-(.*)$", Replace: "$1_sandbox"}}
+		},
+		"replace numbers a missing group": func(a *Agent) {
+			a.Collectors.Docker.ContainerNameRewrite = []NameRewrite{{Match: "^judge-(.*)$", Replace: "${2}"}}
+		},
+		"no socket":           func(a *Agent) { a.Collectors.Docker.Socket = "" },
+		"zero concurrency":    func(a *Agent) { a.Collectors.Docker.MaxConcurrency = 0 },
+		"fractional interval": func(a *Agent) { a.Collectors.Docker.Interval = 1500 * time.Millisecond },
+	} {
+		a := Default()
+		mutate(&a)
+		if err := a.Validate(); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+	a := Default()
+	a.Collectors.Docker.Enabled, a.Collectors.Docker.Socket = false, ""
+	if err := a.Validate(); err != nil {
+		t.Errorf("a disabled collector needs no socket: %v", err)
+	}
+}
+
+// Replacements that reference only groups the pattern has are accepted.
+func TestRewrites_AcceptsGoodTemplates(t *testing.T) {
+	for _, r := range []NameRewrite{
+		{Match: "^judge-", Replace: "judge"},
+		{Match: "^(ozy-smoke-[a-z]+)$", Replace: "${1}"},
+		{Match: "^(?P<app>[a-z]+)-[0-9]+$", Replace: "${app}"},
+		{Match: "^(a)(b)$", Replace: "$1-$2"},
+		{Match: "^x$", Replace: "cost$$"},
+	} {
+		d := DockerCollector{ContainerNameRewrite: []NameRewrite{r}}
+		if rw, err := d.Rewrites(); err != nil || len(rw) != 1 || rw[0].Replace != r.Replace {
+			t.Errorf("%+v: %v, %v", r, rw, err)
 		}
 	}
 }

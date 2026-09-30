@@ -617,3 +617,60 @@ func flushSeries(a *Aggregator, now time.Time, final bool) []wire.Series {
 	series, _ := a.Flush(now, final)
 	return series
 }
+
+// A restarted agent must not write the bucket it started in: its
+// predecessor's final flush may have, and the store would refuse the second
+// point. Samples from before the first whole bucket move into it.
+func TestAggregator_NothingBeforeTheFirstWholeBucket(t *testing.T) {
+	a := newAgg(t, Options{Started: at(3)})
+	a.Add(Sample{Name: "hits", Kind: Counter, Value: 2}, at(4))  // the partial bucket 0
+	a.Add(Sample{Name: "hits", Kind: Counter, Value: 5}, at(12)) // bucket 10
+	if s := find(flushSeries(a, at(10), false), "hits"); s != nil {
+		t.Fatalf("bucket 0 written: %s", points(s))
+	}
+	if s := find(flushSeries(a, at(20), false), "hits"); points(s) != "10:7" {
+		t.Fatalf("got %s, want 10:7: the early sample counted, a bucket late", points(s))
+	}
+
+	// Started on a boundary, to the second: the agent before may have
+	// stopped in that second and flushed bucket 10, so the first is 20.
+	b := newAgg(t, Options{Started: at(10)})
+	b.Add(Sample{Name: "hits", Kind: Counter, Value: 1}, at(10))
+	if s := find(flushSeries(b, at(20), false), "hits"); s != nil {
+		t.Fatalf("bucket 10 written: %s", points(s))
+	}
+	if s := find(flushSeries(b, at(30), false), "hits"); points(s) != "20:1" {
+		t.Fatalf("got %s, want 20:1", points(s))
+	}
+}
+
+// An agent stopped within its first interval holds only its floor bucket,
+// which starts after now. Its final flush must not write it: the next agent,
+// started before that boundary, has the same floor and would be refused.
+func TestAggregator_FinalFlushWritesNoFutureBucket(t *testing.T) {
+	a := newAgg(t, Options{Started: at(3)})
+	a.Add(Sample{Name: "hits", Kind: Counter, Value: 2}, at(4))
+	a.Add(Sample{Name: "depth", Kind: Gauge, Value: 2}, at(4))
+	if got := flushSeries(a, at(6), true); len(got) != 0 {
+		t.Fatalf("final flush at 6 wrote %+v: bucket 10 is the next agent's too", got)
+	}
+	if n := a.HeldBack(); n != 2 {
+		t.Errorf("HeldBack = %d, want 2 (one bucket per context)", n)
+	}
+
+	// A client clock running ahead puts a sample in a later bucket. That is
+	// held back too: the next agent, started at 31, would begin in bucket 40
+	// — but one started at 25 begins in 30, and would be refused.
+	c := newAgg(t, Options{Started: at(-100)})
+	c.Add(Sample{Name: "depth", Kind: Gauge, Value: 5, Timestamp: at(35).Unix()}, at(6))
+	if s := find(flushSeries(c, at(6), true), "depth"); s != nil {
+		t.Fatalf("final flush at 6 wrote %s, a bucket the next agent may write", points(s))
+	}
+
+	// Past the floor, the final flush writes the open bucket as before.
+	b := newAgg(t, Options{Started: at(3)})
+	b.Add(Sample{Name: "depth", Kind: Gauge, Value: 2}, at(12))
+	if s := find(flushSeries(b, at(15), true), "depth"); points(s) != "10:2" {
+		t.Fatalf("got %s, want 10:2", points(s))
+	}
+}

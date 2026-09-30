@@ -1,0 +1,23 @@
+{
+  "Id": "b7c1d9e3f5a2b8c4d6e0f1a3b5c7d9e2f4a6b8c0d1e3f5a7b9c2d4e6f8a0b1c3",
+  "Created": "2026-09-29T17:10:00.000000000Z",
+  "Name": "/judge-3f9a",
+  "State": {
+    "Status": "exited",
+    "Running": false,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": true,
+    "Dead": false,
+    "Pid": 0,
+    "ExitCode": 137,
+    "Error": "",
+    "StartedAt": "2026-09-29T17:10:00.250000000Z",
+    "FinishedAt": "2026-09-29T17:10:02.750000000Z"
+  },
+  "Config": {
+    "Image": "judge-python:3.12",
+    "Labels": {"role": "sandbox"}
+  },
+  "HostConfig": {"Memory": 268435456}
+}

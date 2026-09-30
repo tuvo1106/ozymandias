@@ -63,8 +63,6 @@ type Collector struct {
 	rates   *collector.Rates
 	// prevCPU is the last CPU reading; percentages need two.
 	prevCPU *cpu.TimesStat
-	// lastRun is when Collect last started, for scaling forgetAfter.
-	lastRun time.Time
 }
 
 var _ collector.Collector = (*Collector)(nil)
@@ -86,26 +84,6 @@ func (c *Collector) Name() string { return "host" }
 // Interval implements [collector.Collector].
 func (c *Collector) Interval() time.Duration { return c.iv }
 
-// forgetAfter is how long a device or interface's last counter reading is
-// kept once it stops appearing. Long enough to survive a few failed runs,
-// short enough that a laptop's churn of tunnels and USB disks does not
-// accumulate. With a long interval it stretches to three intervals, so one
-// failed run of a group does not wipe the readings the next run needs.
-const forgetAfter = 5 * time.Minute
-
-// forgetBefore is the cutoff for this run's prune: forgetAfter, or three
-// times the gap since the previous run if that is longer. The collector
-// measures the gap rather than trusting its configured interval, which is
-// zero when the scheduler's default applies.
-func (c *Collector) forgetBefore(now time.Time) time.Time {
-	keep := forgetAfter
-	if !c.lastRun.IsZero() {
-		keep = max(keep, 3*now.Sub(c.lastRun))
-	}
-	c.lastRun = now
-	return now.Add(-keep)
-}
-
 // Collect reads every group. A group that fails does not stop the others:
 // its error joins the returned one and the rest are still emitted. A group
 // the platform does not support ([errors.ErrUnsupported], e.g. disk I/O in
@@ -113,7 +91,7 @@ func (c *Collector) forgetBefore(now time.Time) time.Time {
 // this run, and would otherwise be "logged once" forever.
 func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 	now := c.clock.Now()
-	defer c.rates.Prune(c.forgetBefore(now))
+	defer c.rates.Sweep(now)
 	var errs []error
 	for _, g := range []struct {
 		name string

@@ -27,7 +27,8 @@ import (
 //     forgets them, so memory is bounded by what currently exists rather
 //     than by everything that ever did.
 type Rates struct {
-	last map[string]reading
+	last  map[string]reading
+	swept time.Time // the previous Sweep
 }
 
 type reading struct {
@@ -72,6 +73,39 @@ func (r *Rates) Prune(cutoff time.Time) {
 			delete(r.last, k)
 		}
 	}
+}
+
+// Forget drops every key for which drop returns true: for a collector that
+// knows exactly which keys are gone (a container that left the list, one
+// restarted in place whose counters began again) rather than inferring it
+// from time, which [Rates.Prune] does on the readings' own clock.
+func (r *Rates) Forget(drop func(key string) bool) {
+	for k := range r.last {
+		if drop(k) {
+			delete(r.last, k)
+		}
+	}
+}
+
+// ForgetAfter is how long [Rates.Sweep] keeps a key that stopped
+// appearing, at the least. Long enough to survive a few failed runs, short
+// enough that a laptop's churn of tunnels and USB disks, or a host's churn
+// of containers, does not accumulate.
+const ForgetAfter = 5 * time.Minute
+
+// Sweep is [Rates.Prune] for a collector that calls it once per run, at the
+// run's start time: it forgets keys unseen for ForgetAfter, or for three
+// times the gap since the previous Sweep if that is longer. With a long
+// interval (10m) a fixed 5 minutes would forget, after one failed read,
+// the readings the next run needs. The gap is measured rather than taken
+// from configuration, where zero means "the scheduler's default".
+func (r *Rates) Sweep(now time.Time) {
+	keep := ForgetAfter
+	if !r.swept.IsZero() {
+		keep = max(keep, 3*now.Sub(r.swept))
+	}
+	r.swept = now
+	r.Prune(now.Add(-keep))
 }
 
 // Len returns the number of keys being tracked.

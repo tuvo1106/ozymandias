@@ -1,0 +1,9 @@
+# app-python: its judge runs every submission in a fresh, short-lived
+# sandbox container named judge-<something>. One series per sandbox would
+# bury container.* under thousands of dead names; as one container_name they
+# are one series, and container.exits{container_name:judge} counts the runs.
+collectors:
+  docker:
+    container_name_rewrite:
+      - match: ^judge-.*
+        replace: judge
