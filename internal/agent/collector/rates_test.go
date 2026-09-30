@@ -104,3 +104,34 @@ func TestRates_Properties(t *testing.T) {
 		}
 	})
 }
+
+// Sweep keeps a key at least ForgetAfter, and three gaps when runs are
+// further apart than that.
+func TestRates_SweepScalesWithTheGap(t *testing.T) {
+	r := NewRates()
+	at := time.Unix(1790000000, 0)
+	r.Observe("a", 1, at)
+	r.Sweep(at)
+	r.Sweep(at.Add(10 * time.Minute)) // "a" missed a run 10m apart: kept
+	if r.Len() != 1 {
+		t.Fatal("a key that missed one long-interval run was forgotten")
+	}
+	r.Sweep(at.Add(20 * time.Minute))
+	r.Sweep(at.Add(30 * time.Minute)) // exactly three gaps: still kept
+	if r.Len() != 1 {
+		t.Fatal("forgotten before three gaps had passed")
+	}
+	r.Sweep(at.Add(40 * time.Minute)) // four gaps: gone
+	if r.Len() != 0 {
+		t.Fatal("a key gone for three gaps was kept")
+	}
+
+	r = NewRates()
+	r.Observe("b", 1, at)
+	for i := range 22 { // 15s runs for 5m15s: ForgetAfter governs
+		r.Sweep(at.Add(time.Duration(i) * 15 * time.Second))
+	}
+	if r.Len() != 0 {
+		t.Fatal("a key unseen for over ForgetAfter was kept")
+	}
+}

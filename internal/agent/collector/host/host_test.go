@@ -291,7 +291,7 @@ func TestHost_ForgetsWhatDisappears(t *testing.T) {
 	before := c.rates.Len()
 	src.net = src.net[:0]
 	src.io = map[string]disk.IOCountersStat{}
-	for range forgetAfter/(15*time.Second) + 1 { // a run every 15s
+	for range collector.ForgetAfter/(15*time.Second) + 1 { // a run every 15s
 		fc.Advance(15 * time.Second)
 		_, _ = run(t, c)
 	}
@@ -302,7 +302,7 @@ func TestHost_ForgetsWhatDisappears(t *testing.T) {
 
 // With runs 10 minutes apart, one failed read of the network must not
 // cost the next run its rates: what it needs is 10 minutes old, older than
-// forgetAfter.
+// collector.ForgetAfter.
 func TestHost_ALongIntervalKeepsReadingsAcrossAFailedRun(t *testing.T) {
 	src := machine()
 	fc := testutil.NewFakeClock(t0)
