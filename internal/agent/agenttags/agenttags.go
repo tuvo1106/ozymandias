@@ -6,6 +6,21 @@ import (
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
+// Normalize returns the agent's global tags as Decorate expects them:
+// normalized, with any that cannot be sent left out. Config validation
+// refuses such a tag first; this is the backstop for a caller that skipped
+// it, and the one place both the aggregator and the scheduler get the list
+// from, so the two cannot clean it differently.
+func Normalize(tags []string) []string {
+	var out []string
+	for _, t := range tags {
+		if n, ok := wire.NormalizeTag(t); ok {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // Decorate returns tags (already normalized) with the agent's global tags
 // and host tag added, in canonical order and capped at wire.MaxTagsPerPoint.
 // The host tag is added only when no tag has the key host — a series about

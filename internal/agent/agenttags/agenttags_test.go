@@ -42,3 +42,9 @@ func TestDecorate_Cap(t *testing.T) {
 		t.Fatal("the cap kept a different subset for a different order")
 	}
 }
+
+func TestNormalize(t *testing.T) {
+	if got := Normalize([]string{"Env:Dev", "a:b,c", " "}); !slices.Equal(got, []string{"env:dev"}) {
+		t.Fatalf("got %v", got)
+	}
+}

@@ -197,11 +197,7 @@ func New(opts Options) *Aggregator {
 	}
 	opts.Registry.GaugeFunc("ozy.agent.aggregator.contexts", func() float64 { return float64(a.nContexts.Load()) })
 	a.hostTag = opts.HostTag
-	for _, t := range opts.Tags {
-		if n, ok := wire.NormalizeTag(t); ok {
-			a.agentTags = append(a.agentTags, n)
-		}
-	}
+	a.agentTags = agenttags.Normalize(opts.Tags)
 	a.shards = make([]*shard, opts.Shards)
 	for i := range a.shards {
 		a.shards[i] = &shard{contexts: map[string]*aggContext{}}

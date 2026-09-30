@@ -147,7 +147,7 @@ func (a *Agent) Validate() error {
 			errs = append(errs, errors.New("statsd: read_buffer must be ≥ 0 and readers, workers, queue_size ≥ 1"))
 		}
 	}
-	if iv := a.Aggregator.FlushInterval; iv < time.Second || iv%time.Second != 0 {
+	if iv := a.Aggregator.FlushInterval; !wholeSeconds(iv) {
 		errs = append(errs, fmt.Errorf("aggregator.flush_interval %v: want a whole number of seconds, at least 1s", iv))
 	}
 	if a.Aggregator.ContextExpiry < a.Aggregator.FlushInterval {
