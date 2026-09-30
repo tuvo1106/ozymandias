@@ -11,7 +11,9 @@
 // Each run connects (pgx, ADR-0031), reads them, and disconnects; the check
 // turns two runs' counters into per-second rates with collector.Rates, which
 // skips a run across pg_stat_reset() rather than reporting a negative spike.
-// Connections come from pg_stat_activity, sizes from pg_database_size,
+// Connections are the client sessions in pg_stat_activity (not the
+// server's background processes, which it also lists since PostgreSQL 10
+// and which max_connections does not count), sizes from pg_database_size,
 // pg_table_size and pg_indexes_size.
 //
 // # Choices worth knowing

@@ -219,7 +219,7 @@ the first run has none, and a run across `pg_stat_reset()` is skipped.
 | Metric | Type | Unit | Tags | Meaning |
 |---|---|---|---|---|
 | `postgresql.can_connect` | gauge | — | — | 1 when the run connected, 0 when it could not |
-| `postgresql.connections` | gauge | connections | — | Sessions in `pg_stat_activity`, the check's own included (all of them only with `pg_monitor`) |
+| `postgresql.connections` | gauge | connections | — | Client sessions in `pg_stat_activity`, the check's own included (all of them only with `pg_monitor`); not the server's background processes, which `max_connections` does not count |
 | `postgresql.max_connections` | gauge | connections | — | The server's `max_connections` |
 | `postgresql.percent_usage_connections` | gauge | % | — | connections / max_connections |
 | `postgresql.commits` / `.rollbacks` | gauge | transactions/s | `db` | Transactions committed and rolled back |

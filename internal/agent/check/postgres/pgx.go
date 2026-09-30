@@ -2,11 +2,26 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/url"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+// connectionsQuery counts client sessions. Since PostgreSQL 10,
+// pg_stat_activity also lists the server's background processes
+// (checkpointer, WAL writer, autovacuum launcher, …), which do not count
+// against max_connections: counting them made percent_usage_connections
+// read 40% on a server with 3 of 20 slots in use. Before 10 the view has no
+// backend_type and lists client sessions only, so connectionsQueryOld is
+// the same answer there.
+const (
+	connectionsQuery    = `SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend'`
+	connectionsQueryOld = `SELECT count(*) FROM pg_stat_activity`
+	undefinedColumn     = "42703" // SQLSTATE
 )
 
 // dialPgx connects with pgx (ADR-0031). The connection string is built as a
@@ -39,7 +54,10 @@ type pgxConn struct{ c *pgx.Conn }
 func (p pgxConn) Close(ctx context.Context) error { return p.c.Close(ctx) }
 
 func (p pgxConn) Connections(ctx context.Context) (n int64, err error) {
-	err = p.c.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity`).Scan(&n)
+	err = p.c.QueryRow(ctx, connectionsQuery).Scan(&n)
+	if pe := (*pgconn.PgError)(nil); errors.As(err, &pe) && pe.Code == undefinedColumn {
+		err = p.c.QueryRow(ctx, connectionsQueryOld).Scan(&n) // before PostgreSQL 10
+	}
 	return n, err
 }
 

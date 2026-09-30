@@ -280,3 +280,16 @@ func TestIntegration_RealServer(t *testing.T) {
 		t.Fatalf("emitted %v", g)
 	}
 }
+
+// The connection count is client sessions only: counting the background
+// processes pg_stat_activity also lists (PostgreSQL 10+) inflates
+// percent_usage_connections against a max_connections they do not use.
+// The query runs only against a server, so its text is what can be pinned.
+func TestConnectionsQuery_CountsClientsOnly(t *testing.T) {
+	if !strings.Contains(connectionsQuery, "backend_type = 'client backend'") {
+		t.Fatalf("connections query counts more than clients: %s", connectionsQuery)
+	}
+	if strings.Contains(connectionsQueryOld, "backend_type") {
+		t.Fatal("the fallback for servers before 10 names a column they lack")
+	}
+}
