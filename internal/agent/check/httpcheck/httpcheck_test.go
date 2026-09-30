@@ -233,15 +233,20 @@ func TestCheck_TLS(t *testing.T) {
 	}
 }
 
+// A Host header reaches the server whatever case the YAML key was written
+// in: net/http ignores a Host header and sends req.Host.
 func TestCheck_HostHeader(t *testing.T) {
 	var host string
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { host = r.Host }))
 	defer srv.Close()
-	if _, err := run(t, newCheck(t, map[string]any{"url": srv.URL, "headers": map[string]any{"Host": "shop.test"}}, nil)); err != nil {
-		t.Fatal(err)
-	}
-	if host != "shop.test" {
-		t.Errorf("Host = %q", host)
+	for _, key := range []string{"Host", "host", "HOST"} {
+		host = ""
+		if _, err := run(t, newCheck(t, map[string]any{"url": srv.URL, "headers": map[string]any{key: "shop.test"}}, nil)); err != nil {
+			t.Fatal(err)
+		}
+		if host != "shop.test" {
+			t.Errorf("headers %s: Host = %q", key, host)
+		}
 	}
 }
 

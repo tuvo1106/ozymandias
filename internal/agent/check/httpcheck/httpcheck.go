@@ -153,10 +153,14 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 		return down(0, fmt.Errorf("%s: %w", c.shown, unwrapURL(err)))
 	}
 	for k, v := range c.cfg.Headers {
+		// net/http sends req.Host, never a Host header, so the override has
+		// to go there. Header names are case-insensitive and YAML keys are
+		// whatever was typed: host, HOST and Host all mean it.
+		if http.CanonicalHeaderKey(k) == "Host" {
+			req.Host = v
+			continue
+		}
 		req.Header.Set(k, v)
-	}
-	if h, ok := c.cfg.Headers["Host"]; ok {
-		req.Host = h
 	}
 	start := c.clock.Now()
 	resp, err := c.client.Do(req)
