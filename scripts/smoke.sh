@@ -570,6 +570,11 @@ latest_value() { # <query> — the newest non-null point over the last 5 minutes
 pts = [p for s in json.load(sys.stdin).get("series", []) for p in s["points"] if p[1] is not None]
 print(max(pts)[1] if pts else "none")'
 }
+wait_rate() { # <query> — like wait_positive, but allowing for the two runs a rate needs
+  local i
+  for i in 1 2 3; do wait_positive "$1" 2>/dev/null && return 0; done
+  wait_positive "$1"
+}
 wait_positive() { # <query>
   local v
   for _ in $(seq 1 30); do
@@ -597,18 +602,22 @@ print(" ".join(sorted(d for d, t in seen if t == newest)))'
 }
 only_block_devices() { local d; d=$(newest_devices); [[ -n $d ]] && ! grep -qv '^/dev/' <<<"${d// /$'\n'}" || { echo "devices: '$d'" >&2; return 1; }; }
 check "and only block devices"                 only_block_devices
+# A rate needs two runs, and is a gauge on the wire (ADR-0026): a store that
+# typed the name otherwise refuses every point, which only this check sees.
+check "and network rates"                      wait_rate "sum:system.net.bytes_rcvd$host_q"
 check "the collector reports on itself"        wait_positive "sum:ozy.agent.collector.runs{collector:host}"
 # Zero increase may arrive as 0 or not at all, depending on the reporter.
-sum_window() { # <query> — the sum of every point over the last 5 minutes (0 if none)
+sum_window() { # <query> [seconds, default 300] — the sum of every point in the window (0 if none)
   local now; now=$(ozyd_now 2>/dev/null); [[ -n $now ]] || now=$(date +%s)
   curl -fsS --max-time 2 -G "$OZY_URL/api/v1/query" --data-urlencode "q=$1" \
-    --data-urlencode "from=$((now - 300))" --data-urlencode "to=$((now + 60))" 2>/dev/null |
+    --data-urlencode "from=$((now - ${2:-300}))" --data-urlencode "to=$((now + 60))" 2>/dev/null |
     python3 -c 'import json,sys
 print(sum(p[1] for s in json.load(sys.stdin).get("series", []) for p in s["points"] if p[1] is not None))'
 }
-# Errors are a count: one failing run in five minutes is a single point, which
-# the newest value would miss. Sum the window instead.
-no_errors() { local v; v=$(sum_window "$1") || return 1; python3 -c "import sys; sys.exit(0 if float('$v') == 0 else 1)" || { echo "$1: $v errors in 5m" >&2; return 1; }; }
+# Errors are a count: one failing run is a single point, which the newest
+# value would miss, so sum a window. 90s: several runs of this agent, but not
+# the one before `make up` replaced it.
+no_errors() { local v; v=$(sum_window "$1" 90) || return 1; python3 -c "import sys; sys.exit(0 if float('$v') == 0 else 1)" || { echo "$1: $v errors in 90s" >&2; return 1; }; }
 check "without errors"                         no_errors 'sum:ozy.agent.collector.errors{collector:host}'
 
 echo "smoke: $pass checks passed"
