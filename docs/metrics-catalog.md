@@ -89,10 +89,11 @@ interval's increase.
 From the agent's host collector (`collectors.host`), every 15s, tagged
 `host:<name>` like everything else the agent sends. They describe the kernel
 the agent runs on: in compose, the Docker VM (Colima, Docker Desktop), not the
-Mac; natively (`make dev`), the Mac. A **rate** is per second, computed by the
-agent from two readings of a cumulative counter; the first run after start
-has none, and a reading across a counter reset is skipped rather than
-reported as a spike.
+Mac; natively (`make dev`), the Mac. A unit ending in **/s** is a
+per-second rate the agent computed from two readings of a cumulative
+counter, stored as a gauge (ADR-0026) so that it averages correctly over any
+chart bucket; the first run after start has none, and a reading across a
+counter reset is skipped rather than reported as a spike.
 
 | Metric | Type | Unit | Tags | Meaning |
 |---|---|---|---|---|
@@ -110,11 +111,11 @@ reported as a spike.
 | `system.swap.total` / `.used` / `.free` | gauge | bytes | — | Swap space |
 | `system.swap.pct_free` | gauge | fraction | — | `free / total`, 0–1; absent without swap |
 | `system.disk.total` / `.used` / `.free` | gauge | bytes | `device` | Space on each block device (`/dev/...`), once however many places it is mounted. On macOS, APFS volumes are one container and are reported once as `/dev/diskN`, with used = total − free. In a container: the Docker VM's data disk, seen through the container's bind mounts. Network mounts and folders shared from the Mac are not disks and are skipped |
-| `system.disk.in_use` | gauge | fraction | `device` | Used share, 0–1, counting space reserved for root as used |
-| `system.io.r_s` / `.w_s` | rate | operations/s | `device` | Read and write operations completed, per whole physical disk: partitions (whose I/O the disk already counts), loop, ram, device-mapper and RAID devices are left out, so a sum over devices counts each write once |
-| `system.io.rkb_s` / `.wkb_s` | rate | KiB/s | `device` | Read and written |
-| `system.net.bytes_rcvd` / `.bytes_sent` | rate | bytes/s | `interface` | Traffic per interface. Interfaces that never moved a packet, and those matching `collectors.host.exclude_interfaces`, are skipped |
-| `system.net.packets_in.count` / `packets_out.count` | rate | packets/s | `interface` | Packets |
-| `system.net.packets_in.error` / `packets_out.error` | rate | packets/s | `interface` | Packets with errors |
-| `system.net.packets_in.drop` / `packets_out.drop` | rate | packets/s | `interface` | Packets dropped |
+| `system.disk.in_use` | gauge | fraction | `device` | `used / (used + free)`, 0–1: `df`'s Use%. Space reserved for root (5% on ext4) counts as neither, so `used + free` can be less than `total` |
+| `system.io.r_s` / `.w_s` | gauge | operations/s | `device` | Read and write operations completed, per whole physical disk: partitions (whose I/O the disk already counts), loop, ram, device-mapper and RAID devices are left out, so a sum over devices counts each write once |
+| `system.io.rkb_s` / `.wkb_s` | gauge | KiB/s | `device` | Read and written |
+| `system.net.bytes_rcvd` / `.bytes_sent` | gauge | bytes/s | `interface` | Traffic per interface. Interfaces that never moved a packet, and those matching `collectors.host.exclude_interfaces`, are skipped |
+| `system.net.packets_in.count` / `packets_out.count` | gauge | packets/s | `interface` | Packets |
+| `system.net.packets_in.error` / `packets_out.error` | gauge | packets/s | `interface` | Packets with errors |
+| `system.net.packets_in.drop` / `packets_out.drop` | gauge | packets/s | `interface` | Packets dropped |
 | `system.uptime` | gauge | seconds | — | Time since the kernel booted |

@@ -31,7 +31,9 @@ type canned struct {
 	io       map[string]disk.IOCountersStat
 	net      []net.IOCountersStat
 	uptime   uint64
-	failWith map[string]error // group name → error
+	failWith map[string]error            // group name → error
+	onUsage  func()                      // runs inside each DiskUsage (a slow statfs)
+	netAt    func() []net.IOCountersStat // overrides net when set
 }
 
 func (c *canned) err(group string) error { return c.failWith[group] }
@@ -48,6 +50,9 @@ func (c *canned) Partitions(context.Context) ([]disk.PartitionStat, error) {
 	return c.parts, c.err("parts")
 }
 func (c *canned) DiskUsage(_ context.Context, path string) (*disk.UsageStat, error) {
+	if c.onUsage != nil {
+		c.onUsage()
+	}
 	if u, ok := c.usage[path]; ok {
 		return u, nil
 	}
@@ -56,8 +61,13 @@ func (c *canned) DiskUsage(_ context.Context, path string) (*disk.UsageStat, err
 func (c *canned) DiskIO(context.Context) (map[string]disk.IOCountersStat, error) {
 	return c.io, c.err("io")
 }
-func (c *canned) NetIO(context.Context) ([]net.IOCountersStat, error) { return c.net, c.err("net") }
-func (c *canned) Uptime(context.Context) (uint64, error)              { return c.uptime, c.err("uptime") }
+func (c *canned) NetIO(context.Context) ([]net.IOCountersStat, error) {
+	if c.netAt != nil {
+		return c.netAt(), c.err("net")
+	}
+	return c.net, c.err("net")
+}
+func (c *canned) Uptime(context.Context) (uint64, error) { return c.uptime, c.err("uptime") }
 
 var t0 = time.Unix(1_790_000_000, 0)
 
@@ -404,5 +414,32 @@ func TestHost_IOIsPerWholePhysicalDisk(t *testing.T) {
 	slices.Sort(got)
 	if want := []string{"disk0", "mmcblk0", "nvme0n1", "sda", "vda"}; !slices.Equal(got, want) {
 		t.Fatalf("io devices = %v, want %v", got, want)
+	}
+}
+
+// A rate's denominator is the time between its own two readings. Traffic
+// here is exactly 100 B/s of (fake) clock time; the first run's disk reads
+// take 8s. Stamping every group with the run's start, with the network read
+// after the disks, reported 46.7.
+func TestHost_RatesAreStampedWhenRead(t *testing.T) {
+	fc := testutil.NewFakeClock(t0)
+	src := machine()
+	src.netAt = func() []net.IOCountersStat {
+		b := uint64(fc.Now().Sub(t0).Seconds() * 100)
+		return []net.IOCountersStat{{Name: "eth0", BytesRecv: b, PacketsRecv: 1 + b}}
+	}
+	slow := true
+	src.onUsage = func() {
+		if slow {
+			fc.Advance(8 * time.Second)
+			slow = false
+		}
+	}
+	c := newCollector(src, fc)
+	_, _ = run(t, c)
+	fc.Set(t0.Add(15 * time.Second))
+	g, _ := run(t, c)
+	if v := g.one(t, "system.net.bytes_rcvd").Value; math.Abs(v-100) > 1e-9 {
+		t.Fatalf("bytes_rcvd = %v B/s, want 100", v)
 	}
 }

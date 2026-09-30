@@ -103,14 +103,17 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 		name string
 		fn   func(context.Context, collector.Emit, time.Time) error
 	}{
-		{"cpu", c.cpu}, {"load", c.load}, {"memory", c.memory}, {"swap", c.swap},
-		{"disk", c.disk}, {"io", c.io}, {"net", c.net}, {"uptime", c.uptime},
+		// Counters first and disk space last: statfs can take seconds on a
+		// slow mount, and a rate's denominator must be the time between
+		// its own two readings, so each group is stamped when it runs.
+		{"cpu", c.cpu}, {"io", c.io}, {"net", c.net}, {"load", c.load},
+		{"memory", c.memory}, {"swap", c.swap}, {"uptime", c.uptime}, {"disk", c.disk},
 	} {
 		if ctx.Err() != nil {
 			errs = append(errs, ctx.Err())
 			break
 		}
-		if err := g.fn(ctx, emit, now); err != nil && !errors.Is(err, errors.ErrUnsupported) {
+		if err := g.fn(ctx, emit, c.clock.Now()); err != nil && !errors.Is(err, errors.ErrUnsupported) {
 			errs = append(errs, fmt.Errorf("%s: %w", g.name, err))
 		}
 	}
@@ -262,12 +265,15 @@ func (c *Collector) disk(ctx context.Context, emit collector.Emit, _ time.Time) 
 		}
 		seen[dev] = true
 		delete(failed, dev)
+		// df's definitions everywhere: used is what is taken, free is what
+		// an ordinary user can still write, and in_use is used/(used+free),
+		// df's Use% — root-reserved space (5% on ext4) is in neither.
 		used, inUse := float64(u.Used), u.UsedPercent/100
 		if apfs {
 			// Every volume reports the container's total and free, but only
 			// its own used; the container's used is what is not free.
 			used = float64(u.Total - min(u.Free, u.Total))
-			inUse = used / float64(u.Total)
+			inUse = used / (used + float64(u.Free))
 		}
 		tag := "device:" + dev
 		gauge(emit, "system.disk.total", float64(u.Total), tag)
