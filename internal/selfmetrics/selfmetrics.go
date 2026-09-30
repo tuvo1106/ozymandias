@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"net/http"
+	"runtime/metrics"
 	"slices"
 	"sort"
 	"strings"
@@ -191,4 +192,30 @@ func normalizeTags(tags []string) []string {
 
 func key(name string, normTags []string) string {
 	return name + "|" + strings.Join(normTags, ",")
+}
+
+// RegisterRuntime adds the Go runtime's view of the process: goroutines, heap
+// in use, and GC cycles. They answer "is this process leaking" — a goroutine
+// count that climbs with every reconnect, a heap that never comes back down.
+//
+// Read through runtime/metrics rather than runtime.ReadMemStats, which stops
+// the world to take its snapshot; these samples are the ones the runtime
+// keeps current anyway, so reading them costs a few loads.
+func RegisterRuntime(r *Registry, tags ...string) {
+	read := func(name string) func() float64 {
+		return func() float64 {
+			s := []metrics.Sample{{Name: name}}
+			metrics.Read(s)
+			switch s[0].Value.Kind() {
+			case metrics.KindUint64:
+				return float64(s[0].Value.Uint64())
+			case metrics.KindFloat64:
+				return s[0].Value.Float64()
+			}
+			return math.NaN() // unknown to this Go version: skipped by the reporter
+		}
+	}
+	r.GaugeFunc("ozy.runtime.goroutines", read("/sched/goroutines:goroutines"), tags...)
+	r.GaugeFunc("ozy.runtime.heap_bytes", read("/memory/classes/heap/objects:bytes"), tags...)
+	r.GaugeFunc("ozy.runtime.gc_cycles", read("/gc/cycles/total:gc-cycles"), tags...)
 }

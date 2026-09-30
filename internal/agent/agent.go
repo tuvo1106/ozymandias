@@ -7,11 +7,15 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/agent/aggregator"
+	"github.com/tuvo1106/ozymandias/internal/agent/collector"
+	hostcoll "github.com/tuvo1106/ozymandias/internal/agent/collector/host"
 	"github.com/tuvo1106/ozymandias/internal/agent/config"
 	"github.com/tuvo1106/ozymandias/internal/agent/forwarder"
 	"github.com/tuvo1106/ozymandias/internal/agent/statsd"
@@ -36,6 +40,9 @@ type Options struct {
 	// Hostname resolves the OS hostname when the config leaves it empty.
 	// Default: os.Hostname.
 	Hostname func() (string, error)
+	// Collectors run alongside the configured ones — for tests, and for an
+	// embedder with a source the config has no section for.
+	Collectors []collector.Collector
 }
 
 // Agent is a configured agent, ready to Run.
@@ -49,6 +56,7 @@ type Agent struct {
 	handler  http.Handler
 
 	statsd *statsd.Server // nil when statsd is disabled
+	sched  *collector.Scheduler
 	agg    *aggregator.Aggregator
 	fwd    *forwarder.Forwarder
 	self   *selfmetrics.Reporter
@@ -102,6 +110,30 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		Logger:        a.log,
 	})
 	a.self = selfmetrics.NewReporter(a.reg, cfg.Aggregator.FlushInterval, hostTag)
+	selfmetrics.RegisterRuntime(a.reg, "component:"+Component)
+
+	collectors := slices.Clone(opts.Collectors)
+	if h := cfg.Collectors.Host; h.Enabled {
+		// Validate compiled these already; a failure here is a bug.
+		exclude := make([]*regexp.Regexp, 0, len(h.ExcludeInterfaces))
+		for _, re := range h.ExcludeInterfaces {
+			exclude = append(exclude, regexp.MustCompile(re))
+		}
+		collectors = append(collectors, hostcoll.New(hostcoll.Options{Interval: h.Interval, ExcludeInterfaces: exclude, Clock: a.clock}))
+	}
+	// Straight to the forwarder: collector output is one value per series
+	// per run already, which is what the aggregator would have produced.
+	a.sched = collector.New(collector.Options{
+		Collectors: collectors,
+		Interval:   cfg.Collectors.Interval,
+		Timeout:    cfg.Collectors.Timeout,
+		Sink:       a.fwd.Submit,
+		HostTag:    hostTag,
+		Tags:       cfg.Tags,
+		Clock:      a.clock,
+		Registry:   a.reg,
+		Logger:     a.log,
+	})
 
 	if cfg.Statsd.Enabled {
 		s, err := statsd.Listen(statsd.Options{
@@ -204,8 +236,9 @@ func (a *Agent) Close() error {
 // Run serves until ctx is cancelled, then shuts down in pipeline order so
 // nothing received is lost on the way out:
 //
-//  1. stop accepting: HTTP drains within http.shutdown_timeout, and the
-//     statsd socket closes after its queue is parsed;
+//  1. stop accepting: HTTP drains within http.shutdown_timeout, the statsd
+//     socket closes after its queue is parsed, and collectors stop (a run in
+//     progress is cancelled and what it had read is still sent);
 //  2. the aggregator does a final flush of every open bucket;
 //  3. the forwarder makes one last delivery attempt within
 //     forwarder.shutdown_timeout.
@@ -232,14 +265,15 @@ func (a *Agent) Run(ctx context.Context, ln net.Listener) error {
 
 	var wg sync.WaitGroup
 	var statsdErr error
-	statsdCtx, stopStatsd := context.WithCancel(context.Background())
+	inputs, stopInputs := context.WithCancel(context.Background())
 	if a.statsd != nil {
-		wg.Go(func() { statsdErr = a.statsd.Run(statsdCtx) })
+		wg.Go(func() { statsdErr = a.statsd.Run(inputs) })
 	}
+	wg.Go(func() { a.sched.Run(inputs) })
 
 	err := httpserve.Serve(ctx, srv, ln, a.cfg.HTTP.ShutdownTimeout)
 
-	stopStatsd()
+	stopInputs()
 	wg.Wait()
 	stopAgg()
 	<-aggDone

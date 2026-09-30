@@ -138,3 +138,21 @@ func TestRegistry_ConcurrentUseIsSafe(t *testing.T) {
 		t.Fatalf("hits = %d, want 8000 (lost increments)", got)
 	}
 }
+
+func TestRegisterRuntime(t *testing.T) {
+	r := NewRegistry()
+	RegisterRuntime(r, "component:test")
+	seen := map[string]float64{}
+	for _, p := range r.Snapshot() {
+		seen[p.Name] = p.Value
+	}
+	for _, name := range []string{"ozy.runtime.goroutines", "ozy.runtime.heap_bytes", "ozy.runtime.gc_cycles"} {
+		v, ok := seen[name]
+		if !ok || math.IsNaN(v) || v < 0 {
+			t.Errorf("%s = %v, %v", name, v, ok)
+		}
+	}
+	if seen["ozy.runtime.goroutines"] < 1 || seen["ozy.runtime.heap_bytes"] <= 0 {
+		t.Errorf("implausible runtime readings: %v", seen)
+	}
+}

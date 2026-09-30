@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -61,6 +63,33 @@ type Forwarder struct {
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
 }
 
+// Collectors configures the pull-based collectors (internal/agent/collector).
+type Collectors struct {
+	// Interval is how often a collector runs unless it sets its own. Whole
+	// seconds: a rate's interval is whole seconds on the wire.
+	Interval time.Duration `yaml:"interval"`
+	// Timeout bounds one run of one collector (capped at its interval).
+	Timeout time.Duration `yaml:"timeout"`
+	Host    HostCollector `yaml:"host"`
+}
+
+// HostCollector configures the host collector (system.*).
+type HostCollector struct {
+	Enabled bool `yaml:"enabled"`
+	// Interval overrides collectors.interval; zero means use it.
+	Interval time.Duration `yaml:"interval"`
+	// ExcludeInterfaces are regular expressions; a network interface whose
+	// name matches any is not reported. Setting this replaces the default.
+	ExcludeInterfaces []string `yaml:"exclude_interfaces"`
+}
+
+// DefaultExcludeInterfaces are macOS's virtual interfaces: VPN and system
+// tunnels (utun), Apple Wireless Direct Link (awdl, llw), the Apple Silicon
+// internal NICs (anpi) and the legacy IPv6 tunnels (gif, stf). A Mac has a
+// dozen, each worth eight series of near-zero rates. Loopback and real NICs
+// are kept, and no Linux interface name matches.
+var DefaultExcludeInterfaces = []string{`^(utun|awdl|llw|anpi|gif|stf)[0-9]+$`}
+
 // Agent is the agent's configuration.
 type Agent struct {
 	HTTP       base.HTTP  `yaml:"http"`
@@ -68,6 +97,7 @@ type Agent struct {
 	Statsd     Statsd     `yaml:"statsd"`
 	Aggregator Aggregator `yaml:"aggregator"`
 	Forwarder  Forwarder  `yaml:"forwarder"`
+	Collectors Collectors `yaml:"collectors"`
 	// Hostname is the value of the host tag on everything this agent sends.
 	// Empty means the OS hostname. Set it explicitly in containers, where the
 	// OS hostname is a meaningless container id.
@@ -92,8 +122,12 @@ func Default() Agent {
 		},
 		Aggregator: Aggregator{FlushInterval: 10 * time.Second, ContextExpiry: 5 * time.Minute, HistogramMaxSamples: 10000},
 		Forwarder:  Forwarder{Timeout: 10 * time.Second, MaxQueueBytes: 64 << 20, ShutdownTimeout: 5 * time.Second},
-		ConfdPath:  "./deploy/agent.d",
-		Log:        base.Log{Level: "info", Format: "text"},
+		Collectors: Collectors{
+			Interval: 15 * time.Second, Timeout: 10 * time.Second,
+			Host: HostCollector{Enabled: true, ExcludeInterfaces: slices.Clone(DefaultExcludeInterfaces)},
+		},
+		ConfdPath: "./deploy/agent.d",
+		Log:       base.Log{Level: "info", Format: "text"},
 	}
 }
 
@@ -123,9 +157,31 @@ func (a *Agent) Validate() error {
 	if a.Forwarder.Timeout <= 0 || a.Forwarder.ShutdownTimeout <= 0 || a.Forwarder.MaxQueueBytes < 1 {
 		errs = append(errs, errors.New("forwarder: timeout, shutdown_timeout and max_queue_bytes must be positive"))
 	}
+	errs = append(errs, a.Collectors.validate())
 	for _, t := range a.Tags {
 		if strings.TrimSpace(t) == "" || strings.ContainsAny(t, ",|\n") {
 			errs = append(errs, fmt.Errorf("tags: %q is empty or contains ',', '|' or a newline", t))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func wholeSeconds(d time.Duration) bool { return d >= time.Second && d%time.Second == 0 }
+
+func (c Collectors) validate() error {
+	var errs []error
+	if !wholeSeconds(c.Interval) {
+		errs = append(errs, fmt.Errorf("collectors.interval %v: want a whole number of seconds, at least 1s", c.Interval))
+	}
+	if c.Timeout <= 0 {
+		errs = append(errs, fmt.Errorf("collectors.timeout %v must be positive", c.Timeout))
+	}
+	if iv := c.Host.Interval; iv != 0 && !wholeSeconds(iv) {
+		errs = append(errs, fmt.Errorf("collectors.host.interval %v: want 0 or a whole number of seconds", iv))
+	}
+	for _, re := range c.Host.ExcludeInterfaces {
+		if _, err := regexp.Compile(re); err != nil {
+			errs = append(errs, fmt.Errorf("collectors.host.exclude_interfaces %q: %w", re, err))
 		}
 	}
 	return errors.Join(errs...)
