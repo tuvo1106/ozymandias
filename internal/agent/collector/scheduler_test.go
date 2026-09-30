@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
+	"github.com/tuvo1106/ozymandias/internal/sketch"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
@@ -399,4 +400,103 @@ func TestScheduler_AbandonsACollectorThatIgnoresCancellation(t *testing.T) {
 	if n := sent.Load(); n != 0 {
 		t.Fatalf("sink called %d times after Run returned", n)
 	}
+}
+
+// Autodiscovery's path: a collector added while Run runs is started, one
+// removed stops, and a second with a name already running is refused.
+func TestScheduler_AddAndRemoveWhileRunning(t *testing.T) {
+	testutil.CheckGoroutines(t)
+	emitting := func(name string) *fake {
+		return &fake{name: name, iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+			emit(Metric{Name: name + ".up", Value: 1})
+			return nil
+		}}
+	}
+	fc := testutil.NewFakeClock(t0)
+	sk := &sink{}
+	var logs syncBuffer
+	s := New(Options{Clock: fc, Sink: sk.send, Rand: rand.New(rand.NewPCG(1, 2)), Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	a := emitting("a")
+	testutil.Eventually(t, time.Second, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.ctx != nil }, "Run started")
+	removeA := s.Add(a)
+	s.Add(emitting("a")) // same name: refused
+	if !strings.Contains(logs.String(), "already scheduled") || len(s.Collectors()) != 1 {
+		t.Fatalf("a duplicate name was scheduled: %v\n%s", s.Collectors(), logs.String())
+	}
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "a armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return a.calls.Load() == 1 }, "a ran")
+
+	removeA()
+	testutil.Eventually(t, time.Second, func() bool { return len(s.Collectors()) == 0 }, "a stopped")
+	fc.Advance(5 * time.Second)
+	time.Sleep(20 * time.Millisecond)
+	if n := a.calls.Load(); n != 1 {
+		t.Fatalf("a ran %d times after removal", n-1)
+	}
+	// Its name is free again.
+	b := emitting("a")
+	s.Add(b)
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "b armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return b.calls.Load() == 1 }, "b ran")
+}
+
+// Removing a collector that has not started yet (Run has not been called)
+// takes it out of the queue.
+func TestScheduler_RemoveBeforeRun(t *testing.T) {
+	s := New(Options{Logger: slog.New(slog.DiscardHandler)})
+	remove := s.Add(&fake{name: "x", collect: func(context.Context, Emit) error { return nil }})
+	remove()
+	if len(s.Collectors()) != 0 {
+		t.Fatal("still scheduled")
+	}
+}
+
+// A Distribution goes to the sketch sink, tagged and stamped like a series;
+// an empty one is dropped, and so is one with no sink to go to.
+func TestScheduler_Distributions(t *testing.T) {
+	sk := sketch.NewDefault()
+	_ = sk.Add(0.2)
+	_ = sk.AddWithCount(1.5, 3)
+	c := &fake{name: "hist", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+		emit(Metric{Name: "req.latency", Kind: Distribution, Sketch: sk, Tags: []string{"route:/x"}})
+		emit(Metric{Name: "empty", Kind: Distribution, Sketch: sketch.NewDefault()})
+		emit(Metric{Name: "none", Kind: Distribution})
+		return nil
+	}}
+	var mu sync.Mutex
+	var got []wire.SketchSeries
+	fc, _, reg := start(t, Options{Collectors: []Collector{c}, HostTag: "host:box", SketchSink: func(s []wire.SketchSeries) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, s...)
+	}})
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 1 }, "sketch sent")
+	mu.Lock()
+	s := got[0]
+	mu.Unlock()
+	if s.Metric != "req.latency" || s.Interval != 1 || len(s.Points) != 1 || s.Points[0].Timestamp != t0.Add(time.Second).Unix() ||
+		!slices.Equal(s.Tags, []string{"host:box", "route:/x"}) || s.Points[0].Sketch.Count != 4 {
+		t.Fatalf("got %+v", s)
+	}
+	if n := counter(reg, "ozy.agent.collector.dropped", "hist"); n != 2 {
+		t.Errorf("dropped = %d, want the empty and the missing sketch", n)
+	}
+
+	// No sketch sink: counted as dropped, not lost silently.
+	fc2, _, reg2 := start(t, Options{Collectors: []Collector{&fake{name: "h2", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+		emit(Metric{Name: "x", Kind: Distribution, Sketch: sk})
+		return nil
+	}}}})
+	testutil.Eventually(t, time.Second, func() bool { return fc2.Waiters() == 1 }, "armed")
+	fc2.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return counter(reg2, "ozy.agent.collector.dropped", "h2") == 1 }, "dropped")
 }

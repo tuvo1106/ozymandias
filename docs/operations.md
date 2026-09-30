@@ -97,6 +97,191 @@ GET-only proxy in front that serves its own unix socket (the agent's client
 speaks only unix sockets, not TCP) and point `collectors.docker.socket` at
 that, or disable the collector.
 
+#### Checks and autodiscovery
+
+Checks are configured under `collectors.checks.<check>.instances`
+(deploy/agent.yaml has the shape), or by labels on a container:
+
+```yaml
+services:
+  cache:
+    image: redis:7
+    labels:
+      ozy.check.redis.host: "%%host%%"
+      ozy.check.redis.port: "%%port%%"
+```
+
+The agent lists containers every 10s; the check starts as
+`redis:<container name>`, tagged like the container's metrics, and stops
+with it. `%%host%%` is the container's IP, so **the agent must share a
+Docker network with the container** — in compose, list the app's network on
+the agent service (or the app joins `ozymandias`). A label value is read as
+YAML, so `"6379"` is a number and `"[200, 301]"` a list. Labels that do not
+make a valid check are logged once and counted in
+`ozy.agent.autodiscovery.errors`.
+
+#### Check: openmetrics
+
+Scrapes a Prometheus or OpenMetrics `/metrics` page every run. Counters become
+per-second rates (sent as gauges, ADR-0026), gauges stay gauges, histograms
+become per-bucket counts `<name>.bucket` tagged `upper_bound` plus `.sum` and
+`.count`, and summaries a `quantile`-tagged gauge plus `.sum` and `.count`.
+Every label becomes a tag. `openmetrics.up` and `openmetrics.scrape_duration`
+say whether the scrape worked.
+
+```yaml
+collectors:
+  checks:
+    openmetrics:
+      instances:
+        - name: caddy
+          url: http://caddy:2019/metrics
+          namespace: caddy
+          metrics: ["^caddy_http_"]
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `url` | required | The page, http or https. Autodiscovery fills `%%host%%` and `%%port%%` |
+| `namespace` | none | Prefixed to every scraped metric's name with a dot |
+| `metrics` | all | Regexes; only metrics whose name matches one are kept. The name is the sample name for counters and gauges, the family name for histograms and summaries |
+| `exclude` | none | Regexes; matching metrics are dropped |
+| `rename` | none | Map of name to new name, applied before `namespace` |
+| `exclude_labels` | none | Labels not turned into tags |
+| `timeout` | `10s` | One scrape |
+| `max_body` | 10 MiB | Bytes; a larger page is an error (up 0) |
+| `max_series` | 2000 | Metrics one scrape may emit; the rest are dropped and the run reports an error |
+| `histogram_buckets_as_distributions` | `false` | Send each histogram as one distribution (a DDSketch of the interval's buckets) named after the family, instead of `.bucket` counts, so `p90:` works on it. Lossy: a percentile is as precise as the bucket widths |
+
+The first scrape has gauges only: a rate or a count needs two. A target that
+restarts is detected (a counter went down): its rates skip one scrape, and
+its histogram counts restart from what it counted since.
+
+#### Check: redis
+
+Connects once per run, sends INFO (plain, so Redis before 7 answers too),
+and reports `redis.*`. Settings, besides the common `name`, `interval` and
+`tags`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `host` | required | Name or address, or a unix socket path starting with `/` |
+| `port` | 6379 | A number or a numeric string (label values are strings) |
+| `username`, `password` | none | AUTH after connecting; `username` needs Redis 6 ACLs. The password appears in no log, error or tag |
+| `db` | 0 | SELECTed after AUTH. INFO is server-wide either way |
+| `timeout` | 5s | Bounds the connection and INFO |
+
+```yaml
+collectors:
+  checks:
+    redis:
+      instances:
+        - name: cache
+          host: redis
+```
+
+With autodiscovery, a container labelled `ozy.check.redis.host=%%host%%`
+gets an instance named `redis:<container name>`.
+
+#### Check: postgres
+
+Reports a PostgreSQL server as `postgresql.*` (docs/metrics-catalog.md),
+connecting once per run with pgx (ADR-0031) and disconnecting afterwards.
+
+```yaml
+collectors:
+  checks:
+    postgres:
+      instances:
+        - name: main          # collector tag postgres:main
+          host: db
+          port: 5432          # default; a numeric string also works
+          user: ozy_monitor
+          password: ...       # never logged; prefer a login with pg_monitor
+          dbname: postgres    # default: where it connects, not what it reports
+          sslmode: disable    # default; disable|allow|prefer|require|verify-ca|verify-full
+          timeout: 5s         # default; bounds the whole run
+          relations: [orders] # optional: tables whose sizes to report, at most 100
+```
+
+Every database the server has is reported (tag `db`), except templates and
+those that allow no connections, whichever `dbname` the check connects to. A
+login with the `pg_monitor` role sees every session in `pg_stat_activity`;
+without CONNECT privilege on a database, its size is left out.
+`postgresql.can_connect` is 0 when the server cannot be reached, and the
+failure is logged once.
+
+The unit tests need no server. To check the SQL against a real one:
+
+```console
+$ docker run -d --name ozy-pgtest -p 55432:5432 -e POSTGRES_PASSWORD=pw postgres:16-alpine
+$ OZY_TEST_POSTGRES_HOST=127.0.0.1 OZY_TEST_POSTGRES_PORT=55432 OZY_TEST_POSTGRES_USER=postgres \
+    OZY_TEST_POSTGRES_PASSWORD=pw go test -run Integration -v ./internal/agent/check/postgres/
+$ docker rm -f ozy-pgtest
+```
+
+#### Check: http_check
+
+Requests one URL per run and reports `network.http.*`. Settings, besides
+the common `name`, `interval` and `tags`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `url` | required | An absolute `http://` or `https://` URL |
+| `method` | `GET` | |
+| `timeout` | `5s` | The whole request, body included |
+| `expected_status` | any 2xx or 3xx | A list of statuses that count as up |
+| `content_match` | — | A regular expression the first 64 KiB of the body must match |
+| `tls_skip_verify` | `false` | Accept any certificate (`ssl.days_left` is still reported) |
+| `headers` | — | A map of request headers; `Host` sets the virtual host |
+| `follow_redirects` | `true` | `false` reports the redirect itself (e.g. http → https) |
+
+```yaml
+collectors:
+  checks:
+    http_check:
+      instances:
+        - name: shop
+          url: https://shop.example/healthz
+          content_match: '"status":"ok"'
+```
+
+A run that is not up logs why once (and again when it recovers) and emits
+`network.http.up 0`. The `url` tag is `scheme://host/path` only: the query
+string and any `user:password@` are left out, since that is where tokens
+live, and a URL that cannot be a tag (a comma in it) is sent untagged.
+Every connection is new (no keep-alive), so the time includes connecting.
+
+#### Check: process
+
+Finds processes and reports their count and summed resource use as
+`system.processes.*`, tagged `process_name:<label>`. Exactly one of:
+
+| Setting | Meaning |
+|---|---|
+| `process_name` | The process name, exactly (`exact_match: false`: anywhere in the command line). Not `name`, which is the instance's own name, as for every check |
+| `pattern` | A regular expression over the command line; needs `label` |
+| `pid_file` | A file holding a pid; needs `label`. A missing file means not running (count 0) |
+
+`label` sets the tag's value (default `process_name`).
+
+```yaml
+collectors:
+  checks:
+    process:
+      instances:
+        - process_name: postgres
+        - pattern: 'uvicorn .*app:api'
+          label: api
+```
+
+**The agent sees only its own pid namespace.** In compose that is the
+agent's container, so the check finds nothing there unless the agent
+service runs with `pid: host` (it then sees every process on the Docker
+VM). Natively (`make dev`) it sees the Mac's processes, but counting
+another user's file descriptors needs privileges, so
+`open_file_descriptors` may be absent.
+
 ## Health and self-metrics
 
 ```console

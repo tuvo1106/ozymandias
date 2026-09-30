@@ -1,0 +1,211 @@
+package collector
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"maps"
+	"slices"
+	"sort"
+	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/tuvo1106/ozymandias/internal/clock"
+	"github.com/tuvo1106/ozymandias/pkg/wire"
+)
+
+// Check is a kind of collector that users configure: a factory, registered
+// under a name, that turns one configured instance into a [Collector]. The
+// built-in collectors (host, docker) are wired by the agent; a check is
+// instantiated once per entry under collectors.checks.<name>.instances, or
+// per container that asks for it with ozy.check.<name>.* labels
+// (autodiscovery). The factory is the whole extension point: a new check is a
+// package with a New(Instance) function and one line in the agent's registry.
+type Check func(Instance) (Collector, error)
+
+// Registry maps check names to their factories. It is a plain map, built by
+// the agent and passed where needed, rather than a package-level table that
+// init functions fill: which checks exist is then visible at the one place
+// that builds it, and a test can use a registry of its own.
+type Registry map[string]Check
+
+// Names returns the registered check names, sorted.
+func (r Registry) Names() []string { return slices.Sorted(maps.Keys(r)) }
+
+// Instance is one configured instance of a check, as its factory sees it.
+type Instance struct {
+	// Check is the registered name ("redis").
+	Check string
+	// Name is the collector name the instance runs under, unique within the
+	// agent: the check's name, or "<check>:<name>" when the instance has a
+	// name (from its `name:` setting, or the container autodiscovery found
+	// it on). It is the collector tag on the self-metrics.
+	Name string
+	// Settings are the instance's check-specific settings, with the common
+	// keys (name, interval, tags) removed. Decode them with [Instance.Decode].
+	Settings map[string]any
+	Clock    clock.Clock
+	Logger   *slog.Logger
+}
+
+// Decode decodes the instance's settings into v, a pointer to the check's
+// config struct, strictly: a setting v has no field for is an error, so a
+// misspelt key fails at startup rather than being silently ignored — the
+// same rule the agent's own config follows.
+func (i Instance) Decode(v any) error {
+	data, err := yaml.Marshal(i.Settings)
+	if err != nil {
+		return fmt.Errorf("%s: re-encoding settings: %w", i.Name, err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
+		return fmt.Errorf("%s: %w", i.Name, err)
+	}
+	return nil
+}
+
+// Common instance settings, understood by every check and handled here
+// rather than by each factory.
+const (
+	settingName     = "name"
+	settingInterval = "interval"
+	settingTags     = "tags"
+)
+
+// NewInstance builds the collector for one instance of check from its raw
+// settings: it applies the common settings — name, interval (a duration
+// string), tags (a list of "key:value") — and hands the rest to the factory.
+//
+// index is the instance's position in its list, used for the name when there
+// are several unnamed instances of one check, so that each has its own
+// self-metrics. extraTags are added to every metric after the instance's own
+// (autodiscovery passes the container's tags).
+func (r Registry) NewInstance(check string, index, of int, raw map[string]any, extraTags []string, clk clock.Clock, log *slog.Logger) (Collector, error) {
+	factory, ok := r[check]
+	if !ok {
+		return nil, fmt.Errorf("check %q: no such check (have %s)", check, strings.Join(r.Names(), ", "))
+	}
+	settings := maps.Clone(raw)
+	if settings == nil {
+		settings = map[string]any{}
+	}
+	name := check
+	if v, ok := settings[settingName]; ok {
+		s, ok := v.(string)
+		if !ok || s == "" {
+			return nil, fmt.Errorf("check %q instance %d: name must be a non-empty string", check, index)
+		}
+		name = check + ":" + s
+	} else if of > 1 {
+		name = fmt.Sprintf("%s:%d", check, index)
+	}
+	delete(settings, settingName)
+
+	var iv time.Duration
+	if v, ok := settings[settingInterval]; ok {
+		s, _ := v.(string)
+		d, err := time.ParseDuration(s)
+		if err != nil || d <= 0 || d%time.Second != 0 {
+			return nil, fmt.Errorf("%s: interval %v: want a whole number of seconds, like 30s", name, v)
+		}
+		iv = d
+	}
+	delete(settings, settingInterval)
+
+	var tags []string
+	if v, ok := settings[settingTags]; ok {
+		list, ok := v.([]any)
+		if !ok {
+			return nil, fmt.Errorf("%s: tags must be a list of key:value strings", name)
+		}
+		for _, t := range list {
+			s, ok := t.(string)
+			if !ok {
+				return nil, fmt.Errorf("%s: tag %v is not a string", name, t)
+			}
+			n, ok := wire.NormalizeTag(s)
+			if !ok {
+				return nil, fmt.Errorf("%s: tag %q cannot be sent", name, s)
+			}
+			tags = append(tags, n)
+		}
+	}
+	delete(settings, settingTags)
+	tags = append(tags, extraTags...)
+
+	if clk == nil {
+		clk = clock.Real()
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	c, err := factory(Instance{Check: check, Name: name, Settings: settings, Clock: clk, Logger: log.With("check", name)})
+	if err != nil {
+		return nil, fmt.Errorf("check %s: %w", name, err)
+	}
+	if iv == 0 {
+		iv = c.Interval()
+	}
+	return &instance{name: name, iv: iv, tags: tags, inner: c}, nil
+}
+
+// instance is a check's collector under its instance name, interval and
+// tags.
+type instance struct {
+	name  string
+	iv    time.Duration
+	tags  []string
+	inner Collector
+}
+
+func (i *instance) Name() string            { return i.name }
+func (i *instance) Interval() time.Duration { return i.iv }
+func (i *instance) Collect(ctx context.Context, emit Emit) error {
+	if len(i.tags) == 0 {
+		return i.inner.Collect(ctx, emit)
+	}
+	return i.inner.Collect(ctx, func(m Metric) {
+		// A fresh slice: the check may reuse m.Tags between metrics.
+		m.Tags = append(slices.Clip(m.Tags), i.tags...)
+		emit(m)
+	})
+}
+
+// Configured builds every instance under collectors.checks, in a stable
+// order (by check name, then position), and returns every error rather than
+// the first, so one startup shows every misconfigured instance.
+func (r Registry) Configured(checks map[string][]map[string]any, clk clock.Clock, log *slog.Logger) ([]Collector, error) {
+	names := make([]string, 0, len(checks))
+	for n := range checks {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var (
+		out  []Collector
+		errs []error
+		seen = map[string]bool{}
+	)
+	for _, check := range names {
+		list := checks[check]
+		for i, raw := range list {
+			c, err := r.NewInstance(check, i, len(list), raw, nil, clk, log)
+			if err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if seen[c.Name()] {
+				errs = append(errs, fmt.Errorf("check %s: two instances share this name", c.Name()))
+				continue
+			}
+			seen[c.Name()] = true
+			out = append(out, c)
+		}
+	}
+	return out, errors.Join(errs...)
+}

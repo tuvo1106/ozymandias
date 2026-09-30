@@ -3,6 +3,8 @@ package collector
 import (
 	"context"
 	"time"
+
+	"github.com/tuvo1106/ozymandias/internal/sketch"
 )
 
 // Kind says how a collected value is to be read.
@@ -29,6 +31,11 @@ const (
 	// things observed as events rather than read from a counter (a container
 	// exiting, in M3's docker collector).
 	Count
+	// Distribution is a set of observations over the interval, carried as a
+	// DDSketch in Metric.Sketch (Value is ignored), so percentiles come out
+	// at query time exactly as for statsd distributions. The openmetrics
+	// check sends a scraped histogram's per-interval bucket counts this way.
+	Distribution
 )
 
 func (k Kind) String() string {
@@ -39,6 +46,8 @@ func (k Kind) String() string {
 		return "rate"
 	case Count:
 		return "count"
+	case Distribution:
+		return "distribution"
 	}
 	return "unknown"
 }
@@ -54,6 +63,10 @@ type Metric struct {
 	// intake would; a tag that cannot be normalized is dropped and counted,
 	// not the whole metric.
 	Tags []string
+	// Sketch holds a Distribution's observations; nil for other kinds. The
+	// scheduler encodes it at once, so the collector may reuse it after
+	// emit returns.
+	Sketch *sketch.Sketch
 }
 
 // Emit hands one metric to the scheduler. It is safe for concurrent use (a

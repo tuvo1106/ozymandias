@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"math/rand/v2"
 	"slices"
@@ -43,6 +44,9 @@ type Options struct {
 	// forwarder's Submit only queues — and is called from one goroutine per
 	// collector, so it must be safe for concurrent use.
 	Sink func([]wire.Series)
+	// SketchSink receives each run's distributions, under the same rules as
+	// Sink. Nil drops them, counted.
+	SketchSink func([]wire.SketchSeries)
 	// HostTag ("host:<name>", already normalized) and Tags (the agent's
 	// global tags) are added to every series, as the aggregator adds them to
 	// statsd series: a collector says what it measured, not where.
@@ -83,6 +87,23 @@ type Scheduler struct {
 	// parallel; only Run's stop takes it exclusively.
 	sinkMu  sync.RWMutex
 	stopped bool
+
+	// The running set. Before Run, pending holds what Add was given; while
+	// Run runs, each collector is a task on wg. closing is set when Run
+	// stops accepting, after which Add does nothing.
+	mu      sync.Mutex
+	ctx     context.Context
+	pending []*task
+	running map[*task]bool
+	closing bool
+	wg      sync.WaitGroup
+}
+
+// task is one collector's goroutine.
+type task struct {
+	c      Collector
+	cancel context.CancelFunc
+	alive  atomic.Bool
 }
 
 // New returns a Scheduler. Call Run to start it.
@@ -111,20 +132,92 @@ func New(opts Options) *Scheduler {
 	if opts.Sink == nil {
 		opts.Sink = func([]wire.Series) {}
 	}
-	s := &Scheduler{opts: opts, log: opts.Logger.With("component", "collector"), hostTag: opts.HostTag}
-	seen := map[string]bool{}
+	s := &Scheduler{opts: opts, log: opts.Logger.With("component", "collector"), hostTag: opts.HostTag, running: map[*task]bool{}}
 	for _, c := range opts.Collectors {
-		if seen[c.Name()] {
-			s.log.Warn("two collectors share a name; their self-metrics are combined", "collector", c.Name())
-		}
-		seen[c.Name()] = true
+		s.Add(c)
 	}
 	s.tags = agenttags.Normalize(opts.Tags)
 	return s
 }
 
-// Collectors returns the collectors the scheduler runs.
-func (s *Scheduler) Collectors() []Collector { return slices.Clone(s.opts.Collectors) }
+// Collectors returns the collectors the scheduler runs, or will once Run
+// starts.
+func (s *Scheduler) Collectors() []Collector {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Collector
+	for _, t := range s.pending {
+		out = append(out, t.c)
+	}
+	for t := range s.running {
+		out = append(out, t.c)
+	}
+	return out
+}
+
+// Add schedules c — before Run, or while it runs (autodiscovery adds a check
+// when a container asking for one starts) — and returns a function that
+// stops it again. Stopping cancels its context; a run in progress finishes
+// and is sent. After Run has begun shutting down, Add does nothing.
+//
+// A collector whose name is already scheduled is refused (logged): two
+// would share one set of self-metrics. Those self-metrics outlive a removed
+// collector — the registry has no removal — so their number is bounded by
+// the distinct names ever added, which for autodiscovery is container names.
+func (s *Scheduler) Add(c Collector) (remove func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return func() {}
+	}
+	for _, t := range s.pending {
+		if t.c.Name() == c.Name() {
+			s.log.Warn("a collector with this name is already scheduled; not adding another", "collector", c.Name())
+			return func() {}
+		}
+	}
+	for t := range s.running {
+		if t.c.Name() == c.Name() {
+			s.log.Warn("a collector with this name is already scheduled; not adding another", "collector", c.Name())
+			return func() {}
+		}
+	}
+	t := &task{c: c}
+	if s.ctx == nil {
+		s.pending = append(s.pending, t)
+	} else {
+		s.startLocked(t)
+	}
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if i := slices.Index(s.pending, t); i >= 0 {
+			s.pending = slices.Delete(s.pending, i, i+1)
+			return
+		}
+		if t.cancel != nil {
+			t.cancel()
+		}
+	}
+}
+
+// startLocked starts t's goroutine. s.mu is held.
+func (s *Scheduler) startLocked(t *task) {
+	ctx, cancel := context.WithCancel(s.ctx)
+	t.cancel = cancel
+	t.alive.Store(true)
+	s.running[t] = true
+	s.wg.Go(func() {
+		defer func() {
+			cancel()
+			t.alive.Store(false)
+			s.mu.Lock()
+			delete(s.running, t)
+			s.mu.Unlock()
+		}()
+		s.loop(ctx, t.c)
+	})
+}
 
 // Run is called once. It starts every collector and blocks until ctx is
 // cancelled and every collector's goroutine has returned — or, after
@@ -152,31 +245,34 @@ func (s *Scheduler) Run(ctx context.Context) {
 		s.stopped = true
 		s.sinkMu.Unlock()
 	}()
-	var wg sync.WaitGroup
-	alive := make([]atomic.Bool, len(s.opts.Collectors))
-	for i, c := range s.opts.Collectors {
-		alive := &alive[i]
-		alive.Store(true)
-		wg.Go(func() {
-			defer alive.Store(false)
-			s.loop(ctx, c)
-		})
+	s.mu.Lock()
+	if s.ctx != nil || s.closing {
+		s.mu.Unlock()
+		return // Run is called once
 	}
+	s.ctx = ctx
+	for _, t := range s.pending {
+		s.startLocked(t)
+	}
+	s.pending = nil
+	s.mu.Unlock()
+
+	<-ctx.Done()
+	s.mu.Lock()
+	s.closing = true // no Add from here on, so wg only shrinks
+	stuck := slices.Collect(maps.Keys(s.running))
+	s.mu.Unlock()
+
 	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-	select {
-	case <-done:
-		return
-	case <-ctx.Done():
-	}
+	go func() { s.wg.Wait(); close(done) }()
 	t := s.opts.Clock.NewTimer(s.opts.ShutdownTimeout)
 	defer t.Stop()
 	select {
 	case <-done:
 	case <-t.C():
-		for i := range alive {
-			if alive[i].Load() {
-				s.log.Warn("collector did not stop in time; abandoning it", "collector", s.opts.Collectors[i].Name(), "waited", s.opts.ShutdownTimeout)
+		for _, st := range stuck {
+			if st.alive.Load() {
+				s.log.Warn("collector did not stop in time; abandoning it", "collector", st.c.Name(), "waited", s.opts.ShutdownTimeout)
 			}
 		}
 	}
@@ -275,9 +371,10 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 	}()
 
 	var (
-		mu    sync.Mutex
-		open  = true
-		batch []wire.Series
+		mu       sync.Mutex
+		open     = true
+		batch    []wire.Series
+		sketches []wire.SketchSeries
 	)
 	emit := func(m Metric) {
 		mu.Lock()
@@ -289,10 +386,16 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 		}
 		se, badTags, ok := s.series(m, ts, iv)
 		st.tags.Add(int64(badTags))
-		if ok {
-			batch = append(batch, se)
-		} else {
+		switch {
+		case !ok:
 			st.drop.Inc()
+		case m.Kind == Distribution:
+			sketches = append(sketches, wire.SketchSeries{
+				Metric: se.Metric, Tags: se.Tags, Interval: int64(iv / time.Second),
+				Points: []wire.SketchPoint{{Timestamp: ts, Sketch: m.Sketch.ToWire()}},
+			})
+		default:
+			batch = append(batch, se)
 		}
 	}
 	err := c.Collect(cctx, emit)
@@ -315,23 +418,31 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 	}
 	mu.Lock()
 	open = false
-	out := batch
+	out, outSketches := batch, sketches
 	mu.Unlock()
 
 	st.runs.Inc()
 	st.dur.Set(float64(s.opts.Clock.Now().Sub(start)) / float64(time.Millisecond))
-	st.pts.Add(int64(len(out)))
+	st.pts.Add(int64(len(out) + len(outSketches)))
 	if timedOut && ctx.Err() == nil {
 		st.tout.Inc()
 	}
 	s.report(ctx, st, err)
 	s.sinkMu.RLock()
 	defer s.sinkMu.RUnlock()
-	switch {
-	case s.stopped:
-		st.drop.Add(int64(len(out)))
-	case len(out) > 0:
+	if s.stopped {
+		st.drop.Add(int64(len(out) + len(outSketches)))
+		return
+	}
+	if len(out) > 0 {
 		s.opts.Sink(out) // must not block: Run's return waits for sinkMu
+	}
+	if len(outSketches) > 0 {
+		if s.opts.SketchSink == nil {
+			st.drop.Add(int64(len(outSketches)))
+		} else {
+			s.opts.SketchSink(outSketches)
+		}
 	}
 }
 
@@ -386,6 +497,10 @@ func (s *Scheduler) series(m Metric, ts int64, iv time.Duration) (se wire.Series
 		se.Type, se.Interval = wire.KindCount, int64(iv/time.Second)
 	case Gauge, Rate: // a per-second value is a level; see Rate
 		se.Type = wire.KindGauge
+	case Distribution:
+		if m.Sketch == nil || m.Sketch.Count() == 0 {
+			return wire.Series{}, badTags, false
+		}
 	default:
 		return wire.Series{}, badTags, false
 	}

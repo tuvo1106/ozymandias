@@ -65,6 +65,8 @@ interval's increase.
 | `ozy.agent.docker.events` | counter | events | — | agent | Container events read from the daemon's stream (start, oom, die) |
 | `ozy.agent.docker.events_reconnects` | counter | reconnects | — | agent | Times the event stream ended, or failed to open, and was tried again (at most every 30s). Steady growth means the daemon keeps dropping the stream, or is not there: check the agent's log |
 | `ozy.agent.docker.events_skipped` | counter | lines | — | agent | Event lines the agent could not decode (or over 1 MiB) and skipped; the stream carries on. Non-zero means a daemon speaking a format the agent does not know |
+| `ozy.agent.autodiscovery.instances` | gauge | instances | — | agent | Checks running because a container asked for them with `ozy.check.*` labels |
+| `ozy.agent.autodiscovery.errors` | counter | containers | — | agent | Containers whose `ozy.check.*` labels do not make a valid check (logged once per container) |
 | `ozy.runtime.goroutines` | gauge | goroutines | `component` | agent | Live goroutines. One that climbs and never falls is a leak |
 | `ozy.runtime.heap_bytes` | gauge | bytes | `component` | agent | Heap occupied by live and not-yet-swept objects |
 | `ozy.runtime.gc_runs` | counter | cycles | `component` | agent | Garbage collections. A rising rate with a flat heap means allocation churn |
@@ -162,3 +164,94 @@ series counts only the containers seen on the previous run too: with
 sandboxes that live less than an interval, `container.cpu.usage` and the
 `net`/`io` rates of the folded name undercount, and `container.memory.*`
 and `container.exits` are the figures to trust.
+
+## Check metrics
+
+From configured or autodiscovered checks (`collectors.checks`, docs/operations.md). Every
+metric of an instance carries that instance's `tags` and, when autodiscovered, the
+container's tags.
+
+| Metric | Type | Unit | Tags | Meaning |
+|---|---|---|---|---|
+| `openmetrics.up` | gauge | — | instance | 1 when the last scrape of the target succeeded, 0 when it failed (unreachable, non-200, unparseable, too large) |
+| `openmetrics.scrape_duration` | gauge | seconds | instance | How long the last scrape took, failed or not |
+
+What an `openmetrics` instance scrapes is named after the target's own metrics:
+counters as per-second gauges, histograms as `<name>.bucket` / `.sum` / `.count`
+counts (package doc of internal/agent/check/openmetrics).
+
+## Redis check (`redis.*`)
+
+From the `redis` check (docs/operations.md), per instance, from one INFO per
+run. Every series carries the instance's tags. A **/s** unit is a
+per-second rate of one of INFO's running totals, stored as a gauge
+(ADR-0026); the first run, and the first after a server restart, have none.
+
+| Metric | Type | Unit | Tags | Meaning |
+|---|---|---|---|---|
+| `redis.can_connect` | gauge | — | — | 1 when the run connected (and authenticated) and INFO answered, else 0. Emitted every run |
+| `redis.net.clients` | gauge | connections | — | Connected clients (`connected_clients`) |
+| `redis.net.blocked` | gauge | connections | — | Clients blocked in BLPOP and friends (`blocked_clients`) |
+| `redis.mem.used` | gauge | bytes | — | Memory Redis allocated (`used_memory`) |
+| `redis.mem.rss` | gauge | bytes | — | Resident memory as the OS sees it (`used_memory_rss`) |
+| `redis.mem.peak` | gauge | bytes | — | Highest `used_memory` since start (`used_memory_peak`) |
+| `redis.mem.maxmemory` | gauge | bytes | — | The configured limit; 0 means none |
+| `redis.mem.fragmentation_ratio` | gauge | ratio | — | RSS over used. Well above 1 is fragmentation; below 1 is swapping |
+| `redis.net.commands` | gauge | commands/s | — | Commands processed (`total_commands_processed`): the server's throughput over the whole interval |
+| `redis.stats.keyspace_hits` / `.keyspace_misses` | gauge | lookups/s | — | Key lookups that found / did not find the key. hits / (hits + misses) is the cache hit ratio |
+| `redis.keys.evicted` | gauge | keys/s | — | Keys removed to stay under `maxmemory`. Non-zero means the cache is full |
+| `redis.keys.expired` | gauge | keys/s | — | Keys removed because their TTL passed |
+| `redis.net.rejected_connections` | gauge | connections/s | — | Connections refused at `maxclients` |
+| `redis.keys` | gauge | keys | `db` | Keys per database (`db:db0`). A database with no keys has no series |
+| `redis.expires` | gauge | keys | `db` | Keys with a TTL, per database |
+| `redis.uptime` | gauge | seconds | — | Time since the server started |
+
+## Postgres check (`postgresql.*`)
+
+From the `postgres` check (docs/operations.md), every 15s per instance.
+Every series carries `server:<host>` and `port:<port>`, plus the instance's
+`tags`. A **/s** unit is a per-second rate computed from
+`pg_stat_database`'s cumulative counters and stored as a gauge (ADR-0026);
+the first run has none, and a run across `pg_stat_reset()` is skipped.
+
+| Metric | Type | Unit | Tags | Meaning |
+|---|---|---|---|---|
+| `postgresql.can_connect` | gauge | — | — | 1 when the run connected, 0 when it could not |
+| `postgresql.connections` | gauge | connections | — | Sessions in `pg_stat_activity`, the check's own included (all of them only with `pg_monitor`) |
+| `postgresql.max_connections` | gauge | connections | — | The server's `max_connections` |
+| `postgresql.percent_usage_connections` | gauge | % | — | connections / max_connections |
+| `postgresql.commits` / `.rollbacks` | gauge | transactions/s | `db` | Transactions committed and rolled back |
+| `postgresql.rows_returned` / `.rows_fetched` | gauge | rows/s | `db` | Rows read by sequential scans / fetched by index scans |
+| `postgresql.rows_inserted` / `.rows_updated` / `.rows_deleted` | gauge | rows/s | `db` | Rows written |
+| `postgresql.deadlocks` | gauge | deadlocks/s | `db` | Deadlocks detected |
+| `postgresql.temp_bytes` | gauge | bytes/s | `db` | Written to temporary files by queries too big for `work_mem` |
+| `postgresql.buffer_hit` | gauge | % | `db` | Share of block reads served from shared buffers over the last interval (not since startup). Absent in an interval with no block reads |
+| `postgresql.database_size` | gauge | bytes | `db` | On disk. Absent without CONNECT privilege on the database |
+| `postgresql.table_size` / `.index_size` | gauge | bytes | `schema`, `table` | For the tables listed in `relations`: the table (with TOAST) and all its indexes |
+
+## HTTP check (`network.http.*`)
+
+From each `http_check` instance, every run. Tagged `url:<scheme>://<host><path>`
+(query string and credentials left out; lower-cased like every tag), plus
+the instance's `tags`.
+
+| Metric | Type | Unit | Tags | Meaning |
+|---|---|---|---|---|
+| `network.http.can_connect` | gauge | 0/1 | `url` | A response arrived: 0 for refused, DNS failure, timeout or an untrusted certificate |
+| `network.http.up` | gauge | 0/1 | `url` | Connected, with an expected status, and a body matching `content_match` if set. The one to alert on |
+| `network.http.status_code` | gauge | status | `url` | The response's status (after redirects, unless `follow_redirects: false`) |
+| `network.http.response_time` | gauge | seconds | `url` | From sending the request to reading the body (up to 64 KiB) on a new connection: DNS, connect, TLS and transfer |
+| `network.http.ssl.days_left` | gauge | days | `url` | Until the server certificate's NotAfter (https only; fractional) |
+
+## Process check (`system.processes.*`)
+
+From each `process` instance, every run: the matching processes together,
+tagged `process_name:<label>`. With no match only `number` (0) is sent.
+
+| Metric | Type | Unit | Tags | Meaning |
+|---|---|---|---|---|
+| `system.processes.number` | gauge | processes | `process_name` | Matching processes |
+| `system.processes.cpu.pct` | gauge | % | `process_name` | CPU used since the previous run, in % of one core, summed per process (each differenced against its own previous reading, so processes coming and going do not distort it). None on a process's first run |
+| `system.processes.mem.rss` | gauge | bytes | `process_name` | Resident memory, summed |
+| `system.processes.threads` | gauge | threads | `process_name` | Threads, summed |
+| `system.processes.open_file_descriptors` | gauge | descriptors | `process_name` | Open file descriptors, summed; absent when any match's count cannot be read (another user's process, without privileges) |

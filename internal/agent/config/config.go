@@ -75,6 +75,27 @@ type Collectors struct {
 	Timeout time.Duration   `yaml:"timeout"`
 	Host    HostCollector   `yaml:"host"`
 	Docker  DockerCollector `yaml:"docker"`
+	// Checks are the configurable collectors, by check name: each entry's
+	// instances are run as separate collectors. Fragments append instances,
+	// so an app's fragment can add a redis instance beside another's.
+	Checks map[string]Check `yaml:"checks"`
+}
+
+// Check is one check's configured instances. Each instance is a map of
+// settings: the common ones (name, interval, tags) and whatever the check
+// defines, which it decodes and validates itself when the agent starts.
+type Check struct {
+	Instances []map[string]any `yaml:"instances"`
+}
+
+// Instances returns every check's instances by check name, the shape
+// collector.Registry.Configured takes.
+func (c Collectors) Instances() map[string][]map[string]any {
+	out := make(map[string][]map[string]any, len(c.Checks))
+	for name, ch := range c.Checks {
+		out[name] = ch.Instances
+	}
+	return out
 }
 
 // DockerCollector configures the Docker collector (container.*) and the
@@ -93,6 +114,9 @@ type DockerCollector struct {
 	// many and short-lived by design. The first matching rule wins.
 	// Fragments append.
 	ContainerNameRewrite []NameRewrite `yaml:"container_name_rewrite"`
+	// Autodiscovery runs checks for containers that ask for them with
+	// ozy.check.<check>.<setting> labels. It needs the Docker collector.
+	Autodiscovery bool `yaml:"autodiscovery"`
 }
 
 // Rewrites compiles each ContainerNameRewrite rule, in order: the one
@@ -242,7 +266,7 @@ func Default() Agent {
 		Collectors: Collectors{
 			Interval: 15 * time.Second, Timeout: 10 * time.Second,
 			Host:   HostCollector{Enabled: true, ExcludeInterfaces: slices.Clone(DefaultExcludeInterfaces)},
-			Docker: DockerCollector{Enabled: true, Socket: dockerapi.DefaultSocket, MaxConcurrency: docker.DefaultMaxConcurrency},
+			Docker: DockerCollector{Enabled: true, Socket: dockerapi.DefaultSocket, MaxConcurrency: docker.DefaultMaxConcurrency, Autodiscovery: true},
 		},
 		ConfdPath: "./deploy/agent.d",
 		Log:       base.Log{Level: "info", Format: "text"},

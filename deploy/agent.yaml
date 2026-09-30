@@ -134,6 +134,28 @@ collectors:
     #   -
     #     match: ^judge-.*
     #     replace: judge
+    # Run checks for containers that ask for them with labels:
+    #   ozy.check.<check>.<setting>=<value>
+    # e.g. ozy.check.redis.port=6379. In a value, %%host%% is the container's
+    # IP address and %%port%% its lowest exposed port. The instance is named
+    # <check>:<container name> and tagged like the container's metrics; it
+    # stops when the container does. Label settings are strings; each check
+    # says which of its settings can be set that way.
+    autodiscovery: true
+
+  # Checks: collectors you configure, one per instance. Every instance takes
+  # the common settings `name` (instances of one check need distinct names;
+  # the collector tag becomes <check>:<name>), `interval` (default
+  # collectors.interval) and `tags`, plus the check's own. An unknown check
+  # or setting fails startup. conf.d fragments append instances. The shipped
+  # checks and their settings are in docs/operations.md.
+  checks: {}
+  # checks:
+  #   http_check:
+  #     instances:
+  #       - name: home
+  #         url: https://example.com/
+  #         tags: [team:web]
 
 # Value of the `host` tag on everything this agent sends. Empty means the OS
 # hostname — set it explicitly in a container, where that is a random id. The
