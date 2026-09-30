@@ -127,6 +127,28 @@ func twoNets(c dockerapi.Container) dockerapi.Container {
 	return c
 }
 
+// build is what a sync does for one container and check: resolve the
+// templates, then make the instance with the container's tags.
+func build(d *Discovery, ct dockerapi.Container, check string, labels map[string]string) (collector.Collector, error) {
+	r, err := d.resolveAll(ct, labels)
+	if err != nil {
+		return nil, err
+	}
+	return d.instance(ct, check, r, docker.Tags(ct, d.opts.Rewrites))
+}
+
+// tagsOf runs the named instance once and returns its metric's tags.
+func tagsOf(t *testing.T, s *sched, name string) []string {
+	t.Helper()
+	c := s.get(name)
+	if c == nil {
+		t.Fatalf("%s is not running: %v", name, s.names())
+	}
+	var m collector.Metric
+	_ = c.Collect(context.Background(), func(x collector.Metric) { m = x })
+	return m.Tags
+}
+
 func setup(t *testing.T, opts Options) (*Discovery, *lister, *sched, *bytes.Buffer, *selfmetrics.Registry) {
 	t.Helper()
 	l, s := &lister{}, &sched{}
@@ -186,7 +208,7 @@ func TestInstance_ResolvesAndTypes(t *testing.T) {
 		}
 		return &probe{}, nil
 	}}
-	_, err := d.instance(container("a1", "r", nil), "probe", map[string]string{
+	_, err := build(d, container("a1", "r", nil), "probe", map[string]string{
 		"host": "%%host%%", "port": "%%port%%", "statuses": "[200, 301]", "verify": "true",
 		"url": "http://%%host%%:%%port%%/metrics",
 	})
@@ -200,8 +222,9 @@ func TestInstance_ResolvesAndTypes(t *testing.T) {
 }
 
 // A label value reaches a string setting exactly as written. Read as YAML
-// first and handed on as a Go value, 0123 was octal 83, 1e3 was 1000 and a
-// date a timestamp: a password or a database name changed on the way.
+// first, 0123 was octal 83, 1e3 was 1000 and a date a timestamp; parsed as
+// a YAML node, "pa ss #1" lost its "comment", "!secret" was a tag and
+// quotes and spaces went: a password or a database name changed on the way.
 func TestInstance_StringSettingsKeepTheirText(t *testing.T) {
 	d, _, _, _, _ := setup(t, Options{})
 	var seen probeConfig
@@ -210,8 +233,9 @@ func TestInstance_StringSettingsKeepTheirText(t *testing.T) {
 		name = inst.Name
 		return &probe{}, inst.Decode(&seen)
 	}}
-	for _, v := range []string{"0123", "007", "1e3", "0x1F", "1_000", "2024-01-01", "null", "~", "yes", "3.10", "a: b", "[x", ""} {
-		_, err := d.instance(container("a1", "r", nil), "probe", map[string]string{"password": v, "db": v, "name": "007"})
+	for _, v := range []string{"0123", "007", "1e3", "0x1F", "1_000", "2024-01-01", "null", "~", "yes", "3.10", "a: b", "[x", "",
+		"pa ss #1", "!secret", "&a bar", "*alias", "'quoted'", `"dq"`, " sp ", "|", ">", "- x", "%TAG", "@at", "a\nb"} {
+		_, err := build(d, container("a1", "r", nil), "probe", map[string]string{"password": v, "db": v, "name": "007"})
 		if err != nil {
 			t.Errorf("%q: %v", v, err)
 			continue
@@ -224,11 +248,11 @@ func TestInstance_StringSettingsKeepTheirText(t *testing.T) {
 		}
 	}
 	for in, want := range map[string]int{"6379": 6379, "0x1F": 31} {
-		if _, err := d.instance(container("a1", "r", nil), "probe", map[string]string{"port": in}); err != nil || seen.Port != want {
+		if _, err := build(d, container("a1", "r", nil), "probe", map[string]string{"port": in}); err != nil || seen.Port != want {
 			t.Errorf("port %q = %d, %v; want %d", in, seen.Port, err, want)
 		}
 	}
-	if _, err := d.instance(container("a1", "r", nil), "probe", map[string]string{"port": "0123x"}); err == nil {
+	if _, err := build(d, container("a1", "r", nil), "probe", map[string]string{"port": "0123x"}); err == nil {
 		t.Error("a port that is not a number was accepted")
 	}
 }
@@ -245,19 +269,19 @@ func TestInstance_HostIsOnTheSharedNetwork(t *testing.T) {
 	labels := map[string]string{"host": "%%host%%"}
 	d, _, _, _, _ := setup(t, Options{})
 	d.opts.Checks = checks
-	if _, err := d.instance(twoNets(container("a1", "r", nil)), "probe", labels); err == nil ||
+	if _, err := build(d, twoNets(container("a1", "r", nil)), "probe", labels); err == nil ||
 		!strings.Contains(err.Error(), "autodiscovery_network") || !strings.Contains(err.Error(), "alpha, zeta") {
 		t.Fatalf("two networks, none configured: %v", err)
 	}
 	d.opts.Network = "zeta"
-	if _, err := d.instance(twoNets(container("a1", "r", nil)), "probe", labels); err != nil || seen.Host != "10.0.0.9" {
+	if _, err := build(d, twoNets(container("a1", "r", nil)), "probe", labels); err != nil || seen.Host != "10.0.0.9" {
 		t.Fatalf("configured zeta: host %q, %v", seen.Host, err)
 	}
-	if _, err := d.instance(container("a1", "r", nil), "probe", labels); err == nil || !strings.Contains(err.Error(), `"zeta"`) {
+	if _, err := build(d, container("a1", "r", nil), "probe", labels); err == nil || !strings.Contains(err.Error(), `"zeta"`) {
 		t.Fatalf("not on the configured network: %v", err)
 	}
 	d.opts.Network = ""
-	if _, err := d.instance(container("a1", "r", nil), "probe", labels); err != nil || seen.Host != "172.18.0.4" {
+	if _, err := build(d, container("a1", "r", nil), "probe", labels); err != nil || seen.Host != "172.18.0.4" {
 		t.Fatalf("one network: host %q, %v", seen.Host, err)
 	}
 }
@@ -318,21 +342,90 @@ func TestSync_AFailedListChangesNothing(t *testing.T) {
 // A name rewrite applies to the instance name as to the tags: containers
 // with a name each would otherwise mint self-metric series (tagged with the
 // instance name) per container, however the rewrite folds their metrics.
-// Folded, each container is still checked; their instances share a name.
-func TestSync_RewrittenNamesFoldInstances(t *testing.T) {
+// Folded, each container is still checked, and a replica tag keeps their
+// metrics apart — the same tags would overwrite each other in the store.
+// A replica that leaves frees its number for the next, so the series are
+// as many as the replicas running at once.
+func TestSync_FoldedContainersGetReplicaTags(t *testing.T) {
 	d, l, s, _, _ := setup(t, Options{Rewrites: []docker.Rewrite{{Match: regexp.MustCompile(`^job-.*`), Replace: "job"}}})
-	l.set([]dockerapi.Container{
-		container("a1", "job-1", map[string]string{"ozy.check.probe.port": "1"}),
-		container("b2", "job-2", map[string]string{"ozy.check.probe.port": "1"}),
-	}, nil)
+	job := func(id, name string) dockerapi.Container {
+		return container(id, name, map[string]string{"ozy.check.probe.port": "1"})
+	}
+	l.set([]dockerapi.Container{job("a1", "job-1"), job("b2", "job-2")}, nil)
 	d.Sync(context.Background())
 	if got := s.names(); !slices.Equal(got, []string{"probe:job", "probe:job"}) {
 		t.Fatalf("running %v", got)
 	}
-	var m collector.Metric
-	_ = s.get("probe:job").Collect(context.Background(), func(x collector.Metric) { m = x })
-	if !slices.Contains(m.Tags, "container_name:job") {
-		t.Fatalf("tags %v", m.Tags)
+	replicas := func() []string {
+		var out []string
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, c := range s.running {
+			var m collector.Metric
+			_ = (*c).Collect(context.Background(), func(x collector.Metric) { m = x })
+			if !slices.Contains(m.Tags, "container_name:job") || slices.ContainsFunc(m.Tags, func(t string) bool { return strings.HasPrefix(t, "container_id:") }) {
+				t.Errorf("folded tags %v", m.Tags)
+			}
+			for _, tg := range m.Tags {
+				if strings.HasPrefix(tg, "replica:") {
+					out = append(out, tg)
+				}
+			}
+		}
+		slices.Sort(out)
+		return out
+	}
+	if got := replicas(); !slices.Equal(got, []string{"replica:0", "replica:1"}) {
+		t.Fatalf("replicas %v", got)
+	}
+	// job-1 goes, job-3 comes: it takes the number job-1 freed.
+	l.set([]dockerapi.Container{job("b2", "job-2"), job("c3", "job-3")}, nil)
+	d.Sync(context.Background())
+	if got := replicas(); !slices.Equal(got, []string{"replica:0", "replica:1"}) {
+		t.Fatalf("after a replica was replaced: %v", got)
+	}
+	// An unfolded container has its id, and no replica tag.
+	d2, l2, s2, _, _ := setup(t, Options{})
+	l2.set([]dockerapi.Container{job("a1", "web")}, nil)
+	d2.Sync(context.Background())
+	if tg := tagsOf(t, s2, "probe:web"); slices.ContainsFunc(tg, func(t string) bool { return strings.HasPrefix(t, "replica:") }) {
+		t.Fatalf("an unfolded container got a replica tag: %v", tg)
+	}
+}
+
+// A container restarted in place keeps its id but may get a new address:
+// the instance is rebuilt with it. One listed before it had an address
+// fails, and is tried again once it has one — and only then, not every
+// sync, and it logs once per distinct failure.
+func TestSync_SettingsThatChangeRebuildTheInstance(t *testing.T) {
+	d, l, s, logs, reg := setup(t, Options{})
+	var hosts []string
+	d.opts.Checks = collector.Registry{"probe": func(inst collector.Instance) (collector.Collector, error) {
+		var cfg probeConfig
+		err := inst.Decode(&cfg)
+		hosts = append(hosts, cfg.Host)
+		return &probe{cfg: cfg}, err
+	}}
+	ct := container("a1", "cache", map[string]string{"ozy.check.probe.host": "%%host%%"})
+	ct.NetworkSettings.Networks = nil
+	l.set([]dockerapi.Container{ct}, nil)
+	d.Sync(context.Background())
+	d.Sync(context.Background())
+	if len(s.names()) != 0 || strings.Count(logs.String(), "no network address") != 1 || reg.Counter("ozy.agent.autodiscovery.errors").Value() != 1 {
+		t.Fatalf("no address yet: running %v, logs:\n%s", s.names(), logs.String())
+	}
+	ct.NetworkSettings.Networks = map[string]dockerapi.EndpointSettings{"alpha": {IPAddress: "172.18.0.4"}}
+	l.set([]dockerapi.Container{ct}, nil)
+	d.Sync(context.Background())
+	d.Sync(context.Background())
+	ct.NetworkSettings.Networks = map[string]dockerapi.EndpointSettings{"alpha": {IPAddress: "172.18.0.7"}}
+	l.set([]dockerapi.Container{ct}, nil)
+	d.Sync(context.Background())
+	if got := s.names(); !slices.Equal(got, []string{"probe:cache"}) || !slices.Equal(hosts, []string{"172.18.0.4", "172.18.0.7"}) {
+		t.Fatalf("running %v, built with hosts %v", got, hosts)
+	}
+	if !strings.Contains(logs.String(), "settings changed") {
+		t.Errorf("the rebuild was not logged:\n%s", logs.String())
 	}
 }
 

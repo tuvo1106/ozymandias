@@ -448,9 +448,12 @@ Collector.Collect ──emit(Metric)──▶ Scheduler ──[]wire.Series─�
 - **Autodiscovery** lists containers every 10s and turns
   `ozy.check.<check>.<setting>` labels into instances, added to and removed
   from the running scheduler (`Scheduler.Add` returns the removal). Label
-  values are handed to the check as YAML nodes after `%%host%%`/`%%port%%`
-  substitution, so a port label decodes as a number and a password as the
-  text written. `%%host%%` is the address on the network the agent shares
+  values are handed to the check as plain YAML scalars after
+  `%%host%%`/`%%port%%` substitution, never parsed, so a port label decodes
+  as a number and a password as the text written. Settings are resolved
+  every sync, so a container restarted with a new address gets its check
+  rebuilt; containers a rewrite folds into one name get `replica:<n>` tags
+  (lowest free number), since the same tags would overwrite each other. `%%host%%` is the address on the network the agent shares
   (`autodiscovery_network`), never a guess among several. An instance is
   named after its container's rewritten name: collectors may share a name,
   and share its self-metrics, which the registry frees once the last one

@@ -113,10 +113,12 @@ services:
 
 The agent lists containers every 10s; the check starts as
 `redis:<container name>`, tagged like the container's metrics, and stops
-with it. The name is the one after `container_name_rewrite`, so containers
-folded into one name share one set of `ozy.agent.collector.*` self-metrics
-(each is still checked), and a recreated container's check carries on
-under the same name.
+with it. The name is the one after `container_name_rewrite`. Containers that rewrite
+folds into one name are each checked, and their metrics carry a
+`replica:<n>` tag (the lowest number free among that name's running
+replicas) so that they do not overwrite each other; they share one set of
+`ozy.agent.collector.*` self-metrics. Sum or average across `replica` at
+query time, as the metric calls for.
 
 `%%host%%` is the container's IP address on a network, so **the agent must
 share a Docker network with the container** — in compose, list the app's
@@ -126,12 +128,14 @@ config says `ozymandias`); unset, a container must be on exactly one
 network, and one on several is refused, since its other addresses may have
 no route from the agent.
 
-A label value is read as YAML where the setting wants a number, list or
-boolean (`"6379"`, `"[200, 301]"`), and reaches a text setting exactly as
-written: a password `0123` stays `0123`. Labels that do not make a valid
-check are logged once and counted in `ozy.agent.autodiscovery.errors`;
-they are not retried while the container lives, so a network connected
-later needs the container restarted.
+A label value reaches a setting as plain text that the check decodes:
+`"6379"` is a number where the setting wants one, and a text setting gets
+the value exactly as written (a password `0123` or `pa ss #1` stays as it
+is). A list is written in brackets, `"[200, 301]"`. Labels that do not make
+a valid check are logged once and counted in
+`ozy.agent.autodiscovery.errors`. Settings are resolved again every sync: a
+container restarted with a new address gets its check rebuilt, and one
+that failed for want of an address is tried again once it has one.
 
 #### Check: openmetrics
 

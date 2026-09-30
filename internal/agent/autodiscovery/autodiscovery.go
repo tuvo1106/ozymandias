@@ -62,16 +62,26 @@ type Options struct {
 type Discovery struct {
 	opts    Options
 	log     *slog.Logger
-	running map[key]func() // the instance's remove function
-	failed  map[key]bool   // logged once; labels cannot change
+	running map[key]*member
+	failed  map[key]string // the settings that failed, logged once
 	count   *selfmetrics.Gauge
 	errs    *selfmetrics.Counter
 	lastErr string
 }
 
-// key identifies one instance: a container and a check. A container's
-// labels are fixed for its life, so the id is enough to know its settings.
+// key identifies one instance: a container and a check.
 type key struct{ id, check string }
+
+// member is a running instance. fp is the settings it was built from after
+// template substitution: a container keeps its id across a restart in
+// place, but may come back with another address, and an instance built
+// with the old one would dial it forever. A changed fp rebuilds it.
+type member struct {
+	remove func()
+	fp     string
+	folded string // check and folded name, when the name was rewritten
+	slot   int    // its replica tag, when folded
+}
 
 // New returns a Discovery. Call Run to start it.
 func New(opts Options) *Discovery {
@@ -89,7 +99,7 @@ func New(opts Options) *Discovery {
 	}
 	return &Discovery{
 		opts: opts, log: opts.Logger.With("component", "autodiscovery"),
-		running: map[key]func(){}, failed: map[key]bool{},
+		running: map[key]*member{}, failed: map[key]string{},
 		count: opts.Registry.Gauge("ozy.agent.autodiscovery.instances"),
 		errs:  opts.Registry.Counter("ozy.agent.autodiscovery.errors"),
 	}
@@ -113,6 +123,12 @@ func (d *Discovery) Run(ctx context.Context) {
 // Sync reads the running containers once and starts and stops instances
 // to match. A failed list changes nothing: a daemon that is briefly away
 // should not stop every discovered check.
+//
+// Each instance's settings are resolved again every sync. The same
+// settings leave it alone; different ones (the container restarted in
+// place with a new address) rebuild it; settings that failed before are
+// not retried or logged again until they change — a container listed
+// before it had an address is tried again once it has one.
 func (d *Discovery) Sync(ctx context.Context) {
 	list, err := d.opts.API.ListContainers(ctx)
 	if err != nil {
@@ -123,38 +139,125 @@ func (d *Discovery) Sync(ctx context.Context) {
 		return
 	}
 	d.lastErr = ""
-	seen := map[key]bool{}
+	type item struct {
+		ct    dockerapi.Container
+		check string
+		raw   map[string]string
+	}
+	seen := map[key]item{}
 	for _, ct := range list {
 		for check, raw := range groups(ct.Labels) {
-			k := key{ct.ID, check}
-			seen[k] = true
-			if d.running[k] != nil || d.failed[k] {
-				continue
-			}
-			c, err := d.instance(ct, check, raw)
-			if err != nil {
-				d.failed[k] = true
-				d.errs.Inc()
-				d.log.Warn("container's check labels do not make a valid check; ignoring them",
-					"container", ct.Name(), "check", check, "error", err)
-				continue
-			}
-			d.running[k] = d.opts.Scheduler.Add(c)
-			d.log.Info("started a check for a container", "container", ct.Name(), "check", c.Name())
+			seen[key{ct.ID, check}] = item{ct, check, raw}
 		}
 	}
-	for k, remove := range d.running {
-		if !seen[k] {
-			remove()
+	// Gone first, so a replica number a departed container held is free
+	// for one that arrived in the same sync.
+	for k, m := range d.running {
+		if _, ok := seen[k]; !ok {
+			m.remove()
 			delete(d.running, k)
 		}
 	}
 	for k := range d.failed {
-		if !seen[k] {
+		if _, ok := seen[k]; !ok {
 			delete(d.failed, k)
 		}
 	}
+	// In a stable order, so replica numbers do not depend on map order.
+	for _, k := range slices.SortedFunc(maps.Keys(seen), func(a, b key) int {
+		return strings.Compare(a.id+"\x00"+a.check, b.id+"\x00"+b.check)
+	}) {
+		it := seen[k]
+		d.sync(k, it.ct, it.check, it.raw)
+	}
 	d.count.Set(float64(len(d.running)))
+}
+
+// sync brings one container's instance of one check up to date.
+func (d *Discovery) sync(k key, ct dockerapi.Container, check string, raw map[string]string) {
+	resolved, rerr := d.resolveAll(ct, raw)
+	fp := fingerprint(resolved, rerr)
+	old := d.running[k]
+	if old != nil && old.fp == fp || old == nil && d.failed[k] == fp {
+		return
+	}
+	stop := func() {
+		if old != nil {
+			old.remove()
+			delete(d.running, k)
+		}
+	}
+	fail := func(err error) {
+		stop()
+		d.failed[k] = fp
+		d.errs.Inc()
+		d.log.Warn("container's check labels do not make a valid check; ignoring them",
+			"container", ct.Name(), "check", check, "error", err)
+	}
+	if rerr != nil {
+		fail(rerr)
+		return
+	}
+	tags := docker.Tags(ct, d.opts.Rewrites)
+	m := &member{fp: fp}
+	if name := containerName(ct, tags); !slices.ContainsFunc(tags, func(t string) bool { return strings.HasPrefix(t, "container_id:") }) {
+		m.folded = check + "\x00" + name
+		m.slot = d.freeSlot(m.folded, old)
+		tags = append(tags, "replica:"+strconv.Itoa(m.slot))
+	}
+	c, err := d.instance(ct, check, resolved, tags)
+	if err != nil {
+		fail(err)
+		return
+	}
+	stop()
+	delete(d.failed, k)
+	m.remove = d.opts.Scheduler.Add(c)
+	d.running[k] = m
+	verb := "started a check for a container"
+	if old != nil {
+		verb = "restarted a container's check: its settings changed"
+	}
+	d.log.Info(verb, "container", ct.Name(), "check", c.Name())
+}
+
+// freeSlot is the lowest replica number no other running instance folded
+// into the same name holds; old keeps its own. Containers that a rewrite
+// folds into one name carry the same tags, so their checks would write the
+// same series and overwrite each other. A replica tag keeps them apart,
+// and reusing the lowest free number bounds the series by the replicas
+// running at once, not by every container that ever ran.
+func (d *Discovery) freeSlot(folded string, old *member) int {
+	if old != nil && old.folded == folded {
+		return old.slot
+	}
+	used := map[int]bool{}
+	for _, m := range d.running {
+		if m != old && m.folded == folded {
+			used[m.slot] = true
+		}
+	}
+	n := 0
+	for used[n] {
+		n++
+	}
+	return n
+}
+
+// fingerprint is a stable text for resolved settings, or for the error
+// resolving them.
+func fingerprint(resolved map[string]string, err error) string {
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	var b strings.Builder
+	for _, k := range slices.Sorted(maps.Keys(resolved)) {
+		b.WriteString(k)
+		b.WriteByte(0)
+		b.WriteString(resolved[k])
+		b.WriteByte(0)
+	}
+	return b.String()
 }
 
 // groups splits a container's ozy.check.* labels by check: label
@@ -181,7 +284,21 @@ func groups(labels map[string]string) map[string]map[string]string {
 	return out
 }
 
-// instance builds the collector for one check on one container.
+// resolveAll substitutes the template variables in every label value.
+func (d *Discovery) resolveAll(ct dockerapi.Container, labels map[string]string) (map[string]string, error) {
+	out := make(map[string]string, len(labels))
+	for _, k := range slices.Sorted(maps.Keys(labels)) {
+		v, err := d.resolve(labels[k], ct)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", k, err)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// instance builds the collector for one check on one container, from its
+// resolved label values and the tags its metrics carry.
 //
 // Unnamed, the instance takes its container's name after
 // container_name_rewrite, the name its container's metrics carry. The
@@ -190,15 +307,10 @@ func groups(labels map[string]string) map[string]map[string]string {
 // self-metric series per container, however the rewrite folds their
 // container metrics. Folded containers' instances share one name, and so
 // one set of self-metrics (the scheduler allows that); each is still
-// checked.
-func (d *Discovery) instance(ct dockerapi.Container, check string, labels map[string]string) (collector.Collector, error) {
-	tags := docker.Tags(ct, d.opts.Rewrites)
-	settings := make(map[string]any, len(labels)+1)
-	for _, k := range slices.Sorted(maps.Keys(labels)) {
-		v, err := d.resolve(labels[k], ct)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", k, err)
-		}
+// checked, and its metrics carry its replica tag.
+func (d *Discovery) instance(ct dockerapi.Container, check string, resolved map[string]string, tags []string) (collector.Collector, error) {
+	settings := make(map[string]any, len(resolved)+1)
+	for k, v := range resolved {
 		settings[k] = typed(k, v)
 	}
 	if _, ok := settings["name"]; !ok {
@@ -280,34 +392,42 @@ func lowestPort(ct dockerapi.Container) (int, bool) {
 	return best, best > 0
 }
 
-// typed makes a label value a setting. A check's own settings get the value
-// as a YAML node, which the check's config struct then decodes: "6379"
-// becomes a number for an int field, "[200, 301]" a list, and for a string
-// field the text exactly as written. Decoding the text to a Go value here
-// instead would lose that: YAML reads 0123 as octal 83, 1e3 as 1000,
-// 2024-01-01 as a timestamp, and a password or database name would reach
-// the check changed. The common settings are read here: name and interval
-// are text, tags a list. Text that is not valid YAML, or is a mapping
-// (settings do not nest in a label), stays text.
+// typed makes a label value a setting. A check's own settings get the text
+// as a plain YAML scalar node, which the check's config struct then
+// decodes: "6379" becomes a number for an int field, "true" a boolean,
+// "5s" a duration, and for a string field the text exactly as written.
+// The text is not parsed as YAML first. Parsed, 0123 was octal 83, a
+// password "pa ss #1" lost its "comment", "!x" was a tag, "&a b" an anchor,
+// and quotes and outer spaces went: a password or database name reached
+// the check changed. Only a flow list ("[200, 301]") is parsed, since no
+// scalar can be a list. Empty text and the null spellings are marked as
+// text, or a string setting would decode them as nothing at all. The common settings are read here:
+// name and interval are text, tags a list.
 func typed(key, v string) any {
 	switch key {
 	case "name", "interval":
 		return v
 	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal([]byte(v), &doc); err != nil || len(doc.Content) == 0 {
+	if strings.HasPrefix(v, "[") {
+		var doc yaml.Node
+		if err := yaml.Unmarshal([]byte(v), &doc); err == nil && len(doc.Content) == 1 && doc.Content[0].Kind == yaml.SequenceNode {
+			if key == "tags" {
+				var out any
+				if err := doc.Content[0].Decode(&out); err == nil {
+					return out
+				}
+				return v
+			}
+			return doc.Content[0]
+		}
+	}
+	if key == "tags" {
 		return v
 	}
-	n := doc.Content[0]
-	switch {
-	case n.Kind == yaml.MappingNode, n.Tag == "!!null": // "null", "~"
-		return v
-	case key == "tags":
-		var out any
-		if err := n.Decode(&out); err != nil {
-			return v
-		}
-		return out
+	n := &yaml.Node{Kind: yaml.ScalarNode, Value: v}
+	switch v {
+	case "", "null", "Null", "NULL", "~":
+		n.Tag = "!!str"
 	}
 	return n
 }
