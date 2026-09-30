@@ -70,14 +70,16 @@ forwarder:
 # series per run already) with the host tag and `tags` added.
 collectors:
   # How often a collector runs unless it sets its own interval. Whole seconds,
-  # at least 1s: a rate's interval is whole seconds on the wire. Each
+  # at least 1s: a count's interval is whole seconds on the wire. Each
   # collector starts at a random point in its first interval, so several on
   # the same interval do not all fire together.
   interval: 15s
   # One run of one collector is cancelled after this (and never outlives its
   # interval). What it had read by then is still sent. A timeout is counted
   # in ozy.agent.collector.timeouts, and the failure is logged once, not
-  # every run.
+  # every run. On SIGTERM a running collector gets 2s to return, alongside
+  # http.shutdown_timeout rather than after it, so a slow one costs no extra
+  # stop time.
   timeout: 10s
 
   # The machine the agent runs on (system.*: CPU, load, memory, swap, disks,
@@ -90,7 +92,9 @@ collectors:
     # Network interfaces not to report, as regular expressions. The default
     # skips macOS's virtual interfaces (VPN tunnels, AirDrop, the internal
     # Apple Silicon NICs), each worth eight series of near-zero rates. Setting
-    # this replaces the default; conf.d fragments append to it.
+    # this replaces the default; conf.d fragments append to it. Set it here,
+    # not in the environment, which splits lists on commas and would cut a
+    # {m,n} quantifier in two.
     exclude_interfaces:
       - ^(utun|awdl|llw|anpi|gif|stf)[0-9]+$
 

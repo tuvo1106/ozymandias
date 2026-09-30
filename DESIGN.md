@@ -409,7 +409,9 @@ Collector.Collect ──emit(Metric)──▶ Scheduler ──[]wire.Series─�
   forgets keys that disappear. Prometheus stores the raw counter and
   computes `rate()` at query time, which keeps the option of any window
   later; storing the rate keeps every query cheap and the store free of
-  resets, at the cost of that option.
+  resets, at the cost of that option. The per-second value is sent as a **gauge**
+  (ADR-0026): the query engine sums `rate`-typed points within a bucket, as
+  it does counts, and a per-second value must average.
 - **Failure is data.** A failed run is counted
   (`ozy.agent.collector.errors`), logged once on the transition into failure
   and once on recovery, and never fatal. A run past `collectors.timeout` is

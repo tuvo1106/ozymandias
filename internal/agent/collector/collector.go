@@ -5,8 +5,7 @@ import (
 	"time"
 )
 
-// Kind says how a collected value is to be read, and maps one-to-one onto the
-// wire's series types (docs/wire-protocol.md §C).
+// Kind says how a collected value is to be read.
 type Kind int
 
 const (
@@ -17,8 +16,14 @@ const (
 	// the collector from two readings of a cumulative counter (see [Rates]).
 	// Collectors report rates rather than raw counter values because a raw
 	// cumulative value means nothing on its own — it depends on when the
-	// kernel, container or process started counting — and a delta sent as a
-	// count would need its own reset handling downstream.
+	// kernel, container or process started counting.
+	//
+	// On the wire a Rate is a gauge, not the wire's rate type (ADR-0026).
+	// The query engine rolls a rate series up the way it rolls up a count —
+	// by summing the bucket's points — so a per-second value sent as a rate
+	// would read as n× itself for a bucket holding n points, and a chart
+	// would change with the zoom. A per-second value is a level: averaged
+	// over a bucket it is the bucket's rate, at any width.
 	Rate
 	// Count is a number of events that happened during the interval, for
 	// things observed as events rather than read from a counter (a container

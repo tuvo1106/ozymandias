@@ -3,12 +3,10 @@ package agent
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -115,15 +113,11 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 
 	collectors := slices.Clone(opts.Collectors)
 	if h := cfg.Collectors.Host; h.Enabled {
-		// Validate refuses a bad pattern, but New does not require that
-		// Validate ran, so this is an error, not a panic.
-		exclude := make([]*regexp.Regexp, 0, len(h.ExcludeInterfaces))
-		for _, re := range h.ExcludeInterfaces {
-			rx, err := regexp.Compile(re)
-			if err != nil {
-				return nil, fmt.Errorf("collectors.host.exclude_interfaces %q: %w", re, err)
-			}
-			exclude = append(exclude, rx)
+		// New does not require that Validate ran, so a bad pattern is an
+		// error here too, not a panic.
+		exclude, err := h.Excludes()
+		if err != nil {
+			return nil, err
 		}
 		collectors = append(collectors, hostcoll.New(hostcoll.Options{Interval: h.Interval, ExcludeInterfaces: exclude, Clock: a.clock}))
 	}
@@ -242,9 +236,10 @@ func (a *Agent) Close() error {
 // Run serves until ctx is cancelled, then shuts down in pipeline order so
 // nothing received is lost on the way out:
 //
-//  1. stop accepting: HTTP drains within http.shutdown_timeout, the statsd
-//     socket closes after its queue is parsed, and collectors stop (a run in
-//     progress is cancelled and what it had read is still sent);
+//  1. stop accepting: collectors stop at once (a run in progress is
+//     cancelled and what it had read is still sent; one stuck in a syscall
+//     is abandoned after 2s), HTTP drains within http.shutdown_timeout, and
+//     the statsd socket closes after its queue is parsed;
 //  2. the aggregator does a final flush of every open bucket;
 //  3. the forwarder makes one last delivery attempt within
 //     forwarder.shutdown_timeout.
@@ -275,7 +270,11 @@ func (a *Agent) Run(ctx context.Context, ln net.Listener) error {
 	if a.statsd != nil {
 		wg.Go(func() { statsdErr = a.statsd.Run(inputs) })
 	}
-	wg.Go(func() { a.sched.Run(inputs) })
+	// Collectors stop at SIGTERM itself, in parallel with the HTTP drain,
+	// not after it: they are reads, nothing is waiting on them, and their
+	// bounded wait for a stuck one (collector.DefaultShutdownTimeout) then
+	// overlaps the drain instead of adding to the stop grace period.
+	wg.Go(func() { a.sched.Run(ctx) })
 
 	err := httpserve.Serve(ctx, srv, ln, a.cfg.HTTP.ShutdownTimeout)
 

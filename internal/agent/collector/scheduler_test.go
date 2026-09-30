@@ -103,7 +103,7 @@ func TestScheduler_SendsWhatACollectorEmits(t *testing.T) {
 	got := sk.all()
 	want := []wire.Series{
 		{Metric: "system.load.1", Type: wire.KindGauge, Tags: []string{"device:sda", "env:dev", "host:mac"}},
-		{Metric: "system.net.bytes_rcvd", Type: wire.KindRate, Interval: 15, Tags: []string{"env:dev", "host:mac", "interface:en0"}},
+		{Metric: "system.net.bytes_rcvd", Type: wire.KindGauge, Tags: []string{"env:dev", "host:mac", "interface:en0"}}, // ADR-0026
 		{Metric: "container.exits", Type: wire.KindCount, Interval: 15, Tags: []string{"env:dev", "host:mac"}},
 	}
 	for i, w := range want {
@@ -321,15 +321,18 @@ func TestScheduler_ACollectorsOwnHostWins(t *testing.T) {
 // A collector stuck where cancellation cannot reach it (statfs on a hung
 // disk) must not hold shutdown past the timeout.
 func TestScheduler_AbandonsACollectorThatIgnoresCancellation(t *testing.T) {
-	release := make(chan struct{})
-	defer close(release)
-	stuck := &fake{name: "stuck", iv: time.Second, collect: func(context.Context, Emit) error {
+	release := make(chan struct{}, 1)
+	stuck := &fake{name: "stuck", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
 		<-release // ignores ctx
+		emit(Metric{Name: "late", Value: 1})
 		return nil
 	}}
 	fc := testutil.NewFakeClock(t0)
 	var buf syncBuffer
-	s := New(Options{Collectors: []Collector{stuck}, Clock: fc, Timeout: 50 * time.Millisecond,
+	var sent atomic.Int32
+	reg := selfmetrics.NewRegistry()
+	s := New(Options{Collectors: []Collector{stuck}, Clock: fc, ShutdownTimeout: 2 * time.Second, Registry: reg,
+		Sink:   func([]wire.Series) { sent.Add(1) },
 		Logger: slog.New(slog.NewTextHandler(&buf, nil))})
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -338,6 +341,14 @@ func TestScheduler_AbandonsACollectorThatIgnoresCancellation(t *testing.T) {
 	fc.Advance(time.Second)
 	testutil.Eventually(t, time.Second, func() bool { return stuck.calls.Load() == 1 }, "running")
 	cancel()
+	// The bound is on the injected clock: nothing returns until it moves.
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() >= 1 }, "shutdown timer")
+	select {
+	case <-done:
+		t.Fatal("Run returned before its shutdown bound")
+	case <-time.After(20 * time.Millisecond):
+	}
+	fc.Advance(2 * time.Second)
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -345,5 +356,12 @@ func TestScheduler_AbandonsACollectorThatIgnoresCancellation(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "abandoning") || !strings.Contains(buf.String(), "stuck") {
 		t.Errorf("abandonment not logged: %s", buf.String())
+	}
+	// When the stuck collector finally returns, its batch is dropped, not
+	// handed to a sink that is shutting down.
+	release <- struct{}{}
+	testutil.Eventually(t, time.Second, func() bool { return counter(reg, "ozy.agent.collector.dropped", "stuck") == 1 }, "late batch not dropped")
+	if n := sent.Load(); n != 0 {
+		t.Fatalf("sink called %d times after Run returned", n)
 	}
 }

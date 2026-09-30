@@ -66,7 +66,7 @@ type Forwarder struct {
 // Collectors configures the pull-based collectors (internal/agent/collector).
 type Collectors struct {
 	// Interval is how often a collector runs unless it sets its own. Whole
-	// seconds: a rate's interval is whole seconds on the wire.
+	// seconds: a count's interval is whole seconds on the wire.
 	Interval time.Duration `yaml:"interval"`
 	// Timeout bounds one run of one collector (capped at its interval).
 	Timeout time.Duration `yaml:"timeout"`
@@ -80,6 +80,8 @@ type HostCollector struct {
 	Interval time.Duration `yaml:"interval"`
 	// ExcludeInterfaces are regular expressions; a network interface whose
 	// name matches any is not reported. Setting this replaces the default.
+	// Set it in YAML: the environment splits lists on commas, which would
+	// cut a {m,n} quantifier in two.
 	ExcludeInterfaces []string `yaml:"exclude_interfaces"`
 }
 
@@ -179,12 +181,24 @@ func (c Collectors) validate() error {
 	if iv := c.Host.Interval; iv != 0 && !wholeSeconds(iv) {
 		errs = append(errs, fmt.Errorf("collectors.host.interval %v: want 0 or a whole number of seconds", iv))
 	}
-	for _, re := range c.Host.ExcludeInterfaces {
-		if _, err := regexp.Compile(re); err != nil {
-			errs = append(errs, fmt.Errorf("collectors.host.exclude_interfaces %q: %w", re, err))
-		}
+	if _, err := c.Host.Excludes(); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+// Excludes compiles ExcludeInterfaces: the one place a pattern is checked,
+// used by Validate and by the agent that runs the collector.
+func (h HostCollector) Excludes() ([]*regexp.Regexp, error) {
+	out := make([]*regexp.Regexp, 0, len(h.ExcludeInterfaces))
+	for _, re := range h.ExcludeInterfaces {
+		rx, err := regexp.Compile(re)
+		if err != nil {
+			return nil, fmt.Errorf("collectors.host.exclude_interfaces %q: %w", re, err)
+		}
+		out = append(out, rx)
+	}
+	return out, nil
 }
 
 // Load reads the agent config from path (empty: defaults only), the conf.d

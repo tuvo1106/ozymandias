@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/agent/agenttags"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
@@ -17,8 +18,9 @@ import (
 
 // Defaults for [Options].
 const (
-	DefaultInterval = 15 * time.Second
-	DefaultTimeout  = 10 * time.Second
+	DefaultInterval        = 15 * time.Second
+	DefaultTimeout         = 10 * time.Second
+	DefaultShutdownTimeout = 2 * time.Second
 )
 
 // Options configures a [Scheduler]. Zero values get the defaults.
@@ -30,6 +32,11 @@ type Options struct {
 	// interval: a run that could outlast its period would overlap the next
 	// one's slot, and the ticker would silently drop that run instead.
 	Timeout time.Duration
+	// ShutdownTimeout is how long Run waits, once its context is cancelled,
+	// for collectors to return. Short, because it is spent inside the
+	// agent's stop grace period: a collector honouring its context returns
+	// at once, and one that does not will not return in time anyway.
+	ShutdownTimeout time.Duration
 	// Sink receives each run's series. It must not block for long — the
 	// forwarder's Submit only queues — and is called from one goroutine per
 	// collector, so it must be safe for concurrent use.
@@ -65,6 +72,10 @@ type Scheduler struct {
 	hostTag string
 	tags    []string // Tags, normalized once
 	randMu  sync.Mutex
+	// stopped is set when Run returns. A run still in progress then — a
+	// collector abandoned at shutdown — sends nothing: its sink is being
+	// shut down, and would queue what it was given where nothing sends it.
+	stopped atomic.Bool
 }
 
 // New returns a Scheduler. Call Run to start it.
@@ -74,6 +85,9 @@ func New(opts Options) *Scheduler {
 	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = DefaultTimeout
+	}
+	if opts.ShutdownTimeout <= 0 {
+		opts.ShutdownTimeout = DefaultShutdownTimeout
 	}
 	if opts.Clock == nil {
 		opts.Clock = clock.Real()
@@ -101,7 +115,7 @@ func New(opts Options) *Scheduler {
 
 // Run starts every collector and blocks until ctx is cancelled and every
 // collector's goroutine has returned — or, after cancellation, until
-// Options.Timeout has passed, whichever is first. A Collect in progress at
+// Options.ShutdownTimeout has passed, whichever is first. A Collect in progress at
 // cancellation sees its context cancelled and its partial batch is still
 // sent, so shutdown loses at most the run that was interrupted.
 //
@@ -110,8 +124,9 @@ func New(opts Options) *Scheduler {
 // would hold the agent's shutdown until the container was killed, and the
 // aggregator's final flush — every statsd bucket still open — would never
 // run. A collector still running past the bound is abandoned (logged); its
-// goroutine ends with the process, and anything it emits late is dropped.
+// goroutine ends with the process, and whatever it collects is dropped.
 func (s *Scheduler) Run(ctx context.Context) {
+	defer s.stopped.Store(true)
 	var wg sync.WaitGroup
 	// A slice, not a map by name: several instances of one check share a
 	// name.
@@ -131,20 +146,20 @@ func (s *Scheduler) Run(ctx context.Context) {
 		return
 	case <-ctx.Done():
 	}
-	t := time.NewTimer(s.opts.Timeout)
+	t := s.opts.Clock.NewTimer(s.opts.ShutdownTimeout)
 	defer t.Stop()
 	select {
 	case <-done:
-	case <-t.C:
+	case <-t.C():
 		for i := range alive {
 			if alive[i].Load() {
-				s.log.Warn("collector did not stop in time; abandoning it", "collector", s.opts.Collectors[i].Name(), "waited", s.opts.Timeout)
+				s.log.Warn("collector did not stop in time; abandoning it", "collector", s.opts.Collectors[i].Name(), "waited", s.opts.ShutdownTimeout)
 			}
 		}
 	}
 }
 
-// interval is c's period, rounded up to whole seconds (a rate's interval is
+// interval is c's period, rounded up to whole seconds (a count's interval is
 // whole seconds on the wire) and at least one.
 func (s *Scheduler) interval(c Collector) time.Duration {
 	iv := c.Interval()
@@ -246,6 +261,10 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 		st.tout.Inc()
 	}
 	s.report(ctx, st, err)
+	if s.stopped.Load() {
+		st.drop.Add(int64(len(out)))
+		return
+	}
 	if len(out) > 0 {
 		s.opts.Sink(out)
 	}
@@ -290,21 +309,15 @@ func (s *Scheduler) series(m Metric, ts int64, iv time.Duration) (se wire.Series
 			badTags++
 		}
 	}
-	// The agent's host only when the collector did not name one: a check
-	// that measures another machine (a database elsewhere) says host:db1,
-	// and the series belongs to that host — the aggregator's rule for statsd
-	// tags too.
-	if s.hostTag != "" && !wire.HasTagKey(tags, "host") {
-		tags = append(tags, s.hostTag)
-	}
-	tags = wire.CanonicalTags(append(tags, s.tags...))
+	// The same decoration as statsd series get (agenttags): a check that
+	// measures another machine says host:db1 and keeps it.
+	tags, capped := agenttags.Decorate(tags, s.tags, s.hostTag)
+	badTags += capped
 	se = wire.Series{Metric: name, Tags: tags, Points: []wire.Point{{Timestamp: ts, Value: m.Value}}}
 	switch m.Kind {
-	case Rate:
-		se.Type, se.Interval = wire.KindRate, int64(iv/time.Second)
 	case Count:
 		se.Type, se.Interval = wire.KindCount, int64(iv/time.Second)
-	case Gauge:
+	case Gauge, Rate: // a per-second value is a level; see Rate
 		se.Type = wire.KindGauge
 	default:
 		return wire.Series{}, badTags, false
