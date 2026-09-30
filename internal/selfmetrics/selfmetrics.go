@@ -67,6 +67,7 @@ type Registry struct {
 	counters map[string]*entry[*Counter]
 	gauges   map[string]*entry[*Gauge]
 	funcs    map[string]*entry[func() float64]
+	cfuncs   map[string]*entry[func() float64]
 }
 
 type entry[T any] struct {
@@ -81,6 +82,7 @@ func NewRegistry() *Registry {
 		counters: map[string]*entry[*Counter]{},
 		gauges:   map[string]*entry[*Gauge]{},
 		funcs:    map[string]*entry[func() float64]{},
+		cfuncs:   map[string]*entry[func() float64]{},
 	}
 }
 
@@ -110,6 +112,18 @@ func (r *Registry) GaugeFunc(name string, fn func() float64, tags ...string) {
 	r.funcs[key(name, norm)] = &entry[func() float64]{name: name, tags: norm, inst: fn}
 }
 
+// CounterFunc registers a counter whose cumulative value fn reads at
+// snapshot time, from something that already counts (the runtime's GC
+// cycles). Like a Counter it is reported as the increase since the last
+// report, so a restart does not read as a fall. Registering the same
+// identity again replaces fn.
+func (r *Registry) CounterFunc(name string, fn func() float64, tags ...string) {
+	norm := normalizeTags(tags)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cfuncs[key(name, norm)] = &entry[func() float64]{name: name, tags: norm, inst: fn}
+}
+
 func getOrCreate[T any](m map[string]*entry[T], name string, tags []string, mk func() T) T {
 	norm := normalizeTags(tags)
 	k := key(name, norm)
@@ -136,12 +150,19 @@ func (r *Registry) Snapshot() []Point {
 	for _, e := range r.funcs {
 		funcs = append(funcs, e)
 	}
+	cfuncs := make([]*entry[func() float64], 0, len(r.cfuncs))
+	for _, e := range r.cfuncs {
+		cfuncs = append(cfuncs, e)
+	}
 	r.mu.Unlock()
 
-	// Computed gauges run outside the lock: fn may be slow, and must be free
-	// to use the registry itself.
+	// Computed instruments run outside the lock: fn may be slow, and must
+	// be free to use the registry itself.
 	for _, e := range funcs {
 		points = append(points, Point{e.name, TypeGauge, e.tags, e.inst()})
+	}
+	for _, e := range cfuncs {
+		points = append(points, Point{e.name, TypeCounter, e.tags, e.inst()})
 	}
 	sort.Slice(points, func(i, j int) bool {
 		if points[i].Name != points[j].Name {
@@ -217,5 +238,5 @@ func RegisterRuntime(r *Registry, tags ...string) {
 	}
 	r.GaugeFunc("ozy.runtime.goroutines", read("/sched/goroutines:goroutines"), tags...)
 	r.GaugeFunc("ozy.runtime.heap_bytes", read("/memory/classes/heap/objects:bytes"), tags...)
-	r.GaugeFunc("ozy.runtime.gc_cycles", read("/gc/cycles/total:gc-cycles"), tags...)
+	r.CounterFunc("ozy.runtime.gc_runs", read("/gc/cycles/total:gc-cycles"), tags...)
 }

@@ -62,6 +62,9 @@ func (r *Reporter) Collect(now time.Time) []wire.Series {
 		s := wire.Series{Metric: p.Name, Tags: tags, Points: []wire.Point{{Timestamp: ts, Value: p.Value}}}
 		switch p.Type {
 		case TypeCounter:
+			if math.IsNaN(p.Value) || math.IsInf(p.Value, 0) {
+				continue // a CounterFunc with nothing to read
+			}
 			key := p.Name + "|" + strings.Join(tags, ",")
 			delta := p.Value - r.prev[key]
 			r.prev[key] = p.Value

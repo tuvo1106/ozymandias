@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
 func TestCounter_SameIdentityRegardlessOfTagOrder(t *testing.T) {
@@ -143,10 +146,16 @@ func TestRegisterRuntime(t *testing.T) {
 	r := NewRegistry()
 	RegisterRuntime(r, "component:test")
 	seen := map[string]float64{}
+	types := map[string]Type{}
 	for _, p := range r.Snapshot() {
-		seen[p.Name] = p.Value
+		seen[p.Name], types[p.Name] = p.Value, p.Type
 	}
-	for _, name := range []string{"ozy.runtime.goroutines", "ozy.runtime.heap_bytes", "ozy.runtime.gc_cycles"} {
+	// Cumulative since start, so a counter: reported as each interval's
+	// increase, which a restart cannot make negative.
+	if types["ozy.runtime.gc_runs"] != TypeCounter {
+		t.Errorf("gc_runs is a %v, want a counter", types["ozy.runtime.gc_runs"])
+	}
+	for _, name := range []string{"ozy.runtime.goroutines", "ozy.runtime.heap_bytes", "ozy.runtime.gc_runs"} {
 		v, ok := seen[name]
 		if !ok || math.IsNaN(v) || v < 0 {
 			t.Errorf("%s = %v, %v", name, v, ok)
@@ -154,5 +163,20 @@ func TestRegisterRuntime(t *testing.T) {
 	}
 	if seen["ozy.runtime.goroutines"] < 1 || seen["ozy.runtime.heap_bytes"] <= 0 {
 		t.Errorf("implausible runtime readings: %v", seen)
+	}
+}
+
+// A CounterFunc reports increases, and one that cannot read is skipped.
+func TestCounterFunc(t *testing.T) {
+	r := NewRegistry()
+	v := 10.0
+	r.CounterFunc("c", func() float64 { return v })
+	r.CounterFunc("broken", func() float64 { return math.NaN() })
+	rep := NewReporter(r, 10*time.Second)
+	first := rep.Collect(time.Unix(100, 0))
+	v = 13
+	second := rep.Collect(time.Unix(110, 0))
+	if len(first) != 1 || len(second) != 1 || second[0].Type != wire.KindCount || second[0].Points[0].Value != 3 {
+		t.Fatalf("first %+v second %+v", first, second)
 	}
 }
