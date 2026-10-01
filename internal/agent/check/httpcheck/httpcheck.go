@@ -3,6 +3,8 @@ package httpcheck
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -164,7 +166,20 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	start := c.clock.Now()
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return down(0, fmt.Errorf("%s: %w", c.shown, collector.RequestError(c.shown, err)))
+		err = fmt.Errorf("%s: %w", c.shown, collector.RequestError(c.shown, err))
+		// A certificate that fails verification (expired, untrusted, for
+		// another name) is a server that answered the handshake, not one
+		// nobody could reach. And days_left is the metric meant to catch
+		// an expiring certificate: it must keep reporting, below zero once
+		// expired, rather than go silent the moment it matters.
+		var bad *tls.CertificateVerificationError
+		if errors.As(err, &bad) {
+			if len(bad.UnverifiedCertificates) > 0 {
+				c.daysLeft(gauge, bad.UnverifiedCertificates[0])
+			}
+			return down(1, err)
+		}
+		return down(0, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBody))
@@ -178,8 +193,7 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	gauge("network.http.response_time", elapsed.Seconds())
 	gauge("network.http.status_code", float64(resp.StatusCode))
 	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
-		left := resp.TLS.PeerCertificates[0].NotAfter.Sub(c.clock.Now())
-		gauge("network.http.ssl.days_left", left.Hours()/24)
+		c.daysLeft(gauge, resp.TLS.PeerCertificates[0])
 	}
 
 	var why error
@@ -197,6 +211,12 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	}
 	gauge("network.http.up", 1)
 	return nil
+}
+
+// daysLeft reports how long the server's certificate has left, negative
+// once it has expired.
+func (c *Check) daysLeft(gauge func(string, float64), cert *x509.Certificate) {
+	gauge("network.http.ssl.days_left", cert.NotAfter.Sub(c.clock.Now()).Hours()/24)
 }
 
 func (c *Check) statusOK(code int) bool {

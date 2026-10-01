@@ -222,10 +222,27 @@ func TestCheck_TLS(t *testing.T) {
 		t.Fatalf("%v %v", g, err)
 	}
 
-	// Untrusted: the connection fails, unless told not to verify.
+	// Untrusted: the check fails, unless told not to verify — but the
+	// server was reached, and its certificate's life is still reported.
 	g, err = run(t, newCheck(t, map[string]any{"url": srv.URL}, fc))
-	if err == nil || g.value(t, "network.http.can_connect") != 0 {
+	if err == nil || g.value(t, "network.http.can_connect") != 1 || g.value(t, "network.http.up") != 0 ||
+		g.value(t, "network.http.ssl.days_left") != 1.5 {
 		t.Fatalf("untrusted certificate: %v %v", g, err)
+	}
+
+	// Expired: verification fails, and days_left goes below zero rather
+	// than silent — the moment it exists for. The TLS stack checks expiry
+	// against its own clock, set here past the certificate's end.
+	late := leaf.NotAfter.Add(48 * time.Hour)
+	c, err = build(Config{URL: srv.URL}, testutil.NewFakeClock(late),
+		&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12, Time: func() time.Time { return late }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err = run(t, c)
+	if err == nil || !strings.Contains(err.Error(), "expired") || g.value(t, "network.http.can_connect") != 1 ||
+		g.value(t, "network.http.up") != 0 || g.value(t, "network.http.ssl.days_left") != -2 {
+		t.Fatalf("expired certificate: %v %v", g, err)
 	}
 	g, err = run(t, newCheck(t, map[string]any{"url": srv.URL, "tls_skip_verify": true}, fc))
 	if err != nil || g.value(t, "network.http.ssl.days_left") != 1.5 {
