@@ -503,3 +503,38 @@ func TestCheck_ErrorsHideSecrets(t *testing.T) {
 		t.Fatalf("config error: %v", err)
 	}
 }
+
+// Review finding: a histogram's _sum may fall (negative observations), and
+// reading every fall as a restart sent the whole lifetime sum as one
+// interval's change. The count, which only grows, says whether the target
+// restarted.
+func TestCheck_ASumThatFallsIsNotARestart(t *testing.T) {
+	page := func(sum, count string) string {
+		return "# TYPE skew histogram\n" +
+			"skew_bucket{le=\"0\"} " + count + "\nskew_bucket{le=\"+Inf\"} " + count + "\n" +
+			"skew_sum " + sum + "\nskew_count " + count + "\n# EOF\n"
+	}
+	_, url := serve(t, page("1200000", "100"), page("1199990", "105"), page("-4", "2"))
+	c, fc := check(t, map[string]any{"url": url})
+	_, _ = scrape(t, c)
+	fc.Advance(15 * time.Second)
+	g, err := scrape(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := g.one(t, "skew.sum"); s.Value != -10 {
+		t.Errorf("a sum that fell by 10 was sent as %v", s.Value)
+	}
+	if n := g.one(t, "skew.count"); n.Value != 5 {
+		t.Errorf("count = %v, want 5", n.Value)
+	}
+	// Now the count falls: a restart, so both are what happened since.
+	fc.Advance(15 * time.Second)
+	g, err = scrape(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, n := g.one(t, "skew.sum"), g.one(t, "skew.count"); s.Value != -4 || n.Value != 2 {
+		t.Errorf("after a restart: sum %v count %v, want -4 and 2", s.Value, n.Value)
+	}
+}

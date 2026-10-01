@@ -399,16 +399,44 @@ func (c *Check) summary(f *om.Family, now time.Time, e *emitter) {
 
 // sumCount emits a histogram's or summary's .sum and .count as counts of
 // the interval.
+//
+// A restart is read from the _count, which only grows, not from the _sum:
+// a histogram of negative observations (a temperature change, a clock
+// offset) has a sum that legitimately falls, and taking that fall for a
+// reset would send the whole lifetime sum as one interval's change. So a
+// fall in the count is a restart, and both increases are then the new
+// values; otherwise the sum's change is its difference, negative or not.
+// A sum with no count beside it has nothing to tell a restart by, and keeps
+// the counter rule: a fall is a restart.
 func (c *Check) sumCount(name, key string, hasSum bool, sum float64, hasCount bool, count float64, tags []string, now time.Time, e *emitter) {
-	if hasSum && c.admit(c.counts.Has(key+"\x00sum"), e) {
-		if d, ok := c.counts.Delta(key+"\x00sum", sum, now); ok {
+	sumKey, countKey := key+"\x00sum", key+"\x00count"
+	var (
+		cd         float64
+		cok, reset bool
+	)
+	if hasCount && c.admit(c.counts.Has(countKey), e) {
+		if cd, cok = c.counts.Change(countKey, count, now); cok && cd < 0 {
+			cd, reset = count, true
+		}
+	}
+	if hasSum && c.admit(c.counts.Has(sumKey), e) {
+		var (
+			d  float64
+			ok bool
+		)
+		if hasCount {
+			if d, ok = c.counts.Change(sumKey, sum, now); ok && reset {
+				d = sum
+			}
+		} else {
+			d, ok = c.counts.Delta(sumKey, sum, now)
+		}
+		if ok {
 			e.add(collector.Metric{Name: name + ".sum", Kind: collector.Count, Value: d, Tags: tags})
 		}
 	}
-	if hasCount && c.admit(c.counts.Has(key+"\x00count"), e) {
-		if d, ok := c.counts.Delta(key+"\x00count", count, now); ok {
-			e.add(collector.Metric{Name: name + ".count", Kind: collector.Count, Value: d, Tags: tags})
-		}
+	if cok {
+		e.add(collector.Metric{Name: name + ".count", Kind: collector.Count, Value: cd, Tags: tags})
 	}
 }
 

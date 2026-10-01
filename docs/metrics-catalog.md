@@ -184,7 +184,9 @@ container's tags name the target, and its address changes when it restarts.
 
 What an `openmetrics` instance scrapes is named after the target's own metrics:
 counters as per-second gauges, histograms as `<name>.bucket` / `.sum` / `.count`
-counts (package doc of internal/agent/check/openmetrics).
+counts (package doc of internal/agent/check/openmetrics). A `.sum` may be negative: a
+histogram of negative observations has a sum that falls, and a restart is read from the
+count, which cannot.
 
 ## Redis check (`redis.*`)
 

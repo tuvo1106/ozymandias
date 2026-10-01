@@ -86,6 +86,24 @@ func (r *Rates) Delta(key string, value float64, at time.Time) (delta float64, o
 	return value - prev.value, true
 }
 
+// Change records value for key like [Rates.Delta], and returns the signed
+// difference from the previous reading, with no reset rule: for a value
+// that may legitimately fall (a histogram's _sum of negative observations),
+// whose caller tells a restart from a fall by a companion that cannot (its
+// _count). ok is false for a first reading or a value that is not finite.
+func (r *Rates) Change(key string, value float64, at time.Time) (diff float64, ok bool) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		delete(r.last, key)
+		return 0, false
+	}
+	prev, seen := r.last[key]
+	r.last[key] = reading{value: value, at: at}
+	if !seen {
+		return 0, false
+	}
+	return value - prev.value, true
+}
+
 // Prune forgets every key last observed before cutoff. Collectors call it
 // after each run with a cutoff of a few intervals ago, so a key that misses
 // one run (a slow read) keeps its history but one that is gone for good does
