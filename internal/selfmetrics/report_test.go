@@ -234,3 +234,21 @@ func TestRegistry_DropKeepsAnInstrumentTakenBack(t *testing.T) {
 		t.Fatalf("after drop: %+v", s)
 	}
 }
+
+// Review finding: released, taken back, counted and released again
+// between the Reporter's snapshot and its drop, an instrument passed drop's
+// refs check and went with increments the snapshot never held.
+func TestRegistry_DropKeepsAnInstrumentTakenAndReleasedAgain(t *testing.T) {
+	reg := NewRegistry()
+	reg.Counter("ozy.x.errors").Add(1)
+	reg.Release("ozy.x.errors")
+	snap := reg.Snapshot()
+	reg.Counter("ozy.x.errors").Add(4) // another replica, briefly
+	reg.Release("ozy.x.errors")
+	if reg.drop(snap[0]) {
+		t.Fatal("drop removed an instrument holding increments its snapshot lacks")
+	}
+	if s := reg.Snapshot(); len(s) != 1 || s[0].Value != 5 {
+		t.Fatalf("after drop: %+v", s)
+	}
+}
