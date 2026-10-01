@@ -538,3 +538,26 @@ func TestCheck_ASumThatFallsIsNotARestart(t *testing.T) {
 		t.Errorf("after a restart: sum %v count %v, want -4 and 2", s.Value, n.Value)
 	}
 }
+
+// Review finding: gauge histograms built upper_bound from the raw le text,
+// so le="1.0" was upper_bound:1.0 there and upper_bound:1 on a histogram,
+// and they skipped the histogram path's checks. Now one path serves both.
+func TestCheck_GaugeHistogramBoundsAndChecks(t *testing.T) {
+	page := "# TYPE q gaugehistogram\nq_gbucket{le=\"1.0\"} 3\nq_gbucket{le=\"2.50\"} 4\nq_gcount 6\n" +
+		"# TYPE d gaugehistogram\nd_gbucket{le=\"1\"} 1\nd_gbucket{le=\"1.0\"} 2\nd_gbucket{le=\"+Inf\"} 2\n# EOF\n"
+	_, url := serve(t, page)
+	c, _ := check(t, map[string]any{"url": url})
+	g, err := scrape(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.one(t, "q.bucket", "upper_bound:1")
+	g.one(t, "q.bucket", "upper_bound:2.5")
+	// No +Inf on the page: rebuilt from gcount, as for a histogram.
+	if b := g.one(t, "q.bucket", "upper_bound:+Inf"); b.Value != 6 {
+		t.Errorf("+Inf = %v, want gcount 6", b.Value)
+	}
+	if n := len(g.named("d.bucket")); n != 0 {
+		t.Errorf("a gauge histogram with a duplicate le was sent: %d buckets", n)
+	}
+}

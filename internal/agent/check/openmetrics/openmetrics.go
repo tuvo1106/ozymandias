@@ -290,25 +290,7 @@ func (c *Check) family(f *om.Family, now time.Time, e *emitter) {
 	case om.TypeSummary:
 		c.summary(f, now, e)
 	case om.TypeGaugeHistogram:
-		name, ok := c.name(f.Name)
-		if !ok {
-			return
-		}
-		for _, s := range f.Samples {
-			m := collector.Metric{Value: s.Value, Tags: c.tags(s.Labels, "le")}
-			switch s.Name {
-			case f.Name + "_gbucket":
-				le, _ := s.Label("le")
-				m.Name, m.Tags = name+".bucket", append(m.Tags, "upper_bound:"+le)
-			case f.Name + "_gsum":
-				m.Name = name + ".gsum"
-			case f.Name + "_gcount":
-				m.Name = name + ".gcount"
-			default:
-				continue
-			}
-			e.add(m)
-		}
+		c.gaugeHistogram(f, e)
 	default: // gauge, unknown, info, stateset
 		for _, s := range f.Samples {
 			if name, ok := c.name(s.Name); ok {
@@ -354,6 +336,39 @@ func (c *Check) histogram(f *om.Family, now time.Time, e *emitter) {
 			}
 		}
 		c.sumCount(name, key, h.HasSum, h.Sum, h.HasCount, h.Count, tags, now, e)
+	}
+}
+
+// gaugeHistogram reports a gauge histogram's buckets, gsum and gcount as
+// levels: each sample is the current state, not a running total, so there
+// is nothing to difference. It goes through the same grouping as a
+// histogram (Family.Histograms), so le="1.0" is upper_bound:1 here as
+// there — one query matches both — and a duplicate le or a missing +Inf is
+// handled the same way: the family is skipped, or the +Inf reconstructed.
+func (c *Check) gaugeHistogram(f *om.Family, e *emitter) {
+	name, ok := c.name(f.Name)
+	if !ok {
+		return
+	}
+	hs, err := f.Histograms()
+	if err != nil {
+		c.log.Debug("skipping a malformed gauge histogram", "family", f.Name, "error", err)
+		return
+	}
+	for _, h := range hs {
+		tags := c.tags(h.Labels, "")
+		for _, b := range h.Buckets {
+			e.add(collector.Metric{
+				Name: name + ".bucket", Value: b.Count,
+				Tags: append(append([]string(nil), tags...), "upper_bound:"+formatBound(b.UpperBound)),
+			})
+		}
+		if h.HasSum {
+			e.add(collector.Metric{Name: name + ".gsum", Value: h.Sum, Tags: tags})
+		}
+		if h.HasCount {
+			e.add(collector.Metric{Name: name + ".gcount", Value: h.Count, Tags: tags})
+		}
 	}
 }
 
