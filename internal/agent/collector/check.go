@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -57,8 +58,30 @@ type Instance struct {
 // config struct, strictly: a setting v has no field for is an error, so a
 // misspelt key fails at startup rather than being silently ignored — the
 // same rule the agent's own config follows.
+//
+// A setting given as text that looks like a list — a container label
+// "[200, 301]", the only way a label can spell one — is read as a list
+// when, and only when, v's field for it is a list. A label is text, and a
+// password "[pw]" is text too; whether brackets mean a list is a question
+// only the field's type answers.
 func (i Instance) Decode(v any) error {
-	data, err := yaml.Marshal(i.Settings)
+	settings, cloned := i.Settings, false
+	if lists := listFields(reflect.TypeOf(v)); len(lists) > 0 {
+		for k, val := range settings {
+			n, ok := val.(*yaml.Node)
+			if !ok || !lists[k] || n.Kind != yaml.ScalarNode || !strings.HasPrefix(n.Value, "[") {
+				continue
+			}
+			var doc yaml.Node
+			if err := yaml.Unmarshal([]byte(n.Value), &doc); err == nil && len(doc.Content) == 1 && doc.Content[0].Kind == yaml.SequenceNode {
+				if !cloned {
+					settings, cloned = maps.Clone(i.Settings), true
+				}
+				settings[k] = doc.Content[0]
+			}
+		}
+	}
+	data, err := yaml.Marshal(settings)
 	if err != nil {
 		return fmt.Errorf("%s: re-encoding settings: %w", i.Name, err)
 	}
@@ -68,6 +91,44 @@ func (i Instance) Decode(v any) error {
 		return fmt.Errorf("%s: %w", i.Name, err)
 	}
 	return nil
+}
+
+// listFields names the settings of the config struct t points to whose
+// fields are lists, by the key YAML decodes them from: the yaml tag's name,
+// else the field name lower-cased (yaml.v3's rule); inline structs count
+// as part of the outer one.
+func listFields(t reflect.Type) map[string]bool {
+	for t != nil && t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if t == nil || t.Kind() != reflect.Struct {
+		return nil
+	}
+	out := map[string]bool{}
+	for f := range t.Fields() {
+		if !f.IsExported() {
+			continue
+		}
+		name, opts, _ := strings.Cut(f.Tag.Get("yaml"), ",")
+		if name == "-" {
+			continue
+		}
+		if strings.Contains(","+opts+",", ",inline,") {
+			maps.Copy(out, listFields(f.Type))
+			continue
+		}
+		if name == "" {
+			name = strings.ToLower(f.Name)
+		}
+		ft := f.Type
+		for ft.Kind() == reflect.Pointer {
+			ft = ft.Elem()
+		}
+		if ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array {
+			out[name] = true
+		}
+	}
+	return out
 }
 
 // Common instance settings, understood by every check and handled here

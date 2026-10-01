@@ -234,7 +234,8 @@ func TestInstance_StringSettingsKeepTheirText(t *testing.T) {
 		return &probe{}, inst.Decode(&seen)
 	}}
 	for _, v := range []string{"0123", "007", "1e3", "0x1F", "1_000", "2024-01-01", "null", "~", "yes", "3.10", "a: b", "[x", "",
-		"pa ss #1", "!secret", "&a bar", "*alias", "'quoted'", `"dq"`, " sp ", "|", ">", "- x", "%TAG", "@at", "a\nb"} {
+		"pa ss #1", "!secret", "&a bar", "*alias", "'quoted'", `"dq"`, " sp ", "|", ">", "- x", "%TAG", "@at", "a\nb",
+		"[pw]", "[ok, yes]", "[]"} {
 		_, err := build(d, container("a1", "r", nil), "probe", map[string]string{"password": v, "db": v, "name": "007"})
 		if err != nil {
 			t.Errorf("%q: %v", v, err)

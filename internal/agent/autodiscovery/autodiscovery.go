@@ -406,32 +406,23 @@ func lowestPort(ct dockerapi.Container) (int, bool) {
 // as a plain YAML scalar node, which the check's config struct then
 // decodes: "6379" becomes a number for an int field, "true" a boolean,
 // "5s" a duration, and for a string field the text exactly as written.
-// The text is not parsed as YAML first. Parsed, 0123 was octal 83, a
+// The text is not parsed as YAML here. Parsed, 0123 was octal 83, a
 // password "pa ss #1" lost its "comment", "!x" was a tag, "&a b" an anchor,
-// and quotes and outer spaces went: a password or database name reached
-// the check changed. Only a flow list ("[200, 301]") is parsed, since no
-// scalar can be a list. Empty text and the null spellings are marked as
-// text, or a string setting would decode them as nothing at all. The common settings are read here:
+// "[pw]" a list, and quotes and outer spaces went: a password or database
+// name reached the check changed. Whether "[200, 301]" is a list depends
+// on the field it lands in, which collector.Instance.Decode knows. Empty
+// text and the null spellings are marked as text, or a string setting
+// would decode them as nothing at all. The common settings are read here:
 // name and interval are text, tags a list.
 func typed(key, v string) any {
 	switch key {
 	case "name", "interval":
 		return v
-	}
-	if strings.HasPrefix(v, "[") {
-		var doc yaml.Node
-		if err := yaml.Unmarshal([]byte(v), &doc); err == nil && len(doc.Content) == 1 && doc.Content[0].Kind == yaml.SequenceNode {
-			if key == "tags" {
-				var out any
-				if err := doc.Content[0].Decode(&out); err == nil {
-					return out
-				}
-				return v
-			}
-			return doc.Content[0]
+	case "tags":
+		var out []any
+		if strings.HasPrefix(v, "[") && yaml.Unmarshal([]byte(v), &out) == nil {
+			return out
 		}
-	}
-	if key == "tags" {
 		return v
 	}
 	n := &yaml.Node{Kind: yaml.ScalarNode, Value: v}
