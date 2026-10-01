@@ -89,3 +89,16 @@ func TestDecorateKeeping_TheCapTrimsOwnTagsFirst(t *testing.T) {
 		t.Fatal("with no keep tags it is not Decorate")
 	}
 }
+
+// Below the cap the fast path gives what the full path would: every tag,
+// canonical, the host added unless one is there.
+func TestDecorateKeeping_UnderTheCap(t *testing.T) {
+	got, dropped := DecorateKeeping([]string{"b:1", "a:1"}, []string{"replica:0", "a:1"}, []string{"env:dev"}, "host:mac")
+	if want := []string{"a:1", "b:1", "env:dev", "host:mac", "replica:0"}; !slices.Equal(got, want) || dropped != 0 {
+		t.Fatalf("got %v (%d dropped), want %v", got, dropped, want)
+	}
+	got, _ = DecorateKeeping([]string{"host:db1"}, []string{"replica:0"}, nil, "host:mac")
+	if !slices.Equal(got, []string{"host:db1", "replica:0"}) {
+		t.Fatalf("own host: %v", got)
+	}
+}

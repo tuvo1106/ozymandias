@@ -58,8 +58,11 @@ func Decorate(tags, agentTags []string, hostTag string) (out []string, dropped i
 // and any own host tag are kept, and own tags fill what room is left, in
 // sorted order so the same ones always survive.
 func DecorateKeeping(own, keep, agentTags []string, hostTag string) (out []string, dropped int) {
-	if len(keep) == 0 {
-		return Decorate(own, agentTags, hostTag)
+	if len(keep) == 0 || len(own)+len(keep)+len(agentTags)+1 <= wire.MaxTagsPerPoint {
+		// Nothing to choose between: everything fits, so this is
+		// Decorate, without the set and the extra sorts below. The common
+		// case, on the scheduler's per-metric path.
+		return Decorate(append(own, keep...), agentTags, hostTag)
 	}
 	fixed := make([]string, 0, len(keep)+len(agentTags)+2)
 	fixed = append(append(fixed, keep...), agentTags...)
