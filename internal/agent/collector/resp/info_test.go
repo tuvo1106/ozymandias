@@ -164,3 +164,14 @@ func FuzzParseInfo(f *testing.F) {
 		}
 	})
 }
+
+// A field two sections share is answered by the section whose name sorts
+// first, every time, whatever the map's iteration order.
+func TestInfo_GetIsStableWhenSectionsShareAField(t *testing.T) {
+	info := ParseInfo("# Zeta\r\nx:z\r\n# alpha\r\nx:a\r\n# mid\r\nx:m\r\n")
+	for range 50 {
+		if v, ok := info.Get("x"); !ok || v != "a" {
+			t.Fatalf("Get = %q, %v; want the alpha section's", v, ok)
+		}
+	}
+}

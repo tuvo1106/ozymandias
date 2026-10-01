@@ -46,20 +46,24 @@ func ParseInfo(s string) Info {
 // Get returns a field's value from whichever section holds it. Field names
 // are unique across INFO's sections in every Redis version, which is what
 // lets a check ask for "used_memory" without knowing it lives in "memory".
+//
+// If two sections ever did share a field, the one whose section name sorts
+// first answers, so the answer is the same every time whatever the map's
+// order. It is found in one pass over the sections, keeping the least name
+// that holds the field, rather than by sorting every section name on every
+// call: the redis check asks for a dozen fields a run.
 func (i Info) Get(field string) (string, bool) {
-	// Sorted so that if two sections ever did share a name, the answer
-	// would at least be the same one every time.
-	names := make([]string, 0, len(i))
-	for name := range i {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		if v, ok := i[name][field]; ok {
-			return v, true
+	var (
+		best  string
+		value string
+		found bool
+	)
+	for name, fields := range i {
+		if v, ok := fields[field]; ok && (!found || name < best) {
+			best, value, found = name, v, true
 		}
 	}
-	return "", false
+	return value, found
 }
 
 // Number returns a field parsed as a float, and false when it is absent or
