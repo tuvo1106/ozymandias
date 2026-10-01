@@ -97,7 +97,7 @@ func (r Registry) NewInstance(check string, index, of int, raw map[string]any, e
 	}
 	name := check
 	if v, ok := settings[settingName]; ok {
-		s, ok := v.(string)
+		s, ok := text(v)
 		if !ok || s == "" {
 			return nil, fmt.Errorf("check %q instance %d: name must be a non-empty string", check, index)
 		}
@@ -109,10 +109,10 @@ func (r Registry) NewInstance(check string, index, of int, raw map[string]any, e
 
 	var iv time.Duration
 	if v, ok := settings[settingInterval]; ok {
-		s, _ := v.(string)
+		s, _ := text(v)
 		d, err := time.ParseDuration(s)
 		if err != nil || d <= 0 || d%time.Second != 0 {
-			return nil, fmt.Errorf("%s: interval %v: want a whole number of seconds, like 30s", name, v)
+			return nil, fmt.Errorf("%s: interval %q: want a whole number of seconds, like 30s", name, s)
 		}
 		iv = d
 	}
@@ -121,11 +121,17 @@ func (r Registry) NewInstance(check string, index, of int, raw map[string]any, e
 	var tags []string
 	if v, ok := settings[settingTags]; ok {
 		list, ok := v.([]any)
+		if n, isNode := v.(*yaml.Node); isNode && n.Kind == yaml.SequenceNode {
+			list, ok = make([]any, len(n.Content)), true
+			for i, c := range n.Content {
+				list[i] = c
+			}
+		}
 		if !ok {
 			return nil, fmt.Errorf("%s: tags must be a list of key:value strings", name)
 		}
 		for _, t := range list {
-			s, ok := t.(string)
+			s, ok := text(t)
 			if !ok {
 				return nil, fmt.Errorf("%s: tag %v is not a string", name, t)
 			}
@@ -153,6 +159,21 @@ func (r Registry) NewInstance(check string, index, of int, raw map[string]any, e
 		iv = c.Interval()
 	}
 	return &instance{name: name, iv: iv, tags: tags, inner: c}, nil
+}
+
+// text is a common setting's value as text: a string, or a scalar YAML
+// node as written (configured instances keep their settings as nodes, so
+// that a name like 007 is not the number 7).
+func text(v any) (string, bool) {
+	switch v := v.(type) {
+	case string:
+		return v, true
+	case *yaml.Node:
+		if v.Kind == yaml.ScalarNode && v.Tag != "!!null" {
+			return v.Value, true
+		}
+	}
+	return "", false
 }
 
 // instance is a check's collector under its instance name, interval and

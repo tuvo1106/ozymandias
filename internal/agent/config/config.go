@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/docker"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
 	base "github.com/tuvo1106/ozymandias/internal/config"
@@ -86,6 +88,33 @@ type Collectors struct {
 // defines, which it decodes and validates itself when the agent starts.
 type Check struct {
 	Instances []map[string]any `yaml:"instances"`
+}
+
+// UnmarshalYAML keeps each instance setting as the YAML node it was
+// written as, rather than a Go value YAML guessed a type for: decoded into
+// any, a password 0123 is the number 83 and a database name 1e3 is 1000,
+// before the check ever sees it. The check decodes the node into its own
+// config struct (collector.Instance.Decode), which types it by the field —
+// text for a string, a number for an int — exactly as written.
+func (c *Check) UnmarshalYAML(n *yaml.Node) error {
+	var raw struct {
+		Instances []map[string]yaml.Node `yaml:"instances"`
+	}
+	if err := n.Decode(&raw); err != nil {
+		return err
+	}
+	c.Instances = make([]map[string]any, len(raw.Instances))
+	for i, inst := range raw.Instances {
+		m := make(map[string]any, len(inst))
+		for k, v := range inst {
+			if v.Tag == "!!null" {
+				continue // `key:` with nothing: absent, as in the rest of the config
+			}
+			m[k] = &v
+		}
+		c.Instances[i] = m
+	}
+	return nil
 }
 
 // Instances returns every check's instances by check name, the shape

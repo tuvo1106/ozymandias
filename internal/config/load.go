@@ -109,11 +109,63 @@ func mergeFile(cfg any, path string, merged map[string]any, origins map[string]s
 		}
 		return fmt.Errorf("config: %s: %w", path, err)
 	}
-	var tree map[string]any
-	if err := yaml.Unmarshal(data, &tree); err != nil {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return fmt.Errorf("config: %s: %w", path, err)
 	}
+	tree, _ := toTree(&doc).(map[string]any)
 	return deepMerge(merged, tree, "", path, origins)
+}
+
+// toTree turns a parsed YAML document into the shape deepMerge works on —
+// mappings as map[string]any, sequences as []any — but leaves every scalar
+// as its *yaml.Node. Decoded to Go values instead (YAML 1.1 resolution, as
+// yaml.v3 does into any), 0123 would be 83, 1e3 1000 and 2024-01-02 a
+// timestamp before the merged tree is re-encoded, and a string setting —
+// a password, a database name — would receive the rewritten text. A
+// scalar node re-encodes as it was written, and the final decode into
+// the config struct types it by the field it lands in, as a single file
+// decoded directly would be. A null scalar is nil, which deepMerge treats
+// as absent.
+func toTree(n *yaml.Node) any {
+	switch n.Kind {
+	case yaml.DocumentNode:
+		if len(n.Content) == 0 {
+			return nil
+		}
+		return toTree(n.Content[0])
+	case yaml.AliasNode:
+		return toTree(n.Alias)
+	case yaml.MappingNode:
+		m := make(map[string]any, len(n.Content)/2)
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k, v := n.Content[i], n.Content[i+1]
+			if k.Tag == "!!merge" { // <<: *anchor
+				if base, ok := toTree(v).(map[string]any); ok {
+					for bk, bv := range base {
+						if _, set := m[bk]; !set {
+							m[bk] = bv
+						}
+					}
+				}
+				continue
+			}
+			m[k.Value] = toTree(v)
+		}
+		return m
+	case yaml.SequenceNode:
+		s := make([]any, 0, len(n.Content))
+		for _, c := range n.Content {
+			s = append(s, toTree(c))
+		}
+		return s
+	}
+	if n.Tag == "!!null" {
+		return nil
+	}
+	leaf := *n
+	leaf.HeadComment, leaf.LineComment, leaf.FootComment = "", "", ""
+	return &leaf
 }
 
 // deepMerge merges src into dst: maps recurse, lists append, and a scalar
