@@ -173,7 +173,9 @@ container's tags. A configured instance with a name, or one of several unnamed o
 carries `instance:<name>` (or `instance:<position>`), so two instances of a check never
 write the same series. For the same reason, containers that `container_name_rewrite` folds
 into one name carry `replica:<n>` on their autodiscovered checks' metrics: the lowest
-number free among that name's running replicas.
+number free among that name's running replicas. Discovered `postgres` and `http_check`
+instances leave out `server` and `url`, which would hold the container's address: the
+container's tags name the target, and its address changes when it restarts.
 
 | Metric | Type | Unit | Tags | Meaning |
 |---|---|---|---|---|

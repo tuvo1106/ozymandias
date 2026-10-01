@@ -50,8 +50,15 @@ type Instance struct {
 	// Settings are the instance's check-specific settings, with the common
 	// keys (name, interval, tags) removed. Decode them with [Instance.Decode].
 	Settings map[string]any
-	Clock    clock.Clock
-	Logger   *slog.Logger
+	// Discovered says the instance came from a container's labels, whose
+	// tags already say which container it checks. A check leaves out a tag
+	// that names its target by address (postgres' server, http_check's
+	// url): a discovered target's address is the container's, which
+	// changes when the container restarts, and each change would start a
+	// new series of what the container tags already identify.
+	Discovered bool
+	Clock      clock.Clock
+	Logger     *slog.Logger
 }
 
 // Decode decodes the instance's settings into v, a pointer to the check's
@@ -148,6 +155,16 @@ const (
 // self-metrics. extraTags are added to every metric after the instance's own
 // (autodiscovery passes the container's tags).
 func (r Registry) NewInstance(check string, index, of int, raw map[string]any, extraTags []string, clk clock.Clock, log *slog.Logger) (Collector, error) {
+	return r.newInstance(check, index, of, raw, extraTags, false, clk, log)
+}
+
+// NewDiscovered builds the instance of check autodiscovery found on a
+// container, tagged with tags (the container's); see Instance.Discovered.
+func (r Registry) NewDiscovered(check string, raw map[string]any, tags []string, clk clock.Clock, log *slog.Logger) (Collector, error) {
+	return r.newInstance(check, 0, 1, raw, tags, true, clk, log)
+}
+
+func (r Registry) newInstance(check string, index, of int, raw map[string]any, extraTags []string, discovered bool, clk clock.Clock, log *slog.Logger) (Collector, error) {
 	factory, ok := r[check]
 	if !ok {
 		return nil, fmt.Errorf("check %q: no such check (have %s)", check, strings.Join(r.Names(), ", "))
@@ -212,7 +229,7 @@ func (r Registry) NewInstance(check string, index, of int, raw map[string]any, e
 	if log == nil {
 		log = slog.Default()
 	}
-	c, err := factory(Instance{Check: check, Name: name, Settings: settings, Clock: clk, Logger: log.With("check", name)})
+	c, err := factory(Instance{Check: check, Name: name, Settings: settings, Discovered: discovered, Clock: clk, Logger: log.With("check", name)})
 	if err != nil {
 		return nil, fmt.Errorf("check %s: %w", name, err)
 	}

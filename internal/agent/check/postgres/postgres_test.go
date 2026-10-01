@@ -320,3 +320,18 @@ func TestCollect_CloseIsBounded(t *testing.T) {
 		t.Fatal("the connection was not closed")
 	}
 }
+
+// A discovered instance's host is its container's address, which changes
+// when the container restarts; the container's tags name the target, so
+// server: is left out rather than starting a series per address.
+func TestNew_DiscoveredLeavesOutTheAddress(t *testing.T) {
+	inst := instance(map[string]any{"host": "172.18.0.5", "port": 5432})
+	inst.Discovered = true
+	c, err := newCollector(inst, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(c.tags, []string{"port:5432"}) {
+		t.Fatalf("tags %v", c.tags)
+	}
+}

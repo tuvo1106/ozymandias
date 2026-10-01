@@ -73,7 +73,16 @@ func New(inst collector.Instance) (collector.Collector, error) {
 	if err := inst.Decode(&cfg); err != nil {
 		return nil, err
 	}
-	return build(cfg, inst.Clock, nil)
+	c, err := build(cfg, inst.Clock, nil)
+	if err != nil {
+		return nil, err
+	}
+	if inst.Discovered {
+		// The container's tags name the target; the url holds its address,
+		// which changes when the container restarts.
+		c.tags = nil
+	}
+	return c, nil
 }
 
 // build validates cfg and makes the check. tlsBase, if not nil, is the TLS

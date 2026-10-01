@@ -326,7 +326,7 @@ func (d *Discovery) instance(ct dockerapi.Container, check string, resolved map[
 	if _, ok := settings["name"]; !ok {
 		settings["name"] = containerName(ct, tags)
 	}
-	return d.opts.Checks.NewInstance(check, 0, 1, settings, tags, d.opts.Clock, d.opts.Logger)
+	return d.opts.Checks.NewDiscovered(check, settings, tags, d.opts.Clock, d.opts.Logger)
 }
 
 // containerName is the container_name tag Tags gave ct: its name after

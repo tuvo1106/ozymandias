@@ -363,3 +363,21 @@ func TestCheck_ABodyThatFailsWasStillReached(t *testing.T) {
 	}
 	g.value(t, "network.http.response_time")
 }
+
+// A discovered instance's url holds its container's address, which changes
+// when the container restarts; the container's tags name the target.
+func TestNew_DiscoveredLeavesOutTheURL(t *testing.T) {
+	inst := collector.Instance{Name: Name, Settings: map[string]any{"url": "http://172.18.0.5:8080/health"}}
+	c, err := New(inst)
+	if err != nil || len(c.(*Check).tags) != 1 {
+		t.Fatalf("configured: %v, %v", c, err)
+	}
+	inst.Discovered = true
+	c, err = New(inst)
+	if err != nil || c.(*Check).tags != nil {
+		t.Fatalf("discovered: %v, %v", c, err)
+	}
+	if c, err := New(collector.Instance{Name: Name, Discovered: true, Settings: map[string]any{"url": "ftp://x"}}); err == nil || c != nil {
+		t.Fatalf("a bad url gave %#v, %v", c, err)
+	}
+}

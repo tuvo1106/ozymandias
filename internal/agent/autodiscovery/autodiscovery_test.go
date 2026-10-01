@@ -478,3 +478,17 @@ func TestSync_AConfiguredNameIsNotTaken(t *testing.T) {
 		t.Fatalf("logged %d times:\n%s", n, logs.String())
 	}
 }
+
+// Discovered instances say so, so a check can leave out the tags that
+// carry its container's (changing) address.
+func TestInstance_IsMarkedDiscovered(t *testing.T) {
+	d, _, _, _, _ := setup(t, Options{})
+	var discovered bool
+	d.opts.Checks = collector.Registry{"probe": func(inst collector.Instance) (collector.Collector, error) {
+		discovered = inst.Discovered
+		return &probe{}, nil
+	}}
+	if _, err := build(d, container("a1", "r", nil), "probe", map[string]string{"port": "1"}); err != nil || !discovered {
+		t.Fatalf("discovered = %v, %v", discovered, err)
+	}
+}

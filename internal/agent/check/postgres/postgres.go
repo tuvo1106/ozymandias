@@ -73,9 +73,13 @@ func newCollector(inst collector.Instance, dial dialer) (*Collector, error) {
 	if clk == nil {
 		clk = clock.Real()
 	}
+	tags := []string{"server:" + cfg.Host, "port:" + strconv.Itoa(int(cfg.Port))}
+	if inst.Discovered {
+		tags = tags[1:] // the container's tags name it; its address changes
+	}
 	return &Collector{
 		cfg: cfg, timeout: cfg.Timeout, closeWait: closeWait, dial: dial, clock: clk, rates: collector.NewRates(),
-		tags: []string{"server:" + cfg.Host, "port:" + strconv.Itoa(int(cfg.Port))},
+		tags: tags,
 	}, nil
 }
 
