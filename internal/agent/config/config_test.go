@@ -277,3 +277,13 @@ collectors:
 		t.Fatalf("instance %s every %v", c.Name(), c.Interval())
 	}
 }
+
+// Review finding: Check decodes itself, and a nested decode does not
+// inherit strictness, so a misspelt instances: loaded as no check at all.
+func TestLoad_AMisspeltCheckKeyFails(t *testing.T) {
+	dir := testutil.TempDirWith(t, map[string]string{"agent.yaml": "collectors:\n  checks:\n    redis:\n      instnaces:\n        - host: x\n"})
+	_, _, err := Load(dir+"/agent.yaml", []string{"OZY_AGENT_CONFD_PATH=" + t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "instnaces") || !strings.Contains(err.Error(), "line 4") {
+		t.Fatalf("err = %v", err)
+	}
+}

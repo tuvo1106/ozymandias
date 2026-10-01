@@ -96,7 +96,18 @@ type Check struct {
 // before the check ever sees it. The check decodes the node into its own
 // config struct (collector.Instance.Decode), which types it by the field —
 // text for a string, a number for an int — exactly as written.
+//
+// A decode inside UnmarshalYAML does not inherit the outer decoder's
+// KnownFields, so the keys are checked here: instnaces: would otherwise
+// load as no instances at all, without a word.
 func (c *Check) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if k := n.Content[i]; k.Value != "instances" {
+				return fmt.Errorf("line %d: field %s not found in type config.Check", k.Line, k.Value)
+			}
+		}
+	}
 	var raw struct {
 		Instances []map[string]yaml.Node `yaml:"instances"`
 	}
