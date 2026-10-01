@@ -173,7 +173,7 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	for _, pid := range pids {
 		u, err := c.src.Usage(ctx, pid)
 		if err != nil {
-			continue // exited since the listing
+			continue // exited since the listing, or the run was cut off
 		}
 		n++
 		rss += u.RSS
@@ -185,6 +185,14 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 			cpu += r * 100
 			cpuOK = true
 		}
+	}
+	// A Usage that failed because the run was cut off (its timeout, or
+	// shutdown) is not a process that exited: reading the process table
+	// is context-aware on some platforms, so every call fails at once and
+	// n would count none. Reporting that would read as "the process is
+	// down" with no error to explain it. Report nothing and say why.
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	gauge := func(name string, v float64) {
 		emit(collector.Metric{Name: name, Kind: collector.Gauge, Value: v, Tags: c.tags})
@@ -201,7 +209,7 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	if cpuOK {
 		gauge("system.processes.cpu.pct", cpu)
 	}
-	return ctx.Err()
+	return nil
 }
 
 // match returns the pids the instance describes.

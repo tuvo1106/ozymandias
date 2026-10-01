@@ -22,6 +22,7 @@ type table struct {
 	usage   map[int32]Usage
 	listErr error
 	asked   []Fields // what each List asked for
+	cancel  func()   // if set, the first Usage call cancels the run
 }
 
 // List hands over only the fields asked for, as System does, so a match
@@ -40,7 +41,13 @@ func (t *table) List(_ context.Context, want Fields) ([]Proc, error) {
 	}
 	return out, t.listErr
 }
-func (t *table) Usage(_ context.Context, pid int32) (Usage, error) {
+func (t *table) Usage(ctx context.Context, pid int32) (Usage, error) {
+	if t.cancel != nil {
+		t.cancel()
+	}
+	if err := ctx.Err(); err != nil {
+		return Usage{}, err // as gopsutil's context-aware reads do
+	}
 	u, ok := t.usage[pid]
 	if !ok {
 		return Usage{}, errors.New("no such process")
@@ -291,5 +298,21 @@ func TestCheck_ListsOnlyWhatItMatches(t *testing.T) {
 				t.Fatalf("listed %v, want %v", m.asked, tc.want)
 			}
 		})
+	}
+}
+
+// A run cut off while reading usage (its timeout, or shutdown) fails every
+// Usage call. That is not "every process exited": the check reports
+// nothing rather than system.processes.number 0, and returns the reason.
+func TestCheck_ACutOffRunReportsNothing(t *testing.T) {
+	tb := machine()
+	c := mustBuild(t, Config{ProcessName: "nginx"}, tb, testutil.NewFakeClock(t0))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	tb.cancel = cancel
+	var out []collector.Metric
+	err := c.Collect(ctx, func(m collector.Metric) { out = append(out, m) })
+	if !errors.Is(err, context.Canceled) || len(out) != 0 {
+		t.Fatalf("a cut-off run emitted %+v and returned %v", out, err)
 	}
 }
