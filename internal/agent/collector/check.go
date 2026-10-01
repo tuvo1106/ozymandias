@@ -192,8 +192,9 @@ func (i *instance) Collect(ctx context.Context, emit Emit) error {
 		return i.inner.Collect(ctx, emit)
 	}
 	return i.inner.Collect(ctx, func(m Metric) {
-		// A fresh slice: the check may reuse m.Tags between metrics.
-		m.Tags = append(slices.Clip(m.Tags), i.tags...)
+		// Kept, not merely added: the cap trims the check's own tags
+		// first. A fresh slice: the check may reuse its slices.
+		m.Keep = append(slices.Clip(m.Keep), i.tags...)
 		emit(m)
 	})
 }

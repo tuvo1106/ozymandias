@@ -32,6 +32,9 @@ func Normalize(tags []string) []string {
 // passes a slice it owns, ideally with room for len(agentTags)+1 more: on
 // the statsd path that saves a copy per sample (the caller has just built
 // the slice from the raw tags anyway).
+//
+// DecorateKeeping is the variant for a metric some of whose tags must
+// survive the cap.
 func Decorate(tags, agentTags []string, hostTag string) (out []string, dropped int) {
 	out = append(tags, agentTags...)
 	if hostTag != "" && !wire.HasTagKey(out, "host") {
@@ -43,4 +46,49 @@ func Decorate(tags, agentTags []string, hostTag string) (out []string, dropped i
 		out = out[:wire.MaxTagsPerPoint]
 	}
 	return slices.Clip(out), dropped
+}
+
+// DecorateKeeping is Decorate for a series whose tags come in two kinds:
+// own, what the source reported (a scraped page's labels, which may be
+// many), and keep, the tags that say whose series it is (the check
+// instance, its container, its replica). Decorate's cap cuts the sorted
+// set, so it removes whichever tags sort last — a replica tag behind fifty
+// scraped labels — and two series that differed only there would collide.
+// Here the cap trims own tags first: keep, the agent's tags, the host tag
+// and any own host tag are kept, and own tags fill what room is left, in
+// sorted order so the same ones always survive.
+func DecorateKeeping(own, keep, agentTags []string, hostTag string) (out []string, dropped int) {
+	if len(keep) == 0 {
+		return Decorate(own, agentTags, hostTag)
+	}
+	fixed := make([]string, 0, len(keep)+len(agentTags)+2)
+	fixed = append(append(fixed, keep...), agentTags...)
+	for _, t := range own {
+		if k, _ := wire.SplitTag(t); k == "host" {
+			fixed = append(fixed, t)
+		}
+	}
+	if hostTag != "" && !wire.HasTagKey(fixed, "host") {
+		fixed = append(fixed, hostTag)
+	}
+	fixed = wire.CanonicalTags(fixed)
+	if len(fixed) > wire.MaxTagsPerPoint {
+		dropped = len(fixed) - wire.MaxTagsPerPoint
+		fixed = fixed[:wire.MaxTagsPerPoint]
+	}
+	in := make(map[string]bool, len(fixed))
+	for _, t := range fixed {
+		in[t] = true
+	}
+	var rest []string
+	for _, t := range wire.CanonicalTags(slices.Clone(own)) {
+		if !in[t] {
+			rest = append(rest, t)
+		}
+	}
+	if room := wire.MaxTagsPerPoint - len(fixed); len(rest) > room {
+		dropped += len(rest) - room
+		rest = rest[:room]
+	}
+	return wire.CanonicalTags(append(fixed, rest...)), dropped
 }

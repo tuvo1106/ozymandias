@@ -59,7 +59,7 @@ func TestRegistry_CommonSettings(t *testing.T) {
 		t.Fatalf("name %q interval %v", c.Name(), c.Interval())
 	}
 	got := collect(t, c)
-	if len(got) != 1 || got[0].Value != 7 || !slices.Equal(got[0].Tags, []string{"from:echo", "team:web", "container_name:x"}) {
+	if len(got) != 1 || got[0].Value != 7 || !slices.Equal(got[0].Tags, []string{"from:echo"}) || !slices.Equal(got[0].Keep, []string{"team:web", "container_name:x"}) {
 		t.Fatalf("emitted %+v", got)
 	}
 }
@@ -124,7 +124,7 @@ func tagsOf(t *testing.T, c collector.Collector) []string {
 	if len(ms) != 1 {
 		t.Fatalf("%s emitted %d metrics", c.Name(), len(ms))
 	}
-	return ms[0].Tags
+	return append(ms[0].Tags, ms[0].Keep...)
 }
 
 // Two configured instances of one check must not write the same series:

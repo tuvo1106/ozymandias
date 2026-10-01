@@ -63,6 +63,12 @@ type Metric struct {
 	// intake would; a tag that cannot be normalized is dropped and counted,
 	// not the whole metric.
 	Tags []string
+	// Keep are tags that say whose series this is — added by the check
+	// instance wrapper: the instance's own tags, its container's, its
+	// replica's. They are sent like Tags, but the tag cap
+	// (wire.MaxTagsPerPoint) removes Tags first, so a page with fifty
+	// labels cannot push out the tag that keeps two replicas apart.
+	Keep []string
 	// Sketch holds a Distribution's observations; nil for other kinds. The
 	// scheduler encodes it at once, so the collector may reuse it after
 	// emit returns.

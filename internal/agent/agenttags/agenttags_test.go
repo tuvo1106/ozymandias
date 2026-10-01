@@ -48,3 +48,44 @@ func TestNormalize(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+// Review finding: the cap cut the sorted set, so a replica tag behind fifty
+// scraped labels was dropped and two replicas wrote one series. Keep tags,
+// the agent's tags, the host tag and an own host tag survive; own tags
+// give way, the same ones whatever their order.
+func TestDecorateKeeping_TheCapTrimsOwnTagsFirst(t *testing.T) {
+	var own []string
+	for i := range wire.MaxTagsPerPoint + 5 {
+		own = append(own, fmt.Sprintf("k%03d:v", i))
+	}
+	keep := []string{"replica:1", "zz_instance:cache", "k000:v"} // k000 is both
+	got, dropped := DecorateKeeping(own, keep, []string{"env:dev"}, "host:mac")
+	if len(got) != wire.MaxTagsPerPoint {
+		t.Fatalf("len %d", len(got))
+	}
+	for _, want := range []string{"replica:1", "zz_instance:cache", "k000:v", "env:dev", "host:mac"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s was cut: %v", want, got)
+		}
+	}
+	// 55 own (one also kept) + 2 kept + env + host = 59 distinct; 50 fit.
+	if dropped != 9 {
+		t.Errorf("dropped %d, want 9", dropped)
+	}
+	rev := slices.Clone(own)
+	slices.Reverse(rev)
+	if again, _ := DecorateKeeping(rev, keep, []string{"env:dev"}, "host:mac"); !slices.Equal(got, again) {
+		t.Fatal("the cap kept a different subset for a different order")
+	}
+	// A check that reports another machine's host keeps it.
+	got, _ = DecorateKeeping(append(own, "host:db1"), keep, nil, "host:mac")
+	if !slices.Contains(got, "host:db1") || slices.Contains(got, "host:mac") {
+		t.Fatalf("own host tag: %v", got)
+	}
+	// Nothing to keep: exactly Decorate.
+	a, da := DecorateKeeping(slices.Clone(own), nil, nil, "host:mac")
+	b, db := Decorate(slices.Clone(own), nil, "host:mac")
+	if !slices.Equal(a, b) || da != db {
+		t.Fatal("with no keep tags it is not Decorate")
+	}
+}

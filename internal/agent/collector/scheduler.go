@@ -499,17 +499,21 @@ func (s *Scheduler) series(m Metric, ts int64, iv time.Duration) (se wire.Series
 	if !ok || math.IsNaN(m.Value) || math.IsInf(m.Value, 0) {
 		return wire.Series{}, 0, false
 	}
-	tags := make([]string, 0, len(m.Tags)+len(s.tags)+1)
-	for _, t := range m.Tags {
-		if n, ok := wire.NormalizeTag(t); ok {
-			tags = append(tags, n)
-		} else {
-			badTags++
+	norm := func(in []string) []string {
+		out := make([]string, 0, len(in))
+		for _, t := range in {
+			if n, ok := wire.NormalizeTag(t); ok {
+				out = append(out, n)
+			} else {
+				badTags++
+			}
 		}
+		return out
 	}
 	// The same decoration as statsd series get (agenttags): a check that
-	// measures another machine says host:db1 and keeps it.
-	tags, capped := agenttags.Decorate(tags, s.tags, s.hostTag)
+	// measures another machine says host:db1 and keeps it. Keep survives
+	// the tag cap; Tags give way first.
+	tags, capped := agenttags.DecorateKeeping(norm(m.Tags), norm(m.Keep), s.tags, s.hostTag)
 	badTags += capped
 	se = wire.Series{Metric: name, Tags: tags, Points: []wire.Point{{Timestamp: ts, Value: m.Value}}}
 	switch m.Kind {

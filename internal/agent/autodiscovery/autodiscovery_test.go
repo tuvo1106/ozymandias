@@ -146,7 +146,7 @@ func tagsOf(t *testing.T, s *sched, name string) []string {
 	}
 	var m collector.Metric
 	_ = c.Collect(context.Background(), func(x collector.Metric) { m = x })
-	return m.Tags
+	return append(m.Tags, m.Keep...)
 }
 
 func setup(t *testing.T, opts Options) (*Discovery, *lister, *sched, *bytes.Buffer, *selfmetrics.Registry) {
@@ -180,7 +180,7 @@ func TestSync_StartsAndStopsWithTheContainer(t *testing.T) {
 	}
 	var got []collector.Metric
 	_ = c.Collect(context.Background(), func(m collector.Metric) { got = append(got, m) })
-	if len(got) != 1 || !slices.Contains(got[0].Tags, "container_name:shop-redis-1") || !slices.Contains(got[0].Tags, "compose_project:shop") {
+	if len(got) != 1 || !slices.Contains(got[0].Keep, "container_name:shop-redis-1") || !slices.Contains(got[0].Keep, "compose_project:shop") {
 		t.Fatalf("not tagged like the container: %+v", got)
 	}
 	if n := reg.Gauge("ozy.agent.autodiscovery.instances").Value(); n != 1 {
@@ -363,6 +363,7 @@ func TestSync_FoldedContainersGetReplicaTags(t *testing.T) {
 		for _, c := range s.running {
 			var m collector.Metric
 			_ = (*c).Collect(context.Background(), func(x collector.Metric) { m = x })
+			m.Tags = append(m.Tags, m.Keep...)
 			if !slices.Contains(m.Tags, "container_name:job") || slices.ContainsFunc(m.Tags, func(t string) bool { return strings.HasPrefix(t, "container_id:") }) {
 				t.Errorf("folded tags %v", m.Tags)
 			}

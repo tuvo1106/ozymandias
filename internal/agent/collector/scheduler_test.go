@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -560,5 +561,29 @@ func TestScheduler_ARunCutShortByRemovalIsNotSent(t *testing.T) {
 	}
 	if n := counter(reg, "ozy.agent.collector.errors", "dial"); n != 0 {
 		t.Fatalf("errors = %d: a stop is not a failure", n)
+	}
+}
+
+// A metric's Keep tags reach the wire even when its own tags overflow the
+// cap: they are what keeps two replicas' series apart.
+func TestScheduler_KeepTagsSurviveTheCap(t *testing.T) {
+	var own []string
+	for i := range 60 {
+		own = append(own, "label"+strconv.Itoa(i)+":v")
+	}
+	c := &fake{name: "scrape", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+		emit(Metric{Name: "x.up", Value: 1, Tags: own, Keep: []string{"replica:1", "container_name:job"}})
+		return nil
+	}}
+	fc, sk, reg := start(t, Options{Collectors: []Collector{c}})
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 1 }, "sent")
+	tags := sk.all()[0].Tags
+	if len(tags) != wire.MaxTagsPerPoint || !slices.Contains(tags, "replica:1") || !slices.Contains(tags, "container_name:job") {
+		t.Fatalf("%d tags, replica kept %v: %v", len(tags), slices.Contains(tags, "replica:1"), tags)
+	}
+	if n := counter(reg, "ozy.agent.collector.tags_dropped", "scrape"); n != 12 {
+		t.Fatalf("tags_dropped = %d, want 12 (62 tags, 50 fit)", n)
 	}
 }
