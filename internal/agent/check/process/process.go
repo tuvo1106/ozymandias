@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"regexp"
 	"strconv"
@@ -77,8 +78,9 @@ type Source interface {
 	// are left empty). Name and Cmdline may also be empty for a process
 	// that exited mid-listing or cannot be read.
 	List(ctx context.Context, want Fields) ([]Proc, error)
-	// Usage reads one process. An error means it is gone (or unreadable)
-	// and is skipped.
+	// Usage reads one process. An error means it is gone and is skipped —
+	// unless it is a permission error (errors.Is fs.ErrPermission): the
+	// process is there, the agent may not read it.
 	Usage(ctx context.Context, pid int32) (Usage, error)
 }
 
@@ -163,7 +165,7 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 		return err
 	}
 	var (
-		n            int
+		n, denied    int
 		rss          uint64
 		threads, fds int64
 		fdsOK        = true
@@ -173,7 +175,14 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	for _, pid := range pids {
 		u, err := c.src.Usage(ctx, pid)
 		if err != nil {
-			continue // exited since the listing, or the run was cut off
+			// A process the agent may not read (another user's, run
+			// natively without root) is running all the same: counting it
+			// as gone would chart an outage of a process that is up.
+			if isPermission(err) {
+				n++
+				denied++
+			}
+			continue // otherwise exited since the listing, or the run was cut off
 		}
 		n++
 		rss += u.RSS
@@ -198,8 +207,10 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 		emit(collector.Metric{Name: name, Kind: collector.Gauge, Value: v, Tags: c.tags})
 	}
 	gauge("system.processes.number", float64(n))
-	if n == 0 {
-		return nil
+	if n == denied {
+		// Nothing was readable: a zero rss or thread count would be a
+		// reading of nothing, not of the processes.
+		return deniedErr(denied)
 	}
 	gauge("system.processes.mem.rss", float64(rss))
 	gauge("system.processes.threads", float64(threads))
@@ -209,7 +220,23 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	if cpuOK {
 		gauge("system.processes.cpu.pct", cpu)
 	}
-	return nil
+	return deniedErr(denied)
+}
+
+// isPermission reports whether a Usage error means the process exists but
+// cannot be read. gopsutil returns the system call's errno (EPERM, EACCES)
+// or an *fs.PathError around it, both of which match fs.ErrPermission.
+func isPermission(err error) bool { return errors.Is(err, fs.ErrPermission) }
+
+// deniedErr is the run's error when some matching processes could not be
+// read: they are counted, but their cpu and memory are not, and the sums
+// would otherwise undercount without a word. Returned, the scheduler counts
+// it and logs it once, on the transition, rather than every run.
+func deniedErr(denied int) error {
+	if denied == 0 {
+		return nil
+	}
+	return fmt.Errorf("%d matching process(es) could not be read (permission denied): counted, but their cpu, memory, threads and file descriptors are not; run the agent with access to them", denied)
 }
 
 // match returns the pids the instance describes.

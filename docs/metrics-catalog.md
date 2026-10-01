@@ -256,7 +256,7 @@ tagged `process_name:<label>`. With no match only `number` (0) is sent.
 
 | Metric | Type | Unit | Tags | Meaning |
 |---|---|---|---|---|
-| `system.processes.number` | gauge | processes | `process_name` | Matching processes |
+| `system.processes.number` | gauge | processes | `process_name` | Matching processes, including any the agent may not read (their usage is then left out of the sums, and the run reports an error) |
 | `system.processes.cpu.pct` | gauge | % | `process_name` | CPU used since the previous run, in % of one core, summed per process (each differenced against its own previous reading, so processes coming and going do not distort it). None on a process's first run |
 | `system.processes.mem.rss` | gauge | bytes | `process_name` | Resident memory, summed |
 | `system.processes.threads` | gauge | threads | `process_name` | Threads, summed |

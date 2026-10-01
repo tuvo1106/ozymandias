@@ -23,6 +23,7 @@ type table struct {
 	listErr error
 	asked   []Fields // what each List asked for
 	cancel  func()   // if set, the first Usage call cancels the run
+	denied  map[int32]bool
 }
 
 // List hands over only the fields asked for, as System does, so a match
@@ -47,6 +48,9 @@ func (t *table) Usage(ctx context.Context, pid int32) (Usage, error) {
 	}
 	if err := ctx.Err(); err != nil {
 		return Usage{}, err // as gopsutil's context-aware reads do
+	}
+	if t.denied[pid] {
+		return Usage{}, &os.PathError{Op: "open", Path: "/proc/" + strconv.Itoa(int(pid)) + "/stat", Err: os.ErrPermission}
 	}
 	u, ok := t.usage[pid]
 	if !ok {
@@ -314,5 +318,30 @@ func TestCheck_ACutOffRunReportsNothing(t *testing.T) {
 	err := c.Collect(ctx, func(m collector.Metric) { out = append(out, m) })
 	if !errors.Is(err, context.Canceled) || len(out) != 0 {
 		t.Fatalf("a cut-off run emitted %+v and returned %v", out, err)
+	}
+}
+
+// Review finding: a process the agent may not read was counted as exited,
+// so a root daemon watched by an agent run as a user read as 0, down. It is
+// counted; its usage is not, and the run's error says so.
+func TestCheck_UnreadableProcessesAreCounted(t *testing.T) {
+	tb := machine()
+	tb.denied = map[int32]bool{11: true}
+	c := mustBuild(t, Config{ProcessName: "nginx"}, tb, testutil.NewFakeClock(t0))
+	g, err := run(t, c)
+	if err == nil || !strings.Contains(err.Error(), "1 matching process(es) could not be read") {
+		t.Fatalf("err = %v", err)
+	}
+	if g["system.processes.number"].Value != 2 || g["system.processes.mem.rss"].Value != 1000 {
+		t.Fatalf("number %v rss %v: want 2 (one unreadable), rss of the readable one", g["system.processes.number"].Value, g["system.processes.mem.rss"].Value)
+	}
+	// None readable: counted, and no usage reported at all.
+	tb.denied = map[int32]bool{10: true, 11: true}
+	g, err = run(t, c)
+	if err == nil || g["system.processes.number"].Value != 2 {
+		t.Fatalf("all unreadable: number %v, err %v", g["system.processes.number"].Value, err)
+	}
+	if _, ok := g["system.processes.mem.rss"]; ok {
+		t.Fatalf("rss reported for processes none of which could be read: %+v", g)
 	}
 }
