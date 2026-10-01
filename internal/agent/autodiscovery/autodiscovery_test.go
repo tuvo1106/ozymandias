@@ -458,3 +458,22 @@ func TestRun_SyncsOnItsInterval(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// Review finding: a container named like a configured instance (redis:cache
+// configured, a container cache with redis labels) shared its self-metrics
+// silently. The discovered one is refused, once, and told what to set.
+func TestSync_AConfiguredNameIsNotTaken(t *testing.T) {
+	d, l, s, logs, _ := setup(t, Options{Reserved: []string{"probe:cache", "host"}})
+	l.set([]dockerapi.Container{
+		container("a1", "cache", map[string]string{"ozy.check.probe.port": "1"}),
+		container("b2", "cache2", map[string]string{"ozy.check.probe.port": "1", "ozy.check.probe.name": "other"}),
+	}, nil)
+	d.Sync(context.Background())
+	d.Sync(context.Background())
+	if got := s.names(); !slices.Equal(got, []string{"probe:other"}) {
+		t.Fatalf("running %v", got)
+	}
+	if n := strings.Count(logs.String(), "name of a configured collector"); n != 1 || !strings.Contains(logs.String(), "ozy.check.probe.name") {
+		t.Fatalf("logged %d times:\n%s", n, logs.String())
+	}
+}

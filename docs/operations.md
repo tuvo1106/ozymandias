@@ -118,7 +118,10 @@ folds into one name are each checked, and their metrics carry a
 `replica:<n>` tag (the lowest number free among that name's running
 replicas) so that they do not overwrite each other; they share one set of
 `ozy.agent.collector.*` self-metrics. Sum or average across `replica` at
-query time, as the metric calls for.
+query time, as the metric calls for. A discovered instance may not take the
+name of a configured one (a container `cache` with redis labels beside a
+configured `redis` instance named `cache`): it is refused and logged, and
+an `ozy.check.<check>.name` label gives it another.
 
 `%%host%%` is the container's IP address on a network, so **the agent must
 share a Docker network with the container** — in compose, list the app's

@@ -187,8 +187,13 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		Logger:     a.log,
 	})
 	if dockerAPI != nil && cfg.Collectors.Docker.Autodiscovery {
+		var reserved []string
+		for _, c := range collectors {
+			reserved = append(reserved, c.Name())
+		}
 		a.discovery = autodiscovery.New(autodiscovery.Options{
-			API: dockerAPI, Checks: checks, Scheduler: a.sched, Rewrites: dockerRewrites,
+			Reserved: reserved,
+			API:      dockerAPI, Checks: checks, Scheduler: a.sched, Rewrites: dockerRewrites,
 			Network: cfg.Collectors.Docker.AutodiscoveryNetwork,
 			Clock:   a.clock, Logger: a.log, Registry: a.reg,
 		})

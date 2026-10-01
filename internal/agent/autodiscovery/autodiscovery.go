@@ -50,7 +50,14 @@ type Options struct {
 	// on: the one the agent shares with the containers it checks. Empty,
 	// a container on one network uses that one, and one on several is
 	// refused, since any choice might be an address the agent cannot reach.
-	Network  string
+	Network string
+	// Reserved are the names of the collectors the agent runs anyway — the
+	// built-ins and the configured checks. A discovered instance may not
+	// take one: the two would share one set of self-metrics, and a failing
+	// configured check's errors could no longer be told from the
+	// container's. Discovered instances may share a name with each other;
+	// that is what folding replicas means.
+	Reserved []string
 	Interval time.Duration         // default DefaultInterval
 	Clock    clock.Clock           // default clock.Real()
 	Logger   *slog.Logger          // default slog.Default()
@@ -206,6 +213,9 @@ func (d *Discovery) sync(k key, ct dockerapi.Container, check string, raw map[st
 		tags = append(tags, "replica:"+strconv.Itoa(m.slot))
 	}
 	c, err := d.instance(ct, check, resolved, tags)
+	if err == nil && slices.Contains(d.opts.Reserved, c.Name()) {
+		err = fmt.Errorf("%s is the name of a configured collector; give the container's instance another with an %s%s.name label", c.Name(), LabelPrefix, check)
+	}
 	if err != nil {
 		fail(err)
 		return
