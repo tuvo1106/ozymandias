@@ -378,7 +378,7 @@ func TestCheck_MaxSeriesBoundsState(t *testing.T) {
 		if _, err := scrape(t, c); err == nil || !strings.Contains(err.Error(), "max_series 50") {
 			t.Fatalf("err = %v", err)
 		}
-		if n := oc.rates.Len() + len(oc.buckets) + len(oc.counts.last); n > 50 {
+		if n := oc.rates.Len() + len(oc.buckets) + oc.counts.Len(); n > 50 {
 			t.Fatalf("the check tracks %d series, over max_series 50", n)
 		}
 		fc.Advance(15 * time.Second)
@@ -427,27 +427,17 @@ func TestCheck_ForgetsWhatDisappears(t *testing.T) {
 	c, fc := check(t, map[string]any{"url": url})
 	ck := c.(*Check)
 	_, _ = scrape(t, c)
-	if ck.rates.Len() == 0 || len(ck.buckets) == 0 || len(ck.counts.last) == 0 {
+	if ck.rates.Len() == 0 || len(ck.buckets) == 0 || ck.counts.Len() == 0 {
 		t.Fatal("nothing tracked after the first scrape")
 	}
 	for range collector.ForgetAfter/(15*time.Second) + 2 {
 		fc.Advance(15 * time.Second)
 		_, _ = scrape(t, c)
 	}
-	if ck.rates.Len() != 0 || len(ck.buckets) != 0 || len(ck.counts.last) != 0 {
-		t.Fatalf("still tracking %d rates, %d histograms, %d counts", ck.rates.Len(), len(ck.buckets), len(ck.counts.last))
+	if ck.rates.Len() != 0 || len(ck.buckets) != 0 || ck.counts.Len() != 0 {
+		t.Fatalf("still tracking %d rates, %d histograms, %d counts", ck.rates.Len(), len(ck.buckets), ck.counts.Len())
 	}
 }
-
-func TestDeltas_NonFiniteForgets(t *testing.T) {
-	d := newDeltas()
-	d.observe("k", 1, t0)
-	if _, ok := d.observe("k", nan(), t0); ok || len(d.last) != 0 {
-		t.Fatal("a NaN reading was kept")
-	}
-}
-
-func nan() float64 { var z float64; return z / z }
 
 // With histogram_buckets_as_distributions, the interval's buckets arrive as
 // one sketch: 4 observations in (0,0.1], 1 above 0.5, and no .bucket counts.

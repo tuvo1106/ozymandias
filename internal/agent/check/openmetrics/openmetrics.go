@@ -69,9 +69,8 @@ type Check struct {
 	log           *slog.Logger
 
 	rates   *collector.Rates
-	counts  *deltas
+	counts  *collector.Rates // used with Delta: increases, not rates
 	buckets map[string]bucketState
-	swept   time.Time
 }
 
 // bucketState is one histogram series' previous cumulative buckets.
@@ -109,7 +108,7 @@ func newCheck(cfg Config, clk clock.Clock, log *slog.Logger) (*Check, error) {
 	c := &Check{
 		cfg: cfg, url: cfg.URL, shown: collector.RedactURL(cfg.URL), excludeLabels: map[string]bool{},
 		client: &http.Client{Timeout: cfg.Timeout}, clock: clk, log: log,
-		rates: collector.NewRates(), counts: newDeltas(), buckets: map[string]bucketState{},
+		rates: collector.NewRates(), counts: collector.NewRates(), buckets: map[string]bucketState{},
 	}
 	if c.clock == nil {
 		c.clock = clock.Real()
@@ -190,7 +189,7 @@ func (e *emitter) add(m collector.Metric) {
 // is the growth max_series is there to stop. A series refused is counted
 // as dropped, like a metric past the cap.
 func (c *Check) admit(tracked bool, e *emitter) bool {
-	if tracked || c.rates.Len()+len(c.buckets)+len(c.counts.last) < c.cfg.MaxSeries {
+	if tracked || c.rates.Len()+len(c.buckets)+c.counts.Len() < c.cfg.MaxSeries {
 		return true
 	}
 	e.dropped++
@@ -409,13 +408,13 @@ func (c *Check) summary(f *om.Family, now time.Time, e *emitter) {
 // sumCount emits a histogram's or summary's .sum and .count as counts of
 // the interval.
 func (c *Check) sumCount(name, key string, hasSum bool, sum float64, hasCount bool, count float64, tags []string, now time.Time, e *emitter) {
-	if hasSum && c.admit(c.counts.has(key+"\x00sum"), e) {
-		if d, ok := c.counts.observe(key+"\x00sum", sum, now); ok {
+	if hasSum && c.admit(c.counts.Has(key+"\x00sum"), e) {
+		if d, ok := c.counts.Delta(key+"\x00sum", sum, now); ok {
 			e.add(collector.Metric{Name: name + ".sum", Kind: collector.Count, Value: d, Tags: tags})
 		}
 	}
-	if hasCount && c.admit(c.counts.has(key+"\x00count"), e) {
-		if d, ok := c.counts.observe(key+"\x00count", count, now); ok {
+	if hasCount && c.admit(c.counts.Has(key+"\x00count"), e) {
+		if d, ok := c.counts.Delta(key+"\x00count", count, now); ok {
 			e.add(collector.Metric{Name: name + ".count", Kind: collector.Count, Value: d, Tags: tags})
 		}
 	}
@@ -430,65 +429,14 @@ func formatBound(ub float64) string {
 	return strconv.FormatFloat(ub, 'g', -1, 64)
 }
 
-// sweep forgets series unseen for a while: the rates' own rule
-// (collector.Rates.Sweep), applied to the counts and buckets too.
+// sweep forgets series unseen for a while: the rates' rule
+// (collector.Rates.Sweep), whose cutoff the buckets use too.
 func (c *Check) sweep(now time.Time) {
-	keep := collector.ForgetAfter
-	if !c.swept.IsZero() {
-		keep = max(keep, 3*now.Sub(c.swept))
-	}
-	c.swept = now
-	cutoff := now.Add(-keep)
-	c.rates.Sweep(now)
-	c.counts.prune(cutoff)
+	cutoff := c.rates.Sweep(now)
+	c.counts.Sweep(now)
 	for k, b := range c.buckets {
 		if b.at.Before(cutoff) {
 			delete(c.buckets, k)
-		}
-	}
-}
-
-// deltas turns cumulative counts into the increase since the previous
-// reading. Unlike collector.Rates it keeps the count, not a per-second
-// rate: a histogram's _count is sent as "observations this interval". A
-// count that went down means the target restarted, and the new value is
-// then what happened since — the same rule as the buckets'.
-type deltas struct {
-	last map[string]reading
-}
-
-type reading struct {
-	v  float64
-	at time.Time
-}
-
-func newDeltas() *deltas { return &deltas{last: map[string]reading{}} }
-
-func (d *deltas) observe(key string, v float64, at time.Time) (float64, bool) {
-	if math.IsNaN(v) || math.IsInf(v, 0) {
-		delete(d.last, key)
-		return 0, false
-	}
-	prev, ok := d.last[key]
-	d.last[key] = reading{v: v, at: at}
-	if !ok {
-		return 0, false
-	}
-	if v < prev.v {
-		return v, true
-	}
-	return v - prev.v, true
-}
-
-func (d *deltas) has(key string) bool {
-	_, ok := d.last[key]
-	return ok
-}
-
-func (d *deltas) prune(cutoff time.Time) {
-	for k, r := range d.last {
-		if r.at.Before(cutoff) {
-			delete(d.last, k)
 		}
 	}
 }

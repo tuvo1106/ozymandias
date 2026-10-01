@@ -63,6 +63,29 @@ func (r *Rates) Observe(key string, value float64, at time.Time) (rate float64, 
 	return (value - prev.value) / dt, true
 }
 
+// Delta records value for key like [Rates.Observe], and returns the
+// increase since the previous reading rather than a per-second rate: for a
+// cumulative count sent as "events this interval" (a histogram's _count).
+// A count that went down means the source restarted, and the new value is
+// then what happened since, so it is the increase. ok is false for a first
+// reading or a value that is not finite. A key is used with one of Observe
+// or Delta, not both.
+func (r *Rates) Delta(key string, value float64, at time.Time) (delta float64, ok bool) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		delete(r.last, key)
+		return 0, false
+	}
+	prev, seen := r.last[key]
+	r.last[key] = reading{value: value, at: at}
+	switch {
+	case !seen:
+		return 0, false
+	case value < prev.value:
+		return value, true
+	}
+	return value - prev.value, true
+}
+
 // Prune forgets every key last observed before cutoff. Collectors call it
 // after each run with a cutoff of a few intervals ago, so a key that misses
 // one run (a slow read) keeps its history but one that is gone for good does
@@ -99,13 +122,19 @@ const ForgetAfter = 5 * time.Minute
 // interval (10m) a fixed 5 minutes would forget, after one failed read,
 // the readings the next run needs. The gap is measured rather than taken
 // from configuration, where zero means "the scheduler's default".
-func (r *Rates) Sweep(now time.Time) {
+//
+// It returns the cutoff it used, so a collector with per-series state of
+// its own (the openmetrics check's histogram buckets) forgets that state
+// by the same rule rather than a copy of it.
+func (r *Rates) Sweep(now time.Time) (cutoff time.Time) {
 	keep := ForgetAfter
 	if !r.swept.IsZero() {
 		keep = max(keep, 3*now.Sub(r.swept))
 	}
 	r.swept = now
-	r.Prune(now.Add(-keep))
+	cutoff = now.Add(-keep)
+	r.Prune(cutoff)
+	return cutoff
 }
 
 // Len returns the number of keys being tracked.

@@ -135,3 +135,27 @@ func TestRates_SweepScalesWithTheGap(t *testing.T) {
 		t.Fatal("a key unseen for over ForgetAfter was kept")
 	}
 }
+
+// Delta is Observe for a count sent as "events this interval": the
+// increase, not a rate. A first reading has none; a count that went down
+// (the source restarted) counts from zero, so the new value is the
+// increase; a non-finite reading is forgotten, like Observe's.
+func TestRates_Delta(t *testing.T) {
+	r := NewRates()
+	t0 := time.Unix(1_790_000_000, 0)
+	if _, ok := r.Delta("k", 10, t0); ok {
+		t.Fatal("a first reading gave a delta")
+	}
+	if d, ok := r.Delta("k", 15, t0.Add(10*time.Second)); !ok || d != 5 {
+		t.Fatalf("increase = %v, %v; want 5", d, ok)
+	}
+	if d, ok := r.Delta("k", 3, t0.Add(20*time.Second)); !ok || d != 3 {
+		t.Fatalf("after a reset = %v, %v; want 3", d, ok)
+	}
+	if _, ok := r.Delta("k", math.NaN(), t0.Add(30*time.Second)); ok || r.Has("k") {
+		t.Fatal("a NaN reading was kept")
+	}
+	if cutoff := r.Sweep(t0.Add(time.Hour)); !cutoff.Equal(t0.Add(time.Hour - ForgetAfter)) {
+		t.Fatalf("Sweep's cutoff = %v", cutoff)
+	}
+}
