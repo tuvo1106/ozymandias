@@ -26,6 +26,7 @@ type fakeConn struct {
 	fail            map[string]error
 	gotRelations    []string
 	closed          bool
+	closeBlocks     bool // Close waits for its context, as a stalled server makes it
 }
 
 func (f *fakeConn) Connections(context.Context) (int64, error) { return f.conns, f.fail["conns"] }
@@ -37,7 +38,14 @@ func (f *fakeConn) Relations(_ context.Context, names []string) ([]Relation, err
 	f.gotRelations = names
 	return f.rels, f.fail["rels"]
 }
-func (f *fakeConn) Close(context.Context) error { f.closed = true; return nil }
+func (f *fakeConn) Close(ctx context.Context) error {
+	f.closed = true
+	if f.closeBlocks {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return nil
+}
 
 func instance(settings map[string]any) collector.Instance {
 	return collector.Instance{Check: "postgres", Name: "postgres", Settings: settings, Clock: testutil.NewFakeClock(t0), Logger: slog.New(slog.DiscardHandler)}
@@ -291,5 +299,24 @@ func TestConnectionsQuery_CountsClientsOnly(t *testing.T) {
 	}
 	if strings.Contains(connectionsQueryOld, "backend_type") {
 		t.Fatal("the fallback for servers before 10 names a column they lack")
+	}
+}
+
+// Closing a connection to a stalled server blocks until its context ends.
+// That context is the run's without its cancellation, so it needs a bound
+// of its own, or Collect never returns and the instance never runs again.
+func TestCollect_CloseIsBounded(t *testing.T) {
+	cn := &fakeConn{conns: 1, maxConns: 10, closeBlocks: true}
+	c := newFake(t, map[string]any{"host": "db"}, testutil.NewFakeClock(t0), cn, nil)
+	c.closeWait = 20 * time.Millisecond
+	done := make(chan error, 1)
+	go func() { done <- c.Collect(context.Background(), func(collector.Metric) {}) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Collect did not return: closing the connection was not bounded")
+	}
+	if !cn.closed {
+		t.Fatal("the connection was not closed")
 	}
 }

@@ -36,12 +36,13 @@ var sslModes = map[string]bool{
 
 // Collector is one postgres instance.
 type Collector struct {
-	cfg     Config
-	timeout time.Duration
-	dial    dialer
-	clock   clock.Clock
-	rates   *collector.Rates
-	tags    []string
+	cfg       Config
+	timeout   time.Duration
+	closeWait time.Duration // the bound on saying goodbye; see Collect
+	dial      dialer
+	clock     clock.Clock
+	rates     *collector.Rates
+	tags      []string
 }
 
 var _ collector.Collector = (*Collector)(nil)
@@ -73,7 +74,7 @@ func newCollector(inst collector.Instance, dial dialer) (*Collector, error) {
 		clk = clock.Real()
 	}
 	return &Collector{
-		cfg: cfg, timeout: cfg.Timeout, dial: dial, clock: clk, rates: collector.NewRates(),
+		cfg: cfg, timeout: cfg.Timeout, closeWait: closeWait, dial: dial, clock: clk, rates: collector.NewRates(),
 		tags: []string{"server:" + cfg.Host, "port:" + strconv.Itoa(int(cfg.Port))},
 	}, nil
 }
@@ -83,6 +84,10 @@ func (c *Collector) Name() string { return "postgres" }
 
 // Interval implements collector.Collector: the scheduler's default.
 func (c *Collector) Interval() time.Duration { return 0 }
+
+// closeWait bounds closing a connection: time enough to send a Terminate
+// to a server that is listening, short against the check's interval.
+const closeWait = 2 * time.Second
 
 // dialer opens a connection; the pgx one in production, a fake in tests.
 type dialer func(ctx context.Context, cfg Config) (conn, error)
@@ -133,7 +138,16 @@ func (c *Collector) Collect(ctx context.Context, emit collector.Emit) error {
 		gauge("postgresql.can_connect", 0)
 		return fmt.Errorf("connecting to %s:%d: %w", c.cfg.Host, c.cfg.Port, err)
 	}
-	defer func() { _ = cn.Close(context.WithoutCancel(ctx)) }()
+	defer func() {
+		// Close sends Terminate even when the run's deadline has passed
+		// (a run that timed out still says goodbye), so it gets a context
+		// of its own — but a bounded one. Unbounded, a stalled server or a
+		// full send buffer would block the write forever: the run would
+		// never return, and the instance's goroutine would run no more.
+		cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.closeWait)
+		defer cancel()
+		_ = cn.Close(cctx)
+	}()
 	gauge("postgresql.can_connect", 1)
 
 	var errs []error
