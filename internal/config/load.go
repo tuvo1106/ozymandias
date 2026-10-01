@@ -140,8 +140,20 @@ func toTree(n *yaml.Node) any {
 		m := make(map[string]any, len(n.Content)/2)
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			k, v := n.Content[i], n.Content[i+1]
-			if k.Tag == "!!merge" { // <<: *anchor
-				if base, ok := toTree(v).(map[string]any); ok {
+			if k.Tag == "!!merge" { // <<: *a, or <<: [*a, *b]
+				// The mapping's own keys win over merged ones, and an
+				// earlier map in the list over a later one: so a key is
+				// taken only where none is set yet. A key the mapping sets
+				// after the << overwrites below, as it should.
+				bases := []any{toTree(v)}
+				if list, ok := bases[0].([]any); ok {
+					bases = list
+				}
+				for _, b := range bases {
+					base, ok := b.(map[string]any)
+					if !ok {
+						continue // the strict pass refused this file already
+					}
 					for bk, bv := range base {
 						if _, set := m[bk]; !set {
 							m[bk] = bv

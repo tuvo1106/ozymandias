@@ -183,3 +183,30 @@ func TestLoad_StringsKeepTheirTextThroughTheMerge(t *testing.T) {
 		t.Fatalf("an alias: %+v, %v", f, err)
 	}
 }
+
+// Review finding: toTree handled <<: *a but dropped <<: [*a, *b] without
+// a word. Both merge; the mapping's own keys win, then earlier anchors.
+func TestLoad_MergeKeys(t *testing.T) {
+	type mk struct {
+		A map[string]string `yaml:"a"`
+		B map[string]string `yaml:"b"`
+		X map[string]string `yaml:"x"`
+		Y map[string]string `yaml:"y"`
+	}
+	dir := testutil.TempDirWith(t, map[string]string{"m.yaml": `
+a: &a {k1: a1, k2: a2}
+b: &b {k2: b2, k3: b3}
+x: {<<: [*a, *b], k3: x3}
+y: {k1: y1, <<: *a}
+`})
+	var got mk
+	if _, err := Load(&got, Options{Path: dir + "/m.yaml"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"k1": "a1", "k2": "a2", "k3": "x3"}; !reflect.DeepEqual(got.X, want) {
+		t.Errorf("x = %v, want %v", got.X, want)
+	}
+	if want := map[string]string{"k1": "y1", "k2": "a2"}; !reflect.DeepEqual(got.Y, want) {
+		t.Errorf("y = %v, want %v", got.Y, want)
+	}
+}
