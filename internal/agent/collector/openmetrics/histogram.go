@@ -60,7 +60,7 @@ func (f *Family) Histograms() ([]Histogram, error) {
 	var out []*Histogram
 	byKey := map[string]*Histogram{}
 	get := func(labels []Label) *Histogram {
-		key := labelKey(labels, "le")
+		key := LabelKey(labels, "le")
 		h := byKey[key]
 		if h == nil {
 			h = &Histogram{}
@@ -124,22 +124,37 @@ func (f *Family) Histograms() ([]Histogram, error) {
 	return res, nil
 }
 
-// labelKey is a label set's identity with one label left out: names sorted,
-// so `{a="1",b="2"}` and `{b="2",a="1"}` are one series.
-func labelKey(labels []Label, skip string) string {
+// LabelKey is a label set's identity, with the label named skip left out
+// (pass "" to keep them all): names sorted, so `{a="1",b="2"}` and
+// `{b="2",a="1"}` are one series. The one definition of "same series" for
+// the parser's histogram grouping and for the openmetrics check's state,
+// which must agree.
+//
+// Each name and value is written with its length in front rather than
+// between separator bytes: the parser does not require valid UTF-8, so a
+// value may contain any byte, and with separators `{a="x<sep>b<sep>c"}`
+// could read as `{a="x",b="c"}`. A length prefix cannot be forged.
+func LabelKey(labels []Label, skip string) string {
 	ls := make([]Label, 0, len(labels))
 	for _, l := range labels {
 		if l.Name != skip {
 			ls = append(ls, l)
 		}
 	}
-	slices.SortFunc(ls, func(a, b Label) int { return strings.Compare(a.Name, b.Name) })
+	slices.SortFunc(ls, func(a, b Label) int {
+		if c := strings.Compare(a.Name, b.Name); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Value, b.Value)
+	})
 	var b strings.Builder
 	for _, l := range ls {
+		b.WriteString(strconv.Itoa(len(l.Name)))
+		b.WriteByte(':')
 		b.WriteString(l.Name)
-		b.WriteByte(0xff)
+		b.WriteString(strconv.Itoa(len(l.Value)))
+		b.WriteByte(':')
 		b.WriteString(l.Value)
-		b.WriteByte(0xfe)
 	}
 	return b.String()
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -289,5 +290,35 @@ func TestToSketch_Errors(t *testing.T) {
 	// Only +Inf, but empty: nothing to place, so no error.
 	if err := ToSketch([]Bucket{{inf, 0}}, sketch.NewDefault()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// LabelKey is order-blind, leaves out the label it is told to, and cannot
+// be forged: a value carrying separator bytes or a length-looking prefix
+// still differs from the label set it imitates. The parser does not
+// require valid UTF-8, so a page can carry any byte in a value.
+func TestLabelKey(t *testing.T) {
+	ab := []Label{{"a", "1"}, {"b", "2"}}
+	if LabelKey(ab, "") != LabelKey([]Label{{"b", "2"}, {"a", "1"}}, "") {
+		t.Error("label order changed the key")
+	}
+	if LabelKey(append(ab, Label{"le", "0.5"}), "le") != LabelKey(ab, "") {
+		t.Error("the skipped label changed the key")
+	}
+	for _, forged := range [][]Label{
+		{{"a", "x\xfeb\xffc"}},
+		{{"a", "x\xffb\xfec"}},
+		{{"a", "x1:b1:c"}},
+		{{"a", "x"}, {"b", "c"}},
+		{{"a1:x1:b", "c"}},
+	} {
+		for _, other := range [][]Label{{{"a", "x"}, {"b", "c"}}, {{"a", "x\xfeb\xffc"}}} {
+			if slices.Equal(forged, other) {
+				continue
+			}
+			if LabelKey(forged, "") == LabelKey(other, "") {
+				t.Errorf("%q and %q have one key", forged, other)
+			}
+		}
 	}
 }

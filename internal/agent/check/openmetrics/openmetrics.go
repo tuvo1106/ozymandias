@@ -8,7 +8,6 @@ import (
 	"math"
 	"net/http"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -261,17 +260,10 @@ func (c *Check) tags(labels []om.Label, skip string) []string {
 	return out
 }
 
-// seriesKey identifies a series between scrapes: its name and label set in
-// a canonical order.
-func seriesKey(name string, labels []om.Label, skip string) string {
-	parts := make([]string, 0, len(labels))
-	for _, l := range labels {
-		if l.Name != skip {
-			parts = append(parts, l.Name+"\xff"+l.Value)
-		}
-	}
-	sort.Strings(parts)
-	return name + "\x00" + strings.Join(parts, "\xfe")
+// seriesKey is a sample's identity: its name and its label set, by the
+// parser's one rule for "same series" (om.LabelKey).
+func seriesKey(name string, labels []om.Label) string {
+	return name + "\x00" + om.LabelKey(labels, "")
 }
 
 func (c *Check) family(f *om.Family, now time.Time, e *emitter) {
@@ -285,7 +277,7 @@ func (c *Check) family(f *om.Family, now time.Time, e *emitter) {
 			if !ok {
 				continue
 			}
-			key := seriesKey(s.Name, s.Labels, "")
+			key := seriesKey(s.Name, s.Labels)
 			if !c.admit(c.rates.Has(key), e) {
 				continue
 			}
@@ -338,7 +330,7 @@ func (c *Check) histogram(f *om.Family, now time.Time, e *emitter) {
 	}
 	for _, h := range hs {
 		tags := c.tags(h.Labels, "")
-		key := seriesKey(f.Name, h.Labels, "")
+		key := seriesKey(f.Name, h.Labels)
 		prev, seen := c.buckets[key]
 		if !c.admit(seen, e) {
 			continue
@@ -378,7 +370,7 @@ func (c *Check) summary(f *om.Family, now time.Time, e *emitter) {
 	var order []string
 	byKey := map[string]*sc{}
 	get := func(labels []om.Label) (*sc, string) {
-		k := seriesKey(f.Name, labels, "")
+		k := seriesKey(f.Name, labels)
 		if byKey[k] == nil {
 			byKey[k] = &sc{labels: labels}
 			order = append(order, k)
