@@ -522,3 +522,43 @@ func TestScheduler_Distributions(t *testing.T) {
 	fc2.Advance(time.Second)
 	testutil.Eventually(t, time.Second, func() bool { return counter(reg2, "ozy.agent.collector.dropped", "h2") == 1 }, "dropped")
 }
+
+// Review finding: a collector removed mid-run (its container went, its
+// settings changed) or stopped by shutdown saw its context cancelled, and
+// what it emitted then — a check's can_connect 0 for a cancelled dial — was
+// sent as a reading. A stopped run sends nothing; it counts as dropped.
+func TestScheduler_ARunCutShortByRemovalIsNotSent(t *testing.T) {
+	testutil.CheckGoroutines(t)
+	fc := testutil.NewFakeClock(t0)
+	sk := &sink{}
+	reg := selfmetrics.NewRegistry()
+	s := New(Options{Clock: fc, Sink: sk.send, Rand: rand.New(rand.NewPCG(1, 2)), Registry: reg, Logger: slog.New(slog.DiscardHandler)})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	testutil.Eventually(t, time.Second, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.ctx != nil }, "Run started")
+
+	running := make(chan struct{})
+	c := &fake{name: "dial", iv: time.Second, collect: func(ctx context.Context, emit Emit) error {
+		close(running)
+		<-ctx.Done()
+		emit(Metric{Name: "x.can_connect", Value: 0}) // what a cancelled dial looks like
+		return ctx.Err()
+	}}
+	remove := s.Add(c)
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "armed")
+	fc.Advance(time.Second)
+	<-running
+	remove()
+	testutil.Eventually(t, time.Second, func() bool { return len(s.Collectors()) == 0 }, "stopped")
+	if got := sk.all(); len(got) != 0 {
+		t.Fatalf("a run cut short by removal was sent: %+v", got)
+	}
+	if n := counter(reg, "ozy.agent.collector.dropped", "dial"); n != 1 {
+		t.Fatalf("dropped = %d, want 1", n)
+	}
+	if n := counter(reg, "ozy.agent.collector.errors", "dial"); n != 0 {
+		t.Fatalf("errors = %d: a stop is not a failure", n)
+	}
+}

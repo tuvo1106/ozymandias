@@ -215,8 +215,9 @@ func (s *Scheduler) startLocked(t *task) {
 // cancelled and every collector's goroutine has returned — or, after
 // cancellation, until Options.ShutdownTimeout has passed, whichever is
 // first. A Collect in progress at
-// cancellation sees its context cancelled and its partial batch is still
-// sent, so shutdown loses at most the run that was interrupted.
+// cancellation sees its context cancelled and its batch is not sent: what
+// it read after the cancellation describes the cancellation, not the
+// source. Shutdown loses at most the run that was interrupted.
 //
 // The bound is there because cancellation cannot interrupt everything: a
 // statfs on a hung disk ignores its context. Without it, one stuck mount
@@ -437,6 +438,16 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 		st.tout.Inc()
 	}
 	s.report(ctx, st, err)
+	if ctx.Err() != nil {
+		// Stopped mid-run: the collector was removed (its container went,
+		// or its settings changed) or the agent is shutting down. What the
+		// run read after that is a reading of its own cancellation — a
+		// check whose dial was cancelled reports can_connect 0 — and would
+		// put a false outage on every restart. The run is not sent; a
+		// timeout, by contrast, is a real reading of a slow source, and is.
+		st.drop.Add(int64(len(out) + len(outSketches)))
+		return
+	}
 	s.sinkMu.RLock()
 	defer s.sinkMu.RUnlock()
 	if s.stopped {
