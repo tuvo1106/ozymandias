@@ -102,3 +102,28 @@ func TestDecorateKeeping_UnderTheCap(t *testing.T) {
 		t.Fatalf("own host: %v", got)
 	}
 }
+
+// Review finding: a scraped service="checkout" beside the container's
+// service:shop-api gave one series two service values, counted in both
+// groups of a group-by. The scraped one is renamed exported_service, as
+// Prometheus does; host is left alone (a check may report another machine).
+func TestDecorateKeeping_RenamesClashingOwnTags(t *testing.T) {
+	got, _ := DecorateKeeping([]string{"service:checkout", "route:/x", "host:db1"}, []string{"service:shop-api", "host:other"}, nil, "host:mac")
+	for _, want := range []string{"exported_service:checkout", "service:shop-api", "route:/x", "host:db1"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s missing: %v", want, got)
+		}
+	}
+	if slices.Contains(got, "service:checkout") {
+		t.Errorf("the scraped service kept its key: %v", got)
+	}
+	// Past the cap too.
+	own := []string{"service:checkout"}
+	for i := range wire.MaxTagsPerPoint {
+		own = append(own, fmt.Sprintf("k%03d:v", i))
+	}
+	got, _ = DecorateKeeping(own, []string{"service:shop-api"}, nil, "")
+	if n := len(slices.DeleteFunc(slices.Clone(got), func(t string) bool { k, _ := wire.SplitTag(t); return k != "service" })); n != 1 {
+		t.Fatalf("%d service tags past the cap: %v", n, got)
+	}
+}

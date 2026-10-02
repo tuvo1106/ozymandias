@@ -57,7 +57,16 @@ func Decorate(tags, agentTags []string, hostTag string) (out []string, dropped i
 // Here the cap trims own tags first: keep, the agent's tags, the host tag
 // and any own host tag are kept, and own tags fill what room is left, in
 // sorted order so the same ones always survive.
+//
+// An own tag whose key a keep tag also has is renamed exported_<key>, as
+// Prometheus renames a scraped label that clashes with a target label: a
+// page's service="checkout" beside the container's service:shop-api would
+// otherwise give one series two values for one key, and a group-by on
+// that key would count it in both groups. host is the exception: a check
+// that reports another machine says so with its own host tag.
 func DecorateKeeping(own, keep, agentTags []string, hostTag string) (out []string, dropped int) {
+	own, renamed := exportClashes(own, keep)
+	defer func() { dropped += renamed }()
 	if len(keep) == 0 || len(own)+len(keep)+len(agentTags)+1 <= wire.MaxTagsPerPoint {
 		// Nothing to choose between: everything fits, so this is
 		// Decorate, without the set and the extra sorts below. The common
@@ -94,4 +103,33 @@ func DecorateKeeping(own, keep, agentTags []string, hostTag string) (out []strin
 		rest = rest[:room]
 	}
 	return wire.CanonicalTags(append(fixed, rest...)), dropped
+}
+
+// exportClashes renames each own tag (but host) whose key a keep tag has
+// with another value: key:v becomes exported_key:v. One the longer key makes unsendable is
+// dropped, and counted with the cap's drops.
+func exportClashes(own, keep []string) (out []string, dropped int) {
+	if len(keep) == 0 || len(own) == 0 {
+		return own, 0
+	}
+	keys := make(map[string]bool, len(keep))
+	same := make(map[string]bool, len(keep))
+	for _, t := range keep {
+		k, _ := wire.SplitTag(t)
+		keys[k], same[t] = true, true
+	}
+	out = own[:0]
+	for _, t := range own {
+		// The same tag twice is one tag, not a clash.
+		if k, v := wire.SplitTag(t); k != "host" && keys[k] && !same[t] {
+			n, ok := wire.NormalizeTag(wire.JoinTag("exported_"+k, v))
+			if !ok {
+				dropped++
+				continue
+			}
+			t = n
+		}
+		out = append(out, t)
+	}
+	return out, dropped
 }
