@@ -113,7 +113,10 @@ services:
 
 The agent lists containers every 10s; the check starts as
 `redis:<container name>`, tagged like the container's metrics, and stops
-with it. The name is the one after `container_name_rewrite`. Containers that rewrite
+with it. (One exception: if the image's tag was moved to a new build while
+the container kept running, and the agent restarted since, the check's
+`image_name`/`image_tag` come from the image id Docker then lists, while
+the container's own metrics keep the name it was started from.) The name is the one after `container_name_rewrite`. Containers that rewrite
 folds into one name are each checked, and their metrics carry a
 `replica:<n>` tag (the lowest number free among that name's running
 replicas) so that they do not overwrite each other; they share one set of
