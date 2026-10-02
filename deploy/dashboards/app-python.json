@@ -139,9 +139,9 @@
       }
     },
     {
-      "id": "jobs-per-minute",
+      "id": "jobs",
       "type": "timeseries",
-      "title": "Jobs per minute, by function",
+      "title": "Jobs finished, by function",
       "layout": {
         "x": 6,
         "y": 11,
@@ -150,13 +150,13 @@
       },
       "queries": [
         {
-          "q": "sum:arq.job.count{$env} by {function}.rollup(sum, 60)",
+          "q": "sum:arq.job.count{$env} by {function}.as_count()",
           "display": "bars"
         }
       ],
       "yaxis": {
         "min": 0,
-        "unit": "jobs/min"
+        "unit": "jobs"
       }
     },
     {

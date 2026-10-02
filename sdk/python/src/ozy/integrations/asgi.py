@@ -36,8 +36,11 @@ the client's behaviour decides: when its ``http.disconnect`` was seen on
 ``receive`` the status is ``499`` (nginx's "client closed request"), because
 calling a closed tab a 500 would page someone for nothing. With no disconnect
 seen, such as a shutdown, a reload or a timeout scope outside this middleware,
-it is the server's doing and is recorded as 500. Limit: the disconnect is only
-seen if the app reads ``receive``, which a plain non-streaming handler does not.
+it is the server's doing and is recorded as 500. Even with a disconnect seen, only
+a failure that looks like a closed connection is 499 (a cancellation, an ``OSError``, a
+framework's ``ClientDisconnect``); any other exception is a handler bug and stays 500.
+Limit: the disconnect is only seen if the app reads ``receive``, which a plain
+non-streaming handler does not.
 
 The ``method`` tag is limited to the standard verbs, anything else is
 ``OTHER``. A scanner can send any token as a method, and an unbounded tag is one
@@ -57,6 +60,7 @@ guesses wrong on slugs; the route table already knows the answer.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping
@@ -114,7 +118,10 @@ class MetricsMiddleware:
         """Wrap ``app``; see the class docstring for the arguments."""
         self.app = app
         self._client = client if client is not None else _default_client
-        self._exclude = frozenset(exclude_paths)
+        # A bare string is one path, not an iterable of characters: ``frozenset("/healthz")``
+        # would exclude "/" (the root route) and nothing else.
+        paths = (exclude_paths,) if isinstance(exclude_paths, str) else exclude_paths
+        self._exclude = frozenset(paths)
         self._count_name = count_name
         self._duration_name = duration_name
 
@@ -145,18 +152,23 @@ class MetricsMiddleware:
         async def send_wrapper(message: Message) -> None:
             nonlocal status, responded
             if message.get("type") == "http.response.start" and not responded:
+                # Only after the write succeeds: if it raises (the client closed the socket just
+                # before), nothing reached the client, and the failure branch below classifies it.
+                await send(message)
                 responded = True
                 status = message.get("status")
+                return
             await send(message)
 
         try:
             await self.app(scope, receive_wrapper, send_wrapper)
-        except BaseException:
-            # One branch for a cancellation (asyncio's or trio's), a handler error and a write
-            # to a closed socket alike: with no response started, the client's disconnect is the
-            # likeliest reason nobody got one, so it is 499; otherwise the server failed: 500.
+        except BaseException as exc:
+            # With no response started the client's disconnect decides, but only for failures
+            # that look like a closed connection (a cancellation, an OSError from a write, a
+            # framework's ClientDisconnect). A plain handler bug that happens to follow a
+            # disconnect is still the server's fault and must reach the 5xx metrics.
             if not responded:
-                status = CLIENT_CLOSED if disconnected else SERVER_ERROR
+                status = CLIENT_CLOSED if disconnected and _client_gone(exc) else SERVER_ERROR
             raise
         finally:
             self._record(scope, status, (time.perf_counter() - started) * 1000.0)
@@ -199,3 +211,16 @@ def _status_code(status: Any) -> int:
     if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
         return status
     return SERVER_ERROR
+
+
+# Exception types, by name, that mean "the connection went away" for backends this module does
+# not import: Starlette's ``ClientDisconnect`` and trio/anyio's ``Cancelled``.
+_CONNECTION_GONE_NAMES = frozenset({"ClientDisconnect", "Cancelled"})
+
+
+def _client_gone(exc: BaseException) -> bool:
+    """True for a cancellation or a closed-connection error, false for any other failure."""
+    return (
+        isinstance(exc, asyncio.CancelledError | OSError)
+        or type(exc).__name__ in _CONNECTION_GONE_NAMES
+    )

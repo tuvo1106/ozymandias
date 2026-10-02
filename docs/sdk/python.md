@@ -239,7 +239,15 @@ own error handler still sits outside it, which is why a handler that raises is r
   is what the server will send. A request cancelled before any response started is `499` only
   when the client's disconnect was seen, so closing a tab does not look like a server fault.
   A cancellation with no disconnect behind it (a shutdown, a reload, a timeout scope outside
-  this middleware) is the server's doing and is `500`. Once a response has started, its status stands even if the body then fails.
+  this middleware) is the server's doing and is `500`. Even with a disconnect seen, only a
+  failure that looks like a closed connection (a cancellation, an `OSError`, Starlette's
+  `ClientDisconnect`) is `499`: a handler bug that follows one stays `500` so it reaches your
+  5xx alerts. A failed write of the response's first message counts as no response, not as the
+  status the app tried to send. Once a response has started, its status stands even if the body then fails.
+- **Duration runs until the inner app returns**, so a streamed response, server-sent events or a
+  long poll records its whole lifetime as latency. That is the honest "how long did this request
+  take", but it is not time-to-first-byte; list such routes in `exclude_paths` if their numbers
+  would swamp a latency chart. A bare string for `exclude_paths` is treated as one path.
 - **WebSockets and lifespan events pass through unrecorded.** Duration for a socket that
   lives for an hour would mean nothing.
 - **It is pure ASGI**, not Starlette's `BaseHTTPMiddleware`, so streaming responses,

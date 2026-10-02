@@ -329,3 +329,95 @@ def test_a_handler_error_after_the_client_disconnected_is_499(
     with pytest.raises(ConnectionResetError):
         asyncio.run(MetricsMiddleware(app, client=client)(scope, receive, send))
     assert "status:499,status_class:4xx" in count_line(agent, client)
+
+
+def test_a_handler_bug_after_a_disconnect_is_still_a_500(
+    make_client: ClientFactory, agent: FakeAgent
+) -> None:
+    """The disconnect only decides for failures that look like a closed connection; a KeyError
+    that follows one is a bug and must reach the 5xx metrics."""
+    client = make_client()
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        await receive()
+        raise KeyError("a real bug")
+
+    messages: Iterator[dict[str, Any]] = iter([{"type": "http.disconnect"}])
+
+    async def receive() -> dict[str, Any]:
+        return next(messages)
+
+    async def send(message: Any) -> None:
+        return None
+
+    scope: dict[str, Any] = {"type": "http", "path": "/x", "method": "GET"}
+    with pytest.raises(KeyError):
+        asyncio.run(MetricsMiddleware(app, client=client)(scope, receive, send))
+    line = count_line(agent, client)
+    assert "status:500,status_class:5xx" in line
+    assert "status:499" not in line
+
+
+@pytest.mark.parametrize("name", ["ClientDisconnect", "Cancelled"])
+def test_framework_disconnect_errors_are_recognised_by_name(
+    make_client: ClientFactory, agent: FakeAgent, name: str
+) -> None:
+    """Starlette's ClientDisconnect and trio's Cancelled are not importable here (no
+    dependencies), so they are matched by class name."""
+    client = make_client()
+    error = type(name, (Exception,), {})
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        await receive()
+        raise error()
+
+    messages: Iterator[dict[str, Any]] = iter([{"type": "http.disconnect"}])
+
+    async def receive() -> dict[str, Any]:
+        return next(messages)
+
+    async def send(message: Any) -> None:
+        return None
+
+    scope: dict[str, Any] = {"type": "http", "path": "/x", "method": "GET"}
+    with pytest.raises(error):
+        asyncio.run(MetricsMiddleware(app, client=client)(scope, receive, send))
+    assert "status:499,status_class:4xx" in count_line(agent, client)
+
+
+def test_a_failed_write_of_the_response_start_is_not_recorded_with_the_apps_status(
+    make_client: ClientFactory, agent: FakeAgent
+) -> None:
+    """The client closed the socket before the start message was written: nothing reached it,
+    so the app's 200 must not be what gets counted."""
+    client = make_client()
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        await receive()
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    messages: Iterator[dict[str, Any]] = iter([{"type": "http.disconnect"}])
+
+    async def receive() -> dict[str, Any]:
+        return next(messages)
+
+    async def send(message: Any) -> None:
+        raise BrokenPipeError("socket closed")
+
+    scope: dict[str, Any] = {"type": "http", "path": "/x", "method": "GET"}
+    with pytest.raises(BrokenPipeError):
+        asyncio.run(MetricsMiddleware(app, client=client)(scope, receive, send))
+    line = count_line(agent, client)
+    assert "status:499,status_class:4xx" in line
+    assert "status:200" not in line
+
+
+def test_a_bare_string_for_exclude_paths_is_one_path_not_its_characters(
+    make_client: ClientFactory, agent: FakeAgent
+) -> None:
+    client = make_client()
+    run_request(responder(200, "/healthz"), client, path="/healthz", exclude_paths="/healthz")
+    client.flush()
+    assert agent.recv_or_none(0.2) is None  # excluded
+    run_request(responder(200, "/"), client, path="/", exclude_paths="/healthz")
+    assert "route:/," in count_line(agent, client)  # "/" is NOT swallowed as a character
