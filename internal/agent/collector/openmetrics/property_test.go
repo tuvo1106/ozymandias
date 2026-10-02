@@ -122,12 +122,21 @@ func genFamilies(t *rapid.T) []Family {
 }
 
 // print → parse is the identity, in both formats: every value, label and
-// escape a writer can produce comes back as it was.
+// escape a writer can produce comes back as it was — but a label with an
+// empty value, which the formats define as no label at all.
 func TestProperty_RoundTrip(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		want := genFamilies(t)
 		om := rapid.Bool().Draw(t, "openmetrics")
 		body := write(want, om)
+		for i := range want {
+			for j := range want[i].Samples {
+				want[i].Samples[j].Labels = slices.DeleteFunc(slices.Clone(want[i].Samples[j].Labels), func(l Label) bool { return l.Value == "" })
+				if len(want[i].Samples[j].Labels) == 0 {
+					want[i].Samples[j].Labels = nil
+				}
+			}
+		}
 		got, err := Parse(strings.NewReader(body), Options{})
 		if err != nil {
 			t.Fatalf("Parse: %v\n%s", err, body)

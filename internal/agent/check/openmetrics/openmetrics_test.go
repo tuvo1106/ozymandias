@@ -618,3 +618,31 @@ func TestCheck_ASumWithoutACountFallsAsARestart(t *testing.T) {
 		}
 	}
 }
+
+// Review finding: an empty label value is no label (the exposition
+// formats say so), but it was a "path:" tag and its own series key, so a
+// page writing {path=""} one scrape and nothing the next split one series
+// in two and never formed a rate.
+func TestCheck_AnEmptyLabelIsNoLabel(t *testing.T) {
+	_, url := serve(t,
+		"# TYPE reqs counter\nreqs_total{path=\"\"} 10\n",
+		"# TYPE reqs counter\nreqs_total 40\n")
+	c, fc := check(t, map[string]any{"url": url})
+	if _, err := scrape(t, c); err != nil {
+		t.Fatal(err)
+	}
+	fc.Advance(15 * time.Second)
+	g, err := scrape(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rates := g.named("reqs_total")
+	if len(rates) != 1 || rates[0].Value != 2 {
+		t.Fatalf("one series at 30 per 15s, want rate 2: %+v", rates)
+	}
+	for _, tag := range rates[0].Tags {
+		if strings.HasPrefix(tag, "path") {
+			t.Fatalf("an empty label became the tag %q", tag)
+		}
+	}
+}

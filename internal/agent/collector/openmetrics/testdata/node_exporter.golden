@@ -317,14 +317,14 @@ family node_network_transmit_drop_total type=counter help="Network device statis
   node_network_transmit_drop_total{device="veth3c4d"} 5.74233768315e+11
   node_network_transmit_drop_total{device="wlan0"} 9.65837365524e+11
 family node_network_info type=gauge help="Non-numeric data from /sys/class/net/<iface>, value is always 1."
-  node_network_info{address="02:00:00:00:00:00",broadcast="ff:ff:ff:ff:ff:ff",device="lo",duplex="full",ifalias="",operstate="up"} 1
-  node_network_info{address="02:00:00:00:00:01",broadcast="ff:ff:ff:ff:ff:ff",device="eth0",duplex="full",ifalias="",operstate="up"} 1
-  node_network_info{address="02:00:00:00:00:02",broadcast="ff:ff:ff:ff:ff:ff",device="eth1",duplex="full",ifalias="",operstate="up"} 1
-  node_network_info{address="02:00:00:00:00:03",broadcast="ff:ff:ff:ff:ff:ff",device="docker0",duplex="full",ifalias="",operstate="up"} 1
-  node_network_info{address="02:00:00:00:00:04",broadcast="ff:ff:ff:ff:ff:ff",device="br-4f2a",duplex="full",ifalias="",operstate="up"} 1
-  node_network_info{address="02:00:00:00:00:05",broadcast="ff:ff:ff:ff:ff:ff",device="veth1a2b",duplex="full",ifalias="",operstate="up"} 1
-  node_network_info{address="02:00:00:00:00:06",broadcast="ff:ff:ff:ff:ff:ff",device="veth3c4d",duplex="full",ifalias="",operstate="up"} 1
-  node_network_info{address="02:00:00:00:00:07",broadcast="ff:ff:ff:ff:ff:ff",device="wlan0",duplex="full",ifalias="",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:00",broadcast="ff:ff:ff:ff:ff:ff",device="lo",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:01",broadcast="ff:ff:ff:ff:ff:ff",device="eth0",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:02",broadcast="ff:ff:ff:ff:ff:ff",device="eth1",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:03",broadcast="ff:ff:ff:ff:ff:ff",device="docker0",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:04",broadcast="ff:ff:ff:ff:ff:ff",device="br-4f2a",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:05",broadcast="ff:ff:ff:ff:ff:ff",device="veth1a2b",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:06",broadcast="ff:ff:ff:ff:ff:ff",device="veth3c4d",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:07",broadcast="ff:ff:ff:ff:ff:ff",device="wlan0",duplex="full",operstate="up"} 1
 family node_scrape_collector_duration_seconds type=gauge help="node_exporter: Duration of a collector scrape."
   node_scrape_collector_duration_seconds{collector="arp"} 0.009422
   node_scrape_collector_duration_seconds{collector="bcache"} 0.002596

@@ -56,7 +56,7 @@ func TestParse_Productions(t *testing.T) {
 		}},
 		{"label escapes, trailing comma, spaces", `x{ a = "q\"uo\\te\nd" , b="",} 1` + "\n", Options{}, []Family{
 			{Name: "x", Type: TypeUnknown, Samples: []Sample{
-				{Name: "x", Labels: []Label{{"a", "q\"uo\\te\nd"}, {"b", ""}}, Value: 1},
+				{Name: "x", Labels: []Label{{"a", "q\"uo\\te\nd"}}, Value: 1}, // b="" is no label
 			}},
 		}},
 		{"empty label set", "x{} 1\n", Options{}, []Family{

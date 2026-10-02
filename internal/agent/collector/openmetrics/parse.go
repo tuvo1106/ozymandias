@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -446,14 +447,17 @@ func (p *parser) sample(line string, lineNo int) error {
 // formats' reference parsers accept.
 func (p *parser) labels(sc *scanner) ([]Label, error) {
 	sc.pos++ // '{'
-	var out []Label
+	var (
+		out   []Label
+		names []string // every label written, empty ones too, for duplicates
+	)
 	for {
 		sc.spaces()
 		if sc.peek() == '}' {
 			sc.pos++
 			return out, nil
 		}
-		if len(out) >= p.lim.MaxLabels {
+		if len(names) >= p.lim.MaxLabels {
 			return nil, sc.errf(fmt.Sprintf("more than %d labels", p.lim.MaxLabels))
 		}
 		nameCol := sc.pos + 1
@@ -464,11 +468,10 @@ func (p *parser) labels(sc *scanner) ([]Label, error) {
 		if len(name) > p.lim.MaxNameLen {
 			return nil, sc.errAt(nameCol, fmt.Sprintf("label name longer than %d bytes", p.lim.MaxNameLen))
 		}
-		for _, l := range out {
-			if l.Name == name {
-				return nil, sc.errAt(nameCol, fmt.Sprintf("duplicate label %q", name))
-			}
+		if slices.Contains(names, name) {
+			return nil, sc.errAt(nameCol, fmt.Sprintf("duplicate label %q", name))
 		}
+		names = append(names, name)
 		sc.spaces()
 		if sc.peek() != '=' {
 			return nil, sc.errf("want '=' after a label name")
@@ -479,7 +482,12 @@ func (p *parser) labels(sc *scanner) ([]Label, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, Label{Name: p.str(name), Value: val})
+		// An empty value is no label: the exposition formats say so, and
+		// Prometheus drops it. Kept, {path=""} and no path at all would be
+		// two series, and the empty one a "path:" tag of nothing.
+		if val != "" {
+			out = append(out, Label{Name: p.str(name), Value: val})
+		}
 		sc.spaces()
 		switch sc.peek() {
 		case ',':
