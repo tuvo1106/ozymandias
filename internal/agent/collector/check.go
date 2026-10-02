@@ -66,21 +66,31 @@ type Instance struct {
 // misspelt key fails at startup rather than being silently ignored — the
 // same rule the agent's own config follows.
 //
-// A setting given as text that looks like a list — a container label
-// "[200, 301]", the only way a label can spell one — is read as a list
-// when, and only when, v's field for it is a list. A label is text, and a
-// password "[pw]" is text too; whether brackets mean a list is a question
-// only the field's type answers.
+// A setting given as plain text that looks like a list or a mapping — a
+// container label "[200, 301]" or "{Authorization: Bearer x}", the only
+// way a label can spell one — is read as one when, and only when, v's
+// field for it is a list or a map. A label is text, and a password "[pw]"
+// is text too; whether brackets mean a list is a question only the field's
+// type answers. Quoted text in a config file stays text.
 func (i Instance) Decode(v any) error {
 	settings, cloned := i.Settings, false
-	if lists := listFields(reflect.TypeOf(v)); len(lists) > 0 {
+	if colls := collectionFields(reflect.TypeOf(v)); len(colls) > 0 {
 		for k, val := range settings {
 			n, ok := val.(*yaml.Node)
-			if !ok || !lists[k] || n.Kind != yaml.ScalarNode || !strings.HasPrefix(n.Value, "[") {
+			if !ok || n.Kind != yaml.ScalarNode || n.Style != 0 {
+				continue
+			}
+			var want yaml.Kind
+			switch {
+			case colls[k] == reflect.Slice && strings.HasPrefix(n.Value, "["):
+				want = yaml.SequenceNode
+			case colls[k] == reflect.Map && strings.HasPrefix(n.Value, "{"):
+				want = yaml.MappingNode
+			default:
 				continue
 			}
 			var doc yaml.Node
-			if err := yaml.Unmarshal([]byte(n.Value), &doc); err == nil && len(doc.Content) == 1 && doc.Content[0].Kind == yaml.SequenceNode {
+			if err := yaml.Unmarshal([]byte(n.Value), &doc); err == nil && len(doc.Content) == 1 && doc.Content[0].Kind == want {
 				if !cloned {
 					settings, cloned = maps.Clone(i.Settings), true
 				}
@@ -130,18 +140,19 @@ func nameLines(msg string, data []byte) string {
 	})
 }
 
-// listFields names the settings of the config struct t points to whose
-// fields are lists, by the key YAML decodes them from: the yaml tag's name,
-// else the field name lower-cased (yaml.v3's rule); inline structs count
-// as part of the outer one.
-func listFields(t reflect.Type) map[string]bool {
+// collectionFields names the settings of the config struct t points to
+// whose fields are lists or maps, with which (reflect.Slice for an array
+// too), by the key YAML decodes them from: the yaml tag's name, else the
+// field name lower-cased (yaml.v3's rule); inline structs count as part of
+// the outer one.
+func collectionFields(t reflect.Type) map[string]reflect.Kind {
 	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t == nil || t.Kind() != reflect.Struct {
 		return nil
 	}
-	out := map[string]bool{}
+	out := map[string]reflect.Kind{}
 	for f := range t.Fields() {
 		if !f.IsExported() {
 			continue
@@ -151,7 +162,7 @@ func listFields(t reflect.Type) map[string]bool {
 			continue
 		}
 		if strings.Contains(","+opts+",", ",inline,") {
-			maps.Copy(out, listFields(f.Type))
+			maps.Copy(out, collectionFields(f.Type))
 			continue
 		}
 		if name == "" {
@@ -161,8 +172,11 @@ func listFields(t reflect.Type) map[string]bool {
 		for ft.Kind() == reflect.Pointer {
 			ft = ft.Elem()
 		}
-		if ft.Kind() == reflect.Slice || ft.Kind() == reflect.Array {
-			out[name] = true
+		switch ft.Kind() {
+		case reflect.Slice, reflect.Array:
+			out[name] = reflect.Slice
+		case reflect.Map:
+			out[name] = reflect.Map
 		}
 	}
 	return out

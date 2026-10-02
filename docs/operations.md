@@ -139,7 +139,9 @@ shortcuts. An exporter is scraped with
 A label value reaches a setting as plain text that the check decodes:
 `"6379"` is a number where the setting wants one, and a text setting gets
 the value exactly as written (a password `0123` or `pa ss #1` stays as it
-is). A list is written in brackets, `"[200, 301]"`. Labels that do not make
+is). A list is written in brackets, `"[200, 301]"`, and a mapping in
+braces, `"{Authorization: Bearer x}"`; either is read so only where the
+setting is a list or a mapping. Labels that do not make
 a valid check are logged once and counted in
 `ozy.agent.autodiscovery.errors`. Settings are resolved again every sync: a
 container restarted with a new address gets its check rebuilt, and one

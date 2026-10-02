@@ -22,14 +22,15 @@ import (
 
 // probe is a check that records its settings.
 type probeConfig struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	Statuses []int  `yaml:"statuses"`
-	Verify   bool   `yaml:"verify"`
-	URL      string `yaml:"url"`
-	Password string `yaml:"password"`
-	DB       string `yaml:"db"`
-	Note     string `yaml:"note"`
+	Host     string            `yaml:"host"`
+	Port     int               `yaml:"port"`
+	Statuses []int             `yaml:"statuses"`
+	Verify   bool              `yaml:"verify"`
+	URL      string            `yaml:"url"`
+	Password string            `yaml:"password"`
+	DB       string            `yaml:"db"`
+	Note     string            `yaml:"note"`
+	Headers  map[string]string `yaml:"headers"`
 }
 
 type probe struct{ cfg probeConfig }
@@ -505,5 +506,23 @@ func TestInstance_TheDocumentedOpenMetricsLabelWorks(t *testing.T) {
 	}
 	if _, err := build(d, container("a1", "exporter", nil), "openmetrics", map[string]string{"path": "/metrics"}); err == nil {
 		t.Fatal("a path label, which is no openmetrics setting, was accepted")
+	}
+}
+
+// Review finding: a map setting (http_check's headers) could not be set
+// from a label at all. Brace text decodes as a mapping where the field is
+// a map, and stays text where it is a string.
+func TestInstance_BracesAreAMappingOnlyForAMapSetting(t *testing.T) {
+	d, _, _, _, _ := setup(t, Options{})
+	var seen probeConfig
+	d.opts.Checks = collector.Registry{"probe": func(inst collector.Instance) (collector.Collector, error) {
+		seen = probeConfig{}
+		return &probe{}, inst.Decode(&seen)
+	}}
+	if _, err := build(d, container("a1", "r", nil), "probe", map[string]string{"headers": "{Authorization: Bearer x, X-Env: prod}", "password": "{pw}"}); err != nil {
+		t.Fatal(err)
+	}
+	if seen.Headers["Authorization"] != "Bearer x" || seen.Headers["X-Env"] != "prod" || seen.Password != "{pw}" {
+		t.Fatalf("got %+v", seen)
 	}
 }
