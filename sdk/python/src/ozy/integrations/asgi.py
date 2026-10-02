@@ -27,9 +27,23 @@ Emitted metrics (tag set is bounded by construction)::
 
 Two cases the status tag has to be honest about. If the app raises before it
 sent a response, the server will answer 500, so that is what is recorded. If
-the client disconnects and the request is cancelled before a response started,
-the status is ``499`` (nginx's "client closed request"): calling it 500 would
-page someone for a user closing a tab.
+the request is cancelled before a response started, the cause decides: when
+the client's ``http.disconnect`` was seen on ``receive`` the status is ``499``
+(nginx's "client closed request"), because calling a closed tab a 500 would page
+someone for nothing. A cancellation with no disconnect behind it, such as a
+shutdown, a reload or a timeout scope outside this middleware, is the server's
+doing and is recorded as 500.
+
+The ``method`` tag is limited to the standard verbs, anything else is
+``OTHER``. A scanner can send any token as a method, and an unbounded tag is one
+series per value, the same reason the route is capped at ``unmatched``.
+
+Limits that cannot be fixed from inside a middleware, because the information is
+not in the scope: the pattern is relative to the router that matched, so a
+prefix given to ``include_router`` is not in it, and for a sub-app reached
+through Starlette's ``Mount`` the route may be absent (``unmatched``) or
+relative to the mount, depending on the Starlette version. Add the middleware
+inside a mounted sub-app if its routes need exact patterns.
 
 Rejected alternative: tagging the route in the middleware's *entry* from
 ``scope["path"]`` with an id-stripping regex. It needs a rule per app and
@@ -57,6 +71,10 @@ _log = logging.getLogger("ozy")
 
 UNMATCHED = "unmatched"
 CLIENT_CLOSED = 499
+OTHER = "OTHER"
+
+# The methods worth a series of their own. Everything else is ``OTHER``: see the module docstring.
+METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"})
 
 
 class MetricsMiddleware:
@@ -71,7 +89,10 @@ class MetricsMiddleware:
             ``ozy.statsd``, which is a no-op until ``ozy.init()`` enables it.
         exclude_paths: Exact request paths to leave unrecorded, for health
             checks and other endpoints polled so often they would drown the
-            real traffic. Matched against the raw path, so they cost no series.
+            real traffic. Matched exactly against the raw request path as the
+            server reports it, so ``/healthz`` does not exclude ``/healthz/``,
+            and behind a proxy that strips or adds a prefix the path to list is
+            whatever ``scope["path"]`` holds, which differs between servers.
         count_name: Metric name for the counter.
         duration_name: Metric name for the duration distribution.
     """
@@ -103,6 +124,14 @@ class MetricsMiddleware:
 
         started = time.perf_counter()
         status: int | None = None
+        disconnected = False
+
+        async def receive_wrapper() -> Message:
+            nonlocal disconnected
+            message = await receive()
+            if message.get("type") == "http.disconnect":
+                disconnected = True
+            return message
 
         async def send_wrapper(message: Message) -> None:
             nonlocal status
@@ -111,10 +140,10 @@ class MetricsMiddleware:
             await send(message)
 
         try:
-            await self.app(scope, receive, send_wrapper)
+            await self.app(scope, receive_wrapper, send_wrapper)
         except asyncio.CancelledError:
             if status is None:
-                status = CLIENT_CLOSED
+                status = CLIENT_CLOSED if disconnected else 500
             raise
         except BaseException:
             if status is None:
@@ -130,7 +159,7 @@ class MetricsMiddleware:
             code = 500 if status is None else status
             tags = [
                 f"route:{_route_pattern(scope)}",
-                f"method:{scope.get('method', 'UNKNOWN')}",
+                f"method:{_method(scope)}",
                 f"status:{code}",
                 f"status_class:{code // 100}xx",
             ]
@@ -145,3 +174,9 @@ def _route_pattern(scope: Scope) -> str:
     route = scope.get("route")
     path = getattr(route, "path", None)
     return path if isinstance(path, str) and path else UNMATCHED
+
+
+def _method(scope: Scope) -> str:
+    """The request method if it is a standard verb, else ``OTHER`` (see the module docstring)."""
+    method = scope.get("method")
+    return method if method in METHODS else OTHER

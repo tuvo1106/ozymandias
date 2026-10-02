@@ -208,7 +208,9 @@ app = FastAPI()
 app.add_middleware(MetricsMiddleware, exclude_paths=["/healthz"])
 ```
 
-Add it last so it is outermost and times the whole stack, including other middleware.
+Add it last, so it is the outermost middleware you have added and times the others. Starlette's
+own error handler still sits outside it, which is why a handler that raises is recorded here as
+`500`: this middleware sees the exception before the handler turns it into a response.
 
 | Metric | Type | Tags |
 |---|---|---|
@@ -219,13 +221,22 @@ Add it last so it is outermost and times the whole stack, including other middle
   `scope["route"]` after the inner app returns (routing has not happened when the request
   arrives). It is the path *as the framework reports it*: FastAPI's `include_router(prefix=...)`
   is not part of it, so an app mounted under `/api/v1` sees `/problems/{slug}`, not
-  `/api/v1/problems/{slug}`. `exclude_paths`, by contrast, matches the raw request path, so it
-  does include the prefix. A request that matched nothing is `route:unmatched`, so a scanner probing random
-  URLs is one series rather than thousands.
+  `/api/v1/problems/{slug}`. A sub-app reached through Starlette's `Mount` is similar: depending
+  on the Starlette version its route is relative to the mount, or absent and so `unmatched`. Neither
+  can be recovered from inside a middleware; to get exact patterns for a mounted app, add the
+  middleware inside it. A request that matched nothing is `route:unmatched`, so a scanner probing
+  random URLs is one series rather than thousands.
+- **`exclude_paths` matches the raw request path exactly**, as the server reports it in
+  `scope["path"]`. That does include a router prefix, but `/healthz` does not exclude
+  `/healthz/`, and behind a proxy that strips or adds a prefix the right value depends on
+  the server.
+- **`method` is one of the standard verbs, or `OTHER`.** A scanner can send any token as a
+  method, and an unbounded tag is one series per value.
 - **Status is honest.** An app that raises before answering is recorded as `500`, since that
-  is what the server will send. A request cancelled before any response started, which is
-  what a client disconnect looks like, is `499`, so closing a tab does not look like a
-  server fault. Once a response has started, its status stands even if the body then fails.
+  is what the server will send. A request cancelled before any response started is `499` only
+  when the client's disconnect was seen, so closing a tab does not look like a server fault.
+  A cancellation with no disconnect behind it (a shutdown, a reload, a timeout scope outside
+  this middleware) is the server's doing and is `500`. Once a response has started, its status stands even if the body then fails.
 - **WebSockets and lifespan events pass through unrecorded.** Duration for a socket that
   lives for an hour would mean nothing.
 - **It is pure ASGI**, not Starlette's `BaseHTTPMiddleware`, so streaming responses,

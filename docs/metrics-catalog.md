@@ -97,7 +97,7 @@ dashboard query works for either.
 
 | Metric | Type | Unit | Tags | Emitted by | Meaning |
 |---|---|---|---|---|---|
-| `http.request.count` | counter | requests | `route`, `method`, `status`, `status_class` | Python SDK `MetricsMiddleware`; Node apps by hand | HTTP requests served. `route` is the matched pattern, never the raw path; unmatched requests are `route:unmatched`. A request cancelled before a response started is `status:499` |
+| `http.request.count` | counter | requests | `route`, `method`, `status`, `status_class` | Python SDK `MetricsMiddleware`; Node apps by hand | HTTP requests served. `route` is the matched pattern, never the raw path; unmatched requests are `route:unmatched`. A request cancelled before a response started is `status:499` when the client had disconnected, else `500`; `method` is a standard verb or `OTHER` |
 | `http.request.duration` | distribution | ms | the same | the same | Time from request in to the inner app returning, so a streamed body is included |
 
 ## Python app metrics (`arq.*`, `judge.*`, `submission.*`, …)

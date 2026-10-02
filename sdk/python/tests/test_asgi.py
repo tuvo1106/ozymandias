@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Iterator, MutableMapping
 from types import SimpleNamespace
 from typing import Any
 
@@ -99,17 +99,49 @@ def test_error_after_response_started_keeps_the_sent_status(
     assert "status:200" in "".join(datagrams(agent, client))
 
 
-def test_cancelled_before_response_is_499_not_500(
+def test_cancelled_after_the_client_disconnected_is_499_not_500(
+    make_client: ClientFactory, agent: FakeAgent
+) -> None:
+    client = make_client()
+
+    async def sees_disconnect(scope: Any, receive: Any, send: Any) -> None:
+        await receive()  # the server's http.request
+        raise_after = await receive()  # then the disconnect
+        assert raise_after["type"] == "http.disconnect"
+        raise asyncio.CancelledError
+
+    messages: Iterator[dict[str, Any]] = iter(
+        [
+            {"type": "http.request", "body": b"", "more_body": False},
+            {"type": "http.disconnect"},
+        ]
+    )
+
+    async def receive() -> dict[str, Any]:
+        return next(messages)
+
+    async def send(message: Any) -> None:
+        return None
+
+    scope: dict[str, Any] = {"type": "http", "path": "/x", "method": "GET"}
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(MetricsMiddleware(sees_disconnect, client=client)(scope, receive, send))
+    assert "status:499,status_class:4xx" in "".join(datagrams(agent, client))
+
+
+def test_cancelled_with_no_disconnect_is_the_servers_doing_so_500(
     make_client: ClientFactory, agent: FakeAgent
 ) -> None:
     client = make_client()
 
     async def cancelled(scope: Any, receive: Any, send: Any) -> None:
-        raise asyncio.CancelledError
+        raise asyncio.CancelledError  # a shutdown or a timeout scope, not a closed tab
 
     with pytest.raises(asyncio.CancelledError):
         run_request(cancelled, client)
-    assert "status:499,status_class:4xx" in "".join(datagrams(agent, client))
+    lines = "".join(datagrams(agent, client))
+    assert "status:500,status_class:5xx" in lines
+    assert "499" not in lines
 
 
 def test_cancelled_after_response_started_keeps_the_sent_status(
@@ -212,3 +244,40 @@ def test_custom_metric_names(make_client: ClientFactory, agent: FakeAgent) -> No
     lines = datagrams(agent, client)
     assert any(line.startswith("web.hits:1|c") for line in lines)
     assert any(line.startswith("web.ms:") for line in lines)
+
+
+@pytest.mark.parametrize(
+    ("method", "expected"),
+    [
+        ("GET", "GET"),
+        ("DELETE", "DELETE"),
+        ("PROPFIND", "OTHER"),
+        ("X1", "OTHER"),
+        ("get", "OTHER"),
+    ],
+)
+def test_method_tag_is_limited_to_the_standard_verbs(
+    make_client: ClientFactory, agent: FakeAgent, method: str, expected: str
+) -> None:
+    client = make_client()
+    run_request(responder(200, "/r"), client, method=method)
+    assert f"method:{expected}," in "".join(datagrams(agent, client))
+
+
+def test_a_missing_method_is_other_not_a_crash(
+    make_client: ClientFactory, agent: FakeAgent
+) -> None:
+    client = make_client()
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request"}
+
+    async def send(message: Any) -> None:
+        return None
+
+    middleware = MetricsMiddleware(app, client=client)
+    asyncio.run(middleware({"type": "http", "path": "/x"}, receive, send))
+    assert "method:OTHER," in "".join(datagrams(agent, client))

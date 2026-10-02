@@ -259,7 +259,7 @@
     {
       "id": "sandbox-exits",
       "type": "timeseries",
-      "title": "Judge sandbox exits, by exit code",
+      "title": "Container exits, by container and exit code",
       "layout": {
         "x": 0,
         "y": 24,
@@ -268,7 +268,7 @@
       },
       "queries": [
         {
-          "q": "sum:container.exits{container_name:judge} by {exit_code}.as_count()",
+          "q": "sum:container.exits{$project} by {container_name,exit_code}.as_count()",
           "display": "bars"
         }
       ],
@@ -278,9 +278,9 @@
       }
     },
     {
-      "id": "accounts-queue-age",
-      "type": "query_value",
-      "title": "Oldest waiting email job",
+      "id": "queue-oldest-age",
+      "type": "timeseries",
+      "title": "Oldest unfinished job, by queue",
       "layout": {
         "x": 8,
         "y": 24,
@@ -289,23 +289,14 @@
       },
       "queries": [
         {
-          "q": "max:arq.queue.oldest_age_seconds{queue:accounts,$env}",
-          "reducer": "max"
+          "q": "max:arq.queue.oldest_age_seconds{$env} by {queue}",
+          "display": "line"
         }
       ],
-      "precision": 0,
-      "conditional_formats": [
-        {
-          "op": ">",
-          "value": 300,
-          "color": "red"
-        },
-        {
-          "op": ">",
-          "value": 60,
-          "color": "yellow"
-        }
-      ]
+      "yaxis": {
+        "min": 0,
+        "unit": "s"
+      }
     }
   ]
 }

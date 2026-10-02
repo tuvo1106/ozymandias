@@ -133,6 +133,12 @@ function buildOptions(
  * the legend hangs out of the widget it belongs to, which is what a fixed
  * "chrome height" guess got wrong: it could not know whether a widget had a
  * warnings row above the chart.
+ *
+ * The legend is capped at {@link MAX_LEGEND_SHARE} of the box and scrolls past
+ * that, so the plot keeps at least the remainder however many series there are.
+ * Before the first layout the box is 0: no cap is applied and the fallback
+ * height is used, and the next resize applies both. Not unit-tested, because
+ * jsdom has no layout; it was checked in a browser against a many-series widget.
  */
 function fit(plot: uPlot, el: HTMLElement, explicit: number | undefined) {
   const width = Math.floor(el.clientWidth) || 600;
