@@ -135,3 +135,24 @@ func TestRates_SweepScalesWithTheGap(t *testing.T) {
 		t.Fatal("a key unseen for over ForgetAfter was kept")
 	}
 }
+
+// Change is the signed difference, with no reset rule: a fall is a fall.
+func TestRates_Change(t *testing.T) {
+	r := NewRates()
+	at := time.Unix(1790000000, 0)
+	if _, ok := r.Change("s", 10, at); ok {
+		t.Fatal("a first reading has no change")
+	}
+	if d, ok := r.Change("s", 4, at.Add(time.Second)); !ok || d != -6 {
+		t.Fatalf("change = %v, %v; want -6", d, ok)
+	}
+	if _, ok := r.Change("s", math.NaN(), at.Add(2*time.Second)); ok {
+		t.Fatal("a NaN has no change")
+	}
+	if _, ok := r.Change("s", 1, at.Add(3*time.Second)); ok || !r.Has("s") {
+		t.Fatal("after a NaN the key starts over")
+	}
+	if cutoff := r.Sweep(at.Add(time.Hour)); !cutoff.Equal(at.Add(time.Hour - ForgetAfter)) {
+		t.Fatalf("Sweep's cutoff = %v", cutoff)
+	}
+}

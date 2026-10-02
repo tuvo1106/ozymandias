@@ -93,8 +93,25 @@ statsd_burst() { # <datagrams> <lines each> <line> — separate datagrams, one c
 # Scoped to the run, not to a fixed window: two smoke runs in a row would
 # otherwise sum to 50 and fail. One interval of slack, because the bucket that
 # holds the first sample starts before we do.
+# ozyd_now is ozyd's clock (its Date header): the VM's, which stamps every
+# point and can drift from the Mac's while the Mac sleeps — by hours, until
+# the VM steps it back. Query windows use it, not `date`, or a skewed VM
+# puts this run's points outside them. now_s falls back to the Mac's clock
+# when ozyd does not answer.
+ozyd_now() {
+  curl -fsS --max-time 2 -o /dev/null -D - "$OZY_URL/healthz" | tr -d '\r' |
+    python3 -c 'import sys, email.utils
+for line in sys.stdin:
+    if line.lower().startswith("date:"):
+        print(int(email.utils.parsedate_to_datetime(line[5:].strip()).timestamp()))'
+}
+now_s() {
+  local n
+  n=$(ozyd_now 2>/dev/null)
+  if [[ -n $n ]]; then echo "$n"; else date +%s; fi
+}
 query_sum() {
-  curl -fsS --max-time 5 "$OZY_URL/api/v1/query?metric=$1&agg=sum&from=$((M1_T0 - 10))&to=$(date +%s)" |
+  curl -fsS --max-time 5 "$OZY_URL/api/v1/query?metric=$1&agg=sum&from=$((M1_T0 - 10))&to=$(now_s)" |
     python3 -c 'import json,sys
 d = json.load(sys.stdin)
 pts = [p[1] for s in d.get("series", []) for p in s["points"] if p[1] is not None]
@@ -104,7 +121,7 @@ print(int(sum(pts)) if pts else "null")'
 # this run's window, or "null". Used for percentiles, where summing is
 # meaningless: what matters is the value itself.
 query_agg() {
-  curl -fsS --max-time 5 "$OZY_URL/api/v1/query?metric=$1&agg=$2&from=$((M1_T0 - 10))&to=$(date +%s)" |
+  curl -fsS --max-time 5 "$OZY_URL/api/v1/query?metric=$1&agg=$2&from=$((M1_T0 - 10))&to=$(now_s)" |
     python3 -c 'import json,sys
 d = json.load(sys.stdin)
 pts = [p[1] for s in d.get("series", []) for p in s["points"] if p[1] is not None]
@@ -141,7 +158,7 @@ wait_sum() {
 
 # Send everything first, then assert: one 10s flush covers all of it, so the
 # whole M1 block costs one flush rather than one per check.
-M1_T0=$(date +%s)
+M1_T0=$(now_s)
 N=25
 statsd_burst 5 5 'smoke.test:1|c|#source:smoke'          # 5 datagrams × 5 lines
 statsd 'smoke.gauge:1|g' 'smoke.gauge:2|g' 'smoke.gauge:7|g'
@@ -180,13 +197,7 @@ check "its tag keys are counted"           body_has "$OZY_URL/api/v1/tags/cardin
 # corrected backwards (old points would then be the newest for a while).
 # Right after a recreate the old container's last bucket is still in the
 # window; the retries outlast it. Tag values are lower-cased on the wire.
-ozyd_now() {
-  curl -fsS --max-time 2 -o /dev/null -D - "$OZY_URL/healthz" | tr -d '\r' |
-    python3 -c 'import sys, email.utils
-for line in sys.stdin:
-    if line.lower().startswith("date:"):
-        print(int(email.utils.parsedate_to_datetime(line[5:].strip()).timestamp()))'
-}
+# (ozyd_now is defined with query_sum, near the top.)
 recent_ozyd_hosts() {
   local now body
   now=$(ozyd_now 2>/dev/null) && [[ -n $now ]] || { echo "(ozyd unreachable)"; return; }
@@ -260,7 +271,7 @@ query_expr() {
   local expr=$1
   shift
   curl -fsS --max-time 5 --get "$OZY_URL/api/v1/query" \
-    --data-urlencode "q=$expr" -d "from=$((M1_T0 - 10))" -d "to=$(date +%s)" "$@" |
+    --data-urlencode "q=$expr" -d "from=$((M1_T0 - 10))" -d "to=$(now_s)" "$@" |
     python3 -c 'import json,sys
 d = json.load(sys.stdin)
 pts = [p[1] for s in d.get("series", []) for p in s["points"] if p[1] is not None]
@@ -287,11 +298,11 @@ check "a template variable binds"          test "$(query_expr \
 # The response says what it evaluated, canonically spelled — which is what a
 # dashboard stores and what somebody migrating off the M1 parameters copies.
 check "the response echoes the query"      test "$(field \
-  "$OZY_URL/api/v1/query?metric=smoke.latency.count&agg=sum&by=host&from=$((M1_T0 - 10))&to=$(date +%s)" \
+  "$OZY_URL/api/v1/query?metric=smoke.latency.count&agg=sum&by=host&from=$((M1_T0 - 10))&to=$(now_s)" \
   query)" = "sum:smoke.latency.count{*} by {host}"
 # And names each line the same way for every client.
 check "each line carries its scope"        test "$(field \
-  "$OZY_URL/api/v1/query?metric=smoke.latency.count&agg=sum&from=$((M1_T0 - 10))&to=$(date +%s)" \
+  "$OZY_URL/api/v1/query?metric=smoke.latency.count&agg=sum&from=$((M1_T0 - 10))&to=$(now_s)" \
   series 0 scope)" = "*"
 # POST takes the same query, because a dashboard's outgrows a URL.
 # post_query <json body> — Σ of every non-null point, as an integer.
@@ -305,7 +316,7 @@ print(int(sum(p[1] for s in d["series"] for p in s["points"] if p[1] is not None
 # The body is built here and not inside the `$(…)` below: a `\"` written inside
 # a command substitution inside a quoted argument reaches curl as a literal
 # backslash, and the server sees JSON that is not the JSON written here.
-post_body="{\"q\": \"sum:smoke.latency.count{*}\", \"from\": $((M1_T0 - 10)), \"to\": $(date +%s)}"
+post_body="{\"q\": \"sum:smoke.latency.count{*}\", \"from\": $((M1_T0 - 10)), \"to\": $(now_s)}"
 check "POST takes a query body"            test "$(post_query "$post_body")" = "100"
 
 # The editor endpoint answers 200 with a column to underline, not an exception.
@@ -335,7 +346,7 @@ batch_body="{\"queries\": ["
 batch_body="$batch_body {\"q\": \"sum:smoke.latency.count{*}\"},"
 batch_body="$batch_body {\"q\": \"avg:smoke.latency.count{*} by {host}\"},"
 batch_body="$batch_body {\"q\": \"sum:smoke.latency.count{\"}"
-batch_body="$batch_body ], \"from\": $((M1_T0 - 10)), \"to\": $(date +%s)}"
+batch_body="$batch_body ], \"from\": $((M1_T0 - 10)), \"to\": $(now_s)}"
 # batch_field <expr> — a python expression over the decoded response, as `d`.
 batch_field() {
   curl -fsS --max-time 10 "$OZY_URL/api/v1/query/batch" -d "$batch_body" |
@@ -375,7 +386,7 @@ check "the batch does not claim one grid"  test "$(batch_field '"interval" in d'
 # decodes.
 sketch_field() { # <python expression over the decoded response, as `d`>
   curl -fsS --max-time 10 \
-    "$OZY_URL/api/v1/query/sketch?q=dist:smoke.latency%7B*%7D&from=$((M1_T0 - 10))&to=$(date +%s)" |
+    "$OZY_URL/api/v1/query/sketch?q=dist:smoke.latency%7B*%7D&from=$((M1_T0 - 10))&to=$(now_s)" |
     python3 -c "import json,sys
 d = json.load(sys.stdin)
 print($1)"
@@ -404,7 +415,7 @@ check "the response claims no one gamma"   test "$(sketch_field '"gamma" in d')"
 # The two endpoints know where the other one is — a 400 either way, with the
 # other endpoint named, rather than an empty 200.
 sketch_err() { # <query> <endpoint> — the error message
-  curl -sS --max-time 5 "$OZY_URL/api/v1/$2?q=$1&from=$((M1_T0 - 10))&to=$(date +%s)" |
+  curl -sS --max-time 5 "$OZY_URL/api/v1/$2?q=$1&from=$((M1_T0 - 10))&to=$(now_s)" |
     python3 -c 'import json,sys; print(json.load(sys.stdin).get("error", ""))'
 }
 check "a number is sent to /query"         test -n "$(sketch_err 'p95:smoke.latency%7B*%7D' 'query/sketch' | grep 'api/v1/query')"
@@ -413,7 +424,7 @@ check "a distribution is sent to /sketch"  test -n "$(sketch_err 'dist:smoke.lat
 # covers it: a dashboard's `dist:` query carries `$service`/`$env` and the
 # bindings are an object, which is why it is not a query string.
 # Built in a variable first — see the note above the single-query POST.
-sketch_post_body="{\"q\": \"dist:smoke.latency{\$scope}\", \"from\": $((M1_T0 - 10)), \"to\": $(date +%s), \"vars\": {\"scope\": []}}"
+sketch_post_body="{\"q\": \"dist:smoke.latency{\$scope}\", \"from\": $((M1_T0 - 10)), \"to\": $(now_s), \"vars\": {\"scope\": []}}"
 sketch_post_field() { # <python expression over the decoded response, as `d`>
   curl -fsS --max-time 10 "$OZY_URL/api/v1/query/sketch" -d "$sketch_post_body" |
     python3 -c "import json,sys
@@ -621,7 +632,15 @@ print(sum(p[1] for s in json.load(sys.stdin).get("series", []) for p in s["point
 # the same window: zero errors from runs that happened, not from silence.
 no_errors() { # <collector>
   local runs errs
-  runs=$(sum_window "sum:ozy.agent.collector.runs{collector:$1}" 90) || return 1
+  # A collector that just started (a discovered check) may have run before
+  # its self-metrics were next reported: wait for the runs to arrive. Runs
+  # and errors are reported together, so once runs are there, so are errors.
+  local i
+  for ((i = 0; i < 30; i++)); do
+    runs=$(sum_window "sum:ozy.agent.collector.runs{collector:$1}" 90) || return 1
+    python3 -c "import sys; sys.exit(0 if float('$runs') > 0 else 1)" && break
+    sleep 1
+  done
   python3 -c "import sys; sys.exit(0 if float('$runs') > 0 else 1)" || { echo "$1: no runs reported in 90s" >&2; return 1; }
   errs=$(sum_window "sum:ozy.agent.collector.errors{collector:$1}" 90) || return 1
   python3 -c "import sys; sys.exit(0 if float('$errs') == 0 else 1)" || { echo "$1: $errs errors in 90s" >&2; return 1; }
@@ -649,8 +668,8 @@ wait_since() { # <query> <seconds> — until the section's sum is positive
   return 1
 }
 smoke_ct=ozy-smoke
-docker rm -f "$smoke_ct-long" "$smoke_ct-short" >/dev/null 2>&1 || true
-trap 'docker rm -f "$smoke_ct-long" "$smoke_ct-short" >/dev/null 2>&1 || true' EXIT
+docker rm -f "$smoke_ct-long" "$smoke_ct-short" "$smoke_ct-redis" >/dev/null 2>&1 || true
+trap 'docker rm -f "$smoke_ct-long" "$smoke_ct-short" "$smoke_ct-redis" >/dev/null 2>&1 || true' EXIT
 docker_since=$(ozyd_now 2>/dev/null) || docker_since=$(date +%s)
 # Started under check, so a failure (no busybox offline, no daemon) is a ✗
 # with its reason, not set -e ending smoke without a summary.
@@ -661,5 +680,16 @@ check "a container too brief to poll still counts" wait_since "sum:container.exi
 docker stop -t 0 "$smoke_ct-long" >/dev/null 2>&1 || true
 check "and so does a stopped one"              wait_since "sum:container.exits{container_name:$smoke_ct-long}" 30
 docker rm -f "$smoke_ct-long" >/dev/null 2>&1 || true
+
+# Checks by autodiscovery: a Redis container that asks for the redis check
+# with labels, on the agent's network so %%host%% is reachable. The check is
+# named redis:<container>, and its metrics carry the container's tags.
+check "a labelled Redis container starts"      docker run -d --rm --name "$smoke_ct-redis" --network ozymandias \
+  --label 'ozy.check.redis.host=%%host%%' --label 'ozy.check.redis.port=%%port%%' \
+  redis:7-alpine
+check "a labelled container gets its check"    wait_since "max:redis.can_connect{container_name:$smoke_ct-redis}" 45
+check "which reads the server"                 wait_since "max:redis.net.clients{container_name:$smoke_ct-redis}" 30
+check "and runs without errors"                no_errors "redis:$smoke_ct-redis"
+docker stop -t 1 "$smoke_ct-redis" >/dev/null 2>&1 || true
 
 echo "smoke: $pass checks passed"

@@ -32,6 +32,9 @@ func Normalize(tags []string) []string {
 // passes a slice it owns, ideally with room for len(agentTags)+1 more: on
 // the statsd path that saves a copy per sample (the caller has just built
 // the slice from the raw tags anyway).
+//
+// DecorateKeeping is the variant for a metric some of whose tags must
+// survive the cap.
 func Decorate(tags, agentTags []string, hostTag string) (out []string, dropped int) {
 	out = append(tags, agentTags...)
 	if hostTag != "" && !wire.HasTagKey(out, "host") {
@@ -43,4 +46,100 @@ func Decorate(tags, agentTags []string, hostTag string) (out []string, dropped i
 		out = out[:wire.MaxTagsPerPoint]
 	}
 	return slices.Clip(out), dropped
+}
+
+// DecorateKeeping is Decorate for a series whose tags come in two kinds:
+// own, what the source reported (a scraped page's labels, which may be
+// many), and keep, the tags that say whose series it is (the check
+// instance, its container, its replica). Decorate's cap cuts the sorted
+// set, so it removes whichever tags sort last — a replica tag behind fifty
+// scraped labels — and two series that differed only there would collide.
+// Here the cap trims own tags first: keep, the agent's tags, the host tag
+// and any own host tag are kept, and own tags fill what room is left, in
+// sorted order so the same ones always survive.
+//
+// It renames nothing: a clashing own tag is ExportClashes' business, and
+// whether to apply it is the caller's.
+func DecorateKeeping(own, keep, agentTags []string, hostTag string) (out []string, dropped int) {
+	if len(keep) == 0 || len(own)+len(keep)+len(agentTags)+1 <= wire.MaxTagsPerPoint {
+		// Nothing to choose between: everything fits, so this is
+		// Decorate, without the set and the extra sorts below. The common
+		// case, on the scheduler's per-metric path.
+		return Decorate(append(own, keep...), agentTags, hostTag)
+	}
+	fixed := make([]string, 0, len(keep)+len(agentTags)+2)
+	fixed = append(append(fixed, keep...), agentTags...)
+	for _, t := range own {
+		if k, _ := wire.SplitTag(t); k == "host" {
+			fixed = append(fixed, t)
+		}
+	}
+	if hostTag != "" && !wire.HasTagKey(fixed, "host") {
+		fixed = append(fixed, hostTag)
+	}
+	fixed = wire.CanonicalTags(fixed)
+	if len(fixed) > wire.MaxTagsPerPoint {
+		dropped = len(fixed) - wire.MaxTagsPerPoint
+		fixed = fixed[:wire.MaxTagsPerPoint]
+	}
+	in := make(map[string]bool, len(fixed))
+	for _, t := range fixed {
+		in[t] = true
+	}
+	var rest []string
+	for _, t := range wire.CanonicalTags(slices.Clone(own)) {
+		if !in[t] {
+			rest = append(rest, t)
+		}
+	}
+	if room := wire.MaxTagsPerPoint - len(fixed); len(rest) > room {
+		dropped += len(rest) - room
+		rest = rest[:room]
+	}
+	return wire.CanonicalTags(append(fixed, rest...)), dropped
+}
+
+// ExportClashes renames each own tag whose key a keep tag or an agent tag
+// also has, with another value: key:v becomes exported_key:v, as
+// Prometheus renames a scraped label that clashes with a target label. A
+// page's service="checkout" beside the container's service:shop-api, or
+// its env="staging" beside the agent's env:prod, would otherwise give one
+// series two values for one key, and a group-by on that key would count it
+// in both groups. host is the exception: a check that reports another
+// machine says so with its own host tag. One the longer key makes
+// unsendable is dropped, and counted.
+//
+// For a check's metrics, whose own tags are whatever a scraped page said.
+// A built-in collector's tags (a container's service:) are the agent's own
+// reading and are left as Decorate leaves statsd's. Which a series is, the
+// caller knows; it is not guessed from keep, which a lone unnamed check
+// instance has none of. own is rewritten in place.
+func ExportClashes(own, keep, agentTags []string) (out []string, dropped int) {
+	return exportClashes(own, append(slices.Clip(keep), agentTags...))
+}
+
+func exportClashes(own, keep []string) (out []string, dropped int) {
+	if len(keep) == 0 || len(own) == 0 {
+		return own, 0
+	}
+	keys := make(map[string]bool, len(keep))
+	same := make(map[string]bool, len(keep))
+	for _, t := range keep {
+		k, _ := wire.SplitTag(t)
+		keys[k], same[t] = true, true
+	}
+	out = own[:0]
+	for _, t := range own {
+		// The same tag twice is one tag, not a clash.
+		if k, v := wire.SplitTag(t); k != "host" && keys[k] && !same[t] {
+			n, ok := wire.NormalizeTag(wire.JoinTag("exported_"+k, v))
+			if !ok {
+				dropped++
+				continue
+			}
+			t = n
+		}
+		out = append(out, t)
+	}
+	return out, dropped
 }

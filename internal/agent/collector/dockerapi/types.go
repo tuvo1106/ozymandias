@@ -18,6 +18,28 @@ type Container struct {
 	// been re-pointed or removed. See [ParseImage].
 	Image  string            `json:"Image"`
 	Labels map[string]string `json:"Labels"`
+	// Ports are the container's exposed ports, published or not.
+	Ports           []Port          `json:"Ports"`
+	NetworkSettings NetworkSettings `json:"NetworkSettings"`
+}
+
+// Port is one exposed port. PrivatePort is the port inside the container,
+// which is what another container on the same network connects to.
+type Port struct {
+	PrivatePort int `json:"PrivatePort"`
+	// Type is the port's protocol, "tcp", "udp" or "sctp". Empty from a
+	// daemon or fake that leaves it out; read that as tcp, Docker's default.
+	Type string `json:"Type"`
+}
+
+// NetworkSettings lists the networks a container is attached to.
+type NetworkSettings struct {
+	Networks map[string]EndpointSettings `json:"Networks"`
+}
+
+// EndpointSettings is a container's address on one network.
+type EndpointSettings struct {
+	IPAddress string `json:"IPAddress"`
 }
 
 // Name returns the container's name without the leading "/", or its

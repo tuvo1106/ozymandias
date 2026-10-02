@@ -1,0 +1,31 @@
+family http_request_duration_seconds type=histogram help="Latency of HTTP requests."
+  http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="0.005"} 12
+  http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="0.01"} 40
+  http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="0.025"} 81
+  http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="0.05"} 95
+  http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="0.1"} 99
+  http_request_duration_seconds_bucket{handler="/api/v1/query",method="GET",le="+Inf"} 100
+  http_request_duration_seconds_sum{handler="/api/v1/query",method="GET"} 1.52
+  http_request_duration_seconds_count{handler="/api/v1/query",method="GET"} 100
+  histogram{handler="/api/v1/query",method="GET"} sum=1.52(true) count=100(true) [≤0.005:12] [≤0.01:40] [≤0.025:81] [≤0.05:95] [≤0.1:99] [≤+Inf:100]
+family rpc_durations_seconds type=summary help="RPC latency distributions."
+  rpc_durations_seconds{service="exponential",quantile="0.5"} 7.23e-07
+  rpc_durations_seconds{service="exponential",quantile="0.9"} 2.3e-06
+  rpc_durations_seconds{service="exponential",quantile="0.99"} 4.9e-06
+  rpc_durations_seconds_sum{service="exponential"} 0.0079
+  rpc_durations_seconds_count{service="exponential"} 7921
+family temperature_celsius type=histogram help="Temperature, which can be negative."
+  temperature_celsius_bucket{le="-20"} 0
+  temperature_celsius_bucket{le="-10"} 3
+  temperature_celsius_bucket{le="0"} 20
+  temperature_celsius_bucket{le="10"} 71
+  temperature_celsius_bucket{le="+Inf"} 80
+  temperature_celsius_sum 312.5
+  temperature_celsius_count 80
+  histogram sum=312.5(true) count=80(true) [≤-20:0] [≤-10:3] [≤0:20] [≤10:71] [≤+Inf:80]
+family build_info type=gauge help="A metric with a constant '1' value labeled by version, \"revision\" \\ and goversion."
+  build_info{goversion="go1.25.1",revision="0000000",version="v1.2.3",path="C:\\app\\bin",note="line\nbreak \"quoted\""} 1
+family process_start_time_seconds type=gauge help="Start time of the process since unix epoch in seconds."
+  process_start_time_seconds 1.75907e+09
+family legacy_gauge_with_timestamp type=gauge help="A gauge carrying an explicit timestamp."
+  legacy_gauge_with_timestamp 42 @1759071234567ms

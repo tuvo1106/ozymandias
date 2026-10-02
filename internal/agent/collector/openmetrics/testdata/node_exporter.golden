@@ -1,0 +1,425 @@
+family go_gc_duration_seconds type=summary help="A summary of the pause duration of garbage collection cycles."
+  go_gc_duration_seconds{quantile="0"} 1.9e-05
+  go_gc_duration_seconds{quantile="0.25"} 3.1e-05
+  go_gc_duration_seconds{quantile="0.5"} 4.2e-05
+  go_gc_duration_seconds{quantile="0.75"} 6.8e-05
+  go_gc_duration_seconds{quantile="1"} 0.000612
+  go_gc_duration_seconds_sum 0.184
+  go_gc_duration_seconds_count 2873
+family go_goroutines type=gauge help="Number of goroutines that currently exist."
+  go_goroutines 9
+family node_boot_time_seconds type=gauge help="Node boot time, in unixtime."
+  node_boot_time_seconds 1.7590712e+09
+family node_cpu_seconds_total type=counter help="Seconds the CPUs spent in each mode."
+  node_cpu_seconds_total{cpu="0",mode="idle"} 29144.95
+  node_cpu_seconds_total{cpu="0",mode="iowait"} 13576.43
+  node_cpu_seconds_total{cpu="0",mode="irq"} 58584.1
+  node_cpu_seconds_total{cpu="0",mode="nice"} 6519.27
+  node_cpu_seconds_total{cpu="0",mode="softirq"} 48229.38
+  node_cpu_seconds_total{cpu="0",mode="steal"} 32912
+  node_cpu_seconds_total{cpu="0",mode="system"} 5219.9
+  node_cpu_seconds_total{cpu="0",mode="user"} 45669.22
+  node_cpu_seconds_total{cpu="1",mode="idle"} 3374.61
+  node_cpu_seconds_total{cpu="1",mode="iowait"} 39028.11
+  node_cpu_seconds_total{cpu="1",mode="irq"} 6286.99
+  node_cpu_seconds_total{cpu="1",mode="nice"} 8164.17
+  node_cpu_seconds_total{cpu="1",mode="softirq"} 38206.73
+  node_cpu_seconds_total{cpu="1",mode="steal"} 74416.69
+  node_cpu_seconds_total{cpu="1",mode="system"} 11142.18
+  node_cpu_seconds_total{cpu="1",mode="user"} 20091.51
+  node_cpu_seconds_total{cpu="2",mode="idle"} 56468.99
+  node_cpu_seconds_total{cpu="2",mode="iowait"} 85293.8
+  node_cpu_seconds_total{cpu="2",mode="irq"} 51939.27
+  node_cpu_seconds_total{cpu="2",mode="nice"} 35701.24
+  node_cpu_seconds_total{cpu="2",mode="softirq"} 87862.96
+  node_cpu_seconds_total{cpu="2",mode="steal"} 4192.44
+  node_cpu_seconds_total{cpu="2",mode="system"} 77262.16
+  node_cpu_seconds_total{cpu="2",mode="user"} 26064.84
+  node_cpu_seconds_total{cpu="3",mode="idle"} 12982.96
+  node_cpu_seconds_total{cpu="3",mode="iowait"} 10601.3
+  node_cpu_seconds_total{cpu="3",mode="irq"} 27763.36
+  node_cpu_seconds_total{cpu="3",mode="nice"} 73451.37
+  node_cpu_seconds_total{cpu="3",mode="softirq"} 16265.37
+  node_cpu_seconds_total{cpu="3",mode="steal"} 52344.01
+  node_cpu_seconds_total{cpu="3",mode="system"} 57502.21
+  node_cpu_seconds_total{cpu="3",mode="user"} 33515.78
+  node_cpu_seconds_total{cpu="4",mode="idle"} 49297
+  node_cpu_seconds_total{cpu="4",mode="iowait"} 5651.01
+  node_cpu_seconds_total{cpu="4",mode="irq"} 5364.11
+  node_cpu_seconds_total{cpu="4",mode="nice"} 18536.28
+  node_cpu_seconds_total{cpu="4",mode="softirq"} 61236
+  node_cpu_seconds_total{cpu="4",mode="steal"} 38483.31
+  node_cpu_seconds_total{cpu="4",mode="system"} 28273.25
+  node_cpu_seconds_total{cpu="4",mode="user"} 52700.57
+  node_cpu_seconds_total{cpu="5",mode="idle"} 40786.59
+  node_cpu_seconds_total{cpu="5",mode="iowait"} 26979.03
+  node_cpu_seconds_total{cpu="5",mode="irq"} 71494.15
+  node_cpu_seconds_total{cpu="5",mode="nice"} 62909.5
+  node_cpu_seconds_total{cpu="5",mode="softirq"} 21968.69
+  node_cpu_seconds_total{cpu="5",mode="steal"} 51698.13
+  node_cpu_seconds_total{cpu="5",mode="system"} 47267.69
+  node_cpu_seconds_total{cpu="5",mode="user"} 78762.37
+  node_cpu_seconds_total{cpu="6",mode="idle"} 65650.08
+  node_cpu_seconds_total{cpu="6",mode="iowait"} 25914.4
+  node_cpu_seconds_total{cpu="6",mode="irq"} 88215.74
+  node_cpu_seconds_total{cpu="6",mode="nice"} 10625.92
+  node_cpu_seconds_total{cpu="6",mode="softirq"} 37631.05
+  node_cpu_seconds_total{cpu="6",mode="steal"} 68142.68
+  node_cpu_seconds_total{cpu="6",mode="system"} 13678.61
+  node_cpu_seconds_total{cpu="6",mode="user"} 44006.68
+  node_cpu_seconds_total{cpu="7",mode="idle"} 3528.65
+  node_cpu_seconds_total{cpu="7",mode="iowait"} 60139.43
+  node_cpu_seconds_total{cpu="7",mode="irq"} 68811.38
+  node_cpu_seconds_total{cpu="7",mode="nice"} 51572.33
+  node_cpu_seconds_total{cpu="7",mode="softirq"} 78793
+  node_cpu_seconds_total{cpu="7",mode="steal"} 28237.28
+  node_cpu_seconds_total{cpu="7",mode="system"} 62576.58
+  node_cpu_seconds_total{cpu="7",mode="user"} 53493.29
+  node_cpu_seconds_total{cpu="8",mode="idle"} 52190.57
+  node_cpu_seconds_total{cpu="8",mode="iowait"} 41058.48
+  node_cpu_seconds_total{cpu="8",mode="irq"} 75597.1
+  node_cpu_seconds_total{cpu="8",mode="nice"} 85021.3
+  node_cpu_seconds_total{cpu="8",mode="softirq"} 42668.85
+  node_cpu_seconds_total{cpu="8",mode="steal"} 59773.7
+  node_cpu_seconds_total{cpu="8",mode="system"} 5460.25
+  node_cpu_seconds_total{cpu="8",mode="user"} 63134.28
+  node_cpu_seconds_total{cpu="9",mode="idle"} 58241.6
+  node_cpu_seconds_total{cpu="9",mode="iowait"} 89378.63
+  node_cpu_seconds_total{cpu="9",mode="irq"} 73973.23
+  node_cpu_seconds_total{cpu="9",mode="nice"} 25613.6
+  node_cpu_seconds_total{cpu="9",mode="softirq"} 34721.23
+  node_cpu_seconds_total{cpu="9",mode="steal"} 60178.74
+  node_cpu_seconds_total{cpu="9",mode="system"} 2030.66
+  node_cpu_seconds_total{cpu="9",mode="user"} 41552.58
+  node_cpu_seconds_total{cpu="10",mode="idle"} 15124.35
+  node_cpu_seconds_total{cpu="10",mode="iowait"} 10538.62
+  node_cpu_seconds_total{cpu="10",mode="irq"} 5305.9
+  node_cpu_seconds_total{cpu="10",mode="nice"} 69140.97
+  node_cpu_seconds_total{cpu="10",mode="softirq"} 11640.62
+  node_cpu_seconds_total{cpu="10",mode="steal"} 22285.34
+  node_cpu_seconds_total{cpu="10",mode="system"} 35185.47
+  node_cpu_seconds_total{cpu="10",mode="user"} 78427.98
+  node_cpu_seconds_total{cpu="11",mode="idle"} 7252.32
+  node_cpu_seconds_total{cpu="11",mode="iowait"} 40426.87
+  node_cpu_seconds_total{cpu="11",mode="irq"} 49449.59
+  node_cpu_seconds_total{cpu="11",mode="nice"} 79504.54
+  node_cpu_seconds_total{cpu="11",mode="softirq"} 73735.19
+  node_cpu_seconds_total{cpu="11",mode="steal"} 77758.6
+  node_cpu_seconds_total{cpu="11",mode="system"} 25057.9
+  node_cpu_seconds_total{cpu="11",mode="user"} 37376.69
+  node_cpu_seconds_total{cpu="12",mode="idle"} 32289.4
+  node_cpu_seconds_total{cpu="12",mode="iowait"} 79577.35
+  node_cpu_seconds_total{cpu="12",mode="irq"} 86195.81
+  node_cpu_seconds_total{cpu="12",mode="nice"} 13582.88
+  node_cpu_seconds_total{cpu="12",mode="softirq"} 15859.6
+  node_cpu_seconds_total{cpu="12",mode="steal"} 20876.12
+  node_cpu_seconds_total{cpu="12",mode="system"} 21000.25
+  node_cpu_seconds_total{cpu="12",mode="user"} 43646.65
+  node_cpu_seconds_total{cpu="13",mode="idle"} 53021.12
+  node_cpu_seconds_total{cpu="13",mode="iowait"} 23647.2
+  node_cpu_seconds_total{cpu="13",mode="irq"} 368.42
+  node_cpu_seconds_total{cpu="13",mode="nice"} 37705.19
+  node_cpu_seconds_total{cpu="13",mode="softirq"} 33232.82
+  node_cpu_seconds_total{cpu="13",mode="steal"} 50970.71
+  node_cpu_seconds_total{cpu="13",mode="system"} 85778.81
+  node_cpu_seconds_total{cpu="13",mode="user"} 62144.43
+  node_cpu_seconds_total{cpu="14",mode="idle"} 46394.23
+  node_cpu_seconds_total{cpu="14",mode="iowait"} 55583.35
+  node_cpu_seconds_total{cpu="14",mode="irq"} 60858.01
+  node_cpu_seconds_total{cpu="14",mode="nice"} 4859.36
+  node_cpu_seconds_total{cpu="14",mode="softirq"} 80957.97
+  node_cpu_seconds_total{cpu="14",mode="steal"} 70197.25
+  node_cpu_seconds_total{cpu="14",mode="system"} 78706.19
+  node_cpu_seconds_total{cpu="14",mode="user"} 71808.58
+  node_cpu_seconds_total{cpu="15",mode="idle"} 35314.1
+  node_cpu_seconds_total{cpu="15",mode="iowait"} 35908.09
+  node_cpu_seconds_total{cpu="15",mode="irq"} 9318.34
+  node_cpu_seconds_total{cpu="15",mode="nice"} 57086.06
+  node_cpu_seconds_total{cpu="15",mode="softirq"} 5602.3
+  node_cpu_seconds_total{cpu="15",mode="steal"} 6061.29
+  node_cpu_seconds_total{cpu="15",mode="system"} 18788.69
+  node_cpu_seconds_total{cpu="15",mode="user"} 14607.29
+family node_disk_io_time_seconds_total type=counter help="Total seconds spent doing I/Os."
+  node_disk_io_time_seconds_total{device="nvme0n1"} 1700.268
+  node_disk_io_time_seconds_total{device="nvme1n1"} 262.878
+  node_disk_io_time_seconds_total{device="sda"} 1.166
+  node_disk_io_time_seconds_total{device="sdb"} 756.325
+  node_disk_io_time_seconds_total{device="dm-0"} 507.322
+  node_disk_io_time_seconds_total{device="dm-1"} 1818.05
+  node_disk_io_time_seconds_total{device="loop0"} 127.504
+  node_disk_io_time_seconds_total{device="loop1"} 4371.662
+family node_disk_read_bytes_total type=counter help="The total number of bytes read successfully."
+  node_disk_read_bytes_total{device="nvme0n1"} 4.14954266652e+11
+  node_disk_read_bytes_total{device="nvme1n1"} 6.96422721437e+11
+  node_disk_read_bytes_total{device="sda"} 6.62916990321e+11
+  node_disk_read_bytes_total{device="sdb"} 5.21255112872e+11
+  node_disk_read_bytes_total{device="dm-0"} 1.25081654955e+11
+  node_disk_read_bytes_total{device="dm-1"} 5.3622210103e+11
+  node_disk_read_bytes_total{device="loop0"} 5.25987419607e+11
+  node_disk_read_bytes_total{device="loop1"} 3.41380470411e+11
+family node_disk_written_bytes_total type=counter help="The total number of bytes written successfully."
+  node_disk_written_bytes_total{device="nvme0n1"} 1.54987694494e+11
+  node_disk_written_bytes_total{device="nvme1n1"} 8.20777646003e+11
+  node_disk_written_bytes_total{device="sda"} 8.1322042867e+11
+  node_disk_written_bytes_total{device="sdb"} 5.25123132314e+11
+  node_disk_written_bytes_total{device="dm-0"} 7.63769118139e+11
+  node_disk_written_bytes_total{device="dm-1"} 5.67629056622e+11
+  node_disk_written_bytes_total{device="loop0"} 2.23437494771e+11
+  node_disk_written_bytes_total{device="loop1"} 3.9740583948e+11
+family node_disk_reads_completed_total type=counter help="The total number of reads completed successfully."
+  node_disk_reads_completed_total{device="nvme0n1"} 7.56543897195e+11
+  node_disk_reads_completed_total{device="nvme1n1"} 8.33339802029e+11
+  node_disk_reads_completed_total{device="sda"} 3.28685727269e+11
+  node_disk_reads_completed_total{device="sdb"} 7.08577267371e+11
+  node_disk_reads_completed_total{device="dm-0"} 1.02492200594e+11
+  node_disk_reads_completed_total{device="dm-1"} 9.30703078343e+11
+  node_disk_reads_completed_total{device="loop0"} 5.68057164296e+11
+  node_disk_reads_completed_total{device="loop1"} 9.98007376279e+11
+family node_disk_writes_completed_total type=counter help="The total number of writes completed successfully."
+  node_disk_writes_completed_total{device="nvme0n1"} 3.91559464006e+11
+  node_disk_writes_completed_total{device="nvme1n1"} 2.48128583958e+11
+  node_disk_writes_completed_total{device="sda"} 5.94992953764e+11
+  node_disk_writes_completed_total{device="sdb"} 5.53101829152e+11
+  node_disk_writes_completed_total{device="dm-0"} 6.97200602306e+11
+  node_disk_writes_completed_total{device="dm-1"} 6.7097285485e+11
+  node_disk_writes_completed_total{device="loop0"} 8.66773840736e+11
+  node_disk_writes_completed_total{device="loop1"} 8.37453880587e+11
+family node_filesystem_avail_bytes type=gauge help="Filesystem space available to non-root users in bytes."
+  node_filesystem_avail_bytes{device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/"} 2.9431816586e+10
+  node_filesystem_avail_bytes{device="/dev/nvme0n1p1",fstype="vfat",mountpoint="/boot/efi"} 3.3526852242e+10
+  node_filesystem_avail_bytes{device="tmpfs",fstype="tmpfs",mountpoint="/run"} 5.5054320791e+10
+  node_filesystem_avail_bytes{device="tmpfs",fstype="tmpfs",mountpoint="/run/lock"} 2.6743642469e+10
+  node_filesystem_avail_bytes{device="/dev/sda1",fstype="xfs",mountpoint="/data"} 6.664775084e+10
+family node_filesystem_size_bytes type=gauge help="Filesystem stat."
+  node_filesystem_size_bytes{device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/"} 6.5624602939e+10
+  node_filesystem_size_bytes{device="/dev/nvme0n1p1",fstype="vfat",mountpoint="/boot/efi"} 2.6882949202e+10
+  node_filesystem_size_bytes{device="tmpfs",fstype="tmpfs",mountpoint="/run"} 8.45787377e+10
+  node_filesystem_size_bytes{device="tmpfs",fstype="tmpfs",mountpoint="/run/lock"} 5.1352841224e+10
+  node_filesystem_size_bytes{device="/dev/sda1",fstype="xfs",mountpoint="/data"} 5.1488231404e+10
+family node_filesystem_free_bytes type=gauge help="Filesystem stat."
+  node_filesystem_free_bytes{device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/"} 1.0156033797e+10
+  node_filesystem_free_bytes{device="/dev/nvme0n1p1",fstype="vfat",mountpoint="/boot/efi"} 1.3831780352e+10
+  node_filesystem_free_bytes{device="tmpfs",fstype="tmpfs",mountpoint="/run"} 6.539880486e+10
+  node_filesystem_free_bytes{device="tmpfs",fstype="tmpfs",mountpoint="/run/lock"} 4.3794519517e+10
+  node_filesystem_free_bytes{device="/dev/sda1",fstype="xfs",mountpoint="/data"} 6.5302286355e+10
+family node_filesystem_files type=gauge help="Filesystem stat."
+  node_filesystem_files{device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/"} 8.5471173493e+10
+  node_filesystem_files{device="/dev/nvme0n1p1",fstype="vfat",mountpoint="/boot/efi"} 3.609643115e+09
+  node_filesystem_files{device="tmpfs",fstype="tmpfs",mountpoint="/run"} 5.0049159609e+10
+  node_filesystem_files{device="tmpfs",fstype="tmpfs",mountpoint="/run/lock"} 8.9333789657e+10
+  node_filesystem_files{device="/dev/sda1",fstype="xfs",mountpoint="/data"} 1.5722095673e+10
+family node_filesystem_readonly type=gauge help="Filesystem stat."
+  node_filesystem_readonly{device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/"} 0
+  node_filesystem_readonly{device="/dev/nvme0n1p1",fstype="vfat",mountpoint="/boot/efi"} 0
+  node_filesystem_readonly{device="tmpfs",fstype="tmpfs",mountpoint="/run"} 0
+  node_filesystem_readonly{device="tmpfs",fstype="tmpfs",mountpoint="/run/lock"} 0
+  node_filesystem_readonly{device="/dev/sda1",fstype="xfs",mountpoint="/data"} 0
+family node_load1 type=gauge help="1m load average."
+  node_load1 0.42
+family node_load5 type=gauge help="5m load average."
+  node_load5 0.37
+family node_load15 type=gauge help="15m load average."
+  node_load15 0.31
+family node_memory_MemTotal_bytes type=gauge help="Memory information field MemTotal_bytes."
+  node_memory_MemTotal_bytes 5.5448070601e+10
+family node_memory_MemFree_bytes type=gauge help="Memory information field MemFree_bytes."
+  node_memory_MemFree_bytes 9.7850245808e+10
+family node_memory_MemAvailable_bytes type=gauge help="Memory information field MemAvailable_bytes."
+  node_memory_MemAvailable_bytes 2.899263253e+10
+family node_memory_Buffers_bytes type=gauge help="Memory information field Buffers_bytes."
+  node_memory_Buffers_bytes 5.6602319807e+10
+family node_memory_Cached_bytes type=gauge help="Memory information field Cached_bytes."
+  node_memory_Cached_bytes 8.9289656799e+10
+family node_memory_SwapTotal_bytes type=gauge help="Memory information field SwapTotal_bytes."
+  node_memory_SwapTotal_bytes 1.0019085113e+10
+family node_memory_SwapFree_bytes type=gauge help="Memory information field SwapFree_bytes."
+  node_memory_SwapFree_bytes 6.183065555e+10
+family node_memory_Active_bytes type=gauge help="Memory information field Active_bytes."
+  node_memory_Active_bytes 1.2657396781e+10
+family node_memory_Inactive_bytes type=gauge help="Memory information field Inactive_bytes."
+  node_memory_Inactive_bytes 2.4588823042e+10
+family node_memory_Dirty_bytes type=gauge help="Memory information field Dirty_bytes."
+  node_memory_Dirty_bytes 5.46625652e+08
+family node_memory_Shmem_bytes type=gauge help="Memory information field Shmem_bytes."
+  node_memory_Shmem_bytes 7.7959598652e+10
+family node_memory_Slab_bytes type=gauge help="Memory information field Slab_bytes."
+  node_memory_Slab_bytes 6.4016852297e+10
+family node_network_receive_bytes_total type=counter help="Network device statistic receive_bytes."
+  node_network_receive_bytes_total{device="lo"} 7.20723438068e+11
+  node_network_receive_bytes_total{device="eth0"} 6.70642712057e+11
+  node_network_receive_bytes_total{device="eth1"} 6.5638486447e+11
+  node_network_receive_bytes_total{device="docker0"} 5.2390142479e+11
+  node_network_receive_bytes_total{device="br-4f2a"} 1.69008713362e+11
+  node_network_receive_bytes_total{device="veth1a2b"} 6.03651898398e+11
+  node_network_receive_bytes_total{device="veth3c4d"} 2.203740787e+10
+  node_network_receive_bytes_total{device="wlan0"} 8.76234501313e+11
+family node_network_transmit_bytes_total type=counter help="Network device statistic transmit_bytes."
+  node_network_transmit_bytes_total{device="lo"} 7.98738891307e+11
+  node_network_transmit_bytes_total{device="eth0"} 1.14459481157e+11
+  node_network_transmit_bytes_total{device="eth1"} 8.22600401913e+11
+  node_network_transmit_bytes_total{device="docker0"} 1.54333743371e+11
+  node_network_transmit_bytes_total{device="br-4f2a"} 2.14197504889e+11
+  node_network_transmit_bytes_total{device="veth1a2b"} 9.61326016789e+11
+  node_network_transmit_bytes_total{device="veth3c4d"} 3.0971191036e+10
+  node_network_transmit_bytes_total{device="wlan0"} 2.33009856266e+11
+family node_network_receive_packets_total type=counter help="Network device statistic receive_packets."
+  node_network_receive_packets_total{device="lo"} 5.51014096081e+11
+  node_network_receive_packets_total{device="eth0"} 8.38551731532e+11
+  node_network_receive_packets_total{device="eth1"} 3.59001014029e+11
+  node_network_receive_packets_total{device="docker0"} 5.98114417457e+11
+  node_network_receive_packets_total{device="br-4f2a"} 9.16627679238e+11
+  node_network_receive_packets_total{device="veth1a2b"} 6.4987466619e+10
+  node_network_receive_packets_total{device="veth3c4d"} 8.15657312445e+11
+  node_network_receive_packets_total{device="wlan0"} 9.85067001584e+11
+family node_network_transmit_packets_total type=counter help="Network device statistic transmit_packets."
+  node_network_transmit_packets_total{device="lo"} 7.27817259469e+11
+  node_network_transmit_packets_total{device="eth0"} 8.9585866147e+11
+  node_network_transmit_packets_total{device="eth1"} 5.70819608136e+11
+  node_network_transmit_packets_total{device="docker0"} 9.08044684123e+11
+  node_network_transmit_packets_total{device="br-4f2a"} 9.66014256338e+11
+  node_network_transmit_packets_total{device="veth1a2b"} 1.43888486581e+11
+  node_network_transmit_packets_total{device="veth3c4d"} 1.65492928086e+11
+  node_network_transmit_packets_total{device="wlan0"} 5.60594192153e+11
+family node_network_receive_errs_total type=counter help="Network device statistic receive_errs."
+  node_network_receive_errs_total{device="lo"} 9.57858043789e+11
+  node_network_receive_errs_total{device="eth0"} 8.522938467e+11
+  node_network_receive_errs_total{device="eth1"} 6.66506373277e+11
+  node_network_receive_errs_total{device="docker0"} 8.50420414481e+11
+  node_network_receive_errs_total{device="br-4f2a"} 1.66641168198e+11
+  node_network_receive_errs_total{device="veth1a2b"} 1.55359046175e+11
+  node_network_receive_errs_total{device="veth3c4d"} 6.8063846943e+11
+  node_network_receive_errs_total{device="wlan0"} 1.3196370027e+11
+family node_network_transmit_errs_total type=counter help="Network device statistic transmit_errs."
+  node_network_transmit_errs_total{device="lo"} 6.6814554079e+10
+  node_network_transmit_errs_total{device="eth0"} 7.48724392165e+11
+  node_network_transmit_errs_total{device="eth1"} 5.82046875732e+11
+  node_network_transmit_errs_total{device="docker0"} 5.30666582081e+11
+  node_network_transmit_errs_total{device="br-4f2a"} 8.53771949234e+11
+  node_network_transmit_errs_total{device="veth1a2b"} 9.71118345369e+11
+  node_network_transmit_errs_total{device="veth3c4d"} 6.2535995743e+10
+  node_network_transmit_errs_total{device="wlan0"} 2.07225705209e+11
+family node_network_receive_drop_total type=counter help="Network device statistic receive_drop."
+  node_network_receive_drop_total{device="lo"} 4.4139022736e+10
+  node_network_receive_drop_total{device="eth0"} 1.10691018586e+11
+  node_network_receive_drop_total{device="eth1"} 4.96101854034e+11
+  node_network_receive_drop_total{device="docker0"} 3.2477380416e+10
+  node_network_receive_drop_total{device="br-4f2a"} 9.82516689159e+11
+  node_network_receive_drop_total{device="veth1a2b"} 7.2638583022e+10
+  node_network_receive_drop_total{device="veth3c4d"} 3.58386022922e+11
+  node_network_receive_drop_total{device="wlan0"} 6.6789126503e+11
+family node_network_transmit_drop_total type=counter help="Network device statistic transmit_drop."
+  node_network_transmit_drop_total{device="lo"} 2.21243048895e+11
+  node_network_transmit_drop_total{device="eth0"} 3.03622967725e+11
+  node_network_transmit_drop_total{device="eth1"} 5.60288558851e+11
+  node_network_transmit_drop_total{device="docker0"} 8.87053706472e+11
+  node_network_transmit_drop_total{device="br-4f2a"} 5.56103931523e+11
+  node_network_transmit_drop_total{device="veth1a2b"} 2.74626656206e+11
+  node_network_transmit_drop_total{device="veth3c4d"} 5.74233768315e+11
+  node_network_transmit_drop_total{device="wlan0"} 9.65837365524e+11
+family node_network_info type=gauge help="Non-numeric data from /sys/class/net/<iface>, value is always 1."
+  node_network_info{address="02:00:00:00:00:00",broadcast="ff:ff:ff:ff:ff:ff",device="lo",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:01",broadcast="ff:ff:ff:ff:ff:ff",device="eth0",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:02",broadcast="ff:ff:ff:ff:ff:ff",device="eth1",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:03",broadcast="ff:ff:ff:ff:ff:ff",device="docker0",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:04",broadcast="ff:ff:ff:ff:ff:ff",device="br-4f2a",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:05",broadcast="ff:ff:ff:ff:ff:ff",device="veth1a2b",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:06",broadcast="ff:ff:ff:ff:ff:ff",device="veth3c4d",duplex="full",operstate="up"} 1
+  node_network_info{address="02:00:00:00:00:07",broadcast="ff:ff:ff:ff:ff:ff",device="wlan0",duplex="full",operstate="up"} 1
+family node_scrape_collector_duration_seconds type=gauge help="node_exporter: Duration of a collector scrape."
+  node_scrape_collector_duration_seconds{collector="arp"} 0.009422
+  node_scrape_collector_duration_seconds{collector="bcache"} 0.002596
+  node_scrape_collector_duration_seconds{collector="bonding"} 0.005595
+  node_scrape_collector_duration_seconds{collector="btrfs"} 0.009433
+  node_scrape_collector_duration_seconds{collector="conntrack"} 0.0084
+  node_scrape_collector_duration_seconds{collector="cpu"} 0.001371
+  node_scrape_collector_duration_seconds{collector="cpufreq"} 0.001216
+  node_scrape_collector_duration_seconds{collector="diskstats"} 0.004421
+  node_scrape_collector_duration_seconds{collector="dmi"} 0.000725
+  node_scrape_collector_duration_seconds{collector="edac"} 0.002406
+  node_scrape_collector_duration_seconds{collector="entropy"} 0.000731
+  node_scrape_collector_duration_seconds{collector="fibrechannel"} 0.006695
+  node_scrape_collector_duration_seconds{collector="filefd"} 0.007839
+  node_scrape_collector_duration_seconds{collector="filesystem"} 0.00897
+  node_scrape_collector_duration_seconds{collector="hwmon"} 0.001544
+  node_scrape_collector_duration_seconds{collector="infiniband"} 0.007161
+  node_scrape_collector_duration_seconds{collector="ipvs"} 0.006603
+  node_scrape_collector_duration_seconds{collector="loadavg"} 0.00143
+  node_scrape_collector_duration_seconds{collector="mdadm"} 0.008828
+  node_scrape_collector_duration_seconds{collector="meminfo"} 0.009675
+  node_scrape_collector_duration_seconds{collector="netclass"} 0.002196
+  node_scrape_collector_duration_seconds{collector="netdev"} 0.009525
+  node_scrape_collector_duration_seconds{collector="netstat"} 0.003983
+  node_scrape_collector_duration_seconds{collector="nfs"} 0.004873
+  node_scrape_collector_duration_seconds{collector="nfsd"} 0.009899
+  node_scrape_collector_duration_seconds{collector="nvme"} 0.008324
+  node_scrape_collector_duration_seconds{collector="os"} 0.001615
+  node_scrape_collector_duration_seconds{collector="powersupplyclass"} 0.004315
+  node_scrape_collector_duration_seconds{collector="pressure"} 0.005156
+  node_scrape_collector_duration_seconds{collector="rapl"} 0.003391
+  node_scrape_collector_duration_seconds{collector="schedstat"} 0.001957
+  node_scrape_collector_duration_seconds{collector="selinux"} 0.003185
+  node_scrape_collector_duration_seconds{collector="sockstat"} 0.007222
+  node_scrape_collector_duration_seconds{collector="softnet"} 0.000195
+  node_scrape_collector_duration_seconds{collector="stat"} 0.005541
+  node_scrape_collector_duration_seconds{collector="tapestats"} 0.004405
+  node_scrape_collector_duration_seconds{collector="textfile"} 0.000181
+  node_scrape_collector_duration_seconds{collector="thermal_zone"} 0.003315
+  node_scrape_collector_duration_seconds{collector="time"} 0.006239
+  node_scrape_collector_duration_seconds{collector="timex"} 0.005123
+  node_scrape_collector_duration_seconds{collector="udp_queues"} 0.000643
+  node_scrape_collector_duration_seconds{collector="uname"} 0.009851
+  node_scrape_collector_duration_seconds{collector="vmstat"} 0.007884
+  node_scrape_collector_duration_seconds{collector="xfs"} 0.009717
+  node_scrape_collector_duration_seconds{collector="zfs"} 0.001048
+family node_scrape_collector_success type=gauge help="node_exporter: Whether a collector succeeded."
+  node_scrape_collector_success{collector="arp"} 1
+  node_scrape_collector_success{collector="bcache"} 1
+  node_scrape_collector_success{collector="bonding"} 1
+  node_scrape_collector_success{collector="btrfs"} 1
+  node_scrape_collector_success{collector="conntrack"} 1
+  node_scrape_collector_success{collector="cpu"} 1
+  node_scrape_collector_success{collector="cpufreq"} 1
+  node_scrape_collector_success{collector="diskstats"} 1
+  node_scrape_collector_success{collector="dmi"} 1
+  node_scrape_collector_success{collector="edac"} 1
+  node_scrape_collector_success{collector="entropy"} 1
+  node_scrape_collector_success{collector="fibrechannel"} 1
+  node_scrape_collector_success{collector="filefd"} 1
+  node_scrape_collector_success{collector="filesystem"} 1
+  node_scrape_collector_success{collector="hwmon"} 1
+  node_scrape_collector_success{collector="infiniband"} 1
+  node_scrape_collector_success{collector="ipvs"} 1
+  node_scrape_collector_success{collector="loadavg"} 1
+  node_scrape_collector_success{collector="mdadm"} 1
+  node_scrape_collector_success{collector="meminfo"} 1
+  node_scrape_collector_success{collector="netclass"} 1
+  node_scrape_collector_success{collector="netdev"} 1
+  node_scrape_collector_success{collector="netstat"} 1
+  node_scrape_collector_success{collector="nfs"} 1
+  node_scrape_collector_success{collector="nfsd"} 1
+  node_scrape_collector_success{collector="nvme"} 1
+  node_scrape_collector_success{collector="os"} 1
+  node_scrape_collector_success{collector="powersupplyclass"} 1
+  node_scrape_collector_success{collector="pressure"} 1
+  node_scrape_collector_success{collector="rapl"} 1
+  node_scrape_collector_success{collector="schedstat"} 1
+  node_scrape_collector_success{collector="selinux"} 1
+  node_scrape_collector_success{collector="sockstat"} 1
+  node_scrape_collector_success{collector="softnet"} 1
+  node_scrape_collector_success{collector="stat"} 1
+  node_scrape_collector_success{collector="tapestats"} 1
+  node_scrape_collector_success{collector="textfile"} 1
+  node_scrape_collector_success{collector="thermal_zone"} 1
+  node_scrape_collector_success{collector="time"} 1
+  node_scrape_collector_success{collector="timex"} 1
+  node_scrape_collector_success{collector="udp_queues"} 1
+  node_scrape_collector_success{collector="uname"} 1
+  node_scrape_collector_success{collector="vmstat"} 1
+  node_scrape_collector_success{collector="xfs"} 1
+  node_scrape_collector_success{collector="zfs"} 1
+family node_uname_info type=gauge help="Labeled system information as provided by the uname system call."
+  node_uname_info{domainname="(none)",machine="x86_64",nodename="host-01",release="6.8.0-45-generic",sysname="Linux",version="#45-Ubuntu SMP PREEMPT_DYNAMIC"} 1
+family promhttp_metric_handler_requests_total type=counter help="Total number of scrapes by HTTP status code."
+  promhttp_metric_handler_requests_total{code="200"} 4351
+  promhttp_metric_handler_requests_total{code="500"} 0
+  promhttp_metric_handler_requests_total{code="503"} 0

@@ -147,7 +147,10 @@ collector would send the self-metrics twice); **checks** are the
 user-configurable kind: `Check` = a collector factory registered by name,
 instantiated once per `instances:` entry in `deploy/agent.d/<name>.yaml`, or
 via **autodiscovery** from container labels
-(`ozy.check.redis.port=6379`, `ozy.check.openmetrics.path=/metrics`)
+(`ozy.check.redis.port=6379`,
+`ozy.check.openmetrics.url=http://%%host%%:%%port%%/metrics`; *amended by
+ADR-0032:* the spec had `openmetrics.path=/metrics`, but a label sets
+exactly the check's own setting, and openmetrics takes a whole `url`)
 with `%%host%%` / `%%port%%` template variables resolved from the container.
 A scheduler runs each on its interval (default 15s) with jitter and a timeout;
 a failing collector is logged and counted, never fatal. Collector output goes

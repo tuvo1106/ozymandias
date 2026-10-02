@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/docker"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
 	base "github.com/tuvo1106/ozymandias/internal/config"
@@ -75,6 +77,65 @@ type Collectors struct {
 	Timeout time.Duration   `yaml:"timeout"`
 	Host    HostCollector   `yaml:"host"`
 	Docker  DockerCollector `yaml:"docker"`
+	// Checks are the configurable collectors, by check name: each entry's
+	// instances are run as separate collectors. Fragments append instances,
+	// so an app's fragment can add a redis instance beside another's.
+	Checks map[string]Check `yaml:"checks"`
+}
+
+// Check is one check's configured instances. Each instance is a map of
+// settings: the common ones (name, interval, tags) and whatever the check
+// defines, which it decodes and validates itself when the agent starts.
+type Check struct {
+	Instances []map[string]any `yaml:"instances"`
+}
+
+// UnmarshalYAML keeps each instance setting as the YAML node it was
+// written as, rather than a Go value YAML guessed a type for: decoded into
+// any, a password 0123 is the number 83 and a database name 1e3 is 1000,
+// before the check ever sees it. The check decodes the node into its own
+// config struct (collector.Instance.Decode), which types it by the field —
+// text for a string, a number for an int — exactly as written.
+//
+// A decode inside UnmarshalYAML does not inherit the outer decoder's
+// KnownFields, so the keys are checked here: instnaces: would otherwise
+// load as no instances at all, without a word.
+func (c *Check) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if k := n.Content[i]; k.Value != "instances" {
+				return fmt.Errorf("line %d: field %s not found in type config.Check", k.Line, k.Value)
+			}
+		}
+	}
+	var raw struct {
+		Instances []map[string]yaml.Node `yaml:"instances"`
+	}
+	if err := n.Decode(&raw); err != nil {
+		return err
+	}
+	c.Instances = make([]map[string]any, len(raw.Instances))
+	for i, inst := range raw.Instances {
+		m := make(map[string]any, len(inst))
+		for k, v := range inst {
+			if v.Tag == "!!null" {
+				continue // `key:` with nothing: absent, as in the rest of the config
+			}
+			m[k] = &v
+		}
+		c.Instances[i] = m
+	}
+	return nil
+}
+
+// Instances returns every check's instances by check name, the shape
+// collector.Registry.Configured takes.
+func (c Collectors) Instances() map[string][]map[string]any {
+	out := make(map[string][]map[string]any, len(c.Checks))
+	for name, ch := range c.Checks {
+		out[name] = ch.Instances
+	}
+	return out
 }
 
 // DockerCollector configures the Docker collector (container.*) and the
@@ -93,6 +154,13 @@ type DockerCollector struct {
 	// many and short-lived by design. The first matching rule wins.
 	// Fragments append.
 	ContainerNameRewrite []NameRewrite `yaml:"container_name_rewrite"`
+	// Autodiscovery runs checks for containers that ask for them with
+	// ozy.check.<check>.<setting> labels. It needs the Docker collector.
+	Autodiscovery bool `yaml:"autodiscovery"`
+	// AutodiscoveryNetwork is the Docker network %%host%% takes a
+	// container's address on: one the agent is on too. Empty, a container
+	// must be on a single network.
+	AutodiscoveryNetwork string `yaml:"autodiscovery_network"`
 }
 
 // Rewrites compiles each ContainerNameRewrite rule, in order: the one
@@ -242,7 +310,7 @@ func Default() Agent {
 		Collectors: Collectors{
 			Interval: 15 * time.Second, Timeout: 10 * time.Second,
 			Host:   HostCollector{Enabled: true, ExcludeInterfaces: slices.Clone(DefaultExcludeInterfaces)},
-			Docker: DockerCollector{Enabled: true, Socket: dockerapi.DefaultSocket, MaxConcurrency: docker.DefaultMaxConcurrency},
+			Docker: DockerCollector{Enabled: true, Socket: dockerapi.DefaultSocket, MaxConcurrency: docker.DefaultMaxConcurrency, Autodiscovery: true},
 		},
 		ConfdPath: "./deploy/agent.d",
 		Log:       base.Log{Level: "info", Format: "text"},

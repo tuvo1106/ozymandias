@@ -63,6 +63,29 @@ func (r *Rates) Observe(key string, value float64, at time.Time) (rate float64, 
 	return (value - prev.value) / dt, true
 }
 
+// Change records value for key like [Rates.Observe], and returns the
+// signed difference from the previous reading rather than a per-second
+// rate: for a cumulative value sent as "this interval's change" (a
+// histogram's _count and _sum). It applies no reset rule, because which
+// falls are restarts depends on the value: a count that falls restarted
+// (the new value is then the increase), while a sum of negative
+// observations may simply fall, and is told from a restart by its count.
+// The caller decides. ok is false for a first reading or a value that is
+// not finite, which is forgotten. A key is used with one of Observe or
+// Change, not both.
+func (r *Rates) Change(key string, value float64, at time.Time) (diff float64, ok bool) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		delete(r.last, key)
+		return 0, false
+	}
+	prev, seen := r.last[key]
+	r.last[key] = reading{value: value, at: at}
+	if !seen {
+		return 0, false
+	}
+	return value - prev.value, true
+}
+
 // Prune forgets every key last observed before cutoff. Collectors call it
 // after each run with a cutoff of a few intervals ago, so a key that misses
 // one run (a slow read) keeps its history but one that is gone for good does
@@ -99,14 +122,27 @@ const ForgetAfter = 5 * time.Minute
 // interval (10m) a fixed 5 minutes would forget, after one failed read,
 // the readings the next run needs. The gap is measured rather than taken
 // from configuration, where zero means "the scheduler's default".
-func (r *Rates) Sweep(now time.Time) {
+//
+// It returns the cutoff it used, so a collector with per-series state of
+// its own (the openmetrics check's histogram buckets) forgets that state
+// by the same rule rather than a copy of it.
+func (r *Rates) Sweep(now time.Time) (cutoff time.Time) {
 	keep := ForgetAfter
 	if !r.swept.IsZero() {
 		keep = max(keep, 3*now.Sub(r.swept))
 	}
 	r.swept = now
-	r.Prune(now.Add(-keep))
+	cutoff = now.Add(-keep)
+	r.Prune(cutoff)
+	return cutoff
 }
 
 // Len returns the number of keys being tracked.
 func (r *Rates) Len() int { return len(r.last) }
+
+// Has reports whether key has a reading: whether the next Observe of it
+// updates state rather than adding it.
+func (r *Rates) Has(key string) bool {
+	_, ok := r.last[key]
+	return ok
+}

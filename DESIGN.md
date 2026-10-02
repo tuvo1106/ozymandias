@@ -386,8 +386,9 @@ reasoning behind each package is in its `doc.go`.
 ## 12. Agent collectors
 
 Statsd is push: applications send, the agent aggregates. Collectors are
-pull: the agent goes and reads a source on a timer — the kernel's counters
-now (M3 §3), the Docker daemon and configured checks next.
+pull: the agent goes and reads a source on a timer — the kernel's counters,
+the Docker daemon, and the checks a user configures or a container asks for
+(M3 §3).
 
 ```
 Collector.Collect ──emit(Metric)──▶ Scheduler ──[]wire.Series──▶ Forwarder ──▶ ozyd
@@ -424,17 +425,46 @@ Collector.Collect ──emit(Metric)──▶ Scheduler ──[]wire.Series─�
   counts inside user time.
 - **The Docker collector and the event watcher** split one source by shape.
   Polling the daemon (list, then stats per container, at most
-  `max_concurrency` at once, which bounds the load a run puts on the daemon;
-  stats are one-shot, so CPU % is taken between runs) suits levels and rates. It cannot see a container that starts and
-  dies between two polls, so a watcher follows the event stream and turns
-  each die into `container.exits` and `container.lifetime`. Those samples
-  arrive one at a time, at any moment, several per interval: the statsd
+  `max_concurrency` at once, which bounds the load a run puts on the
+  daemon; stats are one-shot, so CPU % is taken between runs, ADR-0030)
+  suits levels and rates. It cannot see a container that starts and dies
+  between two polls, so a watcher follows the event stream and turns each
+  die into `container.exits` and `container.lifetime`. Those samples arrive
+  one at a time, at any moment, several per interval: the statsd
   aggregator's shape, so the watcher feeds it rather than the scheduler.
-  After a disconnect the watcher resumes from the last event seen and drops
-  the one the daemon replays. `container_name_rewrite` folds containers that
+  After a disconnect the watcher resumes from the newest event seen and
+  drops the events at that time the daemon replays; what the daemon itself
+  no longer has (its own restart empties its buffer) is lost, so
+  `container.exits` is a floor. `container_name_rewrite` folds containers that
   are many by design into one name, and same-tagged containers are combined
   (amounts summed) rather than sent as points that overwrite each other.
   Reading the socket is root-equivalent on the Docker host (ADR-0028).
+- **Checks** are collectors a user configures: a `collector.Check` is a
+  factory, and a `collector.Registry` (an explicit map the agent builds, not
+  init-time registration) names them. The registry applies the settings
+  every instance shares — name, interval, tags — and the check decodes the
+  rest strictly, so a misspelt key fails at startup. Each instance is its own
+  collector with its own goroutine and self-metrics, named `<check>:<name>`.
+- **Autodiscovery** lists containers every 10s and turns
+  `ozy.check.<check>.<setting>` labels into instances, added to and removed
+  from the running scheduler (`Scheduler.Add` returns the removal). Label
+  values are handed to the check as plain YAML scalars after
+  `%%host%%`/`%%port%%` substitution, never parsed, so a port label decodes
+  as a number and a password as the text written. Settings are resolved
+  every sync, so a container restarted with a new address gets its check
+  rebuilt; containers a rewrite folds into one name get `replica:<n>` tags
+  (lowest free number), since the same tags would overwrite each other. `%%host%%` is the address on the network the agent shares
+  (`autodiscovery_network`), never a guess among several. An instance is
+  named after its container's rewritten name: collectors may share a name,
+  and share its self-metrics, which the registry frees once the last one
+  stops (`Registry.Release`), so names that come and go do not accumulate.
+  Configuration then lives with the container, the model Datadog's
+  autodiscovery and Prometheus's docker_sd share.
+- **Distributions from collectors.** A collector may emit a `Distribution`
+  carrying a DDSketch; the scheduler sends it to the forwarder's sketch
+  endpoint. The openmetrics check uses it for histograms, so a scraped
+  histogram answers `p90:` like a statsd one — as precisely as its buckets
+  allow.
 
 ---
 

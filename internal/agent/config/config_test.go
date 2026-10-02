@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/agent/collector"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 )
 
@@ -169,6 +170,9 @@ func TestLoad_ShippedFragments(t *testing.T) {
 	if err != nil || len(warnings) != 0 {
 		t.Fatalf("err=%v warnings=%v", err, warnings)
 	}
+	if n := cfg.Collectors.Docker.AutodiscoveryNetwork; n != "ozymandias" {
+		t.Errorf("autodiscovery_network = %q, want the stack's network", n)
+	}
 	rules := cfg.Collectors.Docker.ContainerNameRewrite
 	if len(rules) != 2 || rules[1].Match != "^judge-.*" || rules[1].Replace != "judge" {
 		t.Fatalf("container_name_rewrite = %+v", rules)
@@ -223,5 +227,63 @@ func TestRewrites_AcceptsGoodTemplates(t *testing.T) {
 		if rw, err := d.Rewrites(); err != nil || len(rw) != 1 || rw[0].Replace != r.Replace {
 			t.Errorf("%+v: %v, %v", r, rw, err)
 		}
+	}
+}
+
+// Review finding: a configured check's settings went through YAML's typing
+// of plain scalars, so a password 0123 reached the check as "83" and a
+// database name 1e3 as "1000". The check gets the text as written, and the
+// common settings still read as text (a name 007 is not 7).
+func TestCheckSettings_KeepTheirText(t *testing.T) {
+	dir := testutil.TempDirWith(t, map[string]string{"agent.yaml": `
+collectors:
+  checks:
+    probe:
+      instances:
+        - name: 007
+          interval: 30s
+          tags: [env:prod]
+          password: 0123
+          db: 1e3
+          user: 2024-01-02
+          hex: 0x1F
+          port: 6379
+          empty:
+`})
+	cfg, _, err := Load(dir+"/agent.yaml", []string{"OZY_AGENT_CONFD_PATH=" + t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type probeCfg struct {
+		Password string `yaml:"password"`
+		DB       string `yaml:"db"`
+		User     string `yaml:"user"`
+		Hex      string `yaml:"hex"`
+		Port     int    `yaml:"port"`
+	}
+	var got probeCfg
+	reg := collector.Registry{"probe": func(inst collector.Instance) (collector.Collector, error) {
+		return nil, inst.Decode(&got)
+	}}
+	list, err := reg.Configured(cfg.Collectors.Instances(), nil, nil)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("%v: %v", list, err)
+	}
+	want := probeCfg{Password: "0123", DB: "1e3", User: "2024-01-02", Hex: "0x1F", Port: 6379}
+	if got != want {
+		t.Fatalf("the check got %+v, want %+v", got, want)
+	}
+	if c := list[0]; c.Name() != "probe:007" || c.Interval() != 30*time.Second {
+		t.Fatalf("instance %s every %v", c.Name(), c.Interval())
+	}
+}
+
+// Review finding: Check decodes itself, and a nested decode does not
+// inherit strictness, so a misspelt instances: loaded as no check at all.
+func TestLoad_AMisspeltCheckKeyFails(t *testing.T) {
+	dir := testutil.TempDirWith(t, map[string]string{"agent.yaml": "collectors:\n  checks:\n    redis:\n      instnaces:\n        - host: x\n"})
+	_, _, err := Load(dir+"/agent.yaml", []string{"OZY_AGENT_CONFD_PATH=" + t.TempDir()})
+	if err == nil || !strings.Contains(err.Error(), "instnaces") || !strings.Contains(err.Error(), "line 4") {
+		t.Fatalf("err = %v", err)
 	}
 }

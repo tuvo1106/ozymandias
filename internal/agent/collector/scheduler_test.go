@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
+	"github.com/tuvo1106/ozymandias/internal/sketch"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
@@ -56,7 +58,10 @@ func (s *sink) all() []wire.Series {
 	return out
 }
 
+// counter reads a collector's self-metric counter without keeping a hold
+// on it, so reading does not keep it alive past its collectors.
 func counter(reg *selfmetrics.Registry, name, coll string) int64 {
+	defer reg.Release(name, "collector:"+coll)
 	return reg.Counter(name, "collector:"+coll).Value()
 }
 
@@ -398,5 +403,257 @@ func TestScheduler_AbandonsACollectorThatIgnoresCancellation(t *testing.T) {
 	testutil.Eventually(t, time.Second, func() bool { return counter(reg, "ozy.agent.collector.dropped", "stuck") == 1 }, "late batch not dropped")
 	if n := sent.Load(); n != 0 {
 		t.Fatalf("sink called %d times after Run returned", n)
+	}
+}
+
+// Autodiscovery's path: a collector added while Run runs is started, one
+// removed stops, and a second of the same name runs beside it, sharing its
+// self-metrics — a recreated container's check starts at once, and folded
+// replicas are all checked. Once none of that name runs, its self-metrics
+// are reported a last time and then forgotten.
+func TestScheduler_AddAndRemoveWhileRunning(t *testing.T) {
+	testutil.CheckGoroutines(t)
+	emitting := func(name string) *fake {
+		return &fake{name: name, iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+			emit(Metric{Name: name + ".up", Value: 1})
+			return nil
+		}}
+	}
+	fc := testutil.NewFakeClock(t0)
+	sk := &sink{}
+	reg := selfmetrics.NewRegistry()
+	s := New(Options{Clock: fc, Sink: sk.send, Rand: rand.New(rand.NewPCG(1, 2)), Registry: reg, Logger: slog.New(slog.DiscardHandler)})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	a := emitting("a")
+	testutil.Eventually(t, time.Second, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.ctx != nil }, "Run started")
+	removeA := s.Add(a)
+	a2 := emitting("a")
+	removeA2 := s.Add(a2) // same name: runs too
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 2 }, "both armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return a.calls.Load() == 1 && a2.calls.Load() == 1 }, "both ran")
+	testutil.Eventually(t, time.Second, func() bool { return counter(reg, "ozy.agent.collector.runs", "a") == 2 }, "runs shared")
+
+	removeA()
+	testutil.Eventually(t, time.Second, func() bool { return len(s.Collectors()) == 1 }, "a stopped")
+	fc.Advance(5 * time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return a2.calls.Load() >= 2 }, "a2 still runs")
+	if n := a.calls.Load(); n != 1 {
+		t.Fatalf("a ran %d times after removal", n-1)
+	}
+	rep := selfmetrics.NewReporter(reg, 10*time.Second)
+	rep.Collect(t0)
+	if !reported(rep.Collect(t0.Add(10*time.Second)), "collector:a") {
+		t.Fatal("a2's self-metrics went with a")
+	}
+	removeA2()
+	testutil.Eventually(t, time.Second, func() bool { return len(s.Collectors()) == 0 }, "a2 stopped")
+	if !reported(rep.Collect(t0.Add(20*time.Second)), "collector:a") {
+		t.Fatal("the last report of a's self-metrics was skipped")
+	}
+	if reported(rep.Collect(t0.Add(30*time.Second)), "collector:a") {
+		t.Fatal("self-metrics of a name nothing runs under were kept")
+	}
+}
+
+// reported says whether any series in out carries tag.
+func reported(out []wire.Series, tag string) bool {
+	for _, s := range out {
+		if slices.Contains(s.Tags, tag) {
+			return true
+		}
+	}
+	return false
+}
+
+// Removing a collector that has not started yet (Run has not been called)
+// takes it out of the queue.
+func TestScheduler_RemoveBeforeRun(t *testing.T) {
+	s := New(Options{Logger: slog.New(slog.DiscardHandler)})
+	remove := s.Add(&fake{name: "x", collect: func(context.Context, Emit) error { return nil }})
+	remove()
+	if len(s.Collectors()) != 0 {
+		t.Fatal("still scheduled")
+	}
+}
+
+// A Distribution goes to the sketch sink, tagged and stamped like a series;
+// an empty one is dropped, and so is one with no sink to go to.
+func TestScheduler_Distributions(t *testing.T) {
+	sk := sketch.NewDefault()
+	_ = sk.Add(0.2)
+	_ = sk.AddWithCount(1.5, 3)
+	c := &fake{name: "hist", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+		emit(Metric{Name: "req.latency", Kind: Distribution, Sketch: sk, Tags: []string{"route:/x"}})
+		emit(Metric{Name: "empty", Kind: Distribution, Sketch: sketch.NewDefault()})
+		emit(Metric{Name: "none", Kind: Distribution})
+		return nil
+	}}
+	var mu sync.Mutex
+	var got []wire.SketchSeries
+	fc, _, reg := start(t, Options{Collectors: []Collector{c}, HostTag: "host:box", SketchSink: func(s []wire.SketchSeries) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, s...)
+	}})
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 1 }, "sketch sent")
+	mu.Lock()
+	s := got[0]
+	mu.Unlock()
+	if s.Metric != "req.latency" || s.Interval != 1 || len(s.Points) != 1 || s.Points[0].Timestamp != t0.Add(time.Second).Unix() ||
+		!slices.Equal(s.Tags, []string{"host:box", "route:/x"}) || s.Points[0].Sketch.Count != 4 {
+		t.Fatalf("got %+v", s)
+	}
+	if n := counter(reg, "ozy.agent.collector.dropped", "hist"); n != 2 {
+		t.Errorf("dropped = %d, want the empty and the missing sketch", n)
+	}
+
+	// No sketch sink: counted as dropped, not lost silently.
+	fc2, _, reg2 := start(t, Options{Collectors: []Collector{&fake{name: "h2", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+		emit(Metric{Name: "x", Kind: Distribution, Sketch: sk})
+		return nil
+	}}}})
+	testutil.Eventually(t, time.Second, func() bool { return fc2.Waiters() == 1 }, "armed")
+	fc2.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return counter(reg2, "ozy.agent.collector.dropped", "h2") == 1 }, "dropped")
+}
+
+// Review finding: a collector removed mid-run (its container went, its
+// settings changed) or stopped by shutdown saw its context cancelled, and
+// what it emitted then — a check's can_connect 0 for a cancelled dial — was
+// sent as a reading. A stopped run sends nothing; it counts as dropped.
+func TestScheduler_ARunCutShortByRemovalIsNotSent(t *testing.T) {
+	testutil.CheckGoroutines(t)
+	fc := testutil.NewFakeClock(t0)
+	sk := &sink{}
+	reg := selfmetrics.NewRegistry()
+	s := New(Options{Clock: fc, Sink: sk.send, Rand: rand.New(rand.NewPCG(1, 2)), Registry: reg, Logger: slog.New(slog.DiscardHandler)})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	testutil.Eventually(t, time.Second, func() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.ctx != nil }, "Run started")
+
+	running := make(chan struct{})
+	c := &fake{name: "dial", iv: time.Second, collect: func(ctx context.Context, emit Emit) error {
+		close(running)
+		<-ctx.Done()
+		emit(Metric{Name: "x.can_connect", Value: 0}) // what a cancelled dial looks like
+		return ctx.Err()
+	}}
+	remove := s.Add(c)
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "armed")
+	fc.Advance(time.Second)
+	<-running
+	remove()
+	testutil.Eventually(t, time.Second, func() bool { return len(s.Collectors()) == 0 }, "stopped")
+	if got := sk.all(); len(got) != 0 {
+		t.Fatalf("a run cut short by removal was sent: %+v", got)
+	}
+	if n := counter(reg, "ozy.agent.collector.dropped", "dial"); n != 1 {
+		t.Fatalf("dropped = %d, want 1", n)
+	}
+	if n := counter(reg, "ozy.agent.collector.errors", "dial"); n != 0 {
+		t.Fatalf("errors = %d: a stop is not a failure", n)
+	}
+}
+
+// A metric's Keep tags reach the wire even when its own tags overflow the
+// cap: they are what keeps two replicas' series apart.
+func TestScheduler_KeepTagsSurviveTheCap(t *testing.T) {
+	var own []string
+	for i := range 60 {
+		own = append(own, "label"+strconv.Itoa(i)+":v")
+	}
+	c := &fake{name: "scrape", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+		emit(Metric{Name: "x.up", Value: 1, Tags: own, Keep: []string{"replica:1", "container_name:job"}})
+		return nil
+	}}
+	fc, sk, reg := start(t, Options{Collectors: []Collector{c}})
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 1 }, "sent")
+	tags := sk.all()[0].Tags
+	if len(tags) != wire.MaxTagsPerPoint || !slices.Contains(tags, "replica:1") || !slices.Contains(tags, "container_name:job") {
+		t.Fatalf("%d tags, replica kept %v: %v", len(tags), slices.Contains(tags, "replica:1"), tags)
+	}
+	if n := counter(reg, "ozy.agent.collector.tags_dropped", "scrape"); n != 12 {
+		t.Fatalf("tags_dropped = %d, want 12 (62 tags, 50 fit)", n)
+	}
+}
+
+// A check that panics fails its run; the scheduler, and every other
+// collector, carry on. Before, a panic in any parser ended the agent.
+func TestScheduler_APanicFailsTheRunNotTheAgent(t *testing.T) {
+	var logs syncBuffer
+	bad := &fake{name: "bad", iv: time.Second, collect: func(context.Context, Emit) error { panic("index out of range") }}
+	good := &fake{name: "good", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+		emit(Metric{Name: "good.up", Value: 1})
+		return nil
+	}}
+	fc, sk, reg := start(t, Options{Collectors: []Collector{bad, good}, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 2 }, "armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return counter(reg, "ozy.agent.collector.errors", "bad") == 1 }, "the panic was not a failed run")
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 1 }, "the other collector's run")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return bad.calls.Load() == 2 }, "the panicking collector was not run again")
+	if !strings.Contains(logs.String(), "panicked") || !strings.Contains(logs.String(), "index out of range") {
+		t.Errorf("log:\n%s", logs.String())
+	}
+}
+
+// Review finding: a second Run returned at its guard but still ran the
+// deferred stop, so the first, live Run's sink was switched off and every
+// batch after counted as dropped. A second call is a no-op.
+func TestScheduler_ASecondRunDoesNotStopTheFirst(t *testing.T) {
+	c := &fake{name: "c", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+		emit(Metric{Name: "c.up", Value: 1})
+		return nil
+	}}
+	fc := testutil.NewFakeClock(t0)
+	sk := &sink{}
+	s := New(Options{Collectors: []Collector{c}, Clock: fc, Sink: sk.send, Rand: rand.New(rand.NewPCG(1, 2)), Logger: slog.New(slog.DiscardHandler)})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "armed")
+	s.Run(context.Background()) // returns at once
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 1 }, "the first Run's batch was not sent")
+}
+
+// Which collectors' tags are renamed on a clash is the scheduler's call, by
+// what the collector is, not by whether it has keep tags. Round 7 inferred
+// "built-in" from an empty Keep, and a lone unnamed check has one too.
+func TestScheduler_OnlyAChecksClashingTagsAreExported(t *testing.T) {
+	emits := func(tag string) func(context.Context, Emit) error {
+		return func(_ context.Context, emit Emit) error {
+			emit(Metric{Name: "m", Value: 1, Tags: []string{tag}})
+			return nil
+		}
+	}
+	builtIn := &fake{name: "docker", iv: time.Second, collect: emits("service:shop-api")}
+	lone := &instance{name: "openmetrics", iv: time.Second, inner: &fake{name: "openmetrics", iv: time.Second, collect: emits("env:staging")}}
+	fc, sk, _ := start(t, Options{Collectors: []Collector{builtIn, lone}, Tags: []string{"service:infra", "env:prod"}, HostTag: "host:mac"})
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 2 }, "armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 2 }, "both runs")
+	for _, se := range sk.all() {
+		switch {
+		case slices.Contains(se.Tags, "service:infra") && slices.Contains(se.Tags, "env:prod") && slices.Contains(se.Tags, "service:shop-api"):
+			// the built-in, decorated as before: both service values
+		case slices.Contains(se.Tags, "exported_env:staging") && !slices.Contains(se.Tags, "env:staging"):
+			// the lone check: its clashing tag exported
+		default:
+			t.Errorf("tags %v", se.Tags)
+		}
 	}
 }

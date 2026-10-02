@@ -1,0 +1,31 @@
+family redis_up type=gauge help="Information about the Redis instance"
+  redis_up 1
+family redis_instance_info type=gauge help="Information about the Redis instance"
+  redis_instance_info{executable="/usr/local/bin/redis-server",maxmemory_policy="noeviction",os="Linux 6.8.0 x86_64",process_id="1",redis_build_id="0000000000000000",redis_mode="standalone",redis_version="7.2.4",role="master",run_id="0000000000000000000000000000000000000000",tcp_port="6379"} 1
+family redis_connected_clients type=gauge help="Redis connected clients"
+  redis_connected_clients 7
+family redis_memory_used_bytes type=gauge help="memory_used_bytes metric"
+  redis_memory_used_bytes 1.1845632e+07
+family redis_commands_processed_total type=counter help="commands_processed_total metric"
+  redis_commands_processed_total 184523
+family redis_keyspace_hits_total type=counter help="keyspace_hits_total metric"
+  redis_keyspace_hits_total 90211
+family redis_keyspace_misses_total type=counter help="keyspace_misses_total metric"
+  redis_keyspace_misses_total 3120
+family redis_evicted_keys_total type=counter help="evicted_keys_total metric"
+  redis_evicted_keys_total 0
+family redis_db_keys type=gauge help="Total number of keys by DB"
+  redis_db_keys{db="db0"} 412
+  redis_db_keys{db="db1"} 0
+family redis_commands_duration_seconds_total type=counter help="Total amount of time in seconds spent per command"
+  redis_commands_duration_seconds_total{cmd="get"} 0.412
+  redis_commands_duration_seconds_total{cmd="set"} 0.219
+  redis_commands_duration_seconds_total{cmd="lpush"} 0.051
+family redis_latency_percentiles_usec type=summary help="A summary of latency percentile distribution per command"
+  redis_latency_percentiles_usec{cmd="get",quantile="50"} 2.007
+  redis_latency_percentiles_usec{cmd="get",quantile="99"} 9.023
+  redis_latency_percentiles_usec{cmd="get",quantile="99.9"} 17.023
+  redis_latency_percentiles_usec_sum{cmd="get"} 412000
+  redis_latency_percentiles_usec_count{cmd="get"} 90211
+family redis_last_slow_execution_duration_seconds type=gauge help="The amount of time needed for last slow execution, in seconds"
+  redis_last_slow_execution_duration_seconds NaN

@@ -57,6 +57,15 @@ type Point struct {
 	Type  Type     `json:"type"`
 	Tags  []string `json:"tags"`
 	Value float64  `json:"value"`
+
+	// released marks an instrument every holder has released: this is its
+	// last value, and the Reporter drops it once it has sent it.
+	released bool
+	// gen is the instrument's generation when snapshotted. A Counter or
+	// Gauge call takes a new one, so drop can tell an instrument released,
+	// taken back and released again since the snapshot — whose new
+	// increments the snapshot does not hold — from one untouched since.
+	gen uint64
 }
 
 // Registry owns a process's instruments. Instruments are identified by
@@ -74,6 +83,8 @@ type entry[T any] struct {
 	name string
 	tags []string
 	inst T
+	refs int    // Counter/Gauge calls not yet matched by a Release
+	gen  uint64 // Counter/Gauge calls ever: see Point.gen
 }
 
 // NewRegistry returns an empty registry.
@@ -128,11 +139,60 @@ func getOrCreate[T any](m map[string]*entry[T], name string, tags []string, mk f
 	norm := normalizeTags(tags)
 	k := key(name, norm)
 	if e, ok := m[k]; ok {
+		e.refs++
+		e.gen++
 		return e.inst
 	}
-	e := &entry[T]{name: name, tags: norm, inst: mk()}
+	e := &entry[T]{name: name, tags: norm, inst: mk(), refs: 1, gen: 1}
 	m[k] = e
 	return e.inst
+}
+
+// Release gives up one hold on the counter or gauge name with tags, taken
+// by a Counter or Gauge call. Once every hold is given up, the instrument
+// is reported one last time and then removed, so a process whose
+// instruments come and go — one set per discovered check, tagged with its
+// container's name — holds only the live ones. Without it the registry, and
+// the Reporter's memory of each counter, grow with every name ever seen.
+//
+// Instruments nobody releases (almost all of them: a process-lifetime
+// counter is never given up) are unaffected. A Counter or Gauge call for a
+// released identity before its last report takes it back, value intact.
+func (r *Registry) Release(name string, tags ...string) {
+	k := key(name, normalizeTags(tags))
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if e, ok := r.counters[k]; ok && e.refs > 0 {
+		e.refs--
+	}
+	if e, ok := r.gauges[k]; ok && e.refs > 0 {
+		e.refs--
+	}
+}
+
+// drop removes the instrument p reported, if nobody has taken it since the
+// snapshot: still released, and the same generation (taken and released
+// again in between, it may hold increments p does not). It reports whether
+// it did. The Reporter calls it after sending
+// p, which is why removal waits for a report rather than happening at
+// Release — a counter's increments since the last report would be lost.
+func (r *Registry) drop(p Point) bool {
+	k := key(p.Name, p.Tags)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch p.Type {
+	case TypeCounter:
+		if e, ok := r.counters[k]; ok && e.refs == 0 && e.gen == p.gen {
+			delete(r.counters, k)
+			return true
+		}
+	case TypeGauge:
+		if e, ok := r.gauges[k]; ok && e.refs == 0 && e.gen == p.gen {
+			delete(r.gauges, k)
+			return true
+		}
+	}
+	return false
 }
 
 // Snapshot returns every instrument's current value, sorted by name then tags
@@ -141,10 +201,10 @@ func (r *Registry) Snapshot() []Point {
 	r.mu.Lock()
 	points := make([]Point, 0, len(r.counters)+len(r.gauges)+len(r.funcs))
 	for _, e := range r.counters {
-		points = append(points, Point{e.name, TypeCounter, e.tags, float64(e.inst.Value())})
+		points = append(points, Point{e.name, TypeCounter, e.tags, float64(e.inst.Value()), e.refs == 0, e.gen})
 	}
 	for _, e := range r.gauges {
-		points = append(points, Point{e.name, TypeGauge, e.tags, e.inst.Value()})
+		points = append(points, Point{e.name, TypeGauge, e.tags, e.inst.Value(), e.refs == 0, e.gen})
 	}
 	funcs := make([]*entry[func() float64], 0, len(r.funcs))
 	for _, e := range r.funcs {
@@ -159,10 +219,10 @@ func (r *Registry) Snapshot() []Point {
 	// Computed instruments run outside the lock: fn may be slow, and must
 	// be free to use the registry itself.
 	for _, e := range funcs {
-		points = append(points, Point{e.name, TypeGauge, e.tags, e.inst()})
+		points = append(points, Point{Name: e.name, Type: TypeGauge, Tags: e.tags, Value: e.inst()})
 	}
 	for _, e := range cfuncs {
-		points = append(points, Point{e.name, TypeCounter, e.tags, e.inst()})
+		points = append(points, Point{Name: e.name, Type: TypeCounter, Tags: e.tags, Value: e.inst()})
 	}
 	sort.Slice(points, func(i, j int) bool {
 		if points[i].Name != points[j].Name {

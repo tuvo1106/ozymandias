@@ -11,10 +11,14 @@ TOTAL                       80
 pkg/wire                    90
 internal/agent/statsd       90
 internal/agent/aggregator   90
+internal/agent/check/openmetrics 90
 internal/agent/collector    90
 internal/agent/collector/host 90
 internal/agent/collector/dockerapi 90
 internal/agent/collector/docker 90
+internal/agent/check/redis 90
+internal/agent/check/httpcheck 90
+internal/agent/check/process 90
 internal/sketch             90
 internal/sketchstore        90
 internal/tsdb               90
@@ -23,3 +27,4 @@ internal/query/*            90
 internal/dashboard          90
 internal/monitor            90
 internal/monitor/*          90
+internal/agent/autodiscovery 90

@@ -79,3 +79,11 @@ func (t tagger) tags(name, id, image string, labels map[string]string) []string 
 	}
 	return out
 }
+
+// Tags returns the tags the collector puts on a container's metrics, for
+// other components that report about a container (autodiscovery tags a
+// check it started for one the same way, so its metrics join the
+// container's on a dashboard).
+func Tags(c dockerapi.Container, rewrites []Rewrite) []string {
+	return tagger{rewrites: rewrites}.tags(c.Name(), c.ID, c.Image, c.Labels)
+}

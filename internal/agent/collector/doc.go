@@ -31,7 +31,10 @@
 // down), so a failed run is counted and logged once — on the transition into
 // failure and on recovery — never fatal, and never holds up another
 // collector. A run that exceeds its timeout has its context cancelled; what
-// it emitted before then is still sent. The agent's own metrics under
+// it emitted before then is still sent. A run cut short because its
+// collector was removed or the agent is stopping is not sent at all: what a
+// check reads of its own cancellation (a dial cancelled, so can_connect 0)
+// is not a reading of the source. The agent's own metrics under
 // ozy.agent.collector.* (runs, errors, timeouts, points, dropped, duration)
 // say which collector is struggling.
 //

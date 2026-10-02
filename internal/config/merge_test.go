@@ -160,3 +160,53 @@ func TestFragments_NullValuesMergeAsAbsent(t *testing.T) {
 		t.Fatalf("got %+v", f)
 	}
 }
+
+// Review finding: merged files went through map[string]any, where YAML
+// types a plain scalar by its look, so a string setting written 0123 came
+// out "83" and 2024-01-02 a timestamp. A string field gets the text as
+// written, whichever file set it, and an alias still works.
+func TestLoad_StringsKeepTheirTextThroughTheMerge(t *testing.T) {
+	for _, v := range []string{"0123", "1e3", "0x1F", "1_000", "2024-01-02", "yes", "007", "3.10"} {
+		f, err := loadFrag(t, map[string]string{
+			"main.yaml":     "name: " + v + "\nnested: {a: " + v + "}\n",
+			"conf.d/x.yaml": "nested: {b: " + v + "}\ntags: [" + v + "]\n",
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", v, err)
+		}
+		if f.Name != v || f.Nested.A != v || f.Nested.B != v || !reflect.DeepEqual(f.Tags, []string{v}) {
+			t.Errorf("%s came out as %+v", v, f)
+		}
+	}
+	f, err := loadFrag(t, map[string]string{"main.yaml": "name: &n 0123\nnested: {a: *n}\n"})
+	if err != nil || f.Nested.A != "0123" {
+		t.Fatalf("an alias: %+v, %v", f, err)
+	}
+}
+
+// Review finding: toTree handled <<: *a but dropped <<: [*a, *b] without
+// a word. Both merge; the mapping's own keys win, then earlier anchors.
+func TestLoad_MergeKeys(t *testing.T) {
+	type mk struct {
+		A map[string]string `yaml:"a"`
+		B map[string]string `yaml:"b"`
+		X map[string]string `yaml:"x"`
+		Y map[string]string `yaml:"y"`
+	}
+	dir := testutil.TempDirWith(t, map[string]string{"m.yaml": `
+a: &a {k1: a1, k2: a2}
+b: &b {k2: b2, k3: b3}
+x: {<<: [*a, *b], k3: x3}
+y: {k1: y1, <<: *a}
+`})
+	var got mk
+	if _, err := Load(&got, Options{Path: dir + "/m.yaml"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"k1": "a1", "k2": "a2", "k3": "x3"}; !reflect.DeepEqual(got.X, want) {
+		t.Errorf("x = %v, want %v", got.X, want)
+	}
+	if want := map[string]string{"k1": "y1", "k2": "a2"}; !reflect.DeepEqual(got.Y, want) {
+		t.Errorf("y = %v, want %v", got.Y, want)
+	}
+}
