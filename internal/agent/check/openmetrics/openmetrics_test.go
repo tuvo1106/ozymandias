@@ -646,3 +646,19 @@ func TestCheck_AnEmptyLabelIsNoLabel(t *testing.T) {
 		}
 	}
 }
+
+// Review finding: a scraped host label (a Host header, a vhost) became the
+// series' host tag, moving it off the agent's machine. It is exported_host.
+func TestCheck_AScrapedHostIsExported(t *testing.T) {
+	page := "# TYPE up gauge\nup{host=\"api.example.com\"} 1\n"
+	_, url := serve(t, page)
+	c, _ := check(t, map[string]any{"url": url})
+	g, err := scrape(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ms := g.named("up")
+	if len(ms) != 1 || !slices.Contains(ms[0].Tags, "exported_host:api.example.com") || slices.ContainsFunc(ms[0].Tags, func(t string) bool { return strings.HasPrefix(t, "host:") }) {
+		t.Fatalf("%+v", ms)
+	}
+}

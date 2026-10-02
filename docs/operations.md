@@ -168,7 +168,9 @@ Every label becomes a tag; one whose key the instance or the agent
 already tags with another value (`service`, `container_name`, `instance`,
 an agent-wide `env`…) becomes
 `exported_<key>`, as Prometheus renames it, so a series never has two
-values for one key. `openmetrics.up` and `openmetrics.scrape_duration`
+values for one key. A `host` label is always `exported_host`: on a scraped
+page it is a Host header or virtual host, not the machine, and as `host` it
+would move the series off the agent's. `openmetrics.up` and `openmetrics.scrape_duration`
 say whether the scrape worked.
 
 ```yaml

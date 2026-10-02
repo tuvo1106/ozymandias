@@ -249,13 +249,25 @@ func (c *Check) name(base string) (string, bool) {
 }
 
 // tags turns labels into tags, leaving out skip and the excluded ones.
+//
+// A label named host becomes exported_host. The agent lets a check's own
+// host tag stand in for its (a check that measures another machine says
+// so), but a scraped page's host is the page's word, and on most pages it
+// is not a machine: it is an HTTP Host header or a virtual host
+// (http_requests_total{host="api.example.com"}). Kept as host, it would move
+// the series off the agent's machine and merge every machine scraping such
+// a page under one name.
 func (c *Check) tags(labels []om.Label, skip string) []string {
 	out := make([]string, 0, len(labels))
 	for _, l := range labels {
 		if l.Name == skip || c.excludeLabels[l.Name] {
 			continue
 		}
-		out = append(out, l.Name+":"+l.Value)
+		name := l.Name
+		if name == "host" {
+			name = "exported_host"
+		}
+		out = append(out, name+":"+l.Value)
 	}
 	return out
 }
