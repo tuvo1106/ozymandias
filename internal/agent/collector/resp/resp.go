@@ -315,15 +315,23 @@ func readLength(rest []byte, max int, what string) (n int, null bool, err error)
 	if len(rest) == 0 || len(rest) > 19 {
 		return 0, false, fmt.Errorf("%w: %s length %q", ErrProtocol, what, rest)
 	}
+	// Past max the value is refused, so accumulating stops there: carried
+	// on, 19 digits overflow int64, wrap negative, and pass a v > max test
+	// — and a negative length reaches make([]byte, n) and panics, taking
+	// the whole agent with it on the word of whatever answers the check.
 	var v int64
+	over := false
 	for _, c := range rest {
 		if c < '0' || c > '9' {
 			return 0, false, fmt.Errorf("%w: %s length %q", ErrProtocol, what, rest)
 		}
-		v = v*10 + int64(c-'0')
+		if !over {
+			v = v*10 + int64(c-'0')
+			over = v > int64(max)
+		}
 	}
-	if v > int64(max) {
-		return 0, false, fmt.Errorf("%w: %s of %d exceeds %d", ErrTooLarge, what, v, max)
+	if over {
+		return 0, false, fmt.Errorf("%w: %s length %s exceeds %d", ErrTooLarge, what, rest, max)
 	}
 	return int(v), false, nil
 }

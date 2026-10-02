@@ -373,6 +373,7 @@ func FuzzRead(f *testing.F) {
 		"+OK\r\n", "-ERR x\r\n", ":1\r\n", "$3\r\nabc\r\n", "$-1\r\n", "*2\r\n:1\r\n$1\r\nx\r\n",
 		"*-1\r\n", "_\r\n", "#t\r\n", ",1.5\r\n", "(12\r\n", "=7\r\ntxt:abc\r\n", "!3\r\nERR\r\n",
 		"%1\r\n+k\r\n+v\r\n", "~1\r\n:1\r\n", ">1\r\n+p\r\n", "*1\r\n*1\r\n*1\r\n:1\r\n",
+		"$9999999999999999999\r\n", "*9999999999999999999\r\n", "%9223372036854775807\r\n",
 	} {
 		f.Add([]byte(s))
 	}
@@ -392,4 +393,20 @@ func FuzzRead(f *testing.F) {
 			t.Fatalf("round trip of %q via %q: got %+v, %v; want %+v", in, enc, got, err, v)
 		}
 	})
+}
+
+// Review finding: a 19-digit length overflowed int64, wrapped negative,
+// passed the limit check and panicked in make — one reply from whatever
+// answers a check took the agent down. Every kind refuses it as too large.
+func TestRead_AnOverflowingLengthIsRefused(t *testing.T) {
+	lim := Limits{MaxBulk: 1 << 20, MaxElems: 1 << 10, MaxDepth: 4, MaxTotal: 1 << 24}
+	for _, in := range []string{
+		"$9999999999999999999\r\n", "*9999999999999999999\r\n", "%9999999999999999999\r\n",
+		"~9999999999999999999\r\n", "=9999999999999999999\r\n", "$9223372036854775808\r\n",
+	} {
+		_, err := NewReader(strings.NewReader(in), lim).Read()
+		if !errors.Is(err, ErrTooLarge) {
+			t.Errorf("%q: err = %v", in, err)
+		}
+	}
 }
