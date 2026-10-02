@@ -51,11 +51,9 @@ type Instance struct {
 	// keys (name, interval, tags) removed. Decode them with [Instance.Decode].
 	Settings map[string]any
 	// Discovered says the instance came from a container's labels, whose
-	// tags already say which container it checks. A check leaves out a tag
-	// that names its target by address (postgres' server, http_check's
-	// url): a discovered target's address is the container's, which
-	// changes when the container restarts, and each change would start a
-	// new series of what the container tags already identify.
+	// tags already say which container it checks. A check passes the tags
+	// that name its target by address through TargetTags, which leaves
+	// them out for a discovered instance.
 	Discovered bool
 	Clock      clock.Clock
 	Logger     *slog.Logger
@@ -136,6 +134,20 @@ func listFields(t reflect.Type) map[string]bool {
 		}
 	}
 	return out
+}
+
+// TargetTags returns tags, the ones a check uses to name its target by
+// address (postgres' server:, http_check's url:), or nothing for a
+// discovered instance. A discovered target's address is its container's,
+// which changes when the container restarts, and every change would start
+// a new series of what the container's tags already identify. One rule,
+// here, rather than one special case per check that a new check could
+// forget.
+func (i Instance) TargetTags(tags ...string) []string {
+	if i.Discovered {
+		return nil
+	}
+	return tags
 }
 
 // Common instance settings, understood by every check and handled here

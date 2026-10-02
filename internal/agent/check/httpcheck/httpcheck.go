@@ -77,11 +77,7 @@ func New(inst collector.Instance) (collector.Collector, error) {
 	if err != nil {
 		return nil, err
 	}
-	if inst.Discovered {
-		// The container's tags name the target; the url holds its address,
-		// which changes when the container restarts.
-		c.tags = nil
-	}
+	c.tags = inst.TargetTags(c.tags...) // the url holds the address
 	return c, nil
 }
 

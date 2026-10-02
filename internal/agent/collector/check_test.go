@@ -193,3 +193,12 @@ func TestRegistry_AnExplicitInstanceTagCannotCollide(t *testing.T) {
 		}
 	}
 }
+
+func TestInstance_TargetTags(t *testing.T) {
+	if got := (collector.Instance{}).TargetTags("server:db", "url:x"); !slices.Equal(got, []string{"server:db", "url:x"}) {
+		t.Fatalf("configured: %v", got)
+	}
+	if got := (collector.Instance{Discovered: true}).TargetTags("server:db"); got != nil {
+		t.Fatalf("discovered: %v", got)
+	}
+}
