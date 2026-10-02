@@ -52,7 +52,7 @@ what "done" means:
 
 1. Work milestones in order. Do not start M(n+1) until every acceptance
    criterion of M(n) passes and is demonstrated (command + output in the notes).
-2. **Two gates: pre-commit, then Actions** (ADR-0024). So:
+2. **Two gates: pre-commit, then Actions** (ADR-0024, ADR-0033). So:
    - **Batch.** One PR per milestone, or per large coherent chunk of one, not
      one per feature slice. Slices are still separate, well-described
      *commits* on the branch, so history stays reviewable.
@@ -62,10 +62,12 @@ what "done" means:
      the full gate**: it runs the checks `make ci` runs (plus a web
      production build) on every PR and on every push to main, `ci` is a
      required check, and a PR merges only when it is green on the head
-     commit. Run `make ci` by hand
-     once before opening a PR (it runs on the efficiency cores, so it does
-     not heat the laptop) and put that evidence, plus `make smoke` when
-     runtime behaviour changed, in the PR description. Batch fixes so a
+     commit. `make ci` is
+     **opt-in** (ADR-0033): run it by hand only when a change really needs
+     it (concurrency, storage, wire format, timing-sensitive code; it runs
+     on the efficiency cores, so it does not heat the laptop). Otherwise
+     pre-commit plus the `ci` check are the evidence. Put whatever you ran,
+     plus `make smoke` when runtime behaviour changed, in the PR description. Batch fixes so a
      review round costs one push.
    - Scopes are package-ish: `feat(agent): …`, `test(tsdb): …`,
      `feat(sdk-python): …`, `feat(web): …`.

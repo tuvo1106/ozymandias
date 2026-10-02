@@ -1,6 +1,6 @@
 # ADR-0024: GitHub Actions is the full gate; pre-push runs nothing
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0033](0033-make-ci-is-opt-in.md)
 - **Date:** 2026-09-28
 - **Supersedes:** [ADR-0013](0013-actions-on-pull-requests.md)
 

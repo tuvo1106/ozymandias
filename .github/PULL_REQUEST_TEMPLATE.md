@@ -10,7 +10,7 @@
 
 <!-- How was this verified? Which test layers from docs/plan/testing.md does this add (unit / property / differential / fuzz / crash / golden / smoke)? -->
 
-- [ ] `make ci` run by hand on this branch (ADR-0024: there is no pre-push hook), and its result:
+- [ ] `make ci` run by hand, only if the change warranted it (ADR-0033), and its result — or "not run":
 - [ ] `make smoke`, if runtime behaviour changed
 
 ## Docs
