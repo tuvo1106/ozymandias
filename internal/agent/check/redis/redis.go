@@ -46,6 +46,14 @@ type Check struct {
 	// failed connection forgets them: whatever answers next may be another
 	// server. At most maxDBs, which no Redis exceeds (16 by default).
 	dbs map[int]bool
+	// runID is the last INFO's run_id, which Redis draws afresh each time
+	// a server process starts. When it changes another server is answering
+	// (a recreated container on a reused address, a failover), and its
+	// counters are not the old one's to subtract from: the rates start
+	// over, as on a first reading, and the remembered databases with them.
+	// Asked of the server rather than inferred from a failed connection,
+	// so a brief timeout to the same server costs no rate.
+	runID string
 }
 
 // maxDBs bounds the databases remembered. Redis's databases setting is 16
@@ -128,6 +136,13 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 		return err
 	}
 	emit(collector.Metric{Name: "redis.can_connect", Kind: collector.Gauge, Value: 1})
+	if id, _ := info.Get("run_id"); id != c.runID {
+		if c.runID != "" {
+			c.rates = collector.NewRates()
+			c.dbs = nil
+		}
+		c.runID = id
+	}
 	for _, g := range gauges {
 		if v, ok := info.Number(g.field); ok {
 			emit(collector.Metric{Name: g.metric, Kind: collector.Gauge, Value: v})

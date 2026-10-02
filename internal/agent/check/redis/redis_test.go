@@ -31,6 +31,7 @@ type server struct {
 	hits     int
 	seen     [][]string
 	flushed  []string // dbs whose keyspace line INFO leaves out (emptied)
+	runID    string   // INFO's run_id, if set
 }
 
 func newServer(t *testing.T, password string) *server {
@@ -69,6 +70,9 @@ func (s *server) handle(c net.Conn) {
 		s.mu.Lock()
 		s.seen = append(s.seen, args)
 		body := fmt.Sprintf(string(tmpl), strconv.Itoa(s.commands), strconv.Itoa(s.hits))
+		if s.runID != "" {
+			body = strings.Replace(body, "# Server\r\n", "# Server\r\nrun_id:"+s.runID+"\r\n", 1)
+		}
 		for _, db := range s.flushed {
 			lines := strings.Split(body, "\n")
 			lines = slices.DeleteFunc(lines, func(l string) bool { return strings.HasPrefix(l, db+":") })
@@ -354,4 +358,34 @@ func must(t *testing.T, c *Check) got {
 		t.Fatal(err)
 	}
 	return g
+}
+
+// Review finding: a different server on the same address (a container
+// recreated in place, a failover) had its counters differenced against the
+// old one's, a bogus rate for one interval. A new run_id starts over; the
+// same one keeps its history through a failed run.
+func TestRedis_ANewServerStartsItsRatesOver(t *testing.T) {
+	s := newServer(t, "")
+	s.runID = "aaaa"
+	fc := testutil.NewFakeClock(t0)
+	c := newCheck(t, map[string]any{"host": "127.0.0.1", "port": s.port()}, fc)
+	if _, err := run(c); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.runID, s.commands = "bbbb", s.commands+1500 // another server, higher totals
+	s.mu.Unlock()
+	fc.Advance(15 * time.Second)
+	got, err := run(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got["redis.net.commands"]) != 0 {
+		t.Fatalf("a rate across two servers: %v", got["redis.net.commands"])
+	}
+	s.advance(1500, 0)
+	fc.Advance(15 * time.Second)
+	if got, _ := run(c); got.value(t, "redis.net.commands") != 100 {
+		t.Fatalf("the new server's own rate: %v", got["redis.net.commands"])
+	}
 }
