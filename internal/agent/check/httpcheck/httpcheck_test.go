@@ -381,3 +381,27 @@ func TestNew_DiscoveredLeavesOutTheURL(t *testing.T) {
 		t.Fatalf("a bad url gave %#v, %v", c, err)
 	}
 }
+
+// Review finding: after a redirect, days_left read the last response's
+// certificate while carrying the configured URL's tag. A TLS host that
+// redirects to a plain-HTTP one still reports its own certificate.
+func TestCheck_DaysLeftIsTheConfiguredHosts(t *testing.T) {
+	plain := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer plain.Close()
+	old := httptest.NewUnstartedServer(http.RedirectHandler(plain.URL, http.StatusMovedPermanently))
+	old.Config.ErrorLog = log.New(io.Discard, "", 0)
+	old.StartTLS()
+	defer old.Close()
+	leaf := old.Certificate()
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	fc := testutil.NewFakeClock(leaf.NotAfter.Add(-72 * time.Hour))
+	c, err := build(Config{URL: old.URL}, fc, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := run(t, c)
+	if err != nil || g.value(t, "network.http.ssl.days_left") != 3 {
+		t.Fatalf("%v %v", g, err)
+	}
+}

@@ -175,6 +175,10 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	start := c.clock.Now()
 	resp, err := c.client.Do(req)
 	if err != nil {
+		// The failing request is the configured URL's, not a redirect
+		// target's: days_left below is the configured host's certificate.
+		var ue *url.Error
+		firstHop := !errors.As(err, &ue) || ue.URL == c.cfg.URL
 		err = fmt.Errorf("%s: %w", c.shown, collector.RequestError(c.shown, err))
 		// A certificate that fails verification (expired, untrusted, for
 		// another name) is a server that answered the handshake, not one
@@ -183,7 +187,7 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 		// expired, rather than go silent the moment it matters.
 		var bad *tls.CertificateVerificationError
 		if errors.As(err, &bad) {
-			if len(bad.UnverifiedCertificates) > 0 {
+			if firstHop && len(bad.UnverifiedCertificates) > 0 {
 				c.daysLeft(gauge, bad.UnverifiedCertificates[0])
 			}
 			return down(1, err)
@@ -201,8 +205,16 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	gauge("network.http.can_connect", 1)
 	gauge("network.http.response_time", elapsed.Seconds())
 	gauge("network.http.status_code", float64(resp.StatusCode))
-	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
-		c.daysLeft(gauge, resp.TLS.PeerCertificates[0])
+	// days_left is tagged with the configured URL, so it is that host's
+	// certificate: after redirects, the first response's, not the last's
+	// (an old host 301ing to a new one would otherwise report the new
+	// host's 80 days while its own certificate expires).
+	first := resp
+	for first.Request != nil && first.Request.Response != nil {
+		first = first.Request.Response
+	}
+	if first.TLS != nil && len(first.TLS.PeerCertificates) > 0 {
+		c.daysLeft(gauge, first.TLS.PeerCertificates[0])
 	}
 
 	var why error
