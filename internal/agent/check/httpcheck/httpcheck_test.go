@@ -405,3 +405,24 @@ func TestCheck_DaysLeftIsTheConfiguredHosts(t *testing.T) {
 		t.Fatalf("%v %v", g, err)
 	}
 }
+
+// Review finding: a failed verification was matched to the configured URL
+// by comparing text, and net/http's error masks a password and canonicalises
+// the URL, so with either, days_left vanished when the certificate failed —
+// the moment it exists for.
+func TestCheck_DaysLeftSurvivesAPasswordInTheURL(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Config.ErrorLog = log.New(io.Discard, "", 0)
+	srv.StartTLS()
+	defer srv.Close()
+	fc := testutil.NewFakeClock(srv.Certificate().NotAfter.Add(-48 * time.Hour))
+	for _, u := range []string{
+		strings.Replace(srv.URL, "https://", "https://user:pw@", 1),
+		strings.Replace(srv.URL, "https://", "HTTPS://", 1),
+	} {
+		g, err := run(t, newCheck(t, map[string]any{"url": u}, fc)) // untrusted
+		if err == nil || g.value(t, "network.http.ssl.days_left") != 2 {
+			t.Errorf("%s: %v %v", u, g, err)
+		}
+	}
+}

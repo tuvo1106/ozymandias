@@ -125,15 +125,33 @@ func build(cfg Config, clk clock.Clock, tlsBase *tls.Config) (*Check, error) {
 		// not notice a listener that stopped accepting.
 		DisableKeepAlives: true,
 	}
-	c.client = &http.Client{Transport: tr}
-	if cfg.FollowRedirects != nil && !*cfg.FollowRedirects {
-		c.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	}
+	follow := cfg.FollowRedirects == nil || *cfg.FollowRedirects
+	c.client = &http.Client{Transport: tr, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		// Record that the request left the configured URL: a certificate
+		// failure after this is the redirect target's, not the configured
+		// host's (see Collect).
+		if hops, ok := req.Context().Value(hopsKey{}).(*int); ok {
+			*hops = len(via)
+		}
+		if !follow {
+			return http.ErrUseLastResponse
+		}
+		if len(via) >= maxRedirects {
+			return fmt.Errorf("stopped after %d redirects", maxRedirects)
+		}
+		return nil
+	}}
 	if tag, ok := wire.NormalizeTag("url:" + (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()); ok {
 		c.tags = []string{tag}
 	}
 	return c, nil
 }
+
+// hopsKey carries a request's redirect count from CheckRedirect to Collect.
+type hopsKey struct{}
+
+// maxRedirects is net/http's default limit, kept when following.
+const maxRedirects = 10
 
 // Name implements [collector.Collector]; the instance wrapper names it.
 func (c *Check) Name() string { return Name }
@@ -154,6 +172,8 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 
 	ctx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
 	defer cancel()
+	hops := new(int) // redirects followed; CheckRedirect counts them
+	ctx = context.WithValue(ctx, hopsKey{}, hops)
 	req, err := http.NewRequestWithContext(ctx, c.cfg.Method, c.cfg.URL, nil)
 	if err != nil {
 		return down(0, fmt.Errorf("%s: %w", c.shown, collector.RequestError(c.shown, err)))
@@ -172,9 +192,11 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	resp, err := c.client.Do(req)
 	if err != nil {
 		// The failing request is the configured URL's, not a redirect
-		// target's: days_left below is the configured host's certificate.
-		var ue *url.Error
-		firstHop := !errors.As(err, &ue) || ue.URL == c.cfg.URL
+		// target's, when no redirect was followed: days_left below is the
+		// configured host's certificate. Counted, not compared: the URL a
+		// *url.Error carries has its password masked and is in canonical
+		// form, so it rarely equals the configured text.
+		firstHop := *hops == 0
 		err = fmt.Errorf("%s: %w", c.shown, collector.RequestError(c.shown, err))
 		// A certificate that fails verification (expired, untrusted, for
 		// another name) is a server that answered the handshake, not one
