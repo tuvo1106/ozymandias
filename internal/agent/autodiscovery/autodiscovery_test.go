@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	omcheck "github.com/tuvo1106/ozymandias/internal/agent/check/openmetrics"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/docker"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
@@ -490,5 +491,19 @@ func TestInstance_IsMarkedDiscovered(t *testing.T) {
 	}}
 	if _, err := build(d, container("a1", "r", nil), "probe", map[string]string{"port": "1"}); err != nil || !discovered {
 		t.Fatalf("discovered = %v, %v", discovered, err)
+	}
+}
+
+// The documented openmetrics label (ADR-0032) builds the real check: a
+// label is the check's own url setting, templates filled in.
+func TestInstance_TheDocumentedOpenMetricsLabelWorks(t *testing.T) {
+	d, _, _, _, _ := setup(t, Options{})
+	d.opts.Checks = collector.Registry{"openmetrics": omcheck.New}
+	c, err := build(d, container("a1", "exporter", nil), "openmetrics", map[string]string{"url": "http://%%host%%:%%port%%/metrics"})
+	if err != nil || c.Name() != "openmetrics:exporter" {
+		t.Fatalf("%v, %v", c, err)
+	}
+	if _, err := build(d, container("a1", "exporter", nil), "openmetrics", map[string]string{"path": "/metrics"}); err == nil {
+		t.Fatal("a path label, which is no openmetrics setting, was accepted")
 	}
 }

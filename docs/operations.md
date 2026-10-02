@@ -131,6 +131,11 @@ config says `ozymandias`); unset, a container must be on exactly one
 network, and one on several is refused, since its other addresses may have
 no route from the agent.
 
+A label `ozy.check.<check>.<setting>` sets exactly that check's setting, as
+the check's table below lists it (ADR-0032); there are no label-only
+shortcuts. An exporter is scraped with
+`ozy.check.openmetrics.url: "http://%%host%%:%%port%%/metrics"`.
+
 A label value reaches a setting as plain text that the check decodes:
 `"6379"` is a number where the setting wants one, and a text setting gets
 the value exactly as written (a password `0123` or `pa ss #1` stays as it
