@@ -541,3 +541,17 @@ func TestSync_ARenamedContainerRenamesItsCheck(t *testing.T) {
 		t.Fatalf("after the rename: %v", got)
 	}
 }
+
+// %%port%% is a TCP port: every check dials TCP, and a UDP port below the
+// one that answers would be dialled forever with nothing there.
+func TestLowestPort_IsTCP(t *testing.T) {
+	ct := container("a1", "dns", nil)
+	ct.Ports = []dockerapi.Port{{PrivatePort: 53, Type: "udp"}, {PrivatePort: 8080, Type: "tcp"}, {PrivatePort: 9000}}
+	if p, ok := lowestPort(ct); !ok || p != 8080 {
+		t.Fatalf("port %d, %v; want 8080", p, ok)
+	}
+	ct.Ports = []dockerapi.Port{{PrivatePort: 53, Type: "udp"}}
+	if _, ok := lowestPort(ct); ok {
+		t.Fatal("a UDP-only container got a port")
+	}
+}

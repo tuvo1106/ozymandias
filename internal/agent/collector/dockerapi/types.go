@@ -27,6 +27,9 @@ type Container struct {
 // which is what another container on the same network connects to.
 type Port struct {
 	PrivatePort int `json:"PrivatePort"`
+	// Type is the port's protocol, "tcp", "udp" or "sctp". Empty from a
+	// daemon or fake that leaves it out; read that as tcp, Docker's default.
+	Type string `json:"Type"`
 }
 
 // NetworkSettings lists the networks a container is attached to.

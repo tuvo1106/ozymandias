@@ -392,12 +392,17 @@ func address(ct dockerapi.Container, network string) (string, error) {
 		strings.Join(names, ", "))
 }
 
-// lowestPort is the smallest port the container exposes. A container
+// lowestPort is the smallest TCP port the container exposes. A container
 // usually exposes one; with several, the lowest is the stable choice (the
 // list's order is not), and a label can always name the port outright.
+// Every check dials TCP, so a UDP port (a DNS server's 53 beside its
+// 8080 status page) would be a port nothing answers on.
 func lowestPort(ct dockerapi.Container) (int, bool) {
 	best := 0
 	for _, p := range ct.Ports {
+		if p.Type != "" && p.Type != "tcp" {
+			continue
+		}
 		if p.PrivatePort > 0 && (best == 0 || p.PrivatePort < best) {
 			best = p.PrivatePort
 		}
