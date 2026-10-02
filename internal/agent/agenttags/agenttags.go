@@ -66,11 +66,18 @@ func Decorate(tags, agentTags []string, hostTag string) (out []string, dropped i
 // that key would count it in both groups. host is the exception: a check
 // that reports another machine says so with its own host tag.
 func DecorateKeeping(own, keep, agentTags []string, hostTag string) (out []string, dropped int) {
+	if len(keep) == 0 {
+		// Not a check's metric (host, docker): nothing was scraped, so
+		// nothing is renamed, and its tags are what they always were — a
+		// container's service: beside an agent-wide service: included,
+		// as on the statsd path.
+		return Decorate(own, agentTags, hostTag)
+	}
 	// The agent's own tags clash as much as the instance's: env="staging"
 	// on a page beside the agent's env:prod is two values for env.
 	own, renamed := exportClashes(own, append(slices.Clip(keep), agentTags...))
 	defer func() { dropped += renamed }()
-	if len(keep) == 0 || len(own)+len(keep)+len(agentTags)+1 <= wire.MaxTagsPerPoint {
+	if len(own)+len(keep)+len(agentTags)+1 <= wire.MaxTagsPerPoint {
 		// Nothing to choose between: everything fits, so this is
 		// Decorate, without the set and the extra sorts below. The common
 		// case, on the scheduler's per-metric path.

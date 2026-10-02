@@ -136,3 +136,15 @@ func TestDecorateKeeping_AgentTagsClashToo(t *testing.T) {
 		t.Fatalf("%v", got)
 	}
 }
+
+// Review finding: every collector's metrics went through the clash rename,
+// so a built-in docker metric's service:shop-api beside an agent-wide
+// service:infra became exported_service. A metric with no keep tags (a
+// built-in collector's) is decorated exactly as before.
+func TestDecorateKeeping_BuiltInsAreNotRenamed(t *testing.T) {
+	got, dropped := DecorateKeeping([]string{"service:shop-api", "container_name:web"}, nil, []string{"service:infra"}, "host:mac")
+	want, wantDropped := Decorate([]string{"service:shop-api", "container_name:web"}, []string{"service:infra"}, "host:mac")
+	if !slices.Equal(got, want) || dropped != wantDropped || !slices.Contains(got, "service:shop-api") {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
