@@ -164,8 +164,9 @@ Scrapes a Prometheus or OpenMetrics `/metrics` page every run. Counters become
 per-second rates (sent as gauges, ADR-0026), gauges stay gauges, histograms
 become per-bucket counts `<name>.bucket` tagged `upper_bound` plus `.sum` and
 `.count`, and summaries a `quantile`-tagged gauge plus `.sum` and `.count`.
-Every label becomes a tag; one whose key the instance already tags with
-another value (`service`, `container_name`, `instance`…) becomes
+Every label becomes a tag; one whose key the instance or the agent
+already tags with another value (`service`, `container_name`, `instance`,
+an agent-wide `env`…) becomes
 `exported_<key>`, as Prometheus renames it, so a series never has two
 values for one key. `openmetrics.up` and `openmetrics.scrape_duration`
 say whether the scrape worked.

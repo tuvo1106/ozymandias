@@ -127,3 +127,12 @@ func TestDecorateKeeping_RenamesClashingOwnTags(t *testing.T) {
 		t.Fatalf("%d service tags past the cap: %v", n, got)
 	}
 }
+
+// Review finding: a scraped env="staging" beside the agent's own env:prod
+// kept both. Agent tags clash like keep tags.
+func TestDecorateKeeping_AgentTagsClashToo(t *testing.T) {
+	got, _ := DecorateKeeping([]string{"env:staging", "route:/x"}, []string{"replica:0"}, []string{"env:prod"}, "host:mac")
+	if !slices.Contains(got, "exported_env:staging") || !slices.Contains(got, "env:prod") || slices.Contains(got, "env:staging") {
+		t.Fatalf("%v", got)
+	}
+}

@@ -58,14 +58,17 @@ func Decorate(tags, agentTags []string, hostTag string) (out []string, dropped i
 // and any own host tag are kept, and own tags fill what room is left, in
 // sorted order so the same ones always survive.
 //
-// An own tag whose key a keep tag also has is renamed exported_<key>, as
+// An own tag whose key a keep tag or an agent tag also has, with another
+// value, is renamed exported_<key>, as
 // Prometheus renames a scraped label that clashes with a target label: a
 // page's service="checkout" beside the container's service:shop-api would
 // otherwise give one series two values for one key, and a group-by on
 // that key would count it in both groups. host is the exception: a check
 // that reports another machine says so with its own host tag.
 func DecorateKeeping(own, keep, agentTags []string, hostTag string) (out []string, dropped int) {
-	own, renamed := exportClashes(own, keep)
+	// The agent's own tags clash as much as the instance's: env="staging"
+	// on a page beside the agent's env:prod is two values for env.
+	own, renamed := exportClashes(own, append(slices.Clip(keep), agentTags...))
 	defer func() { dropped += renamed }()
 	if len(keep) == 0 || len(own)+len(keep)+len(agentTags)+1 <= wire.MaxTagsPerPoint {
 		// Nothing to choose between: everything fits, so this is
