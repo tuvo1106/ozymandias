@@ -27,16 +27,7 @@ const (
 // dialPgx connects with pgx (ADR-0031). The connection string is built as a
 // URL so that a password with '@' or '/' in it is escaped, not parsed.
 func dialPgx(ctx context.Context, cfg Config) (conn, error) {
-	u := url.URL{
-		Scheme:   "postgres",
-		Host:     net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))),
-		Path:     "/" + cfg.DBName,
-		RawQuery: url.Values{"sslmode": {cfg.SSLMode}, "application_name": {"ozymandias-agent"}}.Encode(),
-	}
-	if cfg.User != "" {
-		u.User = url.UserPassword(cfg.User, cfg.Password)
-	}
-	pc, err := pgx.ParseConfig(u.String())
+	pc, err := pgx.ParseConfig(connString(cfg))
 	if err != nil {
 		// pgconn's parse errors redact the password; the URL itself is
 		// never put in an error here.
@@ -47,6 +38,24 @@ func dialPgx(ctx context.Context, cfg Config) (conn, error) {
 		return nil, err
 	}
 	return pgxConn{c}, nil
+}
+
+// connString is cfg as a postgres:// URL. A host starting with "/" is a
+// unix socket directory (/var/run/postgresql, the usual local setup), and
+// needs nothing special: it becomes the URL host "[/var/run/postgresql]",
+// which pgx parses back to the directory, and pgconn dials a unix socket
+// for any host starting with "/" (TestConnString pins both).
+func connString(cfg Config) string {
+	u := url.URL{
+		Scheme:   "postgres",
+		Host:     net.JoinHostPort(cfg.Host, strconv.Itoa(int(cfg.Port))),
+		Path:     "/" + cfg.DBName,
+		RawQuery: url.Values{"sslmode": {cfg.SSLMode}, "application_name": {"ozymandias-agent"}}.Encode(),
+	}
+	if cfg.User != "" {
+		u.User = url.UserPassword(cfg.User, cfg.Password)
+	}
+	return u.String()
 }
 
 type pgxConn struct{ c *pgx.Conn }
