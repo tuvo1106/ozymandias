@@ -37,7 +37,7 @@ type Port int
 func (p *Port) UnmarshalYAML(v *yaml.Node) error {
 	var n Int
 	if err := n.UnmarshalYAML(v); err != nil {
-		return fmt.Errorf("port: %w", err)
+		return err // already names its line, which Instance.Decode turns into the setting
 	}
 	if n < 1 || n > 65535 {
 		return fmt.Errorf("line %d: port %d: want a number from 1 to 65535", v.Line, n)

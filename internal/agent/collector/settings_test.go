@@ -27,8 +27,8 @@ func TestInt_AndPort(t *testing.T) {
 		"int a float":      {map[string]any{"n": 1.5}, "not a whole number"},
 		"port zero":        {map[string]any{"p": 0}, "1 to 65535"},
 		"port too big":     {map[string]any{"p": "70000"}, "1 to 65535"},
-		"port a word":      {map[string]any{"p": "http"}, "port"},
-		"port a map":       {map[string]any{"p": map[string]any{"a": 1}}, "port"},
+		"port a word":      {map[string]any{"p": "http"}, `p: "http" is not a whole number`},
+		"port a map":       {map[string]any{"p": map[string]any{"a": 1}}, "p: want a whole number"},
 	} {
 		inst.Settings = tc.settings
 		if err := inst.Decode(&cfg); err == nil || !strings.Contains(err.Error(), tc.msg) {

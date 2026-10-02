@@ -2,10 +2,13 @@ package collector_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
 )
@@ -214,12 +217,19 @@ func TestInstance_DecodeErrorsNameTheSetting(t *testing.T) {
 	}
 	for settings, want := range map[*map[string]any]string{
 		{"host": "x", "port": 70000}:              "port: ",
+		{"host": "x", "port": "abc"}:              "port: ",
 		{"host": "x", "timeout": "soon"}:          "timeout: ",
 		{"host": "x", "codes": []any{200, "abc"}}: "codes: ",
 	} {
 		err := collector.Instance{Name: "c:x", Settings: *settings}.Decode(&cfg{})
-		if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "line ") {
+		if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "line ") || strings.Count(err.Error(), want) != 1 {
 			t.Errorf("%v: %v", *settings, err)
+		}
+		// Still the decoder's error underneath (AGENTS.md: wrap with %w):
+		// a type mismatch is a *yaml.TypeError a caller can ask for.
+		var te *yaml.TypeError
+		if errors.Unwrap(err) == nil || (want != "port: " && !errors.As(err, &te)) {
+			t.Errorf("%v: %T does not unwrap to the decoder's error", *settings, err)
 		}
 	}
 }

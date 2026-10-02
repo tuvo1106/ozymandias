@@ -105,10 +105,21 @@ func (i Instance) Decode(v any) error {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%s: %s", i.Name, nameLines(err.Error(), data))
+		return &settingsError{msg: i.Name + ": " + nameLines(err.Error(), data), err: err}
 	}
 	return nil
 }
+
+// settingsError is a decode error whose text names settings instead of
+// lines of the re-encoded text (see nameLines), and which still unwraps to
+// the decoder's error, so a caller can errors.As a *yaml.TypeError.
+type settingsError struct {
+	msg string
+	err error
+}
+
+func (e *settingsError) Error() string { return e.msg }
+func (e *settingsError) Unwrap() error { return e.err }
 
 // lineRef is the "line N:" a YAML error, or a setting type's own message,
 // puts before what it says.
