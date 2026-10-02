@@ -608,3 +608,24 @@ func TestScheduler_APanicFailsTheRunNotTheAgent(t *testing.T) {
 		t.Errorf("log:\n%s", logs.String())
 	}
 }
+
+// Review finding: a second Run returned at its guard but still ran the
+// deferred stop, so the first, live Run's sink was switched off and every
+// batch after counted as dropped. A second call is a no-op.
+func TestScheduler_ASecondRunDoesNotStopTheFirst(t *testing.T) {
+	c := &fake{name: "c", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+		emit(Metric{Name: "c.up", Value: 1})
+		return nil
+	}}
+	fc := testutil.NewFakeClock(t0)
+	sk := &sink{}
+	s := New(Options{Collectors: []Collector{c}, Clock: fc, Sink: sk.send, Rand: rand.New(rand.NewPCG(1, 2)), Logger: slog.New(slog.DiscardHandler)})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { s.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 1 }, "armed")
+	s.Run(context.Background()) // returns at once
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 1 }, "the first Run's batch was not sent")
+}

@@ -236,16 +236,16 @@ func (s *Scheduler) startLocked(t *task) {
 // exits moments later; an embedder that outlives Run should expect up to
 // two goroutines per stuck collector.
 func (s *Scheduler) Run(ctx context.Context) {
+	s.mu.Lock()
+	if s.ctx != nil || s.closing {
+		s.mu.Unlock()
+		return // Run is called once; a second call must not stop the first's sink
+	}
 	defer func() {
 		s.sinkMu.Lock()
 		s.stopped = true
 		s.sinkMu.Unlock()
 	}()
-	s.mu.Lock()
-	if s.ctx != nil || s.closing {
-		s.mu.Unlock()
-		return // Run is called once
-	}
 	s.ctx = ctx
 	for _, t := range s.pending {
 		s.startLocked(t)
@@ -294,13 +294,16 @@ func (s *Scheduler) jitter(iv time.Duration) time.Duration {
 }
 
 // The self-metrics every collector has, each tagged collector:<name>.
-var (
-	selfCounters = []string{
-		"ozy.agent.collector.runs", "ozy.agent.collector.errors",
-		"ozy.agent.collector.timeouts", "ozy.agent.collector.points",
-		"ozy.agent.collector.dropped", "ozy.agent.collector.tags_dropped",
-	}
-	selfGauge = "ozy.agent.collector.duration_ms"
+// Named, not indexed: the counter a field holds and the one released for
+// it must be the same, whatever order a later change lists them in.
+const (
+	selfRuns        = "ozy.agent.collector.runs"
+	selfErrors      = "ozy.agent.collector.errors"
+	selfTimeouts    = "ozy.agent.collector.timeouts"
+	selfPoints      = "ozy.agent.collector.points"
+	selfDropped     = "ozy.agent.collector.dropped"
+	selfTagsDropped = "ozy.agent.collector.tags_dropped"
+	selfDuration    = "ozy.agent.collector.duration_ms"
 )
 
 // loop runs one collector until ctx is done.
@@ -309,19 +312,18 @@ func (s *Scheduler) loop(ctx context.Context, c Collector) {
 	reg, tag := s.opts.Registry, "collector:"+c.Name()
 	st := &runState{
 		name: c.Name(),
-		runs: reg.Counter(selfCounters[0], tag),
-		errs: reg.Counter(selfCounters[1], tag),
-		tout: reg.Counter(selfCounters[2], tag),
-		pts:  reg.Counter(selfCounters[3], tag),
-		drop: reg.Counter(selfCounters[4], tag),
-		tags: reg.Counter(selfCounters[5], tag),
-		dur:  reg.Gauge(selfGauge, tag),
+		runs: reg.Counter(selfRuns, tag),
+		errs: reg.Counter(selfErrors, tag),
+		tout: reg.Counter(selfTimeouts, tag),
+		pts:  reg.Counter(selfPoints, tag),
+		drop: reg.Counter(selfDropped, tag),
+		tags: reg.Counter(selfTagsDropped, tag),
+		dur:  reg.Gauge(selfDuration, tag),
 	}
 	defer func() {
-		for _, n := range selfCounters {
+		for _, n := range []string{selfRuns, selfErrors, selfTimeouts, selfPoints, selfDropped, selfTagsDropped, selfDuration} {
 			reg.Release(n, tag)
 		}
-		reg.Release(selfGauge, tag)
 	}()
 
 	first := s.opts.Clock.NewTimer(s.jitter(iv))
