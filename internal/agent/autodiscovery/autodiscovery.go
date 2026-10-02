@@ -183,7 +183,10 @@ func (d *Discovery) Sync(ctx context.Context) {
 // sync brings one container's instance of one check up to date.
 func (d *Discovery) sync(k key, ct dockerapi.Container, check string, raw map[string]string) {
 	resolved, rerr := d.resolveAll(ct, raw)
-	fp := fingerprint(resolved, rerr)
+	// The name is part of what the instance was built from (its name, its
+	// container_name tag): docker rename keeps the id and the labels, and
+	// the check must follow the container's metrics to the new name.
+	fp := ct.Name() + "\x01" + fingerprint(resolved, rerr)
 	old := d.running[k]
 	if old != nil && old.fp == fp || old == nil && d.failed[k] == fp {
 		return

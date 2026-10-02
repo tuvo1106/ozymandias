@@ -526,3 +526,18 @@ func TestInstance_BracesAreAMappingOnlyForAMapSetting(t *testing.T) {
 		t.Fatalf("got %+v", seen)
 	}
 }
+
+// Review finding: docker rename keeps the id and labels, so the instance
+// kept the old name and container_name while the container's own metrics
+// moved to the new one. A rename rebuilds it.
+func TestSync_ARenamedContainerRenamesItsCheck(t *testing.T) {
+	d, l, s, _, _ := setup(t, Options{})
+	labels := map[string]string{"ozy.check.probe.port": "1"}
+	l.set([]dockerapi.Container{container("a1", "app-redis-1", labels)}, nil)
+	d.Sync(context.Background())
+	l.set([]dockerapi.Container{container("a1", "cache-1", labels)}, nil)
+	d.Sync(context.Background())
+	if got := s.names(); !slices.Equal(got, []string{"probe:cache-1"}) || !slices.Contains(tagsOf(t, s, "probe:cache-1"), "container_name:cache-1") {
+		t.Fatalf("after the rename: %v", got)
+	}
+}
