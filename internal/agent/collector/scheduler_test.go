@@ -629,3 +629,31 @@ func TestScheduler_ASecondRunDoesNotStopTheFirst(t *testing.T) {
 	fc.Advance(time.Second)
 	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 1 }, "the first Run's batch was not sent")
 }
+
+// Which collectors' tags are renamed on a clash is the scheduler's call, by
+// what the collector is, not by whether it has keep tags. Round 7 inferred
+// "built-in" from an empty Keep, and a lone unnamed check has one too.
+func TestScheduler_OnlyAChecksClashingTagsAreExported(t *testing.T) {
+	emits := func(tag string) func(context.Context, Emit) error {
+		return func(_ context.Context, emit Emit) error {
+			emit(Metric{Name: "m", Value: 1, Tags: []string{tag}})
+			return nil
+		}
+	}
+	builtIn := &fake{name: "docker", iv: time.Second, collect: emits("service:shop-api")}
+	lone := &instance{name: "openmetrics", iv: time.Second, inner: &fake{name: "openmetrics", iv: time.Second, collect: emits("env:staging")}}
+	fc, sk, _ := start(t, Options{Collectors: []Collector{builtIn, lone}, Tags: []string{"service:infra", "env:prod"}, HostTag: "host:mac"})
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 2 }, "armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 2 }, "both runs")
+	for _, se := range sk.all() {
+		switch {
+		case slices.Contains(se.Tags, "service:infra") && slices.Contains(se.Tags, "env:prod") && slices.Contains(se.Tags, "service:shop-api"):
+			// the built-in, decorated as before: both service values
+		case slices.Contains(se.Tags, "exported_env:staging") && !slices.Contains(se.Tags, "env:staging"):
+			// the lone check: its clashing tag exported
+		default:
+			t.Errorf("tags %v", se.Tags)
+		}
+	}
+}

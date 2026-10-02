@@ -58,26 +58,10 @@ func Decorate(tags, agentTags []string, hostTag string) (out []string, dropped i
 // and any own host tag are kept, and own tags fill what room is left, in
 // sorted order so the same ones always survive.
 //
-// An own tag whose key a keep tag or an agent tag also has, with another
-// value, is renamed exported_<key>, as
-// Prometheus renames a scraped label that clashes with a target label: a
-// page's service="checkout" beside the container's service:shop-api would
-// otherwise give one series two values for one key, and a group-by on
-// that key would count it in both groups. host is the exception: a check
-// that reports another machine says so with its own host tag.
+// It renames nothing: a clashing own tag is ExportClashes' business, and
+// whether to apply it is the caller's.
 func DecorateKeeping(own, keep, agentTags []string, hostTag string) (out []string, dropped int) {
-	if len(keep) == 0 {
-		// Not a check's metric (host, docker): nothing was scraped, so
-		// nothing is renamed, and its tags are what they always were — a
-		// container's service: beside an agent-wide service: included,
-		// as on the statsd path.
-		return Decorate(own, agentTags, hostTag)
-	}
-	// The agent's own tags clash as much as the instance's: env="staging"
-	// on a page beside the agent's env:prod is two values for env.
-	own, renamed := exportClashes(own, append(slices.Clip(keep), agentTags...))
-	defer func() { dropped += renamed }()
-	if len(own)+len(keep)+len(agentTags)+1 <= wire.MaxTagsPerPoint {
+	if len(keep) == 0 || len(own)+len(keep)+len(agentTags)+1 <= wire.MaxTagsPerPoint {
 		// Nothing to choose between: everything fits, so this is
 		// Decorate, without the set and the extra sorts below. The common
 		// case, on the scheduler's per-metric path.
@@ -115,9 +99,25 @@ func DecorateKeeping(own, keep, agentTags []string, hostTag string) (out []strin
 	return wire.CanonicalTags(append(fixed, rest...)), dropped
 }
 
-// exportClashes renames each own tag (but host) whose key a keep tag has
-// with another value: key:v becomes exported_key:v. One the longer key makes unsendable is
-// dropped, and counted with the cap's drops.
+// ExportClashes renames each own tag whose key a keep tag or an agent tag
+// also has, with another value: key:v becomes exported_key:v, as
+// Prometheus renames a scraped label that clashes with a target label. A
+// page's service="checkout" beside the container's service:shop-api, or
+// its env="staging" beside the agent's env:prod, would otherwise give one
+// series two values for one key, and a group-by on that key would count it
+// in both groups. host is the exception: a check that reports another
+// machine says so with its own host tag. One the longer key makes
+// unsendable is dropped, and counted.
+//
+// For a check's metrics, whose own tags are whatever a scraped page said.
+// A built-in collector's tags (a container's service:) are the agent's own
+// reading and are left as Decorate leaves statsd's. Which a series is, the
+// caller knows; it is not guessed from keep, which a lone unnamed check
+// instance has none of. own is rewritten in place.
+func ExportClashes(own, keep, agentTags []string) (out []string, dropped int) {
+	return exportClashes(own, append(slices.Clip(keep), agentTags...))
+}
+
 func exportClashes(own, keep []string) (out []string, dropped int) {
 	if len(keep) == 0 || len(own) == 0 {
 		return own, 0

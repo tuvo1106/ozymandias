@@ -107,8 +107,8 @@ func TestDecorateKeeping_UnderTheCap(t *testing.T) {
 // service:shop-api gave one series two service values, counted in both
 // groups of a group-by. The scraped one is renamed exported_service, as
 // Prometheus does; host is left alone (a check may report another machine).
-func TestDecorateKeeping_RenamesClashingOwnTags(t *testing.T) {
-	got, _ := DecorateKeeping([]string{"service:checkout", "route:/x", "host:db1"}, []string{"service:shop-api", "host:other"}, nil, "host:mac")
+func TestExportClashes_RenamesClashingOwnTags(t *testing.T) {
+	got, _ := decorateCheck([]string{"service:checkout", "route:/x", "host:db1"}, []string{"service:shop-api", "host:other"}, nil, "host:mac")
 	for _, want := range []string{"exported_service:checkout", "service:shop-api", "route:/x", "host:db1"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("%s missing: %v", want, got)
@@ -122,7 +122,7 @@ func TestDecorateKeeping_RenamesClashingOwnTags(t *testing.T) {
 	for i := range wire.MaxTagsPerPoint {
 		own = append(own, fmt.Sprintf("k%03d:v", i))
 	}
-	got, _ = DecorateKeeping(own, []string{"service:shop-api"}, nil, "")
+	got, _ = decorateCheck(own, []string{"service:shop-api"}, nil, "")
 	if n := len(slices.DeleteFunc(slices.Clone(got), func(t string) bool { k, _ := wire.SplitTag(t); return k != "service" })); n != 1 {
 		t.Fatalf("%d service tags past the cap: %v", n, got)
 	}
@@ -130,21 +130,25 @@ func TestDecorateKeeping_RenamesClashingOwnTags(t *testing.T) {
 
 // Review finding: a scraped env="staging" beside the agent's own env:prod
 // kept both. Agent tags clash like keep tags.
-func TestDecorateKeeping_AgentTagsClashToo(t *testing.T) {
-	got, _ := DecorateKeeping([]string{"env:staging", "route:/x"}, []string{"replica:0"}, []string{"env:prod"}, "host:mac")
+func TestExportClashes_AgentTagsClashToo(t *testing.T) {
+	got, _ := decorateCheck([]string{"env:staging", "route:/x"}, []string{"replica:0"}, []string{"env:prod"}, "host:mac")
 	if !slices.Contains(got, "exported_env:staging") || !slices.Contains(got, "env:prod") || slices.Contains(got, "env:staging") {
 		t.Fatalf("%v", got)
 	}
 }
 
-// Review finding: every collector's metrics went through the clash rename,
-// so a built-in docker metric's service:shop-api beside an agent-wide
-// service:infra became exported_service. A metric with no keep tags (a
-// built-in collector's) is decorated exactly as before.
-func TestDecorateKeeping_BuiltInsAreNotRenamed(t *testing.T) {
-	got, dropped := DecorateKeeping([]string{"service:shop-api", "container_name:web"}, nil, []string{"service:infra"}, "host:mac")
-	want, wantDropped := Decorate([]string{"service:shop-api", "container_name:web"}, []string{"service:infra"}, "host:mac")
-	if !slices.Equal(got, want) || dropped != wantDropped || !slices.Contains(got, "service:shop-api") {
-		t.Fatalf("got %v, want %v", got, want)
+// decorateCheck is what the scheduler does with a check's metric.
+func decorateCheck(own, keep, agentTags []string, hostTag string) ([]string, int) {
+	own, renamed := ExportClashes(slices.Clone(own), keep, agentTags)
+	out, dropped := DecorateKeeping(own, keep, agentTags, hostTag)
+	return out, dropped + renamed
+}
+
+// DecorateKeeping alone renames nothing: a built-in's service:shop-api
+// beside an agent-wide service:infra keeps both, as Decorate does.
+func TestDecorateKeeping_RenamesNothing(t *testing.T) {
+	got, _ := DecorateKeeping([]string{"service:shop-api"}, []string{"replica:0"}, []string{"service:infra"}, "host:mac")
+	if !slices.Contains(got, "service:shop-api") || !slices.Contains(got, "service:infra") {
+		t.Fatalf("%v", got)
 	}
 }

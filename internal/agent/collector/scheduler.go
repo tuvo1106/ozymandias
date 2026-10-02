@@ -385,6 +385,7 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 		}
 	}()
 
+	_, isCheck := c.(*instance)
 	var (
 		mu       sync.Mutex
 		open     = true
@@ -399,7 +400,7 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 			st.drop.Inc()
 			return
 		}
-		se, badTags, ok := s.series(m, ts, iv)
+		se, badTags, ok := s.series(m, ts, iv, isCheck)
 		st.tags.Add(int64(badTags))
 		switch {
 		case !ok:
@@ -516,7 +517,7 @@ func (s *Scheduler) report(ctx context.Context, st *runState, err error) {
 // cannot be sent: a name the intake would refuse, or a value with no JSON
 // form. A bad tag drops the tag, not the metric — the same trade the
 // aggregator makes for statsd.
-func (s *Scheduler) series(m Metric, ts int64, iv time.Duration) (se wire.Series, badTags int, ok bool) {
+func (s *Scheduler) series(m Metric, ts int64, iv time.Duration, isCheck bool) (se wire.Series, badTags int, ok bool) {
 	name, ok := wire.NormalizeMetricName(m.Name)
 	if !ok || math.IsNaN(m.Value) || math.IsInf(m.Value, 0) {
 		return wire.Series{}, 0, false
@@ -534,8 +535,18 @@ func (s *Scheduler) series(m Metric, ts int64, iv time.Duration) (se wire.Series
 	}
 	// The same decoration as statsd series get (agenttags): a check that
 	// measures another machine says host:db1 and keeps it. Keep survives
-	// the tag cap; Tags give way first.
-	tags, capped := agenttags.DecorateKeeping(norm(m.Tags), norm(m.Keep), s.tags, s.hostTag)
+	// the tag cap; Tags give way first. Only a check's own tag that clashes
+	// with an identity or agent tag is exported_: a built-in's tags are the
+	// agent's own reading, left as statsd's are. Whether this is a check is
+	// known from the collector, not guessed from Keep, which a lone unnamed
+	// instance has none of.
+	own, keep := norm(m.Tags), norm(m.Keep)
+	if isCheck {
+		var renamed int
+		own, renamed = agenttags.ExportClashes(own, keep, s.tags)
+		badTags += renamed
+	}
+	tags, capped := agenttags.DecorateKeeping(own, keep, s.tags, s.hostTag)
 	badTags += capped
 	se = wire.Series{Metric: name, Tags: tags, Points: []wire.Point{{Timestamp: ts, Value: m.Value}}}
 	switch m.Kind {
