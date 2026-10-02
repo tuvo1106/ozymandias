@@ -18,8 +18,8 @@ acme_build_info{version="2.0.1"} 1
 acme_feature{acme_feature="a"} 1
 acme_feature{acme_feature="b"} 0
 # TYPE acme_queue_depth gaugehistogram
-acme_queue_depth_gbucket{le="10"} 4
-acme_queue_depth_gbucket{le="+Inf"} 5
+acme_queue_depth_bucket{le="10"} 4
+acme_queue_depth_bucket{le="+Inf"} 5
 acme_queue_depth_gcount 5
 acme_queue_depth_gsum 31
 # TYPE acme_mystery unknown

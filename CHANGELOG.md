@@ -31,7 +31,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   under `collectors.checks.<check>.instances`, each instance with a `name`
   (which also tags its metrics `instance:<name>`), `interval` and `tags`, and settings a misspelling of which fails startup:
   `openmetrics` (scrape any Prometheus `/metrics` page: counters as rates,
-  histograms as bucket counts or as distributions for `p90:`), `http_check`
+  histograms as bucket counts or as distributions for `p90:`, gauge
+  histograms as the spec writes them: `_bucket`, `_gsum`, `_gcount`), `http_check`
   (`network.http.*`: status, latency, TLS days left), `redis` (INFO over
   RESP), `postgres` (via pgx, ADR-0031) and `process` (`system.processes.*`).
   A container can ask for a check with labels (`ozy.check.redis.port=6379`,

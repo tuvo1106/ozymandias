@@ -53,7 +53,7 @@ func (f *Family) Histograms() ([]Histogram, error) {
 	case TypeHistogram:
 		bucketSfx, sumSfx, countSfx = "_bucket", "_sum", "_count"
 	case TypeGaugeHistogram:
-		bucketSfx, sumSfx, countSfx = "_gbucket", "_gsum", "_gcount"
+		bucketSfx, sumSfx, countSfx = "_bucket", "_gsum", "_gcount" // _bucket, as for a histogram: see suffixes
 	default:
 		return nil, fmt.Errorf("openmetrics: %s is a %s, not a histogram", f.Name, f.Type)
 	}

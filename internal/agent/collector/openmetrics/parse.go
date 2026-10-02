@@ -340,6 +340,15 @@ func (p *parser) newFamily(name string) *family {
 // named `foo_bucket` belongs to family `foo` only if `foo` is a histogram;
 // otherwise it is a family of its own. That matters for exporters that write
 // `# TYPE foo_count gauge` — a gauge that happens to end in _count.
+//
+// A gauge histogram's buckets are `_bucket`, like a histogram's; only its
+// sum and count differ (`_gsum`, `_gcount`). The OpenMetrics spec says so
+// ("The MetricPoint's Bucket Values Sample MetricNames MUST have the suffix
+// '_bucket'", GaugeHistogram), and its example and prometheus_client write
+// it. There is no `_gbucket`: an earlier version of this parser expected
+// one, so a real exporter's buckets became an untyped family of their own.
+// It is not accepted as an alternative either, since nothing writes it and
+// a family that matched two spellings would be one more thing to be wrong.
 var suffixes = []struct {
 	t   Type
 	sfx []string
@@ -347,7 +356,7 @@ var suffixes = []struct {
 	{TypeCounter, []string{"_total", "_created"}},
 	{TypeSummary, []string{"_sum", "_count", "_created"}},
 	{TypeHistogram, []string{"_bucket", "_sum", "_count", "_created"}},
-	{TypeGaugeHistogram, []string{"_gbucket", "_gsum", "_gcount"}},
+	{TypeGaugeHistogram, []string{"_bucket", "_gsum", "_gcount"}},
 	{TypeInfo, []string{"_info"}},
 }
 

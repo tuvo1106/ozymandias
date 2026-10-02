@@ -75,7 +75,7 @@ func TestFamily_Histograms_MissingInf(t *testing.T) {
 }
 
 func TestFamily_Histograms_GaugeHistogram(t *testing.T) {
-	f := oneFamily(t, "# TYPE g gaugehistogram\ng_gbucket{le=\"-1\"} 1\ng_gbucket{le=\"+Inf\"} 3\ng_gsum -2\ng_gcount 3\n# EOF\n")
+	f := oneFamily(t, "# TYPE g gaugehistogram\ng_bucket{le=\"-1\"} 1\ng_bucket{le=\"+Inf\"} 3\ng_gsum -2\ng_gcount 3\n# EOF\n")
 	hs, err := f.Histograms()
 	if err != nil {
 		t.Fatal(err)

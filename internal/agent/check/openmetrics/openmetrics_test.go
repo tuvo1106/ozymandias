@@ -288,7 +288,7 @@ func TestCheck_OpenMetricsFormat(t *testing.T) {
 }
 
 func TestCheck_GaugeHistogramAndInfo(t *testing.T) {
-	page := "# TYPE q gaugehistogram\nq_gbucket{le=\"1\"} 3\nq_gbucket{le=\"+Inf\"} 5\nq_gsum 4\nq_gcount 5\n" +
+	page := "# TYPE q gaugehistogram\nq_bucket{le=\"1\"} 3\nq_bucket{le=\"+Inf\"} 5\nq_gsum 4\nq_gcount 5\n" +
 		"# TYPE build info\nbuild_info{version=\"1.2\"} 1\n# EOF\n"
 	_, url := serve(t, page)
 	c, _ := check(t, map[string]any{"url": url})
@@ -297,7 +297,7 @@ func TestCheck_GaugeHistogramAndInfo(t *testing.T) {
 		t.Fatal(err)
 	}
 	if b := g.one(t, "q.bucket", "upper_bound:1"); b.Value != 3 || b.Kind != collector.Gauge {
-		t.Errorf("gbucket = %+v", b)
+		t.Errorf("gauge histogram bucket = %+v", b)
 	}
 	if g.one(t, "q.gcount").Value != 5 || g.one(t, "q.gsum").Value != 4 {
 		t.Error("gsum/gcount")
@@ -543,8 +543,8 @@ func TestCheck_ASumThatFallsIsNotARestart(t *testing.T) {
 // so le="1.0" was upper_bound:1.0 there and upper_bound:1 on a histogram,
 // and they skipped the histogram path's checks. Now one path serves both.
 func TestCheck_GaugeHistogramBoundsAndChecks(t *testing.T) {
-	page := "# TYPE q gaugehistogram\nq_gbucket{le=\"1.0\"} 3\nq_gbucket{le=\"2.50\"} 4\nq_gcount 6\n" +
-		"# TYPE d gaugehistogram\nd_gbucket{le=\"1\"} 1\nd_gbucket{le=\"1.0\"} 2\nd_gbucket{le=\"+Inf\"} 2\n# EOF\n"
+	page := "# TYPE q gaugehistogram\nq_bucket{le=\"1.0\"} 3\nq_bucket{le=\"2.50\"} 4\nq_gcount 6\n" +
+		"# TYPE d gaugehistogram\nd_bucket{le=\"1\"} 1\nd_bucket{le=\"1.0\"} 2\nd_bucket{le=\"+Inf\"} 2\n# EOF\n"
 	_, url := serve(t, page)
 	c, _ := check(t, map[string]any{"url": url})
 	g, err := scrape(t, c)
@@ -559,5 +559,40 @@ func TestCheck_GaugeHistogramBoundsAndChecks(t *testing.T) {
 	}
 	if n := len(g.named("d.bucket")); n != 0 {
 		t.Errorf("a gauge histogram with a duplicate le was sent: %d buckets", n)
+	}
+}
+
+// The OpenMetrics spec's own GaugeHistogram example, verbatim (section
+// "GaugeHistogram": bucket samples MUST have the suffix _bucket, the sum
+// _gsum, the count _gcount). Review finding: the parser expected _gbucket,
+// which nothing writes, so a real exporter's buckets became an untyped
+// family named foo_bucket and foo.bucket was never sent.
+func TestCheck_GaugeHistogramAsTheSpecWritesIt(t *testing.T) {
+	page := `# TYPE foo gaugehistogram
+foo_bucket{le="0.01"} 20.0
+foo_bucket{le="0.1"} 25.0
+foo_bucket{le="1"} 34.0
+foo_bucket{le="10"} 34.0
+foo_bucket{le="+Inf"} 42.0
+foo_gcount 42.0
+foo_gsum 3289.3
+# EOF
+`
+	_, url := serve(t, page)
+	c, _ := check(t, map[string]any{"url": url})
+	g, err := scrape(t, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for bound, want := range map[string]float64{"0.01": 20, "0.1": 25, "1": 34, "10": 34, "+Inf": 42} {
+		if b := g.one(t, "foo.bucket", "upper_bound:"+bound); b.Value != want {
+			t.Errorf("bucket %s = %v, want %v", bound, b.Value, want)
+		}
+	}
+	if g.one(t, "foo.gcount").Value != 42 || g.one(t, "foo.gsum").Value != 3289.3 {
+		t.Error("gsum/gcount")
+	}
+	if len(g.named("foo_bucket")) != 0 {
+		t.Error("the buckets were read as a family of their own")
 	}
 }

@@ -16,8 +16,8 @@ family acme_feature type=stateset
   acme_feature{acme_feature="a"} 1
   acme_feature{acme_feature="b"} 0
 family acme_queue_depth type=gaugehistogram
-  acme_queue_depth_gbucket{le="10"} 4
-  acme_queue_depth_gbucket{le="+Inf"} 5
+  acme_queue_depth_bucket{le="10"} 4
+  acme_queue_depth_bucket{le="+Inf"} 5
   acme_queue_depth_gcount 5
   acme_queue_depth_gsum 31
   histogram sum=31(true) count=5(true) [≤10:4] [≤+Inf:5]

@@ -94,7 +94,7 @@ func TestParse_Productions(t *testing.T) {
 		}},
 		{"summary, histogram, gaugehistogram, info, stateset suffixes", strings.Join([]string{
 			"# TYPE s summary", `s{quantile="0.5"} 1`, "s_sum 2", "s_count 3",
-			"# TYPE g gaugehistogram", `g_gbucket{le="+Inf"} 1`, "g_gsum 1", "g_gcount 1",
+			"# TYPE g gaugehistogram", `g_bucket{le="+Inf"} 1`, "g_gsum 1", "g_gcount 1",
 			"# TYPE i info", `i_info{v="1"} 1`,
 			"# TYPE st stateset", `st{st="a"} 1`,
 			"# UNIT s seconds", "# EOF", ""}, "\n"), Options{}, []Family{
@@ -102,7 +102,7 @@ func TestParse_Productions(t *testing.T) {
 				{Name: "s", Labels: []Label{{"quantile", "0.5"}}, Value: 1}, {Name: "s_sum", Value: 2}, {Name: "s_count", Value: 3},
 			}},
 			{Name: "g", Type: TypeGaugeHistogram, Samples: []Sample{
-				{Name: "g_gbucket", Labels: []Label{{"le", "+Inf"}}, Value: 1}, {Name: "g_gsum", Value: 1}, {Name: "g_gcount", Value: 1},
+				{Name: "g_bucket", Labels: []Label{{"le", "+Inf"}}, Value: 1}, {Name: "g_gsum", Value: 1}, {Name: "g_gcount", Value: 1},
 			}},
 			{Name: "i", Type: TypeInfo, Samples: []Sample{{Name: "i_info", Labels: []Label{{"v", "1"}}, Value: 1}}},
 			{Name: "st", Type: TypeStateset, Samples: []Sample{{Name: "st", Labels: []Label{{"st", "a"}}, Value: 1}}},
