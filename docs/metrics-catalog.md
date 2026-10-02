@@ -89,6 +89,17 @@ interval's increase.
 | `ozy.sketchstore.series_rejected` | count | series | | ozyd | Sketch series the store refused (a ref it cannot key, a timestamp outside the key range, or an id collision) |
 | `ozy.sketchstore.id_collisions` | count | series | | ozyd | **Two series hashed to the same id.** One of them is being refused and its percentiles are missing. Expected to be zero forever — about one chance in 37 million at 100k series — so any value at all is worth a look; the log line names both series |
 
+## SDK metrics (`http.*`)
+
+Emitted in the app's own process. The Python SDK's `MetricsMiddleware` produces these; a Node
+app emits the same names by hand (the Node SDK has no HTTP integration yet), so one
+dashboard query works for either.
+
+| Metric | Type | Unit | Tags | Emitted by | Meaning |
+|---|---|---|---|---|---|
+| `http.request.count` | counter | requests | `route`, `method`, `status`, `status_class` | Python SDK `MetricsMiddleware`; Node apps by hand | HTTP requests served. `route` is the matched pattern, never the raw path; unmatched requests are `route:unmatched`. A request cancelled before a response started is `status:499` |
+| `http.request.duration` | distribution | ms | the same | the same | Time from request in to the inner app returning, so a streamed body is included |
+
 ## Host metrics (`system.*`)
 
 From the agent's host collector (`collectors.host`), every 15s, tagged

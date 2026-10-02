@@ -4,7 +4,8 @@
 runtime dependencies, it never raises into your code, and it does nothing at all until you
 point it at an agent.
 
-M1 ships the statsd client. Tracing and the framework integrations arrive in M5
+The SDK ships the statsd client and, from M3, an ASGI metrics middleware
+([below](#asgi-middleware)). Tracing and the other framework integrations arrive in M5
 (see [PLAN.md](../../PLAN.md)).
 
 The SDK is a convenience layer. The public interface is the wire protocol
@@ -194,6 +195,40 @@ These are tested in `sdk/python/tests/test_safety.py` (the L10 safety suite in
 - **Calls don't block.** A call only enqueues, even while the flusher is stuck.
 - **Your exceptions are yours.** Code inside `timed` raises exactly what it raised.
 - **Bounded memory**, as described in [Buffering](#buffering).
+
+## ASGI middleware
+
+`ozy.integrations.asgi.MetricsMiddleware` records one count and one duration per HTTP
+request, for any ASGI app (FastAPI, Starlette, Litestar, Django-ASGI):
+
+```python
+from ozy.integrations.asgi import MetricsMiddleware
+
+app = FastAPI()
+app.add_middleware(MetricsMiddleware, exclude_paths=["/healthz"])
+```
+
+Add it last so it is outermost and times the whole stack, including other middleware.
+
+| Metric | Type | Tags |
+|---|---|---|
+| `http.request.count` | counter | `route`, `method`, `status`, `status_class` |
+| `http.request.duration` | distribution, ms | the same |
+
+- **`route` is the route pattern**, such as `/api/v1/problems/{slug}`, read from
+  `scope["route"]` after the inner app returns (routing has not happened when the request
+  arrives). A request that matched nothing is `route:unmatched`, so a scanner probing random
+  URLs is one series rather than thousands.
+- **Status is honest.** An app that raises before answering is recorded as `500`, since that
+  is what the server will send. A request cancelled before any response started, which is
+  what a client disconnect looks like, is `499`, so closing a tab does not look like a
+  server fault. Once a response has started, its status stands even if the body then fails.
+- **WebSockets and lifespan events pass through unrecorded.** Duration for a socket that
+  lives for an hour would mean nothing.
+- **It is pure ASGI**, not Starlette's `BaseHTTPMiddleware`, so streaming responses,
+  background tasks and context variables behave as they do without it.
+- **It never raises into a request.** A failure while recording is logged at debug level
+  and dropped. Until `ozy.init()` enables the client it is a straight passthrough.
 
 ## Fork behaviour
 

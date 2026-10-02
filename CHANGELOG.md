@@ -9,6 +9,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Python SDK: ASGI metrics middleware** (M3 §4). `ozy.integrations.asgi.MetricsMiddleware`
+  gives any FastAPI or Starlette app request rate, errors and latency by route pattern
+  (`http.request.count`, `http.request.duration`) in one line. See docs/sdk/python.md.
 - **Host metrics from the agent** (M3 §3, part 1). A collector framework
   runs pull-based sources on a timer, each on its own goroutine with jitter,
   a timeout and its own self-metrics (`ozy.agent.collector.*`), and sends
