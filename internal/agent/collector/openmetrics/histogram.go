@@ -31,6 +31,10 @@ type Histogram struct {
 	// Labels are the series' labels without `le`, in the order the first
 	// sample wrote them.
 	Labels []Label
+	// Key is LabelKey of Labels: the series' identity, computed once here
+	// for the grouping, so that a caller keeping state per series (the
+	// openmetrics check) need not sort and encode the labels again.
+	Key string
 	// Buckets are cumulative, in ascending UpperBound, ending with +Inf.
 	Buckets []Bucket
 	// Sum and Count are the `_sum` and `_count` samples, when present.
@@ -63,7 +67,7 @@ func (f *Family) Histograms() ([]Histogram, error) {
 		key := LabelKey(labels, "le")
 		h := byKey[key]
 		if h == nil {
-			h = &Histogram{}
+			h = &Histogram{Key: key}
 			for _, l := range labels {
 				if l.Name != "le" {
 					h.Labels = append(h.Labels, l)

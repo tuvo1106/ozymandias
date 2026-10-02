@@ -312,7 +312,7 @@ func (c *Check) histogram(f *om.Family, now time.Time, e *emitter) {
 	}
 	for _, h := range hs {
 		tags := c.tags(h.Labels, "")
-		key := seriesKey(f.Name, h.Labels)
+		key := f.Name + "\x00" + h.Key // seriesKey(f.Name, h.Labels), already computed
 		prev, seen := c.buckets[key]
 		if !c.admit(seen, e) {
 			continue

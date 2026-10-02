@@ -42,8 +42,8 @@ func TestFamily_Histograms(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Histogram{
-		{Labels: []Label{{"path", "/a"}}, Buckets: []Bucket{{0.5, 2}, {1, 5}, {inf, 7}}, Sum: 4.5, HasSum: true, Count: 7, HasCount: true},
-		{Labels: []Label{{"path", "/b"}}, Buckets: []Bucket{{inf, 1}}, Count: 1, HasCount: true},
+		{Labels: []Label{{"path", "/a"}}, Key: LabelKey([]Label{{"path", "/a"}}, ""), Buckets: []Bucket{{0.5, 2}, {1, 5}, {inf, 7}}, Sum: 4.5, HasSum: true, Count: 7, HasCount: true},
+		{Labels: []Label{{"path", "/b"}}, Key: LabelKey([]Label{{"path", "/b"}}, ""), Buckets: []Bucket{{inf, 1}}, Count: 1, HasCount: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got  %+v\nwant %+v", got, want)
