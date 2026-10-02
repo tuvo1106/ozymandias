@@ -157,8 +157,10 @@ func (s *Scheduler) Collectors() []Collector {
 
 // Add schedules c — before Run, or while it runs (autodiscovery adds a check
 // when a container asking for one starts) — and returns a function that
-// stops it again. Stopping cancels its context; a run in progress finishes
-// and is sent. After Run has begun shutting down, Add does nothing.
+// stops it again. Stopping cancels its context; a run in progress is cut
+// short and not sent (counted in ozy.agent.collector.dropped), since what
+// it reads of its own cancellation is not a reading of the source. After
+// Run has begun shutting down, Add does nothing.
 //
 // Collectors that share a name share its self-metrics: counts add up, and
 // the duration is the latest run's. That is what autodiscovery wants when

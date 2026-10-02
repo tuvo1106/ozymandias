@@ -302,8 +302,8 @@ func (i *instance) Collect(ctx context.Context, emit Emit) error {
 // A single unnamed instance gets no tag; it has nothing to collide with.
 // An instance whose own tags already say instance: keeps that one. Two
 // names that normalise to one tag (Cache, cache) are refused like two
-// equal names. Discovered instances (autodiscovery calls NewInstance, not
-// this) carry their container's tags instead.
+// equal names. Discovered instances (autodiscovery calls NewDiscovered,
+// not this) carry their container's tags instead.
 func (r Registry) Configured(checks map[string][]map[string]any, clk clock.Clock, log *slog.Logger) ([]Collector, error) {
 	names := make([]string, 0, len(checks))
 	for n := range checks {
