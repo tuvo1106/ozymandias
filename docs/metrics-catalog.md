@@ -123,6 +123,10 @@ the app (one per process role: API, judge worker, accounts worker).
 | `ratelimit.rejected` | counter | requests | `action` (`submit`, `run`, `auth`) | Requests refused by a rate limit |
 | `inflight.lock.contended` | counter | submits | — | Submits refused because that user already has one running for the problem |
 | `auth.login.locked` | counter | lockouts | — | Accounts locked out after repeated failed logins |
+| `audit.event` | counter | events | `event` | One per security-relevant auth or billing event (`auth.login.success`, `auth.login.failure`, `auth.login.blocked`, `auth.2fa.*`, `auth.password.changed`, `billing.subscription.activated`, …). The tag is a fixed set of names written in the code, never user input |
+| `auth.signup` | counter | accounts | — | Accounts actually created. A signup with an already-registered email is not one |
+| `account.email.handled` | counter | jobs | `kind` (`verify`, `existing`, `reset`) | Account-email jobs that reached a real user. Handled, not delivered: a failed SMTP send is retried and then swallowed |
+| `stripe.webhook.count` | counter | events | `type` (the three handled Stripe event types, else `other`) | Signature-verified Stripe webhook deliveries |
 
 ## Host metrics (`system.*`)
 
