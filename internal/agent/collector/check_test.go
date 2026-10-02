@@ -202,3 +202,24 @@ func TestInstance_TargetTags(t *testing.T) {
 		t.Fatalf("discovered: %v", got)
 	}
 }
+
+// Review finding: Decode re-encodes the settings, so its errors' "line N"
+// pointed into text nobody wrote. They name the setting instead.
+func TestInstance_DecodeErrorsNameTheSetting(t *testing.T) {
+	type cfg struct {
+		Host    string         `yaml:"host"`
+		Port    collector.Port `yaml:"port"`
+		Timeout time.Duration  `yaml:"timeout"`
+		Codes   []int          `yaml:"codes"`
+	}
+	for settings, want := range map[*map[string]any]string{
+		{"host": "x", "port": 70000}:              "port: ",
+		{"host": "x", "timeout": "soon"}:          "timeout: ",
+		{"host": "x", "codes": []any{200, "abc"}}: "codes: ",
+	} {
+		err := collector.Instance{Name: "c:x", Settings: *settings}.Decode(&cfg{})
+		if err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), "line ") {
+			t.Errorf("%v: %v", *settings, err)
+		}
+	}
+}

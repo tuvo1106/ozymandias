@@ -9,8 +9,10 @@ import (
 	"log/slog"
 	"maps"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,9 +95,39 @@ func (i Instance) Decode(v any) error {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
-		return fmt.Errorf("%s: %w", i.Name, err)
+		return fmt.Errorf("%s: %s", i.Name, nameLines(err.Error(), data))
 	}
 	return nil
+}
+
+// lineRef is the "line N:" a YAML error, or a setting type's own message,
+// puts before what it says.
+var lineRef = regexp.MustCompile(`line (\d+): `)
+
+// nameLines replaces each "line N: " in msg with the setting that line of
+// data holds. The settings were re-encoded before decoding (after the
+// config files were merged, or from container labels), so a line number
+// points into text nobody wrote — line 3 of nothing, for a port on line 42
+// of a conf.d fragment. The setting's name is what the user can find. A
+// line inside a nested value belongs to the top-level key above it.
+func nameLines(msg string, data []byte) string {
+	var keyAt []string // keyAt[i] is line i+1's setting
+	key := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" && line[0] != ' ' && line[0] != '-' {
+			if k, _, ok := strings.Cut(line, ":"); ok {
+				key = strings.Trim(k, `"'`)
+			}
+		}
+		keyAt = append(keyAt, key)
+	}
+	return lineRef.ReplaceAllStringFunc(msg, func(m string) string {
+		n, _ := strconv.Atoi(lineRef.FindStringSubmatch(m)[1])
+		if n < 1 || n > len(keyAt) || keyAt[n-1] == "" {
+			return ""
+		}
+		return keyAt[n-1] + ": "
+	})
 }
 
 // listFields names the settings of the config struct t points to whose
