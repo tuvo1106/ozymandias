@@ -596,3 +596,25 @@ foo_gsum 3289.3
 		t.Error("the buckets were read as a family of their own")
 	}
 }
+
+// A summary with a _sum and no _count has nothing to tell a restart by, so
+// its sum keeps the counter rule: an increase is the difference, and a fall
+// is a restart, whose new value is what happened since.
+func TestCheck_ASumWithoutACountFallsAsARestart(t *testing.T) {
+	page := func(sum string) string {
+		return "# TYPE lat summary\nlat_sum " + sum + "\n# EOF\n"
+	}
+	_, url := serve(t, page("10"), page("15"), page("3"))
+	c, fc := check(t, map[string]any{"url": url})
+	_, _ = scrape(t, c)
+	for _, want := range []float64{5, 3} {
+		fc.Advance(15 * time.Second)
+		g, err := scrape(t, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s := g.one(t, "lat.sum"); s.Value != want {
+			t.Errorf("sum = %v, want %v", s.Value, want)
+		}
+	}
+}

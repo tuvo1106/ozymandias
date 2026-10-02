@@ -63,34 +63,16 @@ func (r *Rates) Observe(key string, value float64, at time.Time) (rate float64, 
 	return (value - prev.value) / dt, true
 }
 
-// Delta records value for key like [Rates.Observe], and returns the
-// increase since the previous reading rather than a per-second rate: for a
-// cumulative count sent as "events this interval" (a histogram's _count).
-// A count that went down means the source restarted, and the new value is
-// then what happened since, so it is the increase. ok is false for a first
-// reading or a value that is not finite. A key is used with one of Observe
-// or Delta, not both.
-func (r *Rates) Delta(key string, value float64, at time.Time) (delta float64, ok bool) {
-	if math.IsNaN(value) || math.IsInf(value, 0) {
-		delete(r.last, key)
-		return 0, false
-	}
-	prev, seen := r.last[key]
-	r.last[key] = reading{value: value, at: at}
-	switch {
-	case !seen:
-		return 0, false
-	case value < prev.value:
-		return value, true
-	}
-	return value - prev.value, true
-}
-
-// Change records value for key like [Rates.Delta], and returns the signed
-// difference from the previous reading, with no reset rule: for a value
-// that may legitimately fall (a histogram's _sum of negative observations),
-// whose caller tells a restart from a fall by a companion that cannot (its
-// _count). ok is false for a first reading or a value that is not finite.
+// Change records value for key like [Rates.Observe], and returns the
+// signed difference from the previous reading rather than a per-second
+// rate: for a cumulative value sent as "this interval's change" (a
+// histogram's _count and _sum). It applies no reset rule, because which
+// falls are restarts depends on the value: a count that falls restarted
+// (the new value is then the increase), while a sum of negative
+// observations may simply fall, and is told from a restart by its count.
+// The caller decides. ok is false for a first reading or a value that is
+// not finite, which is forgotten. A key is used with one of Observe or
+// Change, not both.
 func (r *Rates) Change(key string, value float64, at time.Time) (diff float64, ok bool) {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		delete(r.last, key)

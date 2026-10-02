@@ -443,8 +443,8 @@ func (c *Check) sumCount(name, key string, hasSum bool, sum float64, hasCount bo
 			if d, ok = c.counts.Change(sumKey, sum, now); ok && reset {
 				d = sum
 			}
-		} else {
-			d, ok = c.counts.Delta(sumKey, sum, now)
+		} else if d, ok = c.counts.Change(sumKey, sum, now); ok && d < 0 {
+			d = sum // no count to ask: a fall is a restart, as for a counter
 		}
 		if ok {
 			e.add(collector.Metric{Name: name + ".sum", Kind: collector.Count, Value: d, Tags: tags})
