@@ -340,14 +340,21 @@ func tagInstance(c Collector, check string, seen map[string]bool) error {
 	if !ok {
 		return nil
 	}
+	// An instance tag the instance's own tags give is taken as is, but
+	// recorded like a derived one: tags [instance:b] on instance a beside
+	// an instance named b would otherwise both say instance:b.
+	for _, t := range in.tags {
+		if k, _ := wire.SplitTag(t); k == instanceTag {
+			if seen[check+"|"+t] {
+				return fmt.Errorf("check %s: another instance already has the tag %s", in.name, t)
+			}
+			seen[check+"|"+t] = true
+			return nil
+		}
+	}
 	suffix, named := strings.CutPrefix(in.name, check+":")
 	if !named {
 		return nil
-	}
-	for _, t := range in.tags {
-		if k, _ := wire.SplitTag(t); k == instanceTag {
-			return nil
-		}
 	}
 	tag, ok := wire.NormalizeTag(instanceTag + ":" + suffix)
 	if !ok {

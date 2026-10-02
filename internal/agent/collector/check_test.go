@@ -178,3 +178,18 @@ func TestRegistry_ConfiguredInstancesAreTagged(t *testing.T) {
 		t.Fatalf("a discovered instance tagged %v", got)
 	}
 }
+
+// Review finding: an instance's own instance: tag was not recorded, so it
+// could equal another instance's derived one and the two wrote one series.
+// Either order is refused.
+func TestRegistry_AnExplicitInstanceTagCannotCollide(t *testing.T) {
+	for _, list := range [][]map[string]any{
+		{{"name": "a", "tags": []any{"instance:b"}}, {"name": "b"}},
+		{{"name": "b"}, {"name": "a", "tags": []any{"instance:b"}}},
+		{{"name": "a", "tags": []any{"instance:x"}}, {"name": "c", "tags": []any{"instance:x"}}},
+	} {
+		if _, err := registry.Configured(map[string][]map[string]any{"echo": list}, nil, nil); err == nil || !strings.Contains(err.Error(), "instance:") {
+			t.Errorf("%v: err = %v", list, err)
+		}
+	}
+}
