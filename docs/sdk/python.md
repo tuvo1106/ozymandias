@@ -215,9 +215,12 @@ Add it last so it is outermost and times the whole stack, including other middle
 | `http.request.count` | counter | `route`, `method`, `status`, `status_class` |
 | `http.request.duration` | distribution, ms | the same |
 
-- **`route` is the route pattern**, such as `/api/v1/problems/{slug}`, read from
+- **`route` is the route pattern**, such as `/problems/{slug}`, read from
   `scope["route"]` after the inner app returns (routing has not happened when the request
-  arrives). A request that matched nothing is `route:unmatched`, so a scanner probing random
+  arrives). It is the path *as the framework reports it*: FastAPI's `include_router(prefix=...)`
+  is not part of it, so an app mounted under `/api/v1` sees `/problems/{slug}`, not
+  `/api/v1/problems/{slug}`. `exclude_paths`, by contrast, matches the raw request path, so it
+  does include the prefix. A request that matched nothing is `route:unmatched`, so a scanner probing random
   URLs is one series rather than thousands.
 - **Status is honest.** An app that raises before answering is recorded as `500`, since that
   is what the server will send. A request cancelled before any response started, which is

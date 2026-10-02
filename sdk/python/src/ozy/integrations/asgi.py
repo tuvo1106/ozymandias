@@ -10,11 +10,13 @@ because the latter runs the app in a separate task and breaks streaming
 responses, background tasks and context variables; this wrapper adds one
 ``await`` and nothing else to the request's path.
 
-The route tag is the *pattern* (``/api/v1/problems/{slug}``), never the raw
+The route tag is the *pattern* (``/problems/{slug}``), never the raw
 path, because a raw path with an id in it is one series per id. Routing has not
 happened when the request arrives, so the pattern is read from
 ``scope["route"]`` after the inner app returns: Starlette and FastAPI stamp
-the matched route onto the shared scope dict while dispatching. A request
+the matched route onto the shared scope dict while dispatching. The pattern
+is relative to the router that matched, so a prefix given to FastAPI's
+``include_router`` is not in it (verified against a live app, not assumed). A request
 that matched no route is tagged ``route:unmatched``, so a scanner probing
 random URLs is one series, not thousands.
 

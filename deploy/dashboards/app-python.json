@@ -1,0 +1,311 @@
+{
+  "uid": "app-python",
+  "title": "app-python",
+  "description": "A FastAPI + arq app whose submissions are judged in short-lived Docker sandboxes: the API's RED metrics, the job queue, the judge, and the containers it all runs in.",
+  "template_vars": [
+    {
+      "name": "service",
+      "tag": "service",
+      "default": "*"
+    },
+    {
+      "name": "project",
+      "tag": "compose_project",
+      "default": "*"
+    },
+    {
+      "name": "env",
+      "tag": "env",
+      "default": "*"
+    }
+  ],
+  "widgets": [
+    {
+      "id": "intro",
+      "type": "note",
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 1
+      },
+      "markdown": "Pick the app's service and its Docker Compose project above: this dashboard names no app, so it works for any FastAPI + arq service. App metrics come from the Python SDK (http.request.*, arq.*, judge.*, submission.*); container metrics come from the agent's Docker collector, with no app code. A quiet chart means no traffic, not necessarily a fault: submit a solution and the queue, judge and exit charts all move."
+    },
+    {
+      "id": "throughput",
+      "type": "timeseries",
+      "title": "Requests per second, by route",
+      "layout": {
+        "x": 0,
+        "y": 1,
+        "w": 8,
+        "h": 5
+      },
+      "queries": [
+        {
+          "q": "sum:http.request.count{$service,$env} by {route}.as_rate()",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "req/s"
+      }
+    },
+    {
+      "id": "error-rate",
+      "type": "timeseries",
+      "title": "5xx rate (no line means no 5xx)",
+      "layout": {
+        "x": 8,
+        "y": 1,
+        "w": 4,
+        "h": 5
+      },
+      "queries": [
+        {
+          "q": "sum:http.request.count{$service,$env,status:5*}.as_rate() / sum:http.request.count{$service,$env}.as_rate() * 100",
+          "display": "bars"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "%"
+      }
+    },
+    {
+      "id": "latency",
+      "type": "timeseries",
+      "title": "p95 latency, by route",
+      "layout": {
+        "x": 0,
+        "y": 6,
+        "w": 8,
+        "h": 5
+      },
+      "queries": [
+        {
+          "q": "p95:http.request.duration{$service,$env} by {route}",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "ms"
+      }
+    },
+    {
+      "id": "requests",
+      "type": "query_value",
+      "title": "Requests in the window",
+      "layout": {
+        "x": 8,
+        "y": 6,
+        "w": 4,
+        "h": 5
+      },
+      "queries": [
+        {
+          "q": "sum:http.request.count{$service,$env}.as_count()",
+          "reducer": "sum"
+        }
+      ],
+      "precision": 0
+    },
+    {
+      "id": "queue-depth",
+      "type": "timeseries",
+      "title": "Queue depth (waiting + running)",
+      "layout": {
+        "x": 0,
+        "y": 11,
+        "w": 6,
+        "h": 4
+      },
+      "queries": [
+        {
+          "q": "max:arq.queue.depth{$env} by {queue}",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "jobs"
+      }
+    },
+    {
+      "id": "jobs-per-minute",
+      "type": "timeseries",
+      "title": "Jobs per minute, by function",
+      "layout": {
+        "x": 6,
+        "y": 11,
+        "w": 6,
+        "h": 4
+      },
+      "queries": [
+        {
+          "q": "sum:arq.job.count{$env} by {function}.rollup(sum, 60)",
+          "display": "bars"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "jobs/min"
+      }
+    },
+    {
+      "id": "judge-p50",
+      "type": "timeseries",
+      "title": "Judge run p50, by language",
+      "layout": {
+        "x": 0,
+        "y": 15,
+        "w": 4,
+        "h": 4
+      },
+      "queries": [
+        {
+          "q": "p50:judge.run.duration{$env} by {language}",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "ms"
+      }
+    },
+    {
+      "id": "judge-p95",
+      "type": "timeseries",
+      "title": "Judge run p95, by language",
+      "layout": {
+        "x": 4,
+        "y": 15,
+        "w": 4,
+        "h": 4
+      },
+      "queries": [
+        {
+          "q": "p95:judge.run.duration{$env} by {language}",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "ms"
+      }
+    },
+    {
+      "id": "verdicts",
+      "type": "toplist",
+      "title": "Verdicts in the window",
+      "layout": {
+        "x": 8,
+        "y": 15,
+        "w": 4,
+        "h": 4
+      },
+      "queries": [
+        {
+          "q": "sum:submission.verdict{$env} by {status}.as_count()",
+          "reducer": "sum"
+        }
+      ],
+      "limit": 10
+    },
+    {
+      "id": "container-cpu",
+      "type": "timeseries",
+      "title": "Container CPU (% of one core)",
+      "layout": {
+        "x": 0,
+        "y": 19,
+        "w": 6,
+        "h": 5
+      },
+      "queries": [
+        {
+          "q": "avg:container.cpu.usage{$project} by {compose_service}",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "%"
+      }
+    },
+    {
+      "id": "container-memory",
+      "type": "timeseries",
+      "title": "Container memory",
+      "layout": {
+        "x": 6,
+        "y": 19,
+        "w": 6,
+        "h": 5
+      },
+      "queries": [
+        {
+          "q": "avg:container.memory.usage{$project} by {compose_service}",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "bytes"
+      }
+    },
+    {
+      "id": "sandbox-exits",
+      "type": "timeseries",
+      "title": "Judge sandbox exits, by exit code",
+      "layout": {
+        "x": 0,
+        "y": 24,
+        "w": 8,
+        "h": 4
+      },
+      "queries": [
+        {
+          "q": "sum:container.exits{container_name:judge} by {exit_code}.as_count()",
+          "display": "bars"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "exits"
+      }
+    },
+    {
+      "id": "accounts-queue-age",
+      "type": "query_value",
+      "title": "Oldest waiting email job",
+      "layout": {
+        "x": 8,
+        "y": 24,
+        "w": 4,
+        "h": 4
+      },
+      "queries": [
+        {
+          "q": "max:arq.queue.oldest_age_seconds{queue:accounts,$env}",
+          "reducer": "max"
+        }
+      ],
+      "precision": 0,
+      "conditional_formats": [
+        {
+          "op": ">",
+          "value": 300,
+          "color": "red"
+        },
+        {
+          "op": ">",
+          "value": 60,
+          "color": "yellow"
+        }
+      ]
+    }
+  ]
+}
