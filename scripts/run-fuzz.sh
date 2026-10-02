@@ -14,7 +14,10 @@ while IFS=: read -r file name; do
   pkg="./$(dirname "$file")"
   echo "── $pkg $name ($fuzztime)"
   go test "$pkg" -run '^$' -fuzz "^${name}\$" -fuzztime "$fuzztime"
-done < <(grep -rEo '^func (Fuzz[A-Za-z0-9_]*)' --include='*_test.go' . |
+# --exclude-dir=.claude: agent worktrees live under .claude/worktrees, and each is a whole
+# checkout. Without this their copies of every target are found too, and `go test ./.claude/...`
+# fails because they are not packages of this module.
+done < <(grep -rEo '^func (Fuzz[A-Za-z0-9_]*)' --include='*_test.go' --exclude-dir=.claude . |
   sed -E 's/^\.\/(.*):func (Fuzz[A-Za-z0-9_]*)$/\1:\2/' | sort)
 
 [[ $found -eq 1 ]] || echo "no fuzz targets yet"
