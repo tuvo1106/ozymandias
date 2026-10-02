@@ -99,7 +99,17 @@ type Check struct {
 var _ collector.Collector = (*Check)(nil)
 
 // New is the process factory.
+//
+// It refuses to be discovered from a container's labels. The check reads
+// the agent's process table, not the container's: in its own PID namespace
+// (the compose default) it would see no nginx and report the container's
+// processes gone forever; with pid: host it would count every nginx on the
+// machine and charge them all to the one container. Neither is the
+// container's processes, so a process check is configured, not labelled.
 func New(inst collector.Instance) (collector.Collector, error) {
+	if inst.Discovered {
+		return nil, errors.New("the process check reads the agent's process table, not a container's; configure it under collectors.checks.process instead of with labels")
+	}
 	var cfg Config
 	if err := inst.Decode(&cfg); err != nil {
 		return nil, err

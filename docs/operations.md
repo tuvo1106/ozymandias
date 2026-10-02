@@ -290,7 +290,10 @@ Every connection is new (no keep-alive), so the time includes connecting.
 #### Check: process
 
 Finds processes and reports their count and summed resource use as
-`system.processes.*`, tagged `process_name:<label>`. Exactly one of:
+`system.processes.*`, tagged `process_name:<label>`. It reads the agent's
+process table, so it is configured only: from a container's labels it is
+refused, since it could not count that container's processes. Exactly one
+of:
 
 | Setting | Meaning |
 |---|---|

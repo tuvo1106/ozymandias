@@ -345,3 +345,15 @@ func TestCheck_UnreadableProcessesAreCounted(t *testing.T) {
 		t.Fatalf("rss reported for processes none of which could be read: %+v", g)
 	}
 }
+
+// Review finding: discovered from a container's labels, the check counted
+// the agent's processes and charged them to the container. It refuses.
+func TestNew_RefusesDiscovery(t *testing.T) {
+	_, err := New(collector.Instance{Name: "process:web", Discovered: true, Settings: map[string]any{"process_name": "nginx"}})
+	if err == nil || !strings.Contains(err.Error(), "collectors.checks.process") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := New(collector.Instance{Name: "process:web", Settings: map[string]any{"process_name": "nginx"}}); err != nil {
+		t.Fatalf("configured: %v", err)
+	}
+}
