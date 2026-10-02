@@ -53,6 +53,12 @@ def datagrams(agent: FakeAgent, client: StatsdClient) -> list[str]:
     return agent.recv().splitlines()
 
 
+def count_line(agent: FakeAgent, client: StatsdClient) -> str:
+    """The counter's datagram line. Unlike the duration's it holds no measured value, so a
+    test may search it for digits (``499``, an id) without matching a random millisecond."""
+    return next(line for line in datagrams(agent, client) if line.startswith("http.request.count"))
+
+
 def test_records_count_and_duration_tagged_with_route_pattern(
     make_client: ClientFactory, agent: FakeAgent
 ) -> None:
@@ -63,7 +69,7 @@ def test_records_count_and_duration_tagged_with_route_pattern(
     assert f"http.request.count:1|c{tags}" in lines
     duration = next(line for line in lines if line.startswith("http.request.duration:"))
     assert duration.endswith(f"|d{tags}")
-    assert "two-sum" not in "".join(lines)
+    assert "two-sum" not in "".join(lines)  # letters cannot appear in a measured number
 
 
 def test_unmatched_route_is_one_series(make_client: ClientFactory, agent: FakeAgent) -> None:
@@ -139,9 +145,9 @@ def test_cancelled_with_no_disconnect_is_the_servers_doing_so_500(
 
     with pytest.raises(asyncio.CancelledError):
         run_request(cancelled, client)
-    lines = "".join(datagrams(agent, client))
-    assert "status:500,status_class:5xx" in lines
-    assert "499" not in lines
+    line = count_line(agent, client)
+    assert "status:500,status_class:5xx" in line
+    assert "status:499" not in line
 
 
 def test_cancelled_after_response_started_keeps_the_sent_status(
@@ -281,3 +287,45 @@ def test_a_missing_method_is_other_not_a_crash(
     middleware = MetricsMiddleware(app, client=client)
     asyncio.run(middleware({"type": "http", "path": "/x"}, receive, send))
     assert "method:OTHER," in "".join(datagrams(agent, client))
+
+
+@pytest.mark.parametrize("bad", [None, "200", 0, 99, 600, 12345, True])
+def test_a_bad_status_from_the_app_never_breaks_the_response_and_records_500(
+    make_client: ClientFactory, agent: FakeAgent, bad: Any
+) -> None:
+    client = make_client()
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": bad, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    sent = run_request(app, client)
+    assert [m["type"] for m in sent] == ["http.response.start", "http.response.body"]
+    line = count_line(agent, client)
+    assert "status:500,status_class:5xx" in line
+    assert "status:0" not in line
+
+
+def test_a_handler_error_after_the_client_disconnected_is_499(
+    make_client: ClientFactory, agent: FakeAgent
+) -> None:
+    """Starlette raises ClientDisconnect, and a write to a closed socket raises OSError: a
+    closed tab, not a server fault, and not a CancelledError either."""
+    client = make_client()
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        await receive()
+        raise ConnectionResetError("client went away")
+
+    messages: Iterator[dict[str, Any]] = iter([{"type": "http.disconnect"}])
+
+    async def receive() -> dict[str, Any]:
+        return next(messages)
+
+    async def send(message: Any) -> None:
+        return None
+
+    scope: dict[str, Any] = {"type": "http", "path": "/x", "method": "GET"}
+    with pytest.raises(ConnectionResetError):
+        asyncio.run(MetricsMiddleware(app, client=client)(scope, receive, send))
+    assert "status:499,status_class:4xx" in count_line(agent, client)

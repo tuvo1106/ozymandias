@@ -17,6 +17,11 @@
       "name": "env",
       "tag": "env",
       "default": "*"
+    },
+    {
+      "name": "sandbox",
+      "tag": "container_name",
+      "default": "judge"
     }
   ],
   "widgets": [
@@ -259,7 +264,7 @@
     {
       "id": "sandbox-exits",
       "type": "timeseries",
-      "title": "Container exits, by container and exit code",
+      "title": "Sandbox exits, by exit code",
       "layout": {
         "x": 0,
         "y": 24,
@@ -268,7 +273,7 @@
       },
       "queries": [
         {
-          "q": "sum:container.exits{$project} by {container_name,exit_code}.as_count()",
+          "q": "sum:container.exits{$sandbox} by {exit_code}.as_count()",
           "display": "bars"
         }
       ],

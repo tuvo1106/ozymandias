@@ -11,10 +11,6 @@ import asyncio
 import contextlib
 from typing import Any
 
-import pytest
-
-pytest.importorskip("starlette")
-
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
@@ -63,8 +59,10 @@ def call(app: Any, path: str, method: str = "GET") -> list[dict[str, Any]]:
 
 
 def tags_of(agent: FakeAgent, client: Any) -> str:
+    """The counter's datagram line: it holds the tags and no measured duration, so a test can
+    assert a digit string is absent without matching a random millisecond value."""
     client.flush()
-    return "".join(agent.recv().splitlines())
+    return next(line for line in agent.recv().splitlines() if line.startswith("http.request.count"))
 
 
 def build(client: Any, **kwargs: Any) -> Starlette:

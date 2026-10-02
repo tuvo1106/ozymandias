@@ -45,9 +45,11 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
     # Dev only: the ASGI middleware tests run it against a real Starlette app, because the
-    # route pattern comes from framework internals a hand-built scope cannot vouch for. The
-    # SDK itself still has no runtime dependencies.
-    "starlette>=0.40",
+    # route pattern comes from framework internals a hand-built scope cannot vouch for. Not
+    # optional (a missing install must fail, not skip: every route would silently become
+    # "unmatched" otherwise). The floor is the oldest release actually run: 1.3 and 1.7.
+    # The SDK itself still has no runtime dependencies.
+    "starlette>=1.3",
 ]
 
 # --- tests ---------------------------------------------------------------------

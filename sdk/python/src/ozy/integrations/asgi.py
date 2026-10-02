@@ -20,6 +20,10 @@ is relative to the router that matched, so a prefix given to FastAPI's
 that matched no route is tagged ``route:unmatched``, so a scanner probing
 random URLs is one series, not thousands.
 
+Works with Starlette-family routers (Starlette, FastAPI), which put the matched route on
+``scope["route"]``. Other ASGI frameworks never set it, so every request there is ``unmatched``:
+the counts and durations are right but the per-route breakdown is not.
+
 Emitted metrics (tag set is bounded by construction)::
 
     http.request.count     c  tags: route, method, status, status_class
@@ -27,12 +31,13 @@ Emitted metrics (tag set is bounded by construction)::
 
 Two cases the status tag has to be honest about. If the app raises before it
 sent a response, the server will answer 500, so that is what is recorded. If
-the request is cancelled before a response started, the cause decides: when
-the client's ``http.disconnect`` was seen on ``receive`` the status is ``499``
-(nginx's "client closed request"), because calling a closed tab a 500 would page
-someone for nothing. A cancellation with no disconnect behind it, such as a
-shutdown, a reload or a timeout scope outside this middleware, is the server's
-doing and is recorded as 500.
+the request fails before a response started, a cancellation or any exception,
+the client's behaviour decides: when its ``http.disconnect`` was seen on
+``receive`` the status is ``499`` (nginx's "client closed request"), because
+calling a closed tab a 500 would page someone for nothing. With no disconnect
+seen, such as a shutdown, a reload or a timeout scope outside this middleware,
+it is the server's doing and is recorded as 500. Limit: the disconnect is only
+seen if the app reads ``receive``, which a plain non-streaming handler does not.
 
 The ``method`` tag is limited to the standard verbs, anything else is
 ``OTHER``. A scanner can send any token as a method, and an unbounded tag is one
@@ -52,7 +57,6 @@ guesses wrong on slugs; the route table already knows the answer.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping
@@ -71,6 +75,7 @@ _log = logging.getLogger("ozy")
 
 UNMATCHED = "unmatched"
 CLIENT_CLOSED = 499
+SERVER_ERROR = 500
 OTHER = "OTHER"
 
 # The methods worth a series of their own. Everything else is ``OTHER``: see the module docstring.
@@ -123,7 +128,11 @@ class MetricsMiddleware:
             return
 
         started = time.perf_counter()
-        status: int | None = None
+        # The raw value from the app's ``http.response.start``, coerced only inside ``_record``'s
+        # guard: an app or middleware that sends a bad status must not break its own response
+        # because we tried to read it.
+        status: Any = None
+        responded = False
         disconnected = False
 
         async def receive_wrapper() -> Message:
@@ -134,29 +143,27 @@ class MetricsMiddleware:
             return message
 
         async def send_wrapper(message: Message) -> None:
-            nonlocal status
-            if message.get("type") == "http.response.start" and status is None:
-                status = int(message.get("status", 0))
+            nonlocal status, responded
+            if message.get("type") == "http.response.start" and not responded:
+                responded = True
+                status = message.get("status")
             await send(message)
 
         try:
             await self.app(scope, receive_wrapper, send_wrapper)
-        except asyncio.CancelledError:
-            if status is None:
-                status = CLIENT_CLOSED if disconnected else 500
-            raise
         except BaseException:
-            if status is None:
-                status = 500
+            # One branch for a cancellation (asyncio's or trio's), a handler error and a write
+            # to a closed socket alike: with no response started, the client's disconnect is the
+            # likeliest reason nobody got one, so it is 499; otherwise the server failed: 500.
+            if not responded:
+                status = CLIENT_CLOSED if disconnected else SERVER_ERROR
             raise
         finally:
             self._record(scope, status, (time.perf_counter() - started) * 1000.0)
 
-    def _record(self, scope: Scope, status: int | None, elapsed_ms: float) -> None:
+    def _record(self, scope: Scope, status: Any, elapsed_ms: float) -> None:
         try:
-            # A response that never started and never raised (an app that
-            # returned without answering) is a server fault from the client's side.
-            code = 500 if status is None else status
+            code = _status_code(status)
             tags = [
                 f"route:{_route_pattern(scope)}",
                 f"method:{_method(scope)}",
@@ -180,3 +187,15 @@ def _method(scope: Scope) -> str:
     """The request method if it is a standard verb, else ``OTHER`` (see the module docstring)."""
     method = scope.get("method")
     return method if method in METHODS else OTHER
+
+
+def _status_code(status: Any) -> int:
+    """A valid HTTP status, else 500.
+
+    ``None`` means no response was started and nothing was raised, an app that returned without
+    answering, which is a server fault from the client's side. A missing or non-numeric value
+    from a misbehaving app gets the same answer instead of a new ``status:0`` series.
+    """
+    if isinstance(status, int) and not isinstance(status, bool) and 100 <= status <= 599:
+        return status
+    return SERVER_ERROR

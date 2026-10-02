@@ -199,7 +199,7 @@ These are tested in `sdk/python/tests/test_safety.py` (the L10 safety suite in
 ## ASGI middleware
 
 `ozy.integrations.asgi.MetricsMiddleware` records one count and one duration per HTTP
-request, for any ASGI app (FastAPI, Starlette, Litestar, Django-ASGI):
+request, for a Starlette-family app (Starlette, FastAPI):
 
 ```python
 from ozy.integrations.asgi import MetricsMiddleware
@@ -207,6 +207,9 @@ from ozy.integrations.asgi import MetricsMiddleware
 app = FastAPI()
 app.add_middleware(MetricsMiddleware, exclude_paths=["/healthz"])
 ```
+
+Other ASGI frameworks (Litestar, Django-ASGI) never set `scope["route"]`, so every request there
+is `route:unmatched`: the counts, errors and durations are right, the per-route breakdown is not.
 
 Add it last, so it is the outermost middleware you have added and times the others. Starlette's
 own error handler still sits outside it, which is why a handler that raises is recorded here as
