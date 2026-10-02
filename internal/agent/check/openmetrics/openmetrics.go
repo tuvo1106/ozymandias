@@ -427,6 +427,14 @@ func (c *Check) summary(f *om.Family, now time.Time, e *emitter) {
 // sumCount emits a histogram's or summary's .sum and .count as counts of
 // the interval.
 //
+// The change since the last good scrape, whatever its age: after a missed
+// scrape one point carries two intervals' observations and the missed one
+// has none. That is a count's meaning (events since the last point), and
+// as_rate divides each query bucket's sum by the bucket's width, so totals
+// and rates over any window that spans both are exact; only a 15s view
+// shows the pair as a spike beside a gap. Scaling the value to one
+// interval would instead lose the missed interval's events from every sum.
+//
 // A restart is read from the _count, which only grows, not from the _sum:
 // a histogram of negative observations (a temperature change, a clock
 // offset) has a sum that legitimately falls, and taking that fall for a
