@@ -38,7 +38,20 @@ type Check struct {
 	addr  string
 	clock clock.Clock
 	rates *collector.Rates
+	// dbs are the databases INFO keyspace has listed since the last failed
+	// connection. INFO lists only databases with keys, so one emptied by
+	// FLUSHDB or by expiry simply vanishes from it; remembering it lets the
+	// check report 0, the truth, instead of ending the series — an alert
+	// on redis.keys < N would otherwise see no data rather than zero. A
+	// failed connection forgets them: whatever answers next may be another
+	// server. At most maxDBs, which no Redis exceeds (16 by default).
+	dbs map[int]bool
 }
+
+// maxDBs bounds the databases remembered. Redis's databases setting is 16
+// by default; a server listing more than this is not one to trust with
+// unbounded memory.
+const maxDBs = 256
 
 var _ collector.Collector = (*Check)(nil)
 
@@ -110,6 +123,7 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 	defer c.rates.Sweep(now)
 	info, err := c.info(ctx)
 	if err != nil {
+		c.dbs = nil
 		emit(collector.Metric{Name: "redis.can_connect", Kind: collector.Gauge, Value: 0})
 		return err
 	}
@@ -128,10 +142,26 @@ func (c *Check) Collect(ctx context.Context, emit collector.Emit) error {
 			emit(collector.Metric{Name: r.metric, Kind: collector.Rate, Value: rate})
 		}
 	}
+	listed := map[int]bool{}
+	keys := func(db int, n, expires float64) {
+		tags := []string{"db:db" + strconv.Itoa(db)}
+		emit(collector.Metric{Name: "redis.keys", Kind: collector.Gauge, Value: n, Tags: tags})
+		emit(collector.Metric{Name: "redis.expires", Kind: collector.Gauge, Value: expires, Tags: tags})
+	}
 	for _, db := range info.Keyspace() {
-		tags := []string{"db:db" + strconv.Itoa(db.DB)}
-		emit(collector.Metric{Name: "redis.keys", Kind: collector.Gauge, Value: float64(db.Keys), Tags: tags})
-		emit(collector.Metric{Name: "redis.expires", Kind: collector.Gauge, Value: float64(db.Expires), Tags: tags})
+		listed[db.DB] = true
+		keys(db.DB, float64(db.Keys), float64(db.Expires))
+		if c.dbs == nil {
+			c.dbs = map[int]bool{}
+		}
+		if len(c.dbs) < maxDBs {
+			c.dbs[db.DB] = true
+		}
+	}
+	for db := range c.dbs {
+		if !listed[db] {
+			keys(db, 0, 0) // emptied: INFO leaves it out
+		}
 	}
 	return nil
 }

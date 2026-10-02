@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +30,7 @@ type server struct {
 	commands int
 	hits     int
 	seen     [][]string
+	flushed  []string // dbs whose keyspace line INFO leaves out (emptied)
 }
 
 func newServer(t *testing.T, password string) *server {
@@ -67,6 +69,11 @@ func (s *server) handle(c net.Conn) {
 		s.mu.Lock()
 		s.seen = append(s.seen, args)
 		body := fmt.Sprintf(string(tmpl), strconv.Itoa(s.commands), strconv.Itoa(s.hits))
+		for _, db := range s.flushed {
+			lines := strings.Split(body, "\n")
+			lines = slices.DeleteFunc(lines, func(l string) bool { return strings.HasPrefix(l, db+":") })
+			body = strings.Join(lines, "\n")
+		}
 		s.mu.Unlock()
 		switch strings.ToUpper(args[0]) {
 		case "AUTH":
@@ -295,4 +302,56 @@ func TestNew_ThroughTheRegistry(t *testing.T) {
 	if _, err := reg.NewInstance("redis", 0, 1, map[string]any{"host": "x", "bogus": 1}, nil, nil, nil); err == nil || !errors.Is(err, err) || !strings.Contains(err.Error(), "bogus") {
 		t.Fatalf("unknown setting: %v", err)
 	}
+}
+
+// Review finding: INFO lists only databases with keys, so one emptied by
+// FLUSHDB vanished from the output and its series simply ended — an alert
+// on redis.keys < N saw no data, not zero. A database seen while connected
+// reports 0 once emptied; a failed connection forgets them, since whatever
+// answers next may be another server.
+func TestRedis_AnEmptiedDatabaseReportsZero(t *testing.T) {
+	s := newServer(t, "")
+	fc := testutil.NewFakeClock(t0)
+	c := newCheck(t, map[string]any{"host": "127.0.0.1", "port": s.port()}, fc)
+	keys := func(g got) map[string]float64 {
+		out := map[string]float64{}
+		for _, m := range g["redis.keys"] {
+			out[strings.Join(m.Tags, ",")] = m.Value
+		}
+		return out
+	}
+	if _, err := run(c); err != nil {
+		t.Fatal(err)
+	}
+	s.mu.Lock()
+	s.flushed = []string{"db3"}
+	s.mu.Unlock()
+	g, err := run(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k := keys(g); k["db:db0"] != 42 || len(k) != 2 || k["db:db3"] != 0 {
+		t.Fatalf("after FLUSHDB of db3: %v", k)
+	}
+	if e := g["redis.expires"]; len(e) != 2 {
+		t.Fatalf("redis.expires = %v", e)
+	}
+	// A failed connection forgets: the next server's databases are its own.
+	c.addr = "127.0.0.1:1"
+	if _, err := run(c); err == nil {
+		t.Fatal("dialled a closed port")
+	}
+	c.addr = "127.0.0.1:" + s.port()
+	if k := keys(must(t, c)); len(k) != 1 || k["db:db0"] != 42 {
+		t.Fatalf("after a reconnect: %v", k)
+	}
+}
+
+func must(t *testing.T, c *Check) got {
+	t.Helper()
+	g, err := run(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return g
 }

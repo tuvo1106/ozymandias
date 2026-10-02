@@ -210,7 +210,7 @@ per-second rate of one of INFO's running totals, stored as a gauge
 | `redis.keys.evicted` | gauge | keys/s | — | Keys removed to stay under `maxmemory`. Non-zero means the cache is full |
 | `redis.keys.expired` | gauge | keys/s | — | Keys removed because their TTL passed |
 | `redis.net.rejected_connections` | gauge | connections/s | — | Connections refused at `maxclients` |
-| `redis.keys` | gauge | keys | `db` | Keys per database (`db:db0`). A database with no keys has no series |
+| `redis.keys` | gauge | keys | `db` | Keys per database (`db:db0`). A database never seen with keys has no series; one emptied while the check is connected reports 0 |
 | `redis.expires` | gauge | keys | `db` | Keys with a TTL, per database |
 | `redis.uptime` | gauge | seconds | — | Time since the server started |
 
