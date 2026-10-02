@@ -587,3 +587,24 @@ func TestScheduler_KeepTagsSurviveTheCap(t *testing.T) {
 		t.Fatalf("tags_dropped = %d, want 12 (62 tags, 50 fit)", n)
 	}
 }
+
+// A check that panics fails its run; the scheduler, and every other
+// collector, carry on. Before, a panic in any parser ended the agent.
+func TestScheduler_APanicFailsTheRunNotTheAgent(t *testing.T) {
+	var logs syncBuffer
+	bad := &fake{name: "bad", iv: time.Second, collect: func(context.Context, Emit) error { panic("index out of range") }}
+	good := &fake{name: "good", iv: time.Second, collect: func(_ context.Context, emit Emit) error {
+		emit(Metric{Name: "good.up", Value: 1})
+		return nil
+	}}
+	fc, sk, reg := start(t, Options{Collectors: []Collector{bad, good}, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+	testutil.Eventually(t, time.Second, func() bool { return fc.Waiters() == 2 }, "armed")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return counter(reg, "ozy.agent.collector.errors", "bad") == 1 }, "the panic was not a failed run")
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.all()) == 1 }, "the other collector's run")
+	fc.Advance(time.Second)
+	testutil.Eventually(t, time.Second, func() bool { return bad.calls.Load() == 2 }, "the panicking collector was not run again")
+	if !strings.Contains(logs.String(), "panicked") || !strings.Contains(logs.String(), "index out of range") {
+		t.Errorf("log:\n%s", logs.String())
+	}
+}

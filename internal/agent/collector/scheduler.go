@@ -8,6 +8,7 @@ import (
 	"maps"
 	"math"
 	"math/rand/v2"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -410,7 +411,7 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 			batch = append(batch, se)
 		}
 	}
-	err := c.Collect(cctx, emit)
+	err := s.collect(cctx, c, emit)
 	tmu.Lock()
 	finished = true
 	timedOut := expired
@@ -466,6 +467,23 @@ func (s *Scheduler) runOnce(ctx context.Context, c Collector, iv time.Duration, 
 			s.opts.SketchSink(outSketches)
 		}
 	}
+}
+
+// collect runs c.Collect, turning a panic into the run's error. A check
+// parses what a server it does not control sends, and the agent also
+// carries statsd, traces and every other collector: one bug in one check's
+// parser must cost that check's run, not the process. The stack is logged,
+// since the error alone would not say where to look. A panic in a goroutine
+// the collector starts itself is beyond this; a collector that fans out
+// recovers in its own goroutines.
+func (s *Scheduler) collect(ctx context.Context, c Collector, emit Emit) (err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			s.log.Error("collector panicked; the run counts as failed", "collector", c.Name(), "panic", p, "stack", string(debug.Stack()))
+			err = fmt.Errorf("panicked: %v", p)
+		}
+	}()
+	return c.Collect(ctx, emit)
 }
 
 // report logs a failing run on the transition into failure, or when the
