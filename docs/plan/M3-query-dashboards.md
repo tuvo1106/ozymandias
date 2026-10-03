@@ -274,10 +274,18 @@ docs per its rules; `docs/sdk/python.md` ASGI section; `docs/notes/M3.md`.
 ## 7. Acceptance criteria
 
 - [ ] All four example queries above evaluate correctly against live data.
-- [ ] app-python dashboard shows: req/s + p95 latency by route, error %, arq queue depth, jobs/min by function, judge run p50/p95 by language, verdict breakdown, container CPU/mem for api/worker/postgres/redis, judge sandbox exits by exit code.
+- [x] app-python dashboard shows: req/s + p95 latency by route, error %, arq queue depth, jobs/min by function, judge run p50/p95 by language, verdict breakdown, container CPU/mem for api/worker/postgres/redis, judge sandbox exits by exit code.
 - [ ] app-ruby appears with **no change to its application code**: business and Rails/Sidekiq metrics charted; queue depth equals its Grafana board; small-order p90 wait agrees within bucket-interpolation error via both `histogram_quantile()` and the sketch path (both numbers reported). Restarting its api container does not produce a rate spike (counter-reset handling).
-- [ ] Submitting a solution in app-python visibly moves queue depth, judge duration and `container.exits{container_name:judge}`.
-- [ ] Query editor shows parse errors inline with the right column; autocomplete works for metric, tag key, tag value.
-- [ ] Metric Summary shows per-metric series counts; no app-python/app-node metric exceeds 500 series after a normal session (cardinality discipline verified).
-- [ ] app-python's own test suite + coverage gate pass with ozymandias absent.
+- [x] Submitting a solution in app-python visibly moves queue depth, judge duration and `container.exits{container_name:judge}`.
+- [x] Query editor shows parse errors inline with the right column; autocomplete works for metric, tag key, tag value.
+- [x] Metric Summary shows per-metric series counts; no app-python/app-node metric exceeds 500 series after a normal session (cardinality discipline verified).
+- [x] app-python's own test suite + coverage gate pass with ozymandias absent.
 - [ ] Tests and docs deliverables complete; `docs/notes/M3.md` has evidence.
+
+> **Status (2026-10-03).** Ticked boxes are demonstrated in
+> [`docs/notes/M3.md`](../notes/M3.md) (Acceptance evidence). Left open: the four example queries
+> (example 1 uses `avg:` on a distribution, which the evaluator rejects by a later decision, so
+> it should read `p95:`; example 3 groups by a tag the integrated app does not emit),
+> app-ruby, and the tests-and-docs box (the Playwright test and the L12 latency matrix are not
+> built). A series missing a `by` key is grouped under its absence rather than `"N/A"` as §1
+> step 6 says; `docs/query-language.md` is normative.
