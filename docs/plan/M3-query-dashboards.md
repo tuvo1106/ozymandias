@@ -262,7 +262,8 @@ the notes compare their error on the same data.
   `container.exits` incremented.
 - **L10** Python SDK ASGI middleware tests with a real Starlette/FastAPI test
   app: route pattern tag (not raw path), status tag, exception path, 404
-  (`route:not_found`), streaming responses, no-op when disabled.
+  (`route:unmatched`, as built; `docs/sdk/python.md`), streaming responses, no-op
+  when disabled.
 - **L11** UI: query-editor unit tests (autocomplete context detection, error
   rendering); time-range math; Playwright: build a widget, save, reload, see data.
 - **L12** query latency: 1h/1d/7d ranges × 10/100/1000 series.
@@ -291,5 +292,5 @@ docs per its rules; `docs/sdk/python.md` ASGI section; `docs/notes/M3.md`.
 > the four example queries (the examples are amended above and need re-running);
 > app-ruby; the Metric Summary box, because it names app-node and only app-python was
 > measured (and `container.exits` grows with container churn, see the notes); and the
-> tests-and-docs box (the L12 latency matrix is not built; the L11 Playwright test is
-> deferred by ADR-0035).
+> tests-and-docs box (L12 is built in PR #42 and L11 Playwright is deferred by ADR-0035, but
+> L8, every shipped widget evaluated against data, does not exist).
