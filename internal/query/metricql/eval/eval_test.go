@@ -588,8 +588,9 @@ func TestErrBadQuery_ClassifiesWithoutPrefixingTheMessage(t *testing.T) {
 // square reads as "broken" rather than as "zero". docs/dashboards.md tells
 // template authors so, and the shipped service template draws its 5xx rate as a
 // chart for this reason — so the claim needs to be a test rather than a
-// sentence. If ozymandias ever grows a way to say "0 when nothing matched",
-// this fails and both of those want rewriting.
+// sentence. If a modifier ever turns an empty selection into zero, this fails and
+// both of those want rewriting. (The complement idiom below is not that: it
+// moves the empty selection to the other side, and has its own limit.)
 func TestEval_AnEmptySelectionIsNoSeriesRatherThanZero(t *testing.T) {
 	for _, q := range []string{
 		"sum:req.count{route:/nope}",
@@ -614,5 +615,65 @@ func TestEval_AnEmptySelectionIsNoSeriesRatherThanZero(t *testing.T) {
 	// it by swapping the operands.
 	if got := lines(run(t, fixture(), "sum:req.count{*} / sum:req.count{route:/nope}", 0, 59, 10)); len(got) != 0 {
 		t.Errorf("a missing denominator drew %q, want nothing", got)
+	}
+}
+
+// "100 minus the share of everything that is NOT the thing" draws 0 for a
+// healthy service without a new modifier, because the complement's selection
+// exists whenever the thing is absent. It is NOT a general fix: when everything
+// *is* the thing (every request a 5xx) the complement's selection is empty and
+// the line vanishes, which is the one moment an error-rate chart must not go
+// blank. That is why the shipped templates keep the direct ratio. Both halves
+// are pinned here so that nobody takes the idiom for safe.
+func TestEval_ComplementOfARatioIsZeroWhenNothingMatchesAndBlankWhenEverythingDoes(t *testing.T) {
+	const total = "sum:req.count{*}"
+	direct := run(t, fixture(), "sum:req.count{route:/y} / "+total+" * 100", 0, 59, 10)
+	complement := run(t, fixture(), "100 - sum:req.count{!route:/y} / "+total+" * 100", 0, 59, 10)
+	if len(direct.Series) != 1 || len(complement.Series) != 1 {
+		t.Fatalf("direct %q, complement %q: want one line each", lines(direct), lines(complement))
+	}
+	compared := 0
+	for i, p := range direct.Series[0].Points {
+		if math.IsNaN(p.V) {
+			continue
+		}
+		compared++
+		if got := complement.Series[0].Points[i].V; math.Abs(got-p.V) > 1e-9 {
+			t.Errorf("bucket %d: complement %g, direct %g", i, got, p.V)
+		}
+	}
+	if compared == 0 {
+		t.Fatal("no bucket had a direct answer, so nothing was compared")
+	}
+
+	// Nothing matches the thing: the complement is 0, in at least one real bucket.
+	none := run(t, fixture(), "100 - sum:req.count{!route:/nope} / "+total+" * 100", 0, 59, 10)
+	if len(none.Series) != 1 {
+		t.Fatalf("complement drew %q, want one line of zeros", lines(none))
+	}
+	zeros := 0
+	for i, p := range none.Series[0].Points {
+		if math.IsNaN(p.V) {
+			continue
+		}
+		if p.V != 0 {
+			t.Errorf("bucket %d: %g, want 0 when nothing matched", i, p.V)
+		}
+		zeros++
+	}
+	if zeros == 0 {
+		t.Error("the complement drew a line with no value in it, so 0 was never checked")
+	}
+
+	// Everything matches the thing: the complement's selection is empty, so
+	// nothing is drawn, while the direct ratio draws 100.
+	all := "sum:req.count{!route:/x,!route:/y} / " + total + " * 100"
+	if got := lines(run(t, fixture(), "100 - "+all, 0, 59, 10)); len(got) != 0 {
+		t.Errorf("when everything matches, the complement drew %q, want nothing (the limit this test documents)", got)
+	}
+
+	// No traffic at all is no answer either way.
+	if got := lines(run(t, fixture(), "100 - sum:req.count{!route:/nope,host:zzz} / sum:req.count{host:zzz} * 100", 0, 59, 10)); len(got) != 0 {
+		t.Errorf("with no traffic at all it drew %q, want nothing", got)
 	}
 }

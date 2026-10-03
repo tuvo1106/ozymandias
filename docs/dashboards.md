@@ -255,8 +255,18 @@ divide for a service with no 5xx, and the evaluator drops the group with a
 warning saying so. As a `query_value` that renders as an empty square precisely
 when the service is healthy, which reads as "broken". The shipped template
 therefore draws its 5xx rate as a **timeseries**, where no line legibly means no
-errors, and says so in the widget title. Expressing "0 when nothing matched"
-would need a new modifier and its own ADR.
+errors, and says so in the widget title.
+
+You can write "0 when nothing matched" without a new modifier, by taking the
+complement: `100 - sum:…{!status:5*} / sum:…{*} * 100`. A healthy service then
+draws 0%. **Do not use it for an error rate.** When *every* request is a 5xx,
+the complement's selection is empty, so the line vanishes at the moment the chart
+matters most: a crash loop reads as "no data". The direct ratio draws 100 there.
+That is why the shipped templates keep the direct ratio and its title, and
+`TestEval_ComplementOfARatioIsZeroWhenNothingMatchesAndBlankWhenEverythingDoes`
+pins both halves. A modifier that turns an empty selection into zero was
+considered and not built: it would also turn a misspelt metric name into a
+confident 0%.
 
 **Which services exist** is `GET /api/v1/dashboards/services`: the values of the
 `service` tag on the metrics the templates themselves query. It is not "seen in

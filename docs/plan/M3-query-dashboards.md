@@ -260,7 +260,8 @@ the notes compare their error on the same data.
   app: route pattern tag (not raw path), status tag, exception path, 404
   (`route:not_found`), streaming responses, no-op when disabled.
 - **L11** UI: query-editor unit tests (autocomplete context detection, error
-  rendering); time-range math; Playwright: build a widget, save, reload, see data.
+  rendering); time-range math. (Playwright, "build a widget, save, reload, see
+  data", is deferred by ADR-0035.)
 - **L12** query latency: 1h/1d/7d ranges × 10/100/1000 series.
 
 ## 6. Docs deliverables
