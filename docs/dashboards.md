@@ -253,16 +253,10 @@ changes that: `.fill(zero)` fills empty buckets inside a series that exists. So
 `sum:http.request.count{status:5*} / sum:http.request.count{*}` has nothing to
 divide for a service with no 5xx, and the evaluator drops the group with a
 warning saying so. As a `query_value` that renders as an empty square precisely
-when the service is healthy, which reads as "broken". A naive ratio is
-therefore the wrong thing to put in a `query_value`. The first shipped template
-drew it as a timeseries and said "no line means no 5xx" in the title; the better
-answer is the **complement**: `100 - sum:…{!status:5*} / sum:…{*} * 100`.
-The non-5xx selection exists whenever there is any traffic, so a healthy service
-draws a line at 0% instead of nothing, and a service with no traffic at all still
-draws nothing, which is the honest answer to "no data". It needs no new modifier;
-`TestEval_ComplementOfARatioIsZeroWhenNothingMatches` pins that it agrees with the
-direct ratio wherever the direct ratio has an answer. The `service` and `app-python`
-dashboards both use it.
+when the service is healthy, which reads as "broken". The shipped template
+therefore draws its 5xx rate as a **timeseries**, where no line legibly means no
+errors, and says so in the widget title. Expressing "0 when nothing matched"
+would need a new modifier and its own ADR.
 
 **Which services exist** is `GET /api/v1/dashboards/services`: the values of the
 `service` tag on the metrics the templates themselves query. It is not "seen in
