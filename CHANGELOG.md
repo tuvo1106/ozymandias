@@ -453,6 +453,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The 5xx rate widgets draw 0% for a healthy service** (the `service` template and `app-python`)
+  instead of an empty chart, by querying `100 - non-5xx share`. No new query-language feature.
 - **Timeseries charts with many series drew a sliver.** The legend wrapped onto many
   lines and took the whole widget; it now takes at most 40% of the chart and scrolls.
 - **A rejected append no longer leaves an empty series behind.** The head
