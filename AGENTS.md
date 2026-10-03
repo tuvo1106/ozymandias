@@ -209,8 +209,8 @@ your machine, you are not the person who should be touching them.
 make help           list every target
 make build          go build ./cmd/... into ./bin (embeds the UI if built)
 make web            build the UI into internal/api/ui/dist
-make ci             the full gate, by hand before a PR (Actions runs it on
-                    every PR). On the efficiency cores (macOS taskpolicy) so
+make ci             the full gate, by hand only when a change needs it
+                    (ADR-0033; Actions runs it on every PR). On the efficiency cores (macOS taskpolicy) so
                     it does not heat the laptop; CI_PRIORITY=full for speed
 make test / lint / docs-check / web-check / fuzz / fuzz-long
 make up / down / down-v   the compose stack (waits until healthy)
