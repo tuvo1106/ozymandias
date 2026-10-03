@@ -60,6 +60,9 @@ export interface TimeseriesChartProps {
 /** Shortest canvas worth drawing on; below this an axis has no room for a tick. */
 const MIN_HEIGHT = 40;
 
+/** The most of a chart's box the legend may take before it scrolls. */
+const MAX_LEGEND_SHARE = 0.4;
+
 /** Canvas height when the container cannot say, e.g. before the first layout. */
 const FALLBACK_HEIGHT = 320;
 
@@ -130,6 +133,12 @@ function buildOptions(
  * the legend hangs out of the widget it belongs to, which is what a fixed
  * "chrome height" guess got wrong: it could not know whether a widget had a
  * warnings row above the chart.
+ *
+ * The legend is capped at {@link MAX_LEGEND_SHARE} of the box and scrolls past
+ * that, so the plot keeps at least the remainder however many series there are.
+ * Before the first layout the box is 0: no cap is applied and the fallback
+ * height is used, and the next resize applies both. Not unit-tested, because
+ * jsdom has no layout; it was checked in a browser against a many-series widget.
  */
 function fit(plot: uPlot, el: HTMLElement, explicit: number | undefined) {
   const width = Math.floor(el.clientWidth) || 600;
@@ -137,8 +146,17 @@ function fit(plot: uPlot, el: HTMLElement, explicit: number | undefined) {
     plot.setSize({ width, height: explicit });
     return;
   }
-  const legend = plot.root.querySelector<HTMLElement>(".u-legend")?.offsetHeight ?? 0;
   const box = Math.floor(el.clientHeight);
+  const legendEl = plot.root.querySelector<HTMLElement>(".u-legend");
+  if (legendEl && box > 0) {
+    // A chart with a dozen series wraps its legend onto many lines, and since the plot gets
+    // what the legend leaves, an uncapped legend squeezed the plot to a strip (a widget six
+    // rows tall drew a 20px chart under six lines of key). The legend scrolls instead, so the
+    // picture always keeps the larger share of the box.
+    legendEl.style.maxHeight = `${Math.floor(box * MAX_LEGEND_SHARE)}px`;
+    legendEl.style.overflowY = "auto";
+  }
+  const legend = legendEl?.offsetHeight ?? 0;
   plot.setSize({ width, height: box > 0 ? Math.max(box - legend, MIN_HEIGHT) : FALLBACK_HEIGHT });
 }
 

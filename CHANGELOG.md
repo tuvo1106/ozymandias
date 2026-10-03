@@ -9,6 +9,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **An `app-python` dashboard** for a FastAPI + arq service (M3 §4): requests, errors and
+  latency by route, queue depth and age, jobs per minute, judge run durations and verdicts,
+  and container CPU, memory and exits. It names no app: service, Compose project and
+  environment are template variables. The app's metrics are in `docs/metrics-catalog.md`.
+- **Python SDK: ASGI metrics middleware** (M3 §4). `ozy.integrations.asgi.MetricsMiddleware`
+  gives any FastAPI or Starlette app request rate, errors and latency by route pattern
+  (`http.request.count`, `http.request.duration`) in one line. See docs/sdk/python.md.
 - **Host metrics from the agent** (M3 §3, part 1). A collector framework
   runs pull-based sources on a timer, each on its own goroutine with jitter,
   a timeout and its own self-metrics (`ozy.agent.collector.*`), and sends
@@ -446,6 +453,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Timeseries charts with many series drew a sliver.** The legend wrapped onto many
+  lines and took the whole widget; it now takes at most 40% of the chart and scrolls.
 - **A rejected append no longer leaves an empty series behind.** The head
   created and indexed a series before applying its samples, so an append that
   stored nothing — every sample out of bounds (a backfill behind a block cut),

@@ -89,6 +89,45 @@ interval's increase.
 | `ozy.sketchstore.series_rejected` | count | series | | ozyd | Sketch series the store refused (a ref it cannot key, a timestamp outside the key range, or an id collision) |
 | `ozy.sketchstore.id_collisions` | count | series | | ozyd | **Two series hashed to the same id.** One of them is being refused and its percentiles are missing. Expected to be zero forever — about one chance in 37 million at 100k series — so any value at all is worth a look; the log line names both series |
 
+## SDK metrics (`http.*`)
+
+Emitted in the app's own process. The Python SDK's `MetricsMiddleware` produces these; a Node
+app emits the same names by hand (the Node SDK has no HTTP integration yet), so one
+dashboard query works for either.
+
+| Metric | Type | Unit | Tags | Emitted by | Meaning |
+|---|---|---|---|---|---|
+| `http.request.count` | counter | requests | `route`, `method`, `status`, `status_class` | Python SDK `MetricsMiddleware`; Node apps by hand | HTTP requests served. `route` is the matched pattern, never the raw path; unmatched requests are `route:unmatched`. A request cancelled before a response started is `status:499` when the client had disconnected, else `500`; `method` is a standard verb or `OTHER` |
+| `http.request.duration` | distribution | ms | the same | the same | Time from request in to the inner app returning, so a streamed body is included |
+
+## Python app metrics (`arq.*`, `judge.*`, `submission.*`, …)
+
+From the Python SDK in a FastAPI + arq service whose submissions are judged in
+short-lived Docker sandboxes (the first Python app onboarded). Durations are
+distributions in milliseconds; every tag is a bounded set. `service` is set by
+the app (one per process role: API, judge worker, accounts worker).
+
+| Metric | Type | Unit | Tags | Meaning |
+|---|---|---|---|---|
+| `arq.queue.depth` | gauge | jobs | `queue` (`judge`, `accounts`) | Jobs not yet finished: waiting **and** running, because arq keeps a job queued until it ends. Reported by the API every 10s |
+| `arq.queue.oldest_age_seconds` | gauge | seconds | `queue` | Age of the oldest unfinished job. Absent while the queue is empty. The signal that a consumer is stuck: depth spikes and drains on a burst, age only grows when nothing is consuming |
+| `arq.jobs.enqueued` | counter | jobs | `function` | Jobs the API (or sweeper) actually created. A duplicate arq refuses is not counted |
+| `arq.job.count` | counter | jobs | `function`, `outcome` (`ok`, `error`, `cancelled`) | Job runs. `ok` means the function returned, not that its work succeeded: a judge job that records `judge_error` still returns |
+| `arq.job.duration` | distribution | ms | `function`, `outcome` | Wall time of a job run |
+| `worker.heartbeat` | gauge | — | — | Always 1, once a minute from each worker. A worker that dies reports nothing, and a gauge that stops arriving is alertable where "no traffic" is not |
+| `judge.run.count` | counter | runs | `language`, `runner`, `outcome` | Sandbox runs. `outcome` is the verdict (`accepted`, `wrong_answer`, `time_limit_exceeded`, …) or `error` when the runner itself failed |
+| `judge.run.duration` | distribution | ms | `language`, `runner`, `outcome` | Time to run one sandbox, container start to verdict |
+| `submission.verdict` | counter | submissions | `status`, `language`, `mode` (`submit`, `run`) | Final verdict per submission, including `judge_error` |
+| `judge.orphans.swept` | counter | containers | — | Sandboxes killed because no live job owned them |
+| `submissions.stale_swept` | counter | submissions | — | Submissions failed by the stale sweep (stuck `pending` or `running`) |
+| `ratelimit.rejected` | counter | requests | `action` (`submit`, `run`, `auth`) | Requests refused by a rate limit |
+| `inflight.lock.contended` | counter | submits | — | Submits refused because that user already has one running for the problem |
+| `auth.login.locked` | counter | lockouts | — | Accounts locked out after repeated failed logins |
+| `audit.event` | counter | events | `event` | One per security-relevant auth or billing event (`auth.login.success`, `auth.login.failure`, `auth.login.blocked`, `auth.2fa.*`, `auth.password.changed`, `billing.subscription.activated`, …). The tag is a fixed set of names written in the code, never user input |
+| `auth.signup` | counter | accounts | — | Accounts actually created. A signup with an already-registered email is not one |
+| `account.email.handled` | counter | jobs | `kind` (`verify`, `existing`, `reset`) | Account-email jobs that reached a real user. Handled, not delivered: a failed SMTP send is retried and then swallowed |
+| `stripe.webhook.count` | counter | events | `type` (the three handled Stripe event types, else `other`) | Signature-verified Stripe webhook deliveries |
+
 ## Host metrics (`system.*`)
 
 From the agent's host collector (`collectors.host`), every 15s, tagged

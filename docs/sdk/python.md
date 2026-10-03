@@ -4,7 +4,8 @@
 runtime dependencies, it never raises into your code, and it does nothing at all until you
 point it at an agent.
 
-M1 ships the statsd client. Tracing and the framework integrations arrive in M5
+The SDK ships the statsd client and, from M3, an ASGI metrics middleware
+([below](#asgi-middleware)). Tracing and the other framework integrations arrive in M5
 (see [PLAN.md](../../PLAN.md)).
 
 The SDK is a convenience layer. The public interface is the wire protocol
@@ -194,6 +195,65 @@ These are tested in `sdk/python/tests/test_safety.py` (the L10 safety suite in
 - **Calls don't block.** A call only enqueues, even while the flusher is stuck.
 - **Your exceptions are yours.** Code inside `timed` raises exactly what it raised.
 - **Bounded memory**, as described in [Buffering](#buffering).
+
+## ASGI middleware
+
+`ozy.integrations.asgi.MetricsMiddleware` records one count and one duration per HTTP
+request, for a Starlette-family app (Starlette, FastAPI):
+
+```python
+from ozy.integrations.asgi import MetricsMiddleware
+
+app = FastAPI()
+app.add_middleware(MetricsMiddleware, exclude_paths=["/healthz"])
+```
+
+Other ASGI frameworks (Litestar, Django-ASGI) never set `scope["route"]`, so every request there
+is `route:unmatched`: the counts, errors and durations are right, the per-route breakdown is not.
+
+Add it last, so it is the outermost middleware you have added and times the others. Starlette's
+own error handler still sits outside it, which is why a handler that raises is recorded here as
+`500`: this middleware sees the exception before the handler turns it into a response.
+
+| Metric | Type | Tags |
+|---|---|---|
+| `http.request.count` | counter | `route`, `method`, `status`, `status_class` |
+| `http.request.duration` | distribution, ms | the same |
+
+- **`route` is the route pattern**, such as `/problems/{slug}`, read from
+  `scope["route"]` after the inner app returns (routing has not happened when the request
+  arrives). It is the path *as the framework reports it*: FastAPI's `include_router(prefix=...)`
+  is not part of it, so an app mounted under `/api/v1` sees `/problems/{slug}`, not
+  `/api/v1/problems/{slug}`. A sub-app reached through Starlette's `Mount` is similar: depending
+  on the Starlette version its route is relative to the mount, or absent and so `unmatched`. Neither
+  can be recovered from inside a middleware; to get exact patterns for a mounted app, add the
+  middleware inside it. A request that matched nothing is `route:unmatched`, so a scanner probing
+  random URLs is one series rather than thousands.
+- **`exclude_paths` matches the raw request path exactly**, as the server reports it in
+  `scope["path"]`. That does include a router prefix, but `/healthz` does not exclude
+  `/healthz/`, and behind a proxy that strips or adds a prefix the right value depends on
+  the server.
+- **`method` is one of the standard verbs, or `OTHER`.** A scanner can send any token as a
+  method, and an unbounded tag is one series per value.
+- **Status is honest.** An app that raises before answering is recorded as `500`, since that
+  is what the server will send. A request cancelled before any response started is `499` only
+  when the client's disconnect was seen, so closing a tab does not look like a server fault.
+  A cancellation with no disconnect behind it (a shutdown, a reload, a timeout scope outside
+  this middleware) is the server's doing and is `500`. Even with a disconnect seen, only a
+  failure that looks like a closed connection (a cancellation, an `OSError`, Starlette's
+  `ClientDisconnect`) is `499`: a handler bug that follows one stays `500` so it reaches your
+  5xx alerts. A failed write of the response's first message counts as no response, not as the
+  status the app tried to send. Once a response has started, its status stands even if the body then fails.
+- **Duration runs until the inner app returns**, so a streamed response, server-sent events or a
+  long poll records its whole lifetime as latency. That is the honest "how long did this request
+  take", but it is not time-to-first-byte; list such routes in `exclude_paths` if their numbers
+  would swamp a latency chart. A bare string for `exclude_paths` is treated as one path.
+- **WebSockets and lifespan events pass through unrecorded.** Duration for a socket that
+  lives for an hour would mean nothing.
+- **It is pure ASGI**, not Starlette's `BaseHTTPMiddleware`, so streaming responses,
+  background tasks and context variables behave as they do without it.
+- **It never raises into a request.** A failure while recording is logged at debug level
+  and dropped. Until `ozy.init()` enables the client it is a straight passthrough.
 
 ## Fork behaviour
 

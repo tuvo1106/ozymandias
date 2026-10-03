@@ -16,6 +16,9 @@ package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `ozy.integrations.asgi.MetricsMiddleware`: a pure ASGI middleware that records
+  `http.request.count` and `http.request.duration` tagged by route pattern, method and
+  status. It never raises into a request and is inert until `ozy.init()` enables the client.
 - `ozy.init()`, which layers its arguments over the `OZY_*` environment variables.
   With no agent host configured, the SDK is disabled and inert.
 - The `ozy.statsd` client: `increment`, `decrement`, `gauge`, `histogram`,

@@ -216,7 +216,7 @@ and zero are different.
 
 A definition with `"template": true` is not shown as itself. It is instantiated
 once per service, so a newly onboarded app has a useful overview before anybody
-writes JSON for it. `deploy/dashboards/service.json` is the one ozymandias ships:
+writes JSON for it. `deploy/dashboards/service.json` is the one template ozymandias ships:
 throughput, 5xx rate, p95 latency and a latency heatmap, all from the
 `http.request.*` metrics every SDK sends.
 
