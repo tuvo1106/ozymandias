@@ -524,8 +524,8 @@ flowchart TB
     OUT["lines: scope + points<br/>+ warnings per query"]
 
     TXT --> LEX --> VARS --> GRID --> SEL --> TAGG --> SAGG --> MOD --> FN --> OUT
-    SEL -. "same selector, grid, rollup" .-> CACHE
-    CACHE -. "reused by sibling queries" .-> TAGG
+    TAGG -. "memoised under selector, grid, rollup" .-> CACHE
+    CACHE -. "a sibling query skips SEL and TAGG" .-> SAGG
 ```
 
 (Source: [docs/diagrams/query-pipeline.mmd](docs/diagrams/query-pipeline.mmd);
@@ -533,5 +533,5 @@ the two copies are kept identical.)
 
 ---
 
-*Sections added by later milestones: log path (M4), traces (M5), monitors (M6), the queued pipeline (M7),
-OTLP (M8).*
+*Sections added by later milestones: log path (M4), traces (M5), monitors (M6),
+the queued pipeline (M7), OTLP (M8).*

@@ -32,9 +32,9 @@ modifier  = "rollup(" method [ "," seconds ] ")"         (* method: avg|sum|min|
 Examples:
 
 ```
-avg:http.request.duration{service:app-node,env:dev} by {route}
+p95:http.request.duration{service:app-node,env:dev} by {route}
 sum:http.request.count{service:app-python-api,status:5*}.as_rate() / sum:http.request.count{service:app-python-api}.as_rate() * 100
-p95:judge.run.duration{language:python} by {problem_difficulty}.rollup(max, 60)
+p95:judge.run.duration{language:python} by {outcome}.rollup(max, 60)
 top(sum:container.cpu.usage{compose_project:app-python} by {container_name}, 5, "mean", "desc")
 ```
 
@@ -49,9 +49,13 @@ top(sum:container.cpu.usage{compose_project:app-python} by {container_name}, 5, 
 4. **Time aggregation:** each series → aligned buckets
    `[from + i·interval)`, reduced by the rollup method. Empty bucket → null.
 5. `as_rate()` → bucket value / interval; `as_count()` → per-bucket sum.
-   Applies only to count/rate metrics; error otherwise.
-6. **Space aggregation:** group series by `by` keys (missing key → group
-   `"N/A"`); per bucket apply `space_agg` across the group, ignoring nulls
+   Applies only to count/rate metrics; error otherwise. It is applied to the
+   aggregated line, after step 6; for `sum` and `avg` that is the same number
+   as applying it per series, since both are linear (`docs/query-language.md`
+   is normative on the order).
+6. **Space aggregation:** group series by `by` keys (a series missing a key is
+   grouped under its absence and the key is left off the group's tags, ADR-0034);
+   per bucket apply `space_agg` across the group, ignoring nulls
    (all-null → null). `pXX` on a distribution → merge sketches (per bucket,
    across the group) then quantile; `pXX` on a non-distribution → error.
 7. **Fill**, then **functions**, then **arithmetic**: binary ops join series
@@ -274,18 +278,19 @@ docs per its rules; `docs/sdk/python.md` ASGI section; `docs/notes/M3.md`.
 ## 7. Acceptance criteria
 
 - [ ] All four example queries above evaluate correctly against live data.
-- [x] app-python dashboard shows: req/s + p95 latency by route, error %, arq queue depth, jobs/min by function, judge run p50/p95 by language, verdict breakdown, container CPU/mem for api/worker/postgres/redis, judge sandbox exits by exit code.
+- [ ] app-python dashboard shows: req/s + p95 latency by route, error %, arq queue depth, jobs/min by function, judge run p50/p95 by language, verdict breakdown, container CPU/mem for api/worker/postgres/redis, judge sandbox exits by exit code.
 - [ ] app-ruby appears with **no change to its application code**: business and Rails/Sidekiq metrics charted; queue depth equals its Grafana board; small-order p90 wait agrees within bucket-interpolation error via both `histogram_quantile()` and the sketch path (both numbers reported). Restarting its api container does not produce a rate spike (counter-reset handling).
 - [x] Submitting a solution in app-python visibly moves queue depth, judge duration and `container.exits{container_name:judge}`.
 - [x] Query editor shows parse errors inline with the right column; autocomplete works for metric, tag key, tag value.
-- [x] Metric Summary shows per-metric series counts; no app-python/app-node metric exceeds 500 series after a normal session (cardinality discipline verified).
+- [ ] Metric Summary shows per-metric series counts; no app-python/app-node metric exceeds 500 series after a normal session (cardinality discipline verified).
 - [x] app-python's own test suite + coverage gate pass with ozymandias absent.
 - [ ] Tests and docs deliverables complete; `docs/notes/M3.md` has evidence.
 
 > **Status (2026-10-03).** Ticked boxes are demonstrated in
-> [`docs/notes/M3.md`](../notes/M3.md) (Acceptance evidence). Left open: the four example queries
-> (example 1 uses `avg:` on a distribution, which the evaluator rejects by a later decision, so
-> it should read `p95:`; example 3 groups by a tag the integrated app does not emit),
-> app-ruby, and the tests-and-docs box (the Playwright test and the L12 latency matrix are not
-> built). A series missing a `by` key is grouped under its absence rather than `"N/A"` as §1
-> step 6 says; `docs/query-language.md` is normative.
+> [`docs/notes/M3.md`](../notes/M3.md) (Acceptance evidence). Left open, and why:
+> the four example queries (the examples are amended above and need re-running);
+> the dashboard box until the 5xx widget fix (PR #41) is merged and re-checked live;
+> app-ruby; the Metric Summary box, because it names app-node and only app-python was
+> measured (and `container.exits` grows with container churn, see the notes); and the
+> tests-and-docs box (the L12 latency matrix is not built; the L11 Playwright test is
+> deferred by ADR-0035).

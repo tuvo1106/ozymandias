@@ -27,5 +27,5 @@ flowchart TB
     OUT["lines: scope + points<br/>+ warnings per query"]
 
     TXT --> LEX --> VARS --> GRID --> SEL --> TAGG --> SAGG --> MOD --> FN --> OUT
-    SEL -. "same selector, grid, rollup" .-> CACHE
-    CACHE -. "reused by sibling queries" .-> TAGG
+    TAGG -. "memoised under selector, grid, rollup" .-> CACHE
+    CACHE -. "a sibling query skips SEL and TAGG" .-> SAGG
