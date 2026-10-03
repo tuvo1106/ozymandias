@@ -278,7 +278,7 @@ docs per its rules; `docs/sdk/python.md` ASGI section; `docs/notes/M3.md`.
 ## 7. Acceptance criteria
 
 - [ ] All four example queries above evaluate correctly against live data.
-- [ ] app-python dashboard shows: req/s + p95 latency by route, error %, arq queue depth, jobs/min by function, judge run p50/p95 by language, verdict breakdown, container CPU/mem for api/worker/postgres/redis, judge sandbox exits by exit code.
+- [x] app-python dashboard shows: req/s + p95 latency by route, error %, arq queue depth, jobs/min by function, judge run p50/p95 by language, verdict breakdown, container CPU/mem for api/worker/postgres/redis, judge sandbox exits by exit code.
 - [ ] app-ruby appears with **no change to its application code**: business and Rails/Sidekiq metrics charted; queue depth equals its Grafana board; small-order p90 wait agrees within bucket-interpolation error via both `histogram_quantile()` and the sketch path (both numbers reported). Restarting its api container does not produce a rate spike (counter-reset handling).
 - [x] Submitting a solution in app-python visibly moves queue depth, judge duration and `container.exits{container_name:judge}`.
 - [x] Query editor shows parse errors inline with the right column; autocomplete works for metric, tag key, tag value.
@@ -289,7 +289,6 @@ docs per its rules; `docs/sdk/python.md` ASGI section; `docs/notes/M3.md`.
 > **Status (2026-10-03).** Ticked boxes are demonstrated in
 > [`docs/notes/M3.md`](../notes/M3.md) (Acceptance evidence). Left open, and why:
 > the four example queries (the examples are amended above and need re-running);
-> the dashboard box until the 5xx widget fix (PR #41) is merged and re-checked live;
 > app-ruby; the Metric Summary box, because it names app-node and only app-python was
 > measured (and `container.exits` grows with container churn, see the notes); and the
 > tests-and-docs box (the L12 latency matrix is not built; the L11 Playwright test is
