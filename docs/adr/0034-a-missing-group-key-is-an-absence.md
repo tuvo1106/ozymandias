@@ -34,4 +34,5 @@ A line's scope contains only tags that exist, so it can be pasted back into a
 filter. The cost is that a missing
 key is visible only as a shorter scope: `by {problem_difficulty}` over a metric
 without that tag returns one line scoped `*`, which looks like "no grouping" and
-not like "nothing has this tag". The M3 notes record the case.
+not like "nothing has this tag". No warning is emitted for it today; whether one
+should be is open. `docs/query-language.md` states the rule.
