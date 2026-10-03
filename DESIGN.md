@@ -466,8 +466,72 @@ Collector.Collect ──emit(Metric)──▶ Scheduler ──[]wire.Series─�
   histogram answers `p90:` like a statsd one — as precisely as its buckets
   allow.
 
+## 13. Query pipeline
+
+A query is text: `sum:http.request.count{service:api} by {route}.as_rate()`.
+`internal/query/metricql` parses it into an AST that keeps every position, so
+an error can say `col 17: expected '}'`. `internal/query/metricql/eval`
+answers it. The order of the stages is the whole point, and
+[docs/query-language.md](docs/query-language.md) walks each with a numeric
+table:
+
+1. **Plan.** One request is evaluated onto *one* grid. The interval is the
+   explicit parameter, else a `.rollup()` width, else about 300 points rounded
+   up to the agent's 10 s flush; two sources that disagree are an error, never a
+   silent pick (ADR-0016).
+2. **Select** the series from the tag index, at most 1000 per query node (the
+   error says to add a filter or group).
+3. **Time-aggregate** each series into the grid's buckets with the rollup method
+   its metric type implies. An empty bucket is null, not zero.
+4. **Space-aggregate** by group. A series missing a `by` key is grouped under
+   its absence: the key is left off that group's tags. `pXX` merges sketches
+   first and takes the quantile after, which is why a distribution refuses `avg`
+   (you cannot average percentiles).
+5. **Modify** (`as_rate`, `as_count`), then **fill**, **functions** and
+   **arithmetic**. Binary operators join on identical group tag sets; a group
+   with no match is dropped with a warning, and division by zero is null.
+
+A dashboard is one batch request: its widgets share a grid, and the select and
+time-aggregate half of a node is memoised for the batch (ADR-0018), because
+five widgets over `http.request.count` differ only in how they group. Nothing is
+cached between requests, so nothing can be stale.
+
+```mermaid
+flowchart TB
+    TXT["sum:http.request.count{service:api} by {route}.as_rate()"]
+
+    subgraph parse["metricql: parse"]
+        direction TB
+        LEX["lex + recursive descent<br/>AST with positions<br/>(errors say the column)"]
+    end
+
+    subgraph plan["evaluator: plan (one request, one grid)"]
+        direction TB
+        VARS["resolve template vars"]
+        GRID{{"interval: explicit param,<br/>else a .rollup() width,<br/>else ~300 points<br/>conflicts are an error (ADR-0016)"}}
+    end
+
+    subgraph run["evaluator: run, per query node"]
+        direction TB
+        SEL["select series<br/>(tag index; ≤ 1000 per node)"]
+        TAGG["time-aggregate onto the grid<br/>rollup method by metric type<br/>empty bucket → null"]
+        CACHE[("selection cache<br/>one batch only (ADR-0018)")]
+        SAGG["space-aggregate by group<br/>sum/avg/min/max/count, or merge<br/>sketches then pXX"]
+        MOD["as_rate / as_count"]
+        FN["fill, then functions,<br/>then arithmetic<br/>(join on identical group tags)"]
+    end
+
+    OUT["lines: scope + points<br/>+ warnings per query"]
+
+    TXT --> LEX --> VARS --> GRID --> SEL --> TAGG --> SAGG --> MOD --> FN --> OUT
+    TAGG -. "memoised under selector, grid, rollup" .-> CACHE
+    CACHE -. "a sibling query skips SEL and TAGG" .-> SAGG
+```
+
+(Source: [docs/diagrams/query-pipeline.mmd](docs/diagrams/query-pipeline.mmd);
+the two copies are kept identical.)
+
 ---
 
-*Sections added by later milestones: query pipeline (M3),
-log path (M4), traces (M5), monitors (M6), the queued pipeline (M7),
-OTLP (M8).*
+*Sections added by later milestones: log path (M4), traces (M5), monitors (M6),
+the queued pipeline (M7), OTLP (M8).*

@@ -1,0 +1,31 @@
+%% The path one metricql expression takes, from text to lines on a chart.
+%% Kept identical to the copy in DESIGN.md §13.
+flowchart TB
+    TXT["sum:http.request.count{service:api} by {route}.as_rate()"]
+
+    subgraph parse["metricql: parse"]
+        direction TB
+        LEX["lex + recursive descent<br/>AST with positions<br/>(errors say the column)"]
+    end
+
+    subgraph plan["evaluator: plan (one request, one grid)"]
+        direction TB
+        VARS["resolve template vars"]
+        GRID{{"interval: explicit param,<br/>else a .rollup() width,<br/>else ~300 points<br/>conflicts are an error (ADR-0016)"}}
+    end
+
+    subgraph run["evaluator: run, per query node"]
+        direction TB
+        SEL["select series<br/>(tag index; ≤ 1000 per node)"]
+        TAGG["time-aggregate onto the grid<br/>rollup method by metric type<br/>empty bucket → null"]
+        CACHE[("selection cache<br/>one batch only (ADR-0018)")]
+        SAGG["space-aggregate by group<br/>sum/avg/min/max/count, or merge<br/>sketches then pXX"]
+        MOD["as_rate / as_count"]
+        FN["fill, then functions,<br/>then arithmetic<br/>(join on identical group tags)"]
+    end
+
+    OUT["lines: scope + points<br/>+ warnings per query"]
+
+    TXT --> LEX --> VARS --> GRID --> SEL --> TAGG --> SAGG --> MOD --> FN --> OUT
+    TAGG -. "memoised under selector, grid, rollup" .-> CACHE
+    CACHE -. "a sibling query skips SEL and TAGG" .-> SAGG
