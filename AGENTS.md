@@ -52,7 +52,7 @@ what "done" means:
 
 1. Work milestones in order. Do not start M(n+1) until every acceptance
    criterion of M(n) passes and is demonstrated (command + output in the notes).
-2. **Two gates: pre-commit, then Actions** (ADR-0024). So:
+2. **Two gates: pre-commit, then Actions** (ADR-0024, ADR-0033). So:
    - **Batch.** One PR per milestone, or per large coherent chunk of one, not
      one per feature slice. Slices are still separate, well-described
      *commits* on the branch, so history stays reviewable.
@@ -62,10 +62,12 @@ what "done" means:
      the full gate**: it runs the checks `make ci` runs (plus a web
      production build) on every PR and on every push to main, `ci` is a
      required check, and a PR merges only when it is green on the head
-     commit. Run `make ci` by hand
-     once before opening a PR (it runs on the efficiency cores, so it does
-     not heat the laptop) and put that evidence, plus `make smoke` when
-     runtime behaviour changed, in the PR description. Batch fixes so a
+     commit. `make ci` is
+     **opt-in** (ADR-0033): run it by hand only when a change really needs
+     it (concurrency, storage, wire format, timing-sensitive code; it runs
+     on the efficiency cores, so it does not heat the laptop). Otherwise
+     pre-commit plus the `ci` check are the evidence. Put whatever you ran,
+     plus `make smoke` when runtime behaviour changed, in the PR description. Batch fixes so a
      review round costs one push.
    - Scopes are package-ish: `feat(agent): …`, `test(tsdb): …`,
      `feat(sdk-python): …`, `feat(web): …`.
@@ -105,6 +107,27 @@ the code (test-first for parsers, encoders and state machines).
 - UI changes: `npm run typecheck && npm run lint && npm test` in `web/`.
 - `scripts/smoke.sh` passes (from M1 on; it grows each milestone).
 - Docs updated in the same commit.
+
+### Before you ask for a review
+
+A review round costs a push and finds, at best, what you did not already look for. Six kinds of
+bug kept turning up in M2 and M3 (the Python SDK middleware, its dashboard, and the apps
+integrated against it), and each has a check that is far cheaper *before* the first round than
+after it. Do these first.
+
+| Bug class | What it looked like | Check before review |
+|---|---|---|
+| **A value from outside becomes a label** | the `method` tag took any token a scanner sent; a bad status minted `status:0`; an audit event name or a webhook type from input | Every tag value comes from a fixed set, in code. Test it: feed hostile inputs (random methods, paths, statuses) and assert the distinct tag values stay under a bound. A tag is a series. |
+| **Silent emptiness** | a widget filtered on a tag its series lack; every route tagged `unmatched`; a heartbeat that never fired | Nothing errors, the chart is just blank, so look at the *data*, not the logs. After driving real traffic, check that every metric you added appears. For a shipped dashboard, evaluate each widget's query against data and assert it is non-empty. |
+| **A claim nothing tests** | "outermost, times the whole stack", "works for any ASGI app", "verified against a live app" | State a property in a doc or comment only with a test that pins it. Otherwise say "unverified" or cut it. |
+| **A test that pins nothing** | deleting the code under test left the suite green (five times in one PR); a substring search over a datagram that also held a random duration, which failed one run in three | Break each new line, confirm a test fails, and restore with a script (a killed run leaves the file mutated). Assert on parsed values, never on text that contains a measured number. |
+| **A fix that causes the next bug** | about half of each review round's findings were regressions from the previous round's fix | Before committing a fix to shared code, list its callers and test the ones you did not mean to change. Decide by what a thing *is*, not by a proxy. Run the mutation pass on the fix itself. |
+| **A seam only the live stack shows** | arq dedupes a cron job across *all* workers by name, so two workers sharing one meant one never ran; the SDK caches DNS for 60s; `uv lock` keeps the old hash for a same-version wheel; a framework reports a different route per version | Run the thing end to end once, through the app's own up script, before the first review. Test against the real framework, not a hand-built stand-in for its scope or request. |
+
+What is enforced and what is not: the coverage gates, `make ci` and the shipped-dashboards test
+run in CI. The cardinality-budget test, "every metric appears after the driver runs" and the
+widget-non-empty check are **practice, not yet automated**; each is a slice worth building the
+next time an integration or a dashboard is added.
 
 ## 4. Go conventions
 
@@ -186,8 +209,8 @@ your machine, you are not the person who should be touching them.
 make help           list every target
 make build          go build ./cmd/... into ./bin (embeds the UI if built)
 make web            build the UI into internal/api/ui/dist
-make ci             the full gate, by hand before a PR (Actions runs it on
-                    every PR). On the efficiency cores (macOS taskpolicy) so
+make ci             the full gate, by hand only when a change needs it
+                    (ADR-0033; Actions runs it on every PR). On the efficiency cores (macOS taskpolicy) so
                     it does not heat the laptop; CI_PRIORITY=full for speed
 make test / lint / docs-check / web-check / fuzz / fuzz-long
 make up / down / down-v   the compose stack (waits until healthy)
