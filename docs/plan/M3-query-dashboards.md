@@ -289,7 +289,9 @@ docs per its rules; `docs/sdk/python.md` ASGI section; `docs/notes/M3.md`.
 - [ ] Tests and docs deliverables complete; `docs/notes/M3.md` has evidence.
 
 > **Status (2026-10-03).** Ticked boxes are demonstrated in
-> [`docs/notes/M3.md`](../notes/M3.md) (Acceptance evidence). Left open, and why:
+> [`docs/notes/M3.md`](../notes/M3.md) (Acceptance evidence). The four example queries
+> were amended above and were run with the integrated app's tags in place of the
+> placeholder app names. Left open, and why:
 > app-ruby; the Metric Summary box, because it names app-node and only app-python was
 > measured (and `container.exits` grows with container churn, see the notes); and the
 > tests-and-docs box (L12 and L8 are built and L11 Playwright is deferred by ADR-0035, but
