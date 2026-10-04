@@ -39,23 +39,23 @@ import (
 // float addition order or a known store boundary.
 func TestEval_SameAnswerOverTheTSDBAndTheNaiveStore(t *testing.T) {
 	root := t.TempDir()
-	var run int
+	var iteration int
 	base := int64(1_790_000_000)
 	hosts := []string{"a", "b", "c"}
 	routes := []string{"x", "y"}
 
 	var compared, nonEmpty int
 	rapid.Check(t, func(t *rapid.T) {
-		run++
-		dir := filepath.Join(root, fmt.Sprintf("run%d", run))
+		iteration++
+		dir := filepath.Join(root, fmt.Sprintf("run%d", iteration))
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		real, err := db.Open(db.Options{Dir: dir, Retention: -1, Clock: testutil.NewFakeClock(time.Unix(base, 0))})
+		tsdbStore, err := db.Open(db.Options{Dir: dir, Retention: -1, Clock: testutil.NewFakeClock(time.Unix(base, 0))})
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer func() { _ = real.Close() }()
+		defer func() { _ = tsdbStore.Close() }()
 		oracle, err := naive.Open(filepath.Join(dir, "oracle.db"))
 		if err != nil {
 			t.Fatal(err)
@@ -88,7 +88,7 @@ func TestEval_SameAnswerOverTheTSDBAndTheNaiveStore(t *testing.T) {
 				}
 			}
 		}
-		for _, store := range []tsdb.MetricStore{real, oracle} {
+		for _, store := range []tsdb.MetricStore{tsdbStore, oracle} {
 			for _, s := range data {
 				cp := tsdb.SeriesSamples{Series: s.Series, Samples: append([]tsdb.Sample(nil), s.Samples...)}
 				if _, err := store.Append(context.Background(), []tsdb.SeriesSamples{cp}); err != nil {
@@ -97,7 +97,7 @@ func TestEval_SameAnswerOverTheTSDBAndTheNaiveStore(t *testing.T) {
 			}
 		}
 
-		eReal := &Evaluator{Store: real, Types: types{"m": wire.KindCount}, Timeout: -1}
+		eReal := &Evaluator{Store: tsdbStore, Types: types{"m": wire.KindCount}, Timeout: -1}
 		eOracle := &Evaluator{Store: oracle, Types: types{"m": wire.KindCount}, Timeout: -1}
 
 		for q := 0; q < 6; q++ {
