@@ -73,6 +73,10 @@ type ContainerJSON struct {
 		// written ("app:latest"), even after that tag has been re-pointed
 		// at a newer build — when the list's Image turns into the image id.
 		Image string `json:"Image"`
+		// Tty is true for a container started with a pseudo-terminal: its log
+		// stream is then raw text, not multiplexed frames, and stderr is merged
+		// into stdout by the terminal.
+		Tty bool `json:"Tty"`
 	} `json:"Config"`
 }
 

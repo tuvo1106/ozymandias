@@ -225,3 +225,13 @@ func TestPipeline_AnExistingStatusCodeIsNotOverwritten(t *testing.T) {
 		t.Fatalf("%+v", l.Attrs)
 	}
 }
+
+// A traceback the tailer joined to its ERROR line is one event: the line's
+// pattern must still match, with the whole of it as the message.
+func TestPipeline_MultilineEventsStillMatchTheirFirstLinesPattern(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "python"})
+	l := one(t, p, "ERROR watchdog Account email is backed up\nTraceback (most recent call last):\n  File \"x.py\", line 1\nValueError: no", meta())
+	if l.Status != wire.StatusError || l.Attrs["logger"] != "watchdog" || l.Message != "Account email is backed up\nTraceback (most recent call last):\n  File \"x.py\", line 1\nValueError: no" {
+		t.Fatalf("%+v", l)
+	}
+}

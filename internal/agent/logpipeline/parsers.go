@@ -128,6 +128,10 @@ func newGrok(id, pattern, message string) (*grok, error) {
 	return &grok{id: id, re: re, message: message}, nil
 }
 
+// The message group is (?s:.*) so that a multi-line event (a traceback the
+// tailer joined to its first line) still matches its first line's pattern, with
+// the whole of it as the message.
+//
 // The built-in patterns. Each is anchored and ordered most specific first
 // within its source, because the first that matches wins: uvicorn's access
 // line is also an `INFO: …` line, so the access pattern must be tried before
@@ -139,21 +143,21 @@ var builtinGroks = map[string]struct{ pattern, message string }{
 	"uvicorn-access": {`^(?P<level>[A-Z]+):\s+(?P<client_ip>[0-9.]+|\[[0-9a-fA-F:]+\]):(?P<client_port_int>\d+) - "(?P<method>[A-Z]+) (?P<path>\S+) HTTP/(?P<http_version>[0-9.]+)" (?P<status_code_int>\d{3})(?: (?P<reason>.*))?$`,
 		"${method} ${path} ${status_code}"},
 	// INFO:     Started server process [1]   /   ERROR:    Exception in ASGI application
-	"uvicorn": {`^(?P<level>` + levels + `):\s+(?P<message>.*)$`, ""},
+	"uvicorn": {`^(?P<level>` + levels + `):\s+(?P<message>(?s:.*))$`, ""},
 	// 2026-10-04 12:00:00,123 INFO app.module something happened
-	"python-asctime": {`^(?P<timestamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+) (?P<level>` + levels + `) (?P<logger>[\w.\-]+) (?P<message>.*)$`, ""},
+	"python-asctime": {`^(?P<timestamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]\d+) (?P<level>` + levels + `) (?P<logger>[\w.\-]+) (?P<message>(?s:.*))$`, ""},
 	// INFO arq.worker redis_version=7.4.11 …     (%(levelname)s %(name)s %(message)s)
-	"python-logging": {`^(?P<level>` + levels + `) (?P<logger>[\w.\-]+) (?P<message>.*)$`, ""},
+	"python-logging": {`^(?P<level>` + levels + `) (?P<logger>[\w.\-]+) (?P<message>(?s:.*))$`, ""},
 	// INFO:app.module:something happened        (logging.basicConfig's default)
-	"python-basic": {`^(?P<level>` + levels + `):(?P<logger>[\w.\-]+):(?P<message>.*)$`, ""},
+	"python-basic": {`^(?P<level>` + levels + `):(?P<logger>[\w.\-]+):(?P<message>(?s:.*))$`, ""},
 	// 21:01:00:   1.02s → cron:reap_orphans()    (arq's own clock-stamped line: no date)
-	"arq-clock": {`^(?P<clock>\d{2}:\d{2}:\d{2}): +(?P<message>.*)$`, ""},
+	"arq-clock": {`^(?P<clock>\d{2}:\d{2}:\d{2}): +(?P<message>(?s:.*))$`, ""},
 	// 2026-10-04T12:00:00.123Z pid=1 tid=gx0 class=HardWorker jid=abc INFO: start
-	"sidekiq": {`^(?P<timestamp>\S+) pid=(?P<pid_int>\d+) tid=(?P<tid>\S+)(?: class=(?P<class>\S+))?(?: jid=(?P<jid>\S+))?(?: elapsed=(?P<elapsed_float>[0-9.]+))? (?P<level>[A-Z]+): (?P<message>.*)$`, ""},
+	"sidekiq": {`^(?P<timestamp>\S+) pid=(?P<pid_int>\d+) tid=(?P<tid>\S+)(?: class=(?P<class>\S+))?(?: jid=(?P<jid>\S+))?(?: elapsed=(?P<elapsed_float>[0-9.]+))? (?P<level>[A-Z]+): (?P<message>(?s:.*))$`, ""},
 	// 2026-09-24 02:40:45.365 UTC [54] LOG:  checkpoint starting: time
-	"postgres": {`^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?: [A-Z]{2,5})?) \[(?P<pid_int>\d+)\](?: (?P<user>[^@\s]+)@(?P<db>\S+))? (?P<level>[A-Z]+[0-9]?):\s+(?P<message>.*)$`, ""},
+	"postgres": {`^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?(?: [A-Z]{2,5})?) \[(?P<pid_int>\d+)\](?: (?P<user>[^@\s]+)@(?P<db>\S+))? (?P<level>[A-Z]+[0-9]?):\s+(?P<message>(?s:.*))$`, ""},
 	// 17:C 24 Sep 2026 02:45:46.028 * DB saved on disk
-	"redis": {`^(?P<pid_int>\d+):(?P<role>[XCSM]) (?P<timestamp>\d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2}(?:\.\d+)?) (?P<level>[.\-*#]) (?P<message>.*)$`, ""},
+	"redis": {`^(?P<pid_int>\d+):(?P<role>[XCSM]) (?P<timestamp>\d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2}(?:\.\d+)?) (?P<level>[.\-*#]) (?P<message>(?s:.*))$`, ""},
 }
 
 // builtinParsers lists, per source, the parsers to try in order. A source
