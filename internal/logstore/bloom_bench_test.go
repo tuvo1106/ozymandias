@@ -140,3 +140,25 @@ func BenchmarkSearch_RareWord(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkAppend is the write path with the WAL fsync off (NoSync), so it
+// measures the store's own work: encoding, the head, the WAL write. A real
+// deployment adds one fsync per request (docs/notes/M4.md has that number).
+func BenchmarkAppend(b *testing.B) {
+	s, _ := openStore(b, b.TempDir(), func(o *Options) { o.BlockBytes = 256 << 10 })
+	defer func() { _ = s.Close() }()
+	batch := make([]wire.Log, 500)
+	for i := range batch {
+		batch[i] = wire.Log{Ts: t0.UnixMilli() + int64(i), Service: "web-api", Status: "info", Host: "box",
+			Message: fmt.Sprintf("GET /api/orders/%d 200 in %dms", i, i%900), Attrs: map[string]any{"request_id": fmt.Sprintf("req-%08x", i*7919), "user": "bob"}}
+	}
+	b.ReportAllocs()
+	b.SetBytes(int64(len(batch)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := s.Append(context.Background(), batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(b.N*len(batch))/b.Elapsed().Seconds(), "logs/s")
+}
