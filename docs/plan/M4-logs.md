@@ -238,7 +238,7 @@ ADR: index-light log store; the apps' docs; `docs/notes/M4.md`.
 - [ ] Midnight rotation of app-node's log file loses nothing (fake-clock integration test + one real overnight run noted).
 - [ ] Restarting the agent neither loses nor re-sends more than one batch of lines.
 - [ ] No JWT, reset token or `Authorization` value is findable by search after running app-python's signup/login/reset flows (explicit test).
-- [ ] app-ruby: `service:app-ruby-api @controller:OrdersController @duration:>200` works on its plain-text Rails logs with no app change; placing an order with a phone number leaves **no phone number findable** in ozymandias (explicit scan test).
+- [ ] *(Needs app-ruby onboarded, which ADR-0037 moved out of M3: do that first, or amend this box in an ADR.)* app-ruby: `service:app-ruby-api @controller:OrdersController @duration:>200` works on its plain-text Rails logs with no app change; placing an order with a phone number leaves **no phone number findable** in ozymandias (explicit scan test).
 - [ ] Live tail shows a new line < 2s after it is written.
 - [ ] Compression ratio and v1-vs-v2 search speedup reported in the notes.
 - [ ] Tests and docs deliverables complete; `docs/notes/M4.md` has evidence.

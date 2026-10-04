@@ -225,6 +225,7 @@ compose override. Ship `deploy/dashboards/app-python.json` and
 **app-ruby (docs/private/integrations.md §3):** onboarded with a compose override + labels
 only — the openmetrics check scrapes its existing yabeda `/metrics` on api and
 worker. Ship `deploy/agent.d/app-ruby.yaml` and `deploy/dashboards/app-ruby.json`.
+*(Moved out of M3 by ADR-0037; not built.)*
 Add metricql functions `diff()` (for running-total gauges) and
 `histogram_quantile(q, <bucket query> by {upper_bound,…})` (Prometheus-style
 linear interpolation) — having both the bucket path and the sketch path lets
@@ -281,17 +282,17 @@ docs per its rules; `docs/sdk/python.md` ASGI section; `docs/notes/M3.md`.
 
 - [x] All four example queries above evaluate correctly against live data.
 - [x] app-python dashboard shows: req/s + p95 latency by route, error %, arq queue depth, jobs/min by function, judge run p50/p95 by language, verdict breakdown, container CPU/mem for api/worker/postgres/redis, judge sandbox exits by exit code.
-- [ ] app-ruby appears with **no change to its application code**: business and Rails/Sidekiq metrics charted; queue depth equals its Grafana board; small-order p90 wait agrees within bucket-interpolation error via both `histogram_quantile()` and the sketch path (both numbers reported). Restarting its api container does not produce a rate spike (counter-reset handling).
+- [ ] app-ruby appears with **no change to its application code**: business and Rails/Sidekiq metrics charted; queue depth equals its Grafana board; small-order p90 wait agrees within bucket-interpolation error via both `histogram_quantile()` and the sketch path (both numbers reported). Restarting its api container does not produce a rate spike (counter-reset handling). **Not done, and left unchecked on purpose: moved out of M3 by ADR-0037** (an undated follow-up, tracked in the notes' "What is not done").
 - [x] Submitting a solution in app-python visibly moves queue depth, judge duration and `container.exits{container_name:judge}`.
 - [x] Query editor shows parse errors inline with the right column; autocomplete works for metric, tag key, tag value.
-- [ ] Metric Summary shows per-metric series counts; no app-python/app-node metric exceeds 500 series after a normal session (cardinality discipline verified).
+- [x] Metric Summary shows per-metric series counts; no app-python metric exceeds 500 series after a normal session (cardinality discipline verified for app-python: peak 18 in one session, a figure that includes an earlier service name's data; ADR-0037 moves the app-node half to its onboarding).
 - [x] app-python's own test suite + coverage gate pass with ozymandias absent.
 - [x] Tests and docs deliverables complete; `docs/notes/M3.md` has evidence.
 
-> **Status (2026-10-03).** Ticked boxes are demonstrated in
+> **Status (2026-10-04): closed.** Ticked boxes are demonstrated in
 > [`docs/notes/M3.md`](../notes/M3.md) (Acceptance evidence). The four example queries
 > were amended above and were run with the integrated app's tags in place of the
-> placeholder app names. The tests-and-docs box was audited line by line and is ticked
-> (the notes' Test-plan audit). Left open, and why: app-ruby; and the Metric Summary box,
-> because it names app-node and only app-python was measured (and `container.exits` grows
-> with container churn, see the notes).
+> placeholder app names. The tests-and-docs box was audited line by line. M3 closes on
+> app-python alone ([ADR-0037](../adr/0037-m3-closes-on-app-python-alone.md)): app-ruby is a
+> follow-up, and the Metric Summary box is worded to what was measured. `container.exits`
+> growth is bounded by ADR-0036.
