@@ -53,6 +53,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The dashboards API answers `created_at` and `updated_at` in UTC.** They were rendered in the
+  server's local zone, so the same row read differently on a server in another zone. No change on a
+  server already running in UTC, which a container is.
 - **A restarted agent no longer has points refused** (ADR-0029). The new
   agent wrote the bucket its predecessor's final flush had just written,
   and ozyd refused the second point; with short-lived containers exiting,

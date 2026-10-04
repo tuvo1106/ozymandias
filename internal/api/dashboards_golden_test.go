@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/tuvo1106/ozymandias/internal/meta"
+	"github.com/tuvo1106/ozymandias/internal/testutil"
 )
 
 // The dashboards API's whole bodies, pinned the way TestQuery_Golden pins the
@@ -20,16 +23,21 @@ import (
 // these assert all of it. The requests run in order against one handler, because
 // a dashboard has to exist before it can be read, listed or updated.
 //
-// The timestamps are rendered in the process's local zone (nothing in the
-// handler or the metadata store converts to UTC, and docs/api.md does not say),
-// so a golden written on a laptop would fail on a UTC runner. The test pins the
-// zone to UTC for its own duration. Whether the API should always answer in UTC
-// is a separate question, noted in docs/notes/M3.md; this test does not decide it.
+// The clock moves a minute between the create and the update, so the update's
+// golden shows `updated_at` advancing while `created_at` stays: with a frozen
+// clock the two are equal and a handler that stopped bumping `updated_at`, or
+// overwrote `created_at`, would still match. Timestamps are UTC (docs/api.md),
+// so the files are the same in every zone the suite runs in.
 func TestDashboards_Golden(t *testing.T) {
-	local := time.Local
-	time.Local = time.UTC
-	t.Cleanup(func() { time.Local = local })
-	h, _ := dashboardsAPI(t)
+	db, err := meta.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	clock := testutil.NewFakeClock(now)
+	mux := http.NewServeMux()
+	(&Dashboards{Store: db, Clock: clock}).Register(mux)
+	var h http.Handler = mux
 	steps := []struct{ name, method, path, body string }{
 		{"dashboards-create", http.MethodPost, "/api/v1/dashboards", definition},
 		{"dashboards-get", http.MethodGet, "/api/v1/dashboards/1", ""},
@@ -45,6 +53,9 @@ func TestDashboards_Golden(t *testing.T) {
 	}
 	for _, s := range steps {
 		t.Run(s.name, func(t *testing.T) {
+			if s.name == "dashboards-update" {
+				clock.Advance(time.Minute)
+			}
 			rec, _ := send(t, h, s.method, s.path, s.body)
 			var pretty bytes.Buffer
 			pretty.WriteString(http.StatusText(rec.Code) + "\n")
