@@ -279,7 +279,7 @@ docs per its rules; `docs/sdk/python.md` ASGI section; `docs/notes/M3.md`.
 
 ## 7. Acceptance criteria
 
-- [ ] All four example queries above evaluate correctly against live data.
+- [x] All four example queries above evaluate correctly against live data.
 - [x] app-python dashboard shows: req/s + p95 latency by route, error %, arq queue depth, jobs/min by function, judge run p50/p95 by language, verdict breakdown, container CPU/mem for api/worker/postgres/redis, judge sandbox exits by exit code.
 - [ ] app-ruby appears with **no change to its application code**: business and Rails/Sidekiq metrics charted; queue depth equals its Grafana board; small-order p90 wait agrees within bucket-interpolation error via both `histogram_quantile()` and the sketch path (both numbers reported). Restarting its api container does not produce a rate spike (counter-reset handling).
 - [x] Submitting a solution in app-python visibly moves queue depth, judge duration and `container.exits{container_name:judge}`.
@@ -290,8 +290,7 @@ docs per its rules; `docs/sdk/python.md` ASGI section; `docs/notes/M3.md`.
 
 > **Status (2026-10-03).** Ticked boxes are demonstrated in
 > [`docs/notes/M3.md`](../notes/M3.md) (Acceptance evidence). Left open, and why:
-> the four example queries (the examples are amended above and need re-running);
 > app-ruby; the Metric Summary box, because it names app-node and only app-python was
 > measured (and `container.exits` grows with container churn, see the notes); and the
-> tests-and-docs box (L12 is built in PR #42 and L11 Playwright is deferred by ADR-0035, but
-> L8, every shipped widget evaluated against data, does not exist).
+> tests-and-docs box (L12 and L8 are built and L11 Playwright is deferred by ADR-0035, but
+> the rest of the test plan has not been audited line by line).
