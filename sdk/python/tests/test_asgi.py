@@ -421,3 +421,29 @@ def test_a_bare_string_for_exclude_paths_is_one_path_not_its_characters(
     assert agent.recv_or_none(0.2) is None  # excluded
     run_request(responder(200, "/"), client, path="/", exclude_paths="/healthz")
     assert "route:/," in count_line(agent, client)  # "/" is NOT swallowed as a character
+
+
+def test_a_streamed_response_is_one_request_and_its_duration_includes_the_stream(
+    make_client: ClientFactory, agent: FakeAgent
+) -> None:
+    """Several body chunks (SSE, a download) are one request with the status it started with,
+    every chunk reaches the client untouched, and the duration runs until the stream ends, so a
+    long stream is a long request (documented in docs/sdk/python.md)."""
+    client = make_client()
+    chunks = [b"data: 1\n\n", b"data: 2\n\n", b"data: 3\n\n"]
+
+    async def streamer(scope: Any, receive: Any, send: Any) -> None:
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        for chunk in chunks:
+            await send({"type": "http.response.body", "body": chunk, "more_body": True})
+            await asyncio.sleep(0.06)
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    sent = run_request(streamer, client, path="/events")
+    assert [m.get("body") for m in sent[1:-1]] == chunks  # nothing lost or altered
+    lines = datagrams(agent, client)
+    assert sum(line.startswith("http.request.count:1|c") for line in lines) == 1
+    assert any("status:200,status_class:2xx" in line for line in lines)
+    duration = next(line for line in lines if line.startswith("http.request.duration:"))
+    # Three sleeps of 60 ms: a lower bound only, so a slow machine cannot flake it.
+    assert float(duration.split(":", 1)[1].split("|", 1)[0]) >= 150.0

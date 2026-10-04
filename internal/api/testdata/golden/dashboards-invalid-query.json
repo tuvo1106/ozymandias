@@ -1,0 +1,5 @@
+Bad Request
+{
+  "error": "invalid dashboard: widgets[0] (w1) query[0]: col 14: expected ',' or '}' but found '{'",
+  "status": "error"
+}

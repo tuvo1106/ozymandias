@@ -118,6 +118,26 @@ func TestEval_PercentileMergesRatherThanAverages(t *testing.T) {
 	}
 }
 
+// Every percentile aggregator is a quantile of the same merged sketch, as text
+// through the parser and the planner. p75 and p90 were only ever covered as
+// constants in the quantile table, never run as queries.
+func TestEval_EveryPercentileAggregatorAnswersItsQuantile(t *testing.T) {
+	values := make([]float64, 100)
+	for i := range values {
+		values[i] = float64(i + 1)
+	}
+	e := sketchEnv(t, map[string]map[int64]*sketch.Sketch{"host:a": {0: sketchOf(t, values...)}})
+	for agg, want := range map[string]float64{"p50": 50, "p75": 75, "p90": 90, "p95": 95, "p99": 99} {
+		res := run(t, e, agg+":lat{*}", 0, 59, 60)
+		if len(res.Series) != 1 {
+			t.Fatalf("%s: %d lines, want 1", agg, len(res.Series))
+		}
+		if got := res.Series[0].Points[0].V; math.Abs(got-want)/want > 0.02 {
+			t.Errorf("%s = %v, want ~%v (the sketch's 1%% relative error, doubled)", agg, got, want)
+		}
+	}
+}
+
 // Sketches are merged per output bucket, so a bucket wider than the agent's
 // flush has to combine several of them.
 func TestEval_PercentileMergesAcrossBuckets(t *testing.T) {

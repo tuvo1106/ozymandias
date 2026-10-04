@@ -408,7 +408,8 @@ the number of rows in the database. `count: 2` alongside `unreadable: [5]` means
 three rows exist.
 
 **The database's metadata is the database's.** `id`, `provisioned`, `created_at`
-and `updated_at` come from the columns, and a stored definition containing any of
+and `updated_at` come from the columns (the two timestamps are RFC 3339 in UTC,
+whatever zone the server runs in), and a stored definition containing any of
 those four keys is **refused**: it is named in `unreadable` (or answered with a
 `500` on a single-dashboard `GET`) and the reason is logged with its id. Refused
 rather than overridden, because a response carrying the same key twice means

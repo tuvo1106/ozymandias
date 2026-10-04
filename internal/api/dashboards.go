@@ -214,7 +214,7 @@ var reservedFields = []string{"id", "provisioned", "created_at", "updated_at"}
 //
 // The guarantee lives in the tests either way.
 func (s storedDashboard) MarshalJSON() ([]byte, error) {
-	head, err := json.Marshal(dashboardMetadata{s.ID, s.Provisioned, s.CreatedAt, s.UpdatedAt})
+	head, err := json.Marshal(dashboardMetadata{s.ID, s.Provisioned, s.CreatedAt.UTC(), s.UpdatedAt.UTC()})
 	if err != nil {
 		return nil, err
 	}
