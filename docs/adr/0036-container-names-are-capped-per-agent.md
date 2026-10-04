@@ -47,5 +47,7 @@ counts folds (a container can count more than once).
 - An empty name takes no slot. Names are admitted as the daemon spells them, before tag
   normalization, so two spellings that normalize alike can use two slots.
 - `other` is a name a container could really have; it is not reserved.
+- The cap bounds names, not series: `container.exits` is also tagged by `exit_code` and
+  `oom_killed`, so 200 names times its exit codes can still pass 500. It was not re-measured.
 - Folded containers' `container.*` values sum into one series like a rewritten group's.
 - The cap lives in the agent, so a cap change needs an agent restart.
