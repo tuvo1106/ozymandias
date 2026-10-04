@@ -286,13 +286,12 @@ docs per its rules; `docs/sdk/python.md` ASGI section; `docs/notes/M3.md`.
 - [x] Query editor shows parse errors inline with the right column; autocomplete works for metric, tag key, tag value.
 - [ ] Metric Summary shows per-metric series counts; no app-python/app-node metric exceeds 500 series after a normal session (cardinality discipline verified).
 - [x] app-python's own test suite + coverage gate pass with ozymandias absent.
-- [ ] Tests and docs deliverables complete; `docs/notes/M3.md` has evidence.
+- [x] Tests and docs deliverables complete; `docs/notes/M3.md` has evidence.
 
 > **Status (2026-10-03).** Ticked boxes are demonstrated in
 > [`docs/notes/M3.md`](../notes/M3.md) (Acceptance evidence). The four example queries
 > were amended above and were run with the integrated app's tags in place of the
-> placeholder app names. Left open, and why:
-> app-ruby; the Metric Summary box, because it names app-node and only app-python was
-> measured (and `container.exits` grows with container churn, see the notes); and the
-> tests-and-docs box (L12 and L8 are built and L11 Playwright is deferred by ADR-0035, but
-> the rest of the test plan has not been audited line by line).
+> placeholder app names. The tests-and-docs box was audited line by line and is ticked
+> (the notes' Test-plan audit). Left open, and why: app-ruby; and the Metric Summary box,
+> because it names app-node and only app-python was measured (and `container.exits` grows
+> with container churn, see the notes).
