@@ -1,0 +1,27 @@
+OK
+{
+  "created_at": "2026-09-21T14:13:20Z",
+  "id": 1,
+  "provisioned": false,
+  "title": "Checkout v2",
+  "updated_at": "2026-09-21T14:13:20Z",
+  "widgets": [
+    {
+      "id": "w1",
+      "layout": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "queries": [
+        {
+          "display": "bars",
+          "q": "sum:http.request.count{status:5*}.as_rate()"
+        }
+      ],
+      "title": "errors",
+      "type": "timeseries"
+    }
+  ]
+}
