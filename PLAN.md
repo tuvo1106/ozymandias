@@ -142,7 +142,7 @@ Do them in order; each ends with something visible in a real app.
 | M0 | [Skeleton](docs/plan/M0-skeleton.md) | S | Both binaries build, compose up, CI green |
 | M1 | [Metrics tracer bullet](docs/plan/M1-metrics-tracer-bullet.md) | S–M | app-node request rate + latency on a chart |
 | M2 | [The real TSDB](docs/plan/M2-tsdb.md) | L | Naive store replaced; survives `kill -9`; p95 from DDSketch |
-| M3 | [Query language, dashboards, infra metrics](docs/plan/M3-query-dashboards.md) | M | app-python dashboard (API RED, queue depth, judge durations, containers); app-ruby dashboard from scraped `/metrics` with zero app code, matching its Grafana board |
+| M3 | [Query language, dashboards, infra metrics](docs/plan/M3-query-dashboards.md) | M | app-python dashboard (API RED, queue depth, judge durations, containers); app-ruby dashboard from scraped `/metrics` with zero app code, matching its Grafana board (moved out of M3 by ADR-0037) |
 | M4 | [Logs](docs/plan/M4-logs.md) | M–L | Search + live tail over all three apps' logs (incl. app-ruby' plain-text Rails logs, no app change) |
 | M5 | [Tracing / APM](docs/plan/M5-tracing.md) | L | One trace: `POST /submissions → arq → docker run judge → verdict` |
 | M6 | [Monitors and alerting](docs/plan/M6-monitors.md) | M | Discord/webhook alert when judge queue backs up |
