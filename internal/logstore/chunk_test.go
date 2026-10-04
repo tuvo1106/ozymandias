@@ -14,14 +14,14 @@ import (
 func entries(n int, startTs int64) []rawEntry {
 	out := make([]rawEntry, n)
 	for i := range out {
-		out[i] = rawEntry{Ts: startTs + int64(i)*7, Body: []byte(fmt.Sprintf(`{"message":"line %d"}`, i))}
+		out[i] = rawEntry{Ts: startTs + int64(i)*7, Seq: uint64(startTs) + uint64(i), Body: []byte(fmt.Sprintf(`{"message":"line %d"}`, i))}
 	}
 	return out
 }
 
-func mustEncode(t testing.TB, es []rawEntry, seq uint64) (BlockMeta, []byte) {
+func mustEncode(t testing.TB, es []rawEntry) (BlockMeta, []byte) {
 	t.Helper()
-	m, comp, err := encodeBlock(es, seq)
+	m, comp, err := encodeBlock(es)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,12 +32,12 @@ func TestBlock_RoundTrip(t *testing.T) {
 	for name, es := range map[string][]rawEntry{
 		"one":          entries(1, 1_790_000_000_000),
 		"many":         entries(500, 1_790_000_000_000),
-		"empty bodies": {{Ts: 5, Body: nil}, {Ts: 5, Body: []byte{}}, {Ts: 6, Body: []byte("x")}},
-		"out of order": {{Ts: 100, Body: []byte("a")}, {Ts: 50, Body: []byte("b")}, {Ts: 200, Body: []byte("c")}},
-		"negative":     {{Ts: -5, Body: []byte("a")}, {Ts: 0, Body: []byte("b")}},
-		"extremes":     {{Ts: 1 << 62, Body: []byte("a")}, {Ts: 0, Body: []byte("b")}},
+		"empty bodies": {{Ts: 5, Seq: 1, Body: nil}, {Ts: 5, Seq: 2, Body: []byte{}}, {Ts: 6, Seq: 3, Body: []byte("x")}},
+		"out of order": {{Ts: 100, Seq: 9, Body: []byte("a")}, {Ts: 50, Seq: 3, Body: []byte("b")}, {Ts: 200, Seq: 7, Body: []byte("c")}},
+		"negative":     {{Ts: -5, Seq: 1, Body: []byte("a")}, {Ts: 0, Seq: 2, Body: []byte("b")}},
+		"extremes":     {{Ts: 1 << 62, Seq: 1 << 63, Body: []byte("a")}, {Ts: 0, Seq: 0, Body: []byte("b")}},
 	} {
-		m, comp := mustEncode(t, es, 42)
+		m, comp := mustEncode(t, es)
 		got, err := decodeBlock(m, comp)
 		if err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -48,28 +48,32 @@ func TestBlock_RoundTrip(t *testing.T) {
 			continue
 		}
 		for i := range es {
-			if got[i].Ts != es[i].Ts || !bytes.Equal(got[i].Body, es[i].Body) {
+			if got[i].Ts != es[i].Ts || got[i].Seq != es[i].Seq || !bytes.Equal(got[i].Body, es[i].Body) {
 				t.Errorf("%s entry %d: got %v, want %v", name, i, got[i], es[i])
 			}
 		}
-		if m.N != uint32(len(es)) || m.LastSeq != 42 {
+		var wantSeq uint64
+		for _, e := range es {
+			wantSeq = max(wantSeq, e.Seq)
+		}
+		if m.N != uint32(len(es)) || m.LastSeq != wantSeq {
 			t.Errorf("%s: meta %+v", name, m)
 		}
 	}
-	if _, _, err := encodeBlock(nil, 0); err == nil {
+	if _, _, err := encodeBlock(nil); err == nil {
 		t.Error("an empty block was encoded")
 	}
 }
 
 func TestBlock_MinMaxFollowTheEntriesNotTheirOrder(t *testing.T) {
-	m, _ := mustEncode(t, []rawEntry{{Ts: 100}, {Ts: 50}, {Ts: 200}}, 1)
+	m, _ := mustEncode(t, []rawEntry{{Ts: 100}, {Ts: 50}, {Ts: 200}})
 	if m.MinTs != 50 || m.MaxTs != 200 {
 		t.Errorf("min/max = %d/%d, want 50/200", m.MinTs, m.MaxTs)
 	}
 }
 
 func TestBlock_RejectsDamage(t *testing.T) {
-	m, comp := mustEncode(t, entries(50, 1000), 1)
+	m, comp := mustEncode(t, entries(50, 1000))
 	for name, fn := range map[string]func() (BlockMeta, []byte){
 		"flipped bit":    func() (BlockMeta, []byte) { c := bytes.Clone(comp); c[len(c)/2] ^= 1; return m, c },
 		"short":          func() (BlockMeta, []byte) { return m, comp[:len(comp)-1] },
@@ -109,7 +113,10 @@ func writeChunk(t testing.TB, dir string, blocks [][]rawEntry, seal bool) string
 		t.Fatal(err)
 	}
 	for i, es := range blocks {
-		m, comp := mustEncode(t, es, uint64(i+1)*100)
+		for j := range es {
+			es[j].Seq = uint64(i+1)*100 + uint64(j) // the last entry of block i carries i*100+len-1
+		}
+		m, comp := mustEncode(t, es)
 		if _, err := w.appendBlock(m, comp); err != nil {
 			t.Fatal(err)
 		}
@@ -154,8 +161,8 @@ func TestChunk_WriteThenReadWithAndWithoutFooter(t *testing.T) {
 			if err != nil || len(got) != len(blocks[i]) {
 				t.Errorf("seal=%v block %d: %d entries, err %v", seal, i, len(got), err)
 			}
-			if m.LastSeq != uint64(i+1)*100 {
-				t.Errorf("seal=%v block %d: LastSeq %d", seal, i, m.LastSeq)
+			if want := uint64(i+1)*100 + uint64(len(blocks[i])) - 1; m.LastSeq != want {
+				t.Errorf("seal=%v block %d: LastSeq %d, want %d", seal, i, m.LastSeq, want)
 			}
 		}
 		if seal && ix.ValidEnd+int64(3*indexEntrySz+trailerSize) != int64(len(data)) {
@@ -245,7 +252,7 @@ func TestChunk_ReopenAppendsAfterTheLastBlock(t *testing.T) {
 	if len(w.blocks) != 1 {
 		t.Fatalf("reopened with %d blocks", len(w.blocks))
 	}
-	m, comp := mustEncode(t, entries(5, 2000), 9)
+	m, comp := mustEncode(t, entries(5, 2000))
 	if _, err := w.appendBlock(m, comp); err != nil {
 		t.Fatal(err)
 	}
@@ -392,13 +399,13 @@ func TestChunk_AFooterThatDoesNotTileTheFileIsIgnored(t *testing.T) {
 
 func TestChunk_ImplausibleBlockHeadersEndTheWalk(t *testing.T) {
 	good, blocks := chunkParts(t)
-	_, comp := mustEncode(t, entries(3, 7000), 1)
+	_, comp := mustEncode(t, entries(3, 7000))
 	for name, mutate := range map[string]func(*BlockMeta){
 		"no entries":     func(m *BlockMeta) { m.N = 0 },
 		"min above max":  func(m *BlockMeta) { m.MinTs, m.MaxTs = 10, 5 },
 		"rawLen too big": func(m *BlockMeta) { m.RawLen = maxBlockRaw + 1 },
 	} {
-		m, _ := mustEncode(t, entries(3, 7000), 1)
+		m, _ := mustEncode(t, entries(3, 7000))
 		mutate(&m)
 		bad := make([]byte, blockHdrSize)
 		putBlockHeader(bad, m) // checksum field is right for comp, so only the sanity checks can object
@@ -411,8 +418,8 @@ func TestChunk_ImplausibleBlockHeadersEndTheWalk(t *testing.T) {
 }
 
 func TestBlock_AnEntryLengthPastTheBlockIsAnErrorNotAPanic(t *testing.T) {
-	// ts delta 0, then a length of 1000 with 3 bytes following.
-	raw := append([]byte{0}, binary.AppendUvarint(nil, 1000)...)
+	// ts delta 0, seq delta 0, then a length of 1000 with 3 bytes following.
+	raw := append([]byte{0, 0}, binary.AppendUvarint(nil, 1000)...)
 	raw = append(raw, 'a', 'b', 'c')
 	enc, _ := codec()
 	comp := enc.EncodeAll(raw, nil)
@@ -435,7 +442,7 @@ func TestChunk_ReadBlockChecksTheDiskHeaderAgainstTheIndex(t *testing.T) {
 // allocated for it: the guard exists to stop a corrupt block from costing
 // gigabytes, which only an allocation measurement can show.
 func TestBlock_ALyingHeaderAllocatesNothing(t *testing.T) {
-	m, comp := mustEncode(t, entries(5, 1000), 1)
+	m, comp := mustEncode(t, entries(5, 1000))
 	m.RawLen, m.N = 1<<30, maxBlockCount+1
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)

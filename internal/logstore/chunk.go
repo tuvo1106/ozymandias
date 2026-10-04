@@ -62,11 +62,17 @@ type BlockMeta struct {
 // end is the offset one past the block's last byte.
 func (m BlockMeta) end() int64 { return m.Offset + blockHdrSize + int64(m.CompLen) }
 
-// rawEntry is one log as the chunk layer sees it: a timestamp and an opaque
-// body. The store above decides what the body is (JSON of the log's message,
-// attrs, tags and trace ids); this layer only orders, compresses and checks.
+// rawEntry is one log as the chunk layer sees it: a timestamp, a sequence
+// number and an opaque body. The store above decides what the body is (the
+// log's JSON); this layer only orders, compresses and checks.
+//
+// Seq is the WAL sequence number the store gave the entry. It is unique and
+// survives sealing and restarts, which makes (Ts, Seq) a total order over
+// every log ever stored: what a pagination cursor needs, and what recovery
+// uses to tell a sealed entry from one still only in the WAL.
 type rawEntry struct {
 	Ts   int64
+	Seq  uint64
 	Body []byte
 }
 
@@ -96,26 +102,28 @@ func codec() (*zstd.Encoder, *zstd.Decoder) {
 }
 
 // encodeBlock packs entries into a block: delta-encoded timestamps and
-// length-prefixed bodies, then zstd. Timestamps are zigzag deltas from the
-// previous entry (the first from MinTs), so a run of nearby timestamps costs a
-// byte or two each, and out-of-order input is representable (the store sorts
-// before sealing, but this layer does not depend on it).
-func encodeBlock(entries []rawEntry, lastSeq uint64) (BlockMeta, []byte, error) {
+// sequence numbers, and length-prefixed bodies, then zstd. Both deltas are
+// zigzag from the previous entry (timestamps from MinTs, sequences from 0), so
+// a run of nearby values costs a byte or two each, and out-of-order input is
+// representable (the store sorts before sealing, but this layer does not
+// depend on it). The block's LastSeq is the highest Seq among its entries.
+func encodeBlock(entries []rawEntry) (BlockMeta, []byte, error) {
 	if len(entries) == 0 {
 		return BlockMeta{}, nil, errors.New("logstore: a block needs at least one entry")
 	}
-	minTs, maxTs := entries[0].Ts, entries[0].Ts
+	minTs, maxTs, lastSeq := entries[0].Ts, entries[0].Ts, entries[0].Seq
 	for _, e := range entries {
-		minTs, maxTs = min(minTs, e.Ts), max(maxTs, e.Ts)
+		minTs, maxTs, lastSeq = min(minTs, e.Ts), max(maxTs, e.Ts), max(lastSeq, e.Seq)
 	}
 	var raw []byte
 	var tmp [binary.MaxVarintLen64]byte
-	prev := minTs
+	prev, prevSeq := minTs, uint64(0)
 	for _, e := range entries {
 		raw = append(raw, tmp[:binary.PutVarint(tmp[:], e.Ts-prev)]...)
+		raw = append(raw, tmp[:binary.PutVarint(tmp[:], int64(e.Seq-prevSeq))]...)
 		raw = append(raw, tmp[:binary.PutUvarint(tmp[:], uint64(len(e.Body)))]...)
 		raw = append(raw, e.Body...)
-		prev = e.Ts
+		prev, prevSeq = e.Ts, e.Seq
 	}
 	if len(raw) > maxBlockRaw {
 		return BlockMeta{}, nil, fmt.Errorf("logstore: block of %d bytes exceeds the %d limit", len(raw), maxBlockRaw)
@@ -151,21 +159,26 @@ func decodeBlock(m BlockMeta, comp []byte) ([]rawEntry, error) {
 		return nil, fmt.Errorf("%w: block inflates to %d bytes, header says %d", ErrCorruptChunk, len(raw), m.RawLen)
 	}
 	out := make([]rawEntry, 0, m.N)
-	prev := m.MinTs
+	prev, prevSeq := m.MinTs, uint64(0)
 	for i := uint32(0); i < m.N; i++ {
 		d, k := binary.Varint(raw)
 		if k <= 0 {
 			return nil, fmt.Errorf("%w: entry %d: bad timestamp", ErrCorruptChunk, i)
 		}
 		raw = raw[k:]
+		ds, k := binary.Varint(raw)
+		if k <= 0 {
+			return nil, fmt.Errorf("%w: entry %d: bad sequence number", ErrCorruptChunk, i)
+		}
+		raw = raw[k:]
 		l, k := binary.Uvarint(raw)
 		if k <= 0 || l > uint64(len(raw)-k) {
 			return nil, fmt.Errorf("%w: entry %d: bad length", ErrCorruptChunk, i)
 		}
-		ts := prev + d
-		out = append(out, rawEntry{Ts: ts, Body: raw[k : k+int(l)]})
+		ts, seq := prev+d, prevSeq+uint64(ds)
+		out = append(out, rawEntry{Ts: ts, Seq: seq, Body: raw[k : k+int(l)]})
 		raw = raw[k+int(l):]
-		prev = ts
+		prev, prevSeq = ts, seq
 	}
 	if len(raw) != 0 {
 		return nil, fmt.Errorf("%w: %d bytes after the last entry", ErrCorruptChunk, len(raw))

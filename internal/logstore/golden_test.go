@@ -14,8 +14,8 @@ var updateGolden = flag.Bool("update-golden", false, "rewrite the committed gold
 // the second out of order inside itself and holding an empty body, sealed.
 func goldenBlocks() [][]rawEntry {
 	return [][]rawEntry{
-		{{Ts: 1_790_000_000_000, Body: []byte(`{"message":"first"}`)}, {Ts: 1_790_000_000_250, Body: []byte(`{"message":"second","attrs":{"n":1}}`)}},
-		{{Ts: 1_790_000_005_000, Body: []byte(`{"message":"late"}`)}, {Ts: 1_790_000_004_000, Body: []byte(`{}`)}, {Ts: 1_790_000_004_000, Body: nil}},
+		{{Ts: 1_790_000_000_000, Seq: 100, Body: []byte(`{"message":"first"}`)}, {Ts: 1_790_000_000_250, Seq: 101, Body: []byte(`{"message":"second","attrs":{"n":1}}`)}},
+		{{Ts: 1_790_000_005_000, Seq: 200, Body: []byte(`{"message":"late"}`)}, {Ts: 1_790_000_004_000, Seq: 201, Body: []byte(`{}`)}, {Ts: 1_790_000_004_000, Seq: 202, Body: nil}},
 	}
 }
 
@@ -59,12 +59,12 @@ func TestGolden_V1ChunkStillReads(t *testing.T) {
 			t.Fatalf("block %d: %d entries, want %d", i, len(got), len(want[i]))
 		}
 		for j := range got {
-			if got[j].Ts != want[i][j].Ts || !bytes.Equal(got[j].Body, want[i][j].Body) {
+			if got[j].Ts != want[i][j].Ts || got[j].Seq != want[i][j].Seq || !bytes.Equal(got[j].Body, want[i][j].Body) {
 				t.Errorf("block %d entry %d: %v, want %v", i, j, got[j], want[i][j])
 			}
 		}
 	}
-	if ix.Blocks[0].LastSeq != 100 || ix.Blocks[1].LastSeq != 200 {
+	if ix.Blocks[0].LastSeq != 101 || ix.Blocks[1].LastSeq != 202 {
 		t.Errorf("sequence numbers: %d, %d", ix.Blocks[0].LastSeq, ix.Blocks[1].LastSeq)
 	}
 }

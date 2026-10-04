@@ -31,15 +31,20 @@ blockHeader (40 bytes)
 The decompressed `entries` are `n` records back to back:
 
 ```
-tsDelta  varint   (zig-zag) from the previous entry's ts; the first from minTs
-len      uvarint  bytes of body
-body     bytes    opaque to this layer; the store puts JSON of the log's
-                  message, attrs, tags, trace_id and span_id here
+tsDelta   varint   (zig-zag) from the previous entry's ts; the first from minTs
+seqDelta  varint   (zig-zag) from the previous entry's seq; the first from 0
+len       uvarint  bytes of body
+body      bytes    opaque to this layer; the store puts the log's JSON here
 ```
 
-The delta is signed so a block need not be sorted, but the store sorts by timestamp before
-sealing, which is what makes the deltas small (a run of nearby timestamps costs a byte or two
-each).
+`seq` is the WAL sequence number the store gave the entry. It is unique and survives sealing
+and restarts, so `(ts, seq)` is a total order over every log ever stored: it is what a
+pagination cursor names, and what recovery compares with `lastSeq`. The block's `lastSeq` is
+the highest `seq` among its entries.
+
+Both deltas are signed so a block need not be sorted, but the store sorts by `(ts, seq)` before
+sealing, which is what keeps them small: nearby timestamps and consecutive sequence numbers cost
+a byte or two each.
 
 A block is **self-describing**: its header says how long it is and whether its payload is
 intact. Nothing else is needed to find the next block.
