@@ -62,6 +62,7 @@ type SearchResult struct {
 type Stats struct {
 	Streams         int   // streams the index selected
 	BlocksRead      int   // blocks decompressed
+	BlocksSkipped   int   // blocks a bloom filter ruled out without decompressing them
 	BytesRead       int64 // raw bytes of those blocks
 	EntriesExamined int   // logs decoded and tested against the filter
 }
@@ -77,6 +78,9 @@ type run struct {
 	path     string
 	meta     BlockMeta
 	isBlock  bool
+	// need is what a block must contain for pred to match anything in it; a
+	// bloom filter answers it without decompressing the block.
+	need logql.Need
 }
 
 // snapshot selects streams with the plan's matchers and collects their runs
@@ -84,8 +88,10 @@ type run struct {
 // seen either entirely or not at all (see [Store]).
 func (s *Store) snapshot(plan logql.Plan, from, to int64) ([]*run, int) {
 	filters := make([]logql.Filter, len(plan.Branches))
+	needs := make([]logql.Need, len(plan.Branches))
 	for i, b := range plan.Branches {
 		filters[i] = logql.Compile(b.Filter)
+		needs[i] = logql.Needs(b.Filter)
 	}
 	s.smu.RLock()
 	defer s.smu.RUnlock()
@@ -94,6 +100,7 @@ func (s *Store) snapshot(plan logql.Plan, from, to int64) ([]*run, int) {
 	selected := 0
 	for _, st := range s.byID {
 		var preds []logql.Filter
+		var stNeeds []logql.Need
 		for i, b := range plan.Branches {
 			ok := true
 			for _, m := range b.Matchers {
@@ -104,6 +111,7 @@ func (s *Store) snapshot(plan logql.Plan, from, to int64) ([]*run, int) {
 			}
 			if ok {
 				preds = append(preds, filters[i])
+				stNeeds = append(stNeeds, needs[i])
 			}
 		}
 		if len(preds) == 0 {
@@ -111,6 +119,7 @@ func (s *Store) snapshot(plan logql.Plan, from, to int64) ([]*run, int) {
 		}
 		selected++
 		pred := orFilters(preds)
+		need := logql.OrNeeds(stNeeds)
 
 		if len(st.head) > 0 {
 			var es []rawEntry
@@ -130,7 +139,7 @@ func (s *Store) snapshot(plan logql.Plan, from, to int64) ([]*run, int) {
 			}
 			for _, b := range cs.blocks {
 				if b.MaxTs >= from && b.MinTs <= to {
-					runs = append(runs, &run{streamID: st.id, pred: pred, minTs: b.MinTs, maxTs: b.MaxTs, path: cs.path, meta: b, isBlock: true})
+					runs = append(runs, &run{streamID: st.id, pred: pred, minTs: b.MinTs, maxTs: b.MaxTs, path: cs.path, meta: b, isBlock: true, need: need})
 				}
 			}
 		}
@@ -206,6 +215,23 @@ func (c fileCache) close() {
 	for _, f := range c {
 		_ = f.Close()
 	}
+}
+
+// ruledOut reports whether the run's block certainly holds no log matching its
+// query, by its bloom filter. It reads only the filter (a few KiB), never the
+// block. Anything doubtful (no filter, a filter that fails its checksum, a file
+// that cannot be read) answers false: the block is then read, which is slower
+// and always correct.
+func (r *run) ruledOut(files fileCache) bool {
+	if !r.isBlock || r.need.None() {
+		return false
+	}
+	f, err := files.open(r.path)
+	if err != nil {
+		return false
+	}
+	b, ok := readBloom(f, r.meta)
+	return ok && !b.mayMatch(r.need)
 }
 
 // load returns a run's entries. A block that has been deleted since the
@@ -292,6 +318,10 @@ scan:
 		for next < len(runs) && (h.Len() == 0 || runs[next].reaches(h.top().Ts, desc)) {
 			r := runs[next]
 			next++
+			if r.ruledOut(files) {
+				res.Stats.BlocksSkipped++
+				continue
+			}
 			if r.isBlock {
 				if budget < int64(r.meta.RawLen) {
 					// This block might hold an entry that sorts before

@@ -19,9 +19,15 @@ import (
 //	header   "OZYC" | version u16 | reserved u16                       8 bytes
 //	block    minTs i64 | maxTs i64 | n u32 | rawLen u32 | compLen u32
 //	         | crc32c u32 (of the compressed bytes) | lastSeq u64       40 bytes
+//	         | bloomLen u32 (v2 only)                                    +4 bytes
 //	         | zstd(entries)                                             compLen bytes
-//	footer   one 44-byte index entry per block, then
+//	         | bloom filter (v2 only)                                    bloomLen bytes
+//	footer   one 44-byte (v2: 48) index entry per block, then
 //	         count u32 | indexOffset u64 | crc32c u32 | "OZYF"          20 bytes
+//
+// Version 1 chunks have no filters and stay readable. A file keeps the version
+// it was created with, even when a newer binary appends to it, so one file is
+// never a mix of block layouts; the new version starts with the next day's chunk.
 //
 // Everything is big-endian. A block is self-describing, so the footer is an
 // optimization and never the only copy of anything: a chunk that was killed
@@ -31,15 +37,21 @@ import (
 const (
 	chunkMagic    = "OZYC"
 	footerMagic   = "OZYF"
-	chunkVersion  = 1
+	chunkVersion  = 2 // the version new chunks are written in
 	chunkHdrSize  = 8
-	blockHdrSize  = 40
-	indexEntrySz  = 44
+	blockHdrSize  = 40 // v1; v2 adds bloomLen (see hdrSize)
+	indexEntrySz  = 44 // v1; v2 adds bloomLen (see entrySize)
 	trailerSize   = 20
 	maxBlockRaw   = 16 << 20 // a block is sealed at 256 KiB; this only bounds a corrupt rawLen
 	maxBlockComp  = 16 << 20
 	maxBlockCount = 1 << 22
+	maxBloomLen   = 1 << 20 // a filter is at most maxBloomBytes; this bounds a corrupt bloomLen
 )
+
+// newChunkVersion is the version a new chunk file is created in. It is a
+// variable only so tests can write v1 chunks and prove they still read; nothing
+// else assigns it.
+var newChunkVersion uint16 = chunkVersion
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
@@ -58,10 +70,39 @@ type BlockMeta struct {
 	CompLen uint32 // compressed bytes
 	CRC     uint32 // crc32c of the compressed bytes
 	LastSeq uint64 // highest WAL sequence number of any entry in the block
+	// BloomLen is the bytes of bloom filter after the compressed data (v2; 0 for
+	// a block with none).
+	BloomLen uint32
+	// ver is the chunk version the block was read from or written in. It is not
+	// stored per block: it is the file's, and it decides the header layout.
+	ver uint16
 }
 
+// hdrSize is the block header's length in a chunk of version v.
+func hdrSize(v uint16) int {
+	if v >= 2 {
+		return blockHdrSize + 4
+	}
+	return blockHdrSize
+}
+
+// entrySize is the footer index entry's length in a chunk of version v.
+func entrySize(v uint16) int {
+	if v >= 2 {
+		return indexEntrySz + 4
+	}
+	return indexEntrySz
+}
+
+func (m BlockMeta) hdr() int64 { return int64(hdrSize(m.ver)) }
+
 // end is the offset one past the block's last byte.
-func (m BlockMeta) end() int64 { return m.Offset + blockHdrSize + int64(m.CompLen) }
+func (m BlockMeta) end() int64 {
+	return m.Offset + m.hdr() + int64(m.CompLen) + int64(m.BloomLen)
+}
+
+// bloomOffset is where the block's filter starts.
+func (m BlockMeta) bloomOffset() int64 { return m.Offset + m.hdr() + int64(m.CompLen) }
 
 // rawEntry is one log as the chunk layer sees it: a timestamp, a sequence
 // number and an opaque body. The store above decides what the body is (the
@@ -188,6 +229,9 @@ func decodeBlock(m BlockMeta, comp []byte) ([]rawEntry, error) {
 }
 
 func putBlockHeader(b []byte, m BlockMeta) {
+	if m.ver >= 2 {
+		binary.BigEndian.PutUint32(b[40:], m.BloomLen)
+	}
 	binary.BigEndian.PutUint64(b[0:], uint64(m.MinTs))
 	binary.BigEndian.PutUint64(b[8:], uint64(m.MaxTs))
 	binary.BigEndian.PutUint32(b[16:], m.N)
@@ -197,8 +241,13 @@ func putBlockHeader(b []byte, m BlockMeta) {
 	binary.BigEndian.PutUint64(b[32:], m.LastSeq)
 }
 
-func getBlockHeader(b []byte, offset int64) BlockMeta {
+func getBlockHeader(b []byte, offset int64, ver uint16) BlockMeta {
+	var bloomLen uint32
+	if ver >= 2 {
+		bloomLen = binary.BigEndian.Uint32(b[40:])
+	}
 	return BlockMeta{
+		BloomLen: bloomLen, ver: ver,
 		Offset:  offset,
 		MinTs:   int64(binary.BigEndian.Uint64(b[0:])),
 		MaxTs:   int64(binary.BigEndian.Uint64(b[8:])),
@@ -216,7 +265,7 @@ func getBlockHeader(b []byte, offset int64) BlockMeta {
 // reader allocate gigabytes, before a checksum has had a chance to say no.
 func (m BlockMeta) plausible(fileSize int64) bool {
 	return m.N > 0 && m.N <= maxBlockCount && m.RawLen <= maxBlockRaw && m.CompLen <= maxBlockComp &&
-		m.MinTs <= m.MaxTs && m.end() <= fileSize
+		m.BloomLen <= maxBloomLen && m.MinTs <= m.MaxTs && m.end() <= fileSize
 }
 
 // ChunkIndex is what a reader learns about a chunk file: its blocks, where
@@ -228,6 +277,8 @@ type ChunkIndex struct {
 	ValidEnd int64
 	// Sealed is true if the footer was present and intact.
 	Sealed bool
+	// Version is the chunk file's format version.
+	Version uint16
 }
 
 // readIndex learns a chunk's blocks from r, which holds size bytes. It
@@ -245,16 +296,18 @@ func readIndex(r io.ReaderAt, size int64) (ChunkIndex, error) {
 	if string(hdr[:4]) != chunkMagic {
 		return ChunkIndex{}, fmt.Errorf("%w: bad magic %q", ErrCorruptChunk, hdr[:4])
 	}
-	if v := binary.BigEndian.Uint16(hdr[4:]); v != chunkVersion {
-		return ChunkIndex{}, fmt.Errorf("%w: unsupported version %d", ErrCorruptChunk, v)
+	ver := binary.BigEndian.Uint16(hdr[4:])
+	if ver < 1 || ver > chunkVersion {
+		return ChunkIndex{}, fmt.Errorf("%w: unsupported version %d", ErrCorruptChunk, ver)
 	}
-	if ix, ok := readFooter(r, size); ok {
+	if ix, ok := readFooter(r, size, ver); ok {
 		return ix, nil
 	}
-	return walkBlocks(r, size)
+	return walkBlocks(r, size, ver)
 }
 
-func readFooter(r io.ReaderAt, size int64) (ChunkIndex, bool) {
+func readFooter(r io.ReaderAt, size int64, ver uint16) (ChunkIndex, bool) {
+	esz := int64(entrySize(ver))
 	if size < chunkHdrSize+trailerSize {
 		return ChunkIndex{}, false
 	}
@@ -265,18 +318,19 @@ func readFooter(r io.ReaderAt, size int64) (ChunkIndex, bool) {
 	count := binary.BigEndian.Uint32(t[0:])
 	off := int64(binary.BigEndian.Uint64(t[4:]))
 	crc := binary.BigEndian.Uint32(t[12:])
-	if count > maxBlockCount || off+int64(count)*indexEntrySz != size-trailerSize {
+	if count > maxBlockCount || off+int64(count)*esz != size-trailerSize {
 		return ChunkIndex{}, false
 	}
-	buf := make([]byte, int64(count)*indexEntrySz)
+	buf := make([]byte, int64(count)*esz)
 	if _, err := r.ReadAt(buf, off); err != nil || crc32.Checksum(buf, castagnoli) != crc {
 		return ChunkIndex{}, false
 	}
-	ix := ChunkIndex{Blocks: make([]BlockMeta, count), ValidEnd: off, Sealed: true}
+	ix := ChunkIndex{Blocks: make([]BlockMeta, count), ValidEnd: off, Sealed: true, Version: ver}
 	prevEnd := int64(chunkHdrSize)
 	for i := range ix.Blocks {
-		e := buf[i*indexEntrySz:]
+		e := buf[int64(i)*esz:]
 		m := BlockMeta{
+			ver:     ver,
 			Offset:  int64(binary.BigEndian.Uint64(e[0:])),
 			MinTs:   int64(binary.BigEndian.Uint64(e[8:])),
 			MaxTs:   int64(binary.BigEndian.Uint64(e[16:])),
@@ -284,6 +338,9 @@ func readFooter(r io.ReaderAt, size int64) (ChunkIndex, bool) {
 			RawLen:  binary.BigEndian.Uint32(e[28:]),
 			CompLen: binary.BigEndian.Uint32(e[32:]),
 			LastSeq: binary.BigEndian.Uint64(e[36:]),
+		}
+		if ver >= 2 {
+			m.BloomLen = binary.BigEndian.Uint32(e[44:])
 		}
 		// The index does not carry the block's crc (the block header does,
 		// and decoding checks it); it must still tile the file.
@@ -299,19 +356,20 @@ func readFooter(r io.ReaderAt, size int64) (ChunkIndex, bool) {
 	return ix, true
 }
 
-func walkBlocks(r io.ReaderAt, size int64) (ChunkIndex, error) {
-	ix := ChunkIndex{ValidEnd: chunkHdrSize}
-	var hdr [blockHdrSize]byte
-	for ix.ValidEnd+blockHdrSize <= size {
-		if _, err := r.ReadAt(hdr[:], ix.ValidEnd); err != nil {
+func walkBlocks(r io.ReaderAt, size int64, ver uint16) (ChunkIndex, error) {
+	ix := ChunkIndex{ValidEnd: chunkHdrSize, Version: ver}
+	hsz := int64(hdrSize(ver))
+	hdr := make([]byte, hsz)
+	for ix.ValidEnd+hsz <= size {
+		if _, err := r.ReadAt(hdr, ix.ValidEnd); err != nil {
 			return ix, err
 		}
-		m := getBlockHeader(hdr[:], ix.ValidEnd)
+		m := getBlockHeader(hdr, ix.ValidEnd, ver)
 		if !m.plausible(size) {
 			break
 		}
 		comp := make([]byte, m.CompLen)
-		if _, err := r.ReadAt(comp, ix.ValidEnd+blockHdrSize); err != nil {
+		if _, err := r.ReadAt(comp, ix.ValidEnd+hsz); err != nil {
 			return ix, err
 		}
 		if crc32.Checksum(comp, castagnoli) != m.CRC {
@@ -325,23 +383,43 @@ func walkBlocks(r io.ReaderAt, size int64) (ChunkIndex, error) {
 
 // readBlock reads and decodes one block of a chunk file.
 func readBlock(r io.ReaderAt, m BlockMeta) ([]rawEntry, error) {
-	buf := make([]byte, blockHdrSize+int(m.CompLen))
+	hsz := int(m.hdr())
+	buf := make([]byte, hsz+int(m.CompLen))
 	if _, err := r.ReadAt(buf, m.Offset); err != nil {
 		return nil, fmt.Errorf("logstore: reading block at %d: %w", m.Offset, err)
 	}
-	disk := getBlockHeader(buf, m.Offset)
-	if disk.N != m.N || disk.RawLen != m.RawLen || disk.CompLen != m.CompLen || disk.MinTs != m.MinTs || disk.MaxTs != m.MaxTs {
+	disk := getBlockHeader(buf, m.Offset, m.ver)
+	if disk.N != m.N || disk.RawLen != m.RawLen || disk.CompLen != m.CompLen || disk.MinTs != m.MinTs || disk.MaxTs != m.MaxTs ||
+		disk.BloomLen != m.BloomLen {
 		return nil, fmt.Errorf("%w: block at %d does not match its index entry", ErrCorruptChunk, m.Offset)
 	}
-	return decodeBlock(disk, buf[blockHdrSize:])
+	return decodeBlock(disk, buf[hsz:])
+}
+
+// readBloom reads and verifies a block's filter. ok is false when the block has
+// none, when it cannot be read, or when it fails its checksum: in every case the
+// caller reads the block instead, which is slower and always correct.
+func readBloom(r io.ReaderAt, m BlockMeta) (bloomView, bool) {
+	if m.BloomLen == 0 {
+		return bloomView{}, false
+	}
+	blob := make([]byte, m.BloomLen)
+	if _, err := r.ReadAt(blob, m.bloomOffset()); err != nil {
+		return bloomView{}, false
+	}
+	return parseBloom(blob)
 }
 
 // encodeFooter builds the footer index for blocks, which must tile the file
 // from the header to indexOffset.
-func encodeFooter(blocks []BlockMeta, indexOffset int64) []byte {
-	buf := make([]byte, len(blocks)*indexEntrySz, len(blocks)*indexEntrySz+trailerSize)
+func encodeFooter(blocks []BlockMeta, indexOffset int64, ver uint16) []byte {
+	esz := entrySize(ver)
+	buf := make([]byte, len(blocks)*esz, len(blocks)*esz+trailerSize)
 	for i, m := range blocks {
-		e := buf[i*indexEntrySz:]
+		e := buf[i*esz:]
+		if ver >= 2 {
+			binary.BigEndian.PutUint32(e[44:], m.BloomLen)
+		}
 		binary.BigEndian.PutUint64(e[0:], uint64(m.Offset))
 		binary.BigEndian.PutUint64(e[8:], uint64(m.MinTs))
 		binary.BigEndian.PutUint64(e[16:], uint64(m.MaxTs))
@@ -364,7 +442,8 @@ type chunkWriter struct {
 	f      *os.File
 	path   string
 	blocks []BlockMeta
-	end    int64 // offset where the next block goes
+	end    int64  // offset where the next block goes
+	ver    uint16 // the file's format version: new files are chunkVersion, old ones keep theirs
 	// noSync skips fsync (Options.NoSync: tests and benchmarks only).
 	noSync bool
 }
@@ -388,7 +467,8 @@ func openChunk(path string, noSync bool) (*chunkWriter, error) {
 	if st.Size() == 0 {
 		var hdr [chunkHdrSize]byte
 		copy(hdr[:], chunkMagic)
-		binary.BigEndian.PutUint16(hdr[4:], chunkVersion)
+		binary.BigEndian.PutUint16(hdr[4:], newChunkVersion)
+		w.ver = newChunkVersion
 		if _, err := f.WriteAt(hdr[:], 0); err != nil {
 			_ = f.Close()
 			return nil, fmt.Errorf("logstore: writing chunk header: %w", err)
@@ -407,18 +487,26 @@ func openChunk(path string, noSync bool) (*chunkWriter, error) {
 			return nil, fmt.Errorf("logstore: cutting %s back to its last good block: %w", path, err)
 		}
 	}
-	w.blocks, w.end = ix.Blocks, ix.ValidEnd
+	w.blocks, w.end, w.ver = ix.Blocks, ix.ValidEnd, ix.Version
 	return w, nil
 }
 
 // appendBlock writes a block and fsyncs it before returning, which is the
 // ordering the store relies on: a block is durable before the WAL entries it
 // replaces may be dropped.
-func (w *chunkWriter) appendBlock(m BlockMeta, comp []byte) (BlockMeta, error) {
-	m.Offset = w.end
-	buf := make([]byte, blockHdrSize, blockHdrSize+len(comp))
+//
+// bloom is the block's filter, written after the compressed data; it is
+// dropped when the file is a v1 chunk, whose layout has no room for it.
+func (w *chunkWriter) appendBlock(m BlockMeta, comp, bloom []byte) (BlockMeta, error) {
+	if w.ver < 2 {
+		bloom = nil
+	}
+	m.Offset, m.ver, m.BloomLen = w.end, w.ver, uint32(len(bloom))
+	hsz := hdrSize(w.ver)
+	buf := make([]byte, hsz, hsz+len(comp)+len(bloom))
 	putBlockHeader(buf, m)
 	buf = append(buf, comp...)
+	buf = append(buf, bloom...)
 	if _, err := w.f.WriteAt(buf, w.end); err != nil {
 		// A partial block is a torn tail; cut it off so the next one lands
 		// where the reader expects.
@@ -436,7 +524,7 @@ func (w *chunkWriter) appendBlock(m BlockMeta, comp []byte) (BlockMeta, error) {
 // seal writes the footer index and syncs. The chunk stays appendable: the next
 // openChunk cuts the footer off again.
 func (w *chunkWriter) seal() error {
-	if _, err := w.f.WriteAt(encodeFooter(w.blocks, w.end), w.end); err != nil {
+	if _, err := w.f.WriteAt(encodeFooter(w.blocks, w.end, w.ver), w.end); err != nil {
 		_ = w.f.Truncate(w.end)
 		return fmt.Errorf("logstore: writing footer: %w", err)
 	}

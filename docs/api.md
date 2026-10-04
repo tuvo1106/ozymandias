@@ -399,16 +399,19 @@ A page of logs, newest first.
 ```json
 {"logs":[{"ts":1790000000123,"message":"db down","status":"error","service":"web-api","source":"winston","host":"box","tags":["env:dev"],"attrs":{"status_code":503,"route":"/orders"}}],
  "cursor":"…", "truncated":false,
- "stats":{"streams":2,"blocks_read":3,"bytes_read":18204,"entries_examined":412}}
+ "stats":{"streams":2,"blocks_read":3,"blocks_skipped":40,"bytes_read":18204,"entries_examined":412}}
 ```
 
 `cursor` is absent on the last page. `truncated: true` means the **scan budget**
 (`logs.scan_budget`) ran out first: what came back is a correct prefix in the
 requested order and `cursor` continues from it, but logs further along were not
 examined. `stats` say what the query cost: the label index selects `streams`,
-then the scan decompresses `blocks_read` blocks. A query that names a service
-and a status reads few; a bare word with nothing else to narrow it reads
-everything in the range.
+then the scan decompresses `blocks_read` blocks. A block's bloom filter can rule
+it out without decompressing it, which counts as `blocks_skipped` and costs no
+scan budget: a rare word skips nearly every block, a word in every block skips
+none, and a query that is a label, a number comparison or a negation has nothing
+a filter can test. A query that names a service and a status reads few; a bare
+common word with nothing else to narrow it reads everything in the range.
 
 ### `GET /api/v1/logs/aggregate`
 

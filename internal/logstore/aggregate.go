@@ -42,6 +42,10 @@ func (s *Store) scan(ctx context.Context, q logql.Node, from, to, budget int64, 
 		if err := ctx.Err(); err != nil {
 			return false, st, err
 		}
+		if r.ruledOut(files) {
+			st.BlocksSkipped++
+			continue
+		}
 		if r.isBlock {
 			if budget < int64(r.meta.RawLen) {
 				return true, st, nil

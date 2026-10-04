@@ -117,7 +117,7 @@ func writeChunk(t testing.TB, dir string, blocks [][]rawEntry, seal bool) string
 			es[j].Seq = uint64(i+1)*100 + uint64(j) // the last entry of block i carries i*100+len-1
 		}
 		m, comp := mustEncode(t, es)
-		if _, err := w.appendBlock(m, comp); err != nil {
+		if _, err := w.appendBlock(m, comp, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -146,6 +146,10 @@ func readAll(t testing.TB, path string) ([]byte, ChunkIndex) {
 }
 
 func TestChunk_WriteThenReadWithAndWithoutFooter(t *testing.T) {
+	forEachVersion(t, runTestChunk_WriteThenReadWithAndWithoutFooter)
+}
+
+func runTestChunk_WriteThenReadWithAndWithoutFooter(t *testing.T) {
 	blocks := [][]rawEntry{entries(10, 1000), entries(20, 5000), entries(5, 9000)}
 	for _, seal := range []bool{true, false} {
 		path := writeChunk(t, t.TempDir(), blocks, seal)
@@ -165,7 +169,7 @@ func TestChunk_WriteThenReadWithAndWithoutFooter(t *testing.T) {
 				t.Errorf("seal=%v block %d: LastSeq %d, want %d", seal, i, m.LastSeq, want)
 			}
 		}
-		if seal && ix.ValidEnd+int64(3*indexEntrySz+trailerSize) != int64(len(data)) {
+		if seal && ix.ValidEnd+int64(3*entrySize(ix.Version)+trailerSize) != int64(len(data)) {
 			t.Errorf("footer is not where the index says: ValidEnd %d, file %d", ix.ValidEnd, len(data))
 		}
 	}
@@ -175,6 +179,10 @@ func TestChunk_WriteThenReadWithAndWithoutFooter(t *testing.T) {
 // never panic, must serve exactly the blocks that are whole, and a writer
 // reopening it must be able to carry on.
 func TestChunk_TornAtEveryOffsetServesTheValidPrefix(t *testing.T) {
+	forEachVersion(t, runTestChunk_TornAtEveryOffsetServesTheValidPrefix)
+}
+
+func runTestChunk_TornAtEveryOffsetServesTheValidPrefix(t *testing.T) {
 	blocks := [][]rawEntry{entries(8, 1000), entries(8, 2000), entries(8, 3000)}
 	path := writeChunk(t, t.TempDir(), blocks, false)
 	full, fullIx := readAll(t, path)
@@ -208,6 +216,10 @@ func TestChunk_TornAtEveryOffsetServesTheValidPrefix(t *testing.T) {
 }
 
 func TestChunk_CorruptFooterFallsBackToTheWalk(t *testing.T) {
+	forEachVersion(t, runTestChunk_CorruptFooterFallsBackToTheWalk)
+}
+
+func runTestChunk_CorruptFooterFallsBackToTheWalk(t *testing.T) {
 	path := writeChunk(t, t.TempDir(), [][]rawEntry{entries(8, 1000), entries(8, 2000)}, true)
 	data, _ := readAll(t, path)
 	for name, mut := range map[string]func([]byte){
@@ -230,10 +242,14 @@ func TestChunk_CorruptFooterFallsBackToTheWalk(t *testing.T) {
 }
 
 func TestChunk_BitRotInABlockEndsTheValidPrefixThere(t *testing.T) {
+	forEachVersion(t, runTestChunk_BitRotInABlockEndsTheValidPrefixThere)
+}
+
+func runTestChunk_BitRotInABlockEndsTheValidPrefixThere(t *testing.T) {
 	path := writeChunk(t, t.TempDir(), [][]rawEntry{entries(30, 1000), entries(30, 2000), entries(30, 3000)}, false)
 	data, ix := readAll(t, path)
 	b := bytes.Clone(data)
-	b[ix.Blocks[1].Offset+blockHdrSize+3] ^= 0xff // inside block 1's payload
+	b[ix.Blocks[1].Offset+ix.Blocks[1].hdr()+3] ^= 0xff // inside block 1's payload
 	got, err := readIndex(bytes.NewReader(b), int64(len(b)))
 	if err != nil || len(got.Blocks) != 1 {
 		t.Fatalf("blocks = %d, err %v; want the prefix before the damaged block", len(got.Blocks), err)
@@ -243,6 +259,10 @@ func TestChunk_BitRotInABlockEndsTheValidPrefixThere(t *testing.T) {
 // Reopening a sealed chunk cuts the footer off and appends where the last
 // block ended; sealing again writes a footer that covers all of it.
 func TestChunk_ReopenAppendsAfterTheLastBlock(t *testing.T) {
+	forEachVersion(t, runTestChunk_ReopenAppendsAfterTheLastBlock)
+}
+
+func runTestChunk_ReopenAppendsAfterTheLastBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := writeChunk(t, dir, [][]rawEntry{entries(5, 1000)}, true)
 	w, err := openChunk(path, false)
@@ -253,7 +273,7 @@ func TestChunk_ReopenAppendsAfterTheLastBlock(t *testing.T) {
 		t.Fatalf("reopened with %d blocks", len(w.blocks))
 	}
 	m, comp := mustEncode(t, entries(5, 2000))
-	if _, err := w.appendBlock(m, comp); err != nil {
+	if _, err := w.appendBlock(m, comp, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.seal(); err != nil {
@@ -272,6 +292,10 @@ func TestChunk_ReopenAppendsAfterTheLastBlock(t *testing.T) {
 }
 
 func TestChunk_ReopenAfterATornTailCutsItOff(t *testing.T) {
+	forEachVersion(t, runTestChunk_ReopenAfterATornTailCutsItOff)
+}
+
+func runTestChunk_ReopenAfterATornTailCutsItOff(t *testing.T) {
 	path := writeChunk(t, t.TempDir(), [][]rawEntry{entries(5, 1000), entries(5, 2000)}, false)
 	data, ix := readAll(t, path)
 	if err := os.WriteFile(path, data[:ix.Blocks[1].end()-3], 0o644); err != nil { // tear the second block
@@ -291,6 +315,10 @@ func TestChunk_ReopenAfterATornTailCutsItOff(t *testing.T) {
 }
 
 func TestChunk_RejectsAFileThatIsNotOne(t *testing.T) {
+	forEachVersion(t, runTestChunk_RejectsAFileThatIsNotOne)
+}
+
+func runTestChunk_RejectsAFileThatIsNotOne(t *testing.T) {
 	for name, b := range map[string][]byte{
 		"empty":         nil,
 		"short":         []byte("OZY"),
@@ -311,6 +339,9 @@ func FuzzReadChunk(f *testing.F) {
 	sealed, _ := os.ReadFile(writeChunk(f, dir, [][]rawEntry{entries(6, 1000), entries(3, 9000)}, true))
 	f.Add(sealed)
 	f.Add(sealed[:len(sealed)/2])
+	withBlooms, _ := os.ReadFile(writeChunkWithBlooms(f, f.TempDir(), goldenLogBlocks()))
+	f.Add(withBlooms)
+	f.Add(withBlooms[:len(withBlooms)-30])
 	f.Add([]byte("OZYC\x00\x01\x00\x00"))
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -360,11 +391,15 @@ func withTrailer(data []byte, index []byte, count uint32, indexOffset int64, ext
 }
 
 func indexBytes(blocks []BlockMeta) []byte {
-	f := encodeFooter(blocks, 0)
+	f := encodeFooter(blocks, 0, blocks[0].ver)
 	return f[:len(f)-trailerSize]
 }
 
 func TestChunk_AFooterThatDoesNotTileTheFileIsIgnored(t *testing.T) {
+	forEachVersion(t, runTestChunk_AFooterThatDoesNotTileTheFileIsIgnored)
+}
+
+func runTestChunk_AFooterThatDoesNotTileTheFileIsIgnored(t *testing.T) {
 	data, blocks := chunkParts(t)
 	end := blocks[1].end()
 	shifted := append([]BlockMeta(nil), blocks...)
@@ -398,6 +433,10 @@ func TestChunk_AFooterThatDoesNotTileTheFileIsIgnored(t *testing.T) {
 }
 
 func TestChunk_ImplausibleBlockHeadersEndTheWalk(t *testing.T) {
+	forEachVersion(t, runTestChunk_ImplausibleBlockHeadersEndTheWalk)
+}
+
+func runTestChunk_ImplausibleBlockHeadersEndTheWalk(t *testing.T) {
 	good, blocks := chunkParts(t)
 	_, comp := mustEncode(t, entries(3, 7000))
 	for name, mutate := range map[string]func(*BlockMeta){
@@ -407,7 +446,8 @@ func TestChunk_ImplausibleBlockHeadersEndTheWalk(t *testing.T) {
 	} {
 		m, _ := mustEncode(t, entries(3, 7000))
 		mutate(&m)
-		bad := make([]byte, blockHdrSize)
+		bad := make([]byte, hdrSize(newChunkVersion))
+		m.ver = newChunkVersion
 		putBlockHeader(bad, m) // checksum field is right for comp, so only the sanity checks can object
 		file := append(append(bytes.Clone(good), bad...), comp...)
 		ix, err := readIndex(bytes.NewReader(file), int64(len(file)))
@@ -430,6 +470,10 @@ func TestBlock_AnEntryLengthPastTheBlockIsAnErrorNotAPanic(t *testing.T) {
 }
 
 func TestChunk_ReadBlockChecksTheDiskHeaderAgainstTheIndex(t *testing.T) {
+	forEachVersion(t, runTestChunk_ReadBlockChecksTheDiskHeaderAgainstTheIndex)
+}
+
+func runTestChunk_ReadBlockChecksTheDiskHeaderAgainstTheIndex(t *testing.T) {
 	data, blocks := chunkParts(t)
 	m := blocks[0]
 	m.N++ // the index claims a different entry count than the block's own header
@@ -466,5 +510,18 @@ func TestCodec_DecoderRefusesToInflatePastTheCap(t *testing.T) {
 	}
 	if out, err := dec.DecodeAll(bomb, nil); err == nil {
 		t.Errorf("decoded %d bytes past the %d-byte cap", len(out), maxBlockRaw)
+	}
+}
+
+// forEachVersion runs a chunk test once per supported format version, writing
+// new chunks in that version, so the v1 layout is held to every property the
+// current one is and cannot rot unnoticed.
+func forEachVersion(t *testing.T, fn func(*testing.T)) {
+	t.Helper()
+	saved := newChunkVersion
+	defer func() { newChunkVersion = saved }()
+	for _, v := range []uint16{1, 2} {
+		newChunkVersion = v
+		t.Run(fmt.Sprintf("v%d", v), fn)
 	}
 }

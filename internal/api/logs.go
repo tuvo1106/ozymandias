@@ -94,12 +94,13 @@ func (l *Logs) params(r *http.Request) (logParams, url.Values, error) {
 type statsJSON struct {
 	Streams         int   `json:"streams"`
 	BlocksRead      int   `json:"blocks_read"`
+	BlocksSkipped   int   `json:"blocks_skipped"`
 	BytesRead       int64 `json:"bytes_read"`
 	EntriesExamined int   `json:"entries_examined"`
 }
 
 func toStats(s logstore.Stats) statsJSON {
-	return statsJSON{s.Streams, s.BlocksRead, s.BytesRead, s.EntriesExamined}
+	return statsJSON{s.Streams, s.BlocksRead, s.BlocksSkipped, s.BytesRead, s.EntriesExamined}
 }
 
 func (l *Logs) fail(w http.ResponseWriter, r *http.Request, what string, err error) {

@@ -235,7 +235,8 @@ var (
 	pStatus = []string{"debug", "info", "warn", "error"}
 	pHost   = []string{"", "h1", "h2"}
 	pEnv    = []string{"", "dev", "prod"}
-	pWords  = []string{"timeout", "refused", "ok", "slow", "retry", "Épée"}
+	pWords  = []string{"timeout", "refused", "ok", "slow", "retry", "Épée", "zebra", "quokka", "Alpha-Beta", "gamma_delta"}
+	pUsers  = []string{"alice", "bob", "carol", "dave", "erin", "Zoë"}
 )
 
 func randLog(t *rapid.T, base int64, label string) wire.Log {
@@ -248,6 +249,9 @@ func randLog(t *rapid.T, base int64, label string) wire.Log {
 		Attrs: map[string]any{
 			"ms":   json.Number(fmt.Sprint(rapid.IntRange(0, 4).Draw(t, label+"ms") * 100)),
 			"code": json.Number(fmt.Sprint(rapid.SampledFrom([]int{200, 404, 500}).Draw(t, label+"code"))),
+			// Words that are rare per block, so a bloom filter has something to rule out.
+			"user":  rapid.SampledFrom(pUsers).Draw(t, label+"user"),
+			"flags": []any{rapid.SampledFrom(pUsers).Draw(t, label+"f1"), true},
 		},
 	}
 	if env := rapid.SampledFrom(pEnv).Draw(t, label+"env"); env != "" {
@@ -260,6 +264,8 @@ var pTerms = []string{
 	"service:api", "service:w*", "status:error", "status:warn", "host:h1", "host:*", "env:dev", "env:prod",
 	"timeout", "refused", "tim*out", "slow retry", "épée", "@ms:>200", "@ms:<=100", "@code:500", "@code:[200 TO 404]",
 	"-status:debug", "-timeout", "-host:*", "-@code:200",
+	"zebra", "quok*", "-quokka", "alice", "ALICE", "@user:bob", "@user:car*", "@user:zoë", "alpha-beta", "gamma_d*a", "ali",
+	"@flags:erin", "@flags:true", "zebra OR quokka", "(alice OR dave) timeout", "z*a", "@user:*",
 }
 
 func randQuery(t *rapid.T, label string) string {
@@ -309,6 +315,13 @@ func expected(t tb, logs []oracleLog, q string, from, to int64, order Order) []s
 }
 
 func TestProperty_SearchEqualsBruteForce(t *testing.T) {
+	skipped, read := 0, 0
+	t.Cleanup(func() {
+		// Agreeing while never skipping would prove nothing about the filters.
+		if !t.Failed() && skipped == 0 {
+			t.Errorf("no block was ever ruled out by a bloom filter (%d read): the generators never exercise them", read)
+		}
+	})
 	rapid.Check(t, func(t *rapid.T) {
 		dir, err := os.MkdirTemp("", "logstore-prop")
 		if err != nil {
@@ -353,6 +366,12 @@ func TestProperty_SearchEqualsBruteForce(t *testing.T) {
 			to := base + rapid.Int64Range(0, 3*86_400_000).Draw(t, fmt.Sprintf("to%d", qi))
 			limit := rapid.SampledFrom([]int{1, 5, 17, 1000}).Draw(t, fmt.Sprintf("limit%d", qi))
 			got := jsons(all(t, s, q, from, to, SearchOpts{Order: order, Limit: limit}))
+			full, err := s.Search(context.Background(), mustParse(t, q), from, to, SearchOpts{Limit: 1000})
+			if err != nil {
+				t.Fatal(err)
+			}
+			skipped += full.Stats.BlocksSkipped
+			read += full.Stats.BlocksRead
 			want := expected(t, oracle, q, from, to, order)
 			if strings.Join(got, "\n") != strings.Join(want, "\n") {
 				t.Fatalf("query %q [%d,%d] order %v limit %d: store returned %d logs, brute force %d\nfirst difference: %s",

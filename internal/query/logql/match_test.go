@@ -10,7 +10,10 @@ import (
 
 // logFrom builds a log from JSON attrs, as the wire decoder would (numbers
 // as json.Number).
-func logFrom(t testing.TB, msg, status string, attrs string, tags ...string) *wire.Log {
+func logFrom(t interface {
+	Helper()
+	Fatal(args ...any)
+}, msg, status string, attrs string, tags ...string) *wire.Log {
 	t.Helper()
 	l := &wire.Log{Ts: 1, Message: msg, Status: status, Service: "api", Source: "s", Host: "h1", Tags: tags}
 	if attrs != "" {

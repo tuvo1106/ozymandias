@@ -552,7 +552,7 @@ func (s *Store) sealDay(st *stream, day string, group []rawEntry) error {
 	if err != nil {
 		return err
 	}
-	pub, err := cs.w.appendBlock(meta, comp)
+	pub, err := cs.w.appendBlock(meta, comp, buildBloom(group))
 	if err != nil {
 		return err
 	}
