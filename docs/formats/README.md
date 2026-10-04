@@ -9,6 +9,7 @@ tests happens in the same commit.
 | [chunk.md](chunk.md) | `internal/tsdb/chunkenc` | the head, blocks, compaction |
 | [wal.md](wal.md) | `internal/tsdb/wal` | replay at startup |
 | [block.md](block.md) | `internal/tsdb/block` | queries, compaction |
+| [log-chunk.md](log-chunk.md) | `internal/logstore` | log search, recovery |
 
 Conventions used throughout:
 

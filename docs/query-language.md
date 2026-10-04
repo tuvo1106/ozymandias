@@ -352,8 +352,8 @@ term     = key ":" value                      (* key is reserved: service source
 ```
 
 `AND`, `OR` and `NOT` are operators only in capitals and standing alone; `ORDER` and
-`"OR"` are text. A quoted string takes `\"`, `\\`, `\n`, `\t` and `\r`. Parentheses nest at
-most 64 deep. The empty query is valid and matches everything.
+`"OR"` are text. A quoted string takes `\"`, `\\`, `\n`, `\t` and `\r`. Parentheses and negations nest at
+most 63 deep. The empty query is valid and matches everything.
 
 ### The three kinds of term
 
