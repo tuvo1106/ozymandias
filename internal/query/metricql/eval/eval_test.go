@@ -591,6 +591,19 @@ func TestErrBadQuery_ClassifiesWithoutPrefixingTheMessage(t *testing.T) {
 // sentence. If a modifier ever turns an empty selection into zero, this fails and
 // both of those want rewriting. (The complement idiom below is not that: it
 // moves the empty selection to the other side, and has its own limit.)
+// fill(null) is the default written out, and exists to override a fill a
+// caller would otherwise apply: it must leave the gaps as gaps.
+func TestEval_FillNullKeepsTheGaps(t *testing.T) {
+	plain := lines(run(t, fixture(), "sum:req.count{route:/y} by {route}", 0, 59, 10))
+	explicit := lines(run(t, fixture(), "sum:req.count{route:/y} by {route}.fill(null)", 0, 59, 10))
+	if len(plain) != 1 || strings.Join(plain, "|") != strings.Join(explicit, "|") {
+		t.Errorf("fill(null) drew %q, want the unfilled answer %q", explicit, plain)
+	}
+	if !strings.Contains(explicit[0], "_") {
+		t.Errorf("%q has no gap in it, so the test is not testing a gap", explicit[0])
+	}
+}
+
 func TestEval_AnEmptySelectionIsNoSeriesRatherThanZero(t *testing.T) {
 	for _, q := range []string{
 		"sum:req.count{route:/nope}",
