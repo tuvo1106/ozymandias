@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { routes } from "./routes";
 
@@ -37,12 +37,15 @@ describe("app shell", () => {
   });
 
   it("renders a placeholder naming the milestone for unbuilt sections, deep links included", () => {
-    renderAt("/logs/live");
-    expect(screen.getByRole("heading", { name: "Logs" })).toBeInTheDocument();
-    expect(screen.getByText("Coming in M4")).toBeInTheDocument();
+    renderAt("/apm/traces");
+    expect(screen.getByRole("heading", { name: "APM" })).toBeInTheDocument();
+    expect(screen.getByText("Coming in M5")).toBeInTheDocument();
   });
 
   it("renders not-found for unknown pages inside a live section", () => {
+    renderAt("/logs/nope");
+    expect(screen.getByRole("heading", { name: "Page not found" })).toBeInTheDocument();
+    cleanup();
     renderAt("/metrics/nope");
     expect(screen.getByRole("heading", { name: "Page not found" })).toBeInTheDocument();
   });

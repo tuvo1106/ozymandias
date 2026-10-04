@@ -48,7 +48,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
     path: "/logs",
     milestone: "M4",
     description: "Search, facet and live-tail logs from every app and container.",
-    live: false,
+    live: true,
   },
   {
     label: "APM",

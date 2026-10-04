@@ -70,6 +70,16 @@ export const routes: RouteObject[] = [
           { path: "*", element: <NotFound /> },
         ],
       },
+      {
+        path: "logs",
+        children: [
+          {
+            index: true,
+            lazy: async () => ({ Component: (await import("../pages/logs/LogExplorer")).LogExplorer }),
+          },
+          { path: "*", element: <NotFound /> },
+        ],
+      },
       ...NAV_ITEMS.filter((item) => !item.live).map((item) => ({
         path: `${item.path.slice(1)}/*`,
         element: <ComingSoon />,
