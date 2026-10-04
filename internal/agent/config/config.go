@@ -154,6 +154,11 @@ type DockerCollector struct {
 	// many and short-lived by design. The first matching rule wins.
 	// Fragments append.
 	ContainerNameRewrite []NameRewrite `yaml:"container_name_rewrite"`
+	// MaxContainerNames caps the distinct container_name values the agent
+	// reports; names past it become "other" (docker.OverflowName). Zero is
+	// unlimited. It is the backstop for names no container_name_rewrite rule
+	// covers, such as Docker's generated ones (ADR-0036).
+	MaxContainerNames int `yaml:"max_container_names"`
 	// Autodiscovery runs checks for containers that ask for them with
 	// ozy.check.<check>.<setting> labels. It needs the Docker collector.
 	Autodiscovery bool `yaml:"autodiscovery"`
@@ -310,7 +315,7 @@ func Default() Agent {
 		Collectors: Collectors{
 			Interval: 15 * time.Second, Timeout: 10 * time.Second,
 			Host:   HostCollector{Enabled: true, ExcludeInterfaces: slices.Clone(DefaultExcludeInterfaces)},
-			Docker: DockerCollector{Enabled: true, Socket: dockerapi.DefaultSocket, MaxConcurrency: docker.DefaultMaxConcurrency, Autodiscovery: true},
+			Docker: DockerCollector{Enabled: true, Socket: dockerapi.DefaultSocket, MaxConcurrency: docker.DefaultMaxConcurrency, MaxContainerNames: docker.DefaultMaxContainerNames, Autodiscovery: true},
 		},
 		ConfdPath: "./deploy/agent.d",
 		Log:       base.Log{Level: "info", Format: "text"},
@@ -370,6 +375,9 @@ func (c Collectors) validate() error {
 	}
 	if c.Docker.Enabled && (c.Docker.Socket == "" || c.Docker.MaxConcurrency < 1) {
 		errs = append(errs, errors.New("collectors.docker: socket must be set and max_concurrency at least 1"))
+	}
+	if c.Docker.MaxContainerNames < 0 {
+		errs = append(errs, errors.New("collectors.docker.max_container_names must be 0 (unlimited) or more"))
 	}
 	if _, err := c.Docker.Rewrites(); err != nil {
 		errs = append(errs, err)

@@ -46,6 +46,9 @@ type Options struct {
 	// Rewrites are the Docker collector's name rewrites, so an instance is
 	// tagged like its container's metrics.
 	Rewrites []docker.Rewrite
+	// NameCap is the Docker collector's, so a check's tags name the container
+	// the way its own metrics do.
+	NameCap *docker.NameCap
 	// Network is the Docker network %%host%% takes a container's address
 	// on: the one the agent shares with the containers it checks. Empty,
 	// a container on one network uses that one, and one on several is
@@ -208,7 +211,7 @@ func (d *Discovery) sync(k key, ct dockerapi.Container, check string, raw map[st
 		fail(rerr)
 		return
 	}
-	tags := docker.Tags(ct, d.opts.Rewrites)
+	tags := docker.Tags(ct, d.opts.Rewrites, d.opts.NameCap)
 	m := &member{fp: fp}
 	if name := containerName(ct, tags); !slices.ContainsFunc(tags, func(t string) bool { return strings.HasPrefix(t, "container_id:") }) {
 		m.folded = check + "\x00" + name

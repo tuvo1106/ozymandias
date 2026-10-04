@@ -42,6 +42,7 @@ type WatcherOptions struct {
 	API      API
 	Sink     func(Sample)
 	Rewrites []Rewrite
+	NameCap  *NameCap // shared with the Collector, so both halves agree on a name
 	// OnStart, if set, is called with each started container's id: the
 	// collector forgets its cached start time (Collector.ContainerStarted).
 	OnStart  func(id string)
@@ -117,7 +118,7 @@ func NewWatcher(opts WatcherOptions) *Watcher {
 		opts.Logger = slog.Default()
 	}
 	return &Watcher{
-		api: opts.API, sink: opts.Sink, tag: tagger{rewrites: opts.Rewrites},
+		api: opts.API, sink: opts.Sink, tag: tagger{rewrites: opts.Rewrites, cap: opts.NameCap},
 		clock: opts.Clock, log: opts.Logger.With("component", "collector", "collector", "docker-events"),
 		reconnects: opts.Registry.Counter("ozy.agent.docker.events_reconnects"),
 		events:     opts.Registry.Counter("ozy.agent.docker.events"),

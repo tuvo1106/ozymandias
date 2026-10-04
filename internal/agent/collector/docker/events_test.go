@@ -395,3 +395,38 @@ func TestWatcher_ResumeSkipsEveryEventAtTheLastTime(t *testing.T) {
 		t.Fatalf("%d exits, want 3: a replayed die was counted again", n)
 	}
 }
+
+// The watcher and the collector share one NameCap, so a container that dies
+// under a folded name is counted under it: container.exits must join
+// container.* on the name, not on a name only one of them folded.
+func TestWatcher_CapFoldsExitNames(t *testing.T) {
+	id := func(c string) string { return c + idAPI[1:] }
+	api := &fakeAPI{
+		scripts: [][]dockerapi.Event{{
+			event("die", id("a"), t0, map[string]string{"name": "admiring_allen", "exitCode": "0"}),
+			event("die", id("b"), t0, map[string]string{"name": "adoring_hellman", "exitCode": "0"}),
+		}},
+		errs: []error{nil},
+	}
+	folds := 0
+	sk, _, _ := watch(t, api, WatcherOptions{NameCap: NewNameCap(1, func() { folds++ })})
+	testutil.Eventually(t, time.Second, func() bool { return len(sk.named("container.exits")) == 2 }, "exits")
+	var names []string
+	for _, s := range sk.named("container.exits") {
+		for _, tg := range s.Tags {
+			if strings.HasPrefix(tg, "container_name:") {
+				names = append(names, tg)
+			}
+		}
+		if strings.Contains(strings.Join(s.Tags, ","), "container_id") && slices.Contains(s.Tags, "container_name:"+OverflowName) {
+			t.Errorf("a folded exit kept its container_id: %v", s.Tags)
+		}
+	}
+	slices.Sort(names)
+	if want := []string{"container_name:admiring_allen", "container_name:" + OverflowName}; !slices.Equal(names, want) {
+		t.Errorf("names = %v, want %v", names, want)
+	}
+	if folds != 1 {
+		t.Errorf("folds = %d, want 1", folds)
+	}
+}
