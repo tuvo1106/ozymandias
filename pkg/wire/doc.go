@@ -17,6 +17,7 @@
 //   - names.go: metric-name and tag rules shared by every hop.
 //   - series.go: hop C, agent → ozyd POST /v1/series, and the response
 //     shapes every intake endpoint shares.
+//   - logs.go: hop E, agent → ozyd POST /v1/logs.
 //
 // The statsd datagram (hop A) is parsed in internal/agent/statsd, next to
 // the UDP server whose hot path it is; its shared goldens live here in
