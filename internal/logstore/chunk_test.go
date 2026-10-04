@@ -108,7 +108,7 @@ func crc(b []byte) uint32 { return crcOf(b) }
 func writeChunk(t testing.TB, dir string, blocks [][]rawEntry, seal bool) string {
 	t.Helper()
 	path := filepath.Join(dir, "c.chunk")
-	w, err := openChunk(path)
+	w, err := openChunk(path, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestChunk_BitRotInABlockEndsTheValidPrefixThere(t *testing.T) {
 func TestChunk_ReopenAppendsAfterTheLastBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := writeChunk(t, dir, [][]rawEntry{entries(5, 1000)}, true)
-	w, err := openChunk(path)
+	w, err := openChunk(path, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestChunk_ReopenAfterATornTailCutsItOff(t *testing.T) {
 	if err := os.WriteFile(path, data[:ix.Blocks[1].end()-3], 0o644); err != nil { // tear the second block
 		t.Fatal(err)
 	}
-	w, err := openChunk(path)
+	w, err := openChunk(path, false)
 	if err != nil {
 		t.Fatal(err)
 	}

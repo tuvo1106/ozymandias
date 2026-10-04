@@ -1,6 +1,7 @@
 package logstore
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -364,6 +365,8 @@ type chunkWriter struct {
 	path   string
 	blocks []BlockMeta
 	end    int64 // offset where the next block goes
+	// noSync skips fsync (Options.NoSync: tests and benchmarks only).
+	noSync bool
 }
 
 // openChunk opens the chunk at path for appending, creating it if it does not
@@ -371,7 +374,7 @@ type chunkWriter struct {
 // (a footer from a clean close, or a torn tail from a crash) is cut off, so
 // the file always ends where the next block begins and the footer is written
 // again on close.
-func openChunk(path string) (*chunkWriter, error) {
+func openChunk(path string, noSync bool) (*chunkWriter, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("logstore: opening chunk: %w", err)
@@ -381,7 +384,7 @@ func openChunk(path string) (*chunkWriter, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	w := &chunkWriter{f: f, path: path}
+	w := &chunkWriter{f: f, path: path, noSync: noSync}
 	if st.Size() == 0 {
 		var hdr [chunkHdrSize]byte
 		copy(hdr[:], chunkMagic)
@@ -422,7 +425,7 @@ func (w *chunkWriter) appendBlock(m BlockMeta, comp []byte) (BlockMeta, error) {
 		_ = w.f.Truncate(w.end)
 		return BlockMeta{}, fmt.Errorf("logstore: writing block: %w", err)
 	}
-	if err := w.f.Sync(); err != nil {
+	if err := w.sync(); err != nil {
 		return BlockMeta{}, fmt.Errorf("logstore: syncing chunk: %w", err)
 	}
 	w.blocks = append(w.blocks, m)
@@ -437,9 +440,18 @@ func (w *chunkWriter) seal() error {
 		_ = w.f.Truncate(w.end)
 		return fmt.Errorf("logstore: writing footer: %w", err)
 	}
+	return w.sync()
+}
+
+func (w *chunkWriter) sync() error {
+	if w.noSync {
+		return nil
+	}
 	return w.f.Sync()
 }
 
 func (w *chunkWriter) close() error { return w.f.Close() }
 
 func crcOf(b []byte) uint32 { return crc32.Checksum(b, castagnoli) }
+
+func bytesReader(b []byte) *bytes.Reader { return bytes.NewReader(b) }

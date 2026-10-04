@@ -178,6 +178,31 @@ func lookup(m map[string]any, path string) []any {
 	return out
 }
 
+// AttrValues returns every value of the attribute at a dotted path, with the
+// same flattening as an `@path:` term: it is how the log store counts the
+// values of an attribute for a facet, so a facet and a filter agree on what
+// "the attribute" is.
+func AttrValues(attrs map[string]any, path string) []any { return lookup(attrs, path) }
+
+// ValueText is how an attribute value reads as text: the digits a number was
+// logged with, "true"/"false", "null".
+func ValueText(v any) string {
+	switch v := v.(type) {
+	case string:
+		return v
+	case json.Number:
+		return v.String()
+	case float64:
+		return strconv.FormatFloat(v, 'g', -1, 64)
+	case bool:
+		return strconv.FormatBool(v)
+	case nil:
+		return "null"
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
 func appendFlat(out []any, v any) []any {
 	if arr, ok := v.([]any); ok {
 		for _, e := range arr {

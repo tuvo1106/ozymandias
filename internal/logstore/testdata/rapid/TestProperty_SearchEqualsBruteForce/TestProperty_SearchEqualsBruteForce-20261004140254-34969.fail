@@ -1,0 +1,233 @@
+# 2026/10/04 14:02:54.643492 [TestProperty_SearchEqualsBruteForce] [rapid] draw ops: 5
+# 2026/10/04 14:02:54.643501 [TestProperty_SearchEqualsBruteForce] [rapid] draw op0: 0
+# 2026/10/04 14:02:54.643506 [TestProperty_SearchEqualsBruteForce] [rapid] draw op1: 2
+# 2026/10/04 14:02:54.643509 [TestProperty_SearchEqualsBruteForce] [rapid] draw n1: 1
+# 2026/10/04 14:02:54.643512 [TestProperty_SearchEqualsBruteForce] [rapid] draw b1.0ts: 0
+# 2026/10/04 14:02:54.643514 [TestProperty_SearchEqualsBruteForce] [rapid] draw b1.0svc: "api"
+# 2026/10/04 14:02:54.643517 [TestProperty_SearchEqualsBruteForce] [rapid] draw b1.0st: "debug"
+# 2026/10/04 14:02:54.643518 [TestProperty_SearchEqualsBruteForce] [rapid] draw b1.0host: ""
+# 2026/10/04 14:02:54.643519 [TestProperty_SearchEqualsBruteForce] [rapid] draw b1.0w1: "timeout"
+# 2026/10/04 14:02:54.643521 [TestProperty_SearchEqualsBruteForce] [rapid] draw b1.0w2: "timeout"
+# 2026/10/04 14:02:54.643522 [TestProperty_SearchEqualsBruteForce] [rapid] draw b1.0ms: 0
+# 2026/10/04 14:02:54.643524 [TestProperty_SearchEqualsBruteForce] [rapid] draw b1.0code: 200
+# 2026/10/04 14:02:54.643525 [TestProperty_SearchEqualsBruteForce] [rapid] draw b1.0env: ""
+# 2026/10/04 14:02:54.643841 [TestProperty_SearchEqualsBruteForce] [rapid] draw op2: 2
+# 2026/10/04 14:02:54.643843 [TestProperty_SearchEqualsBruteForce] [rapid] draw n2: 3
+# 2026/10/04 14:02:54.643844 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.0ts: 0
+# 2026/10/04 14:02:54.643845 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.0svc: "api"
+# 2026/10/04 14:02:54.643846 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.0st: "debug"
+# 2026/10/04 14:02:54.643849 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.0host: ""
+# 2026/10/04 14:02:54.643849 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.0w1: "timeout"
+# 2026/10/04 14:02:54.643850 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.0w2: "timeout"
+# 2026/10/04 14:02:54.643851 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.0ms: 0
+# 2026/10/04 14:02:54.643852 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.0code: 200
+# 2026/10/04 14:02:54.643853 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.0env: ""
+# 2026/10/04 14:02:54.643855 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.1ts: 0
+# 2026/10/04 14:02:54.643856 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.1svc: "worker"
+# 2026/10/04 14:02:54.643857 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.1st: "debug"
+# 2026/10/04 14:02:54.643857 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.1host: "h1"
+# 2026/10/04 14:02:54.643858 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.1w1: "timeout"
+# 2026/10/04 14:02:54.643859 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.1w2: "refused"
+# 2026/10/04 14:02:54.643859 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.1ms: 0
+# 2026/10/04 14:02:54.643861 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.1code: 200
+# 2026/10/04 14:02:54.643861 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.1env: "dev"
+# 2026/10/04 14:02:54.643865 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.2ts: 5
+# 2026/10/04 14:02:54.643867 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.2svc: "worker"
+# 2026/10/04 14:02:54.643868 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.2st: "debug"
+# 2026/10/04 14:02:54.643869 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.2host: "h1"
+# 2026/10/04 14:02:54.643871 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.2w1: "refused"
+# 2026/10/04 14:02:54.643871 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.2w2: "timeout"
+# 2026/10/04 14:02:54.643873 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.2ms: 0
+# 2026/10/04 14:02:54.643874 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.2code: 404
+# 2026/10/04 14:02:54.643875 [TestProperty_SearchEqualsBruteForce] [rapid] draw b2.2env: "dev"
+# 2026/10/04 14:02:54.644035 [TestProperty_SearchEqualsBruteForce] [rapid] draw op3: 3
+# 2026/10/04 14:02:54.644036 [TestProperty_SearchEqualsBruteForce] [rapid] draw n3: 2
+# 2026/10/04 14:02:54.644038 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.0ts: -1
+# 2026/10/04 14:02:54.644038 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.0svc: "worker"
+# 2026/10/04 14:02:54.644040 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.0st: "info"
+# 2026/10/04 14:02:54.644041 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.0host: "h1"
+# 2026/10/04 14:02:54.644041 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.0w1: "timeout"
+# 2026/10/04 14:02:54.644042 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.0w2: "timeout"
+# 2026/10/04 14:02:54.644043 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.0ms: 4
+# 2026/10/04 14:02:54.644044 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.0code: 404
+# 2026/10/04 14:02:54.644045 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.0env: "dev"
+# 2026/10/04 14:02:54.644046 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.1ts: 1
+# 2026/10/04 14:02:54.644047 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.1svc: "worker"
+# 2026/10/04 14:02:54.644047 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.1st: "debug"
+# 2026/10/04 14:02:54.644048 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.1host: "h1"
+# 2026/10/04 14:02:54.644049 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.1w1: "timeout"
+# 2026/10/04 14:02:54.644049 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.1w2: "refused"
+# 2026/10/04 14:02:54.644050 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.1ms: 0
+# 2026/10/04 14:02:54.644051 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.1code: 404
+# 2026/10/04 14:02:54.644052 [TestProperty_SearchEqualsBruteForce] [rapid] draw b3.1env: ""
+# 2026/10/04 14:02:54.644320 [TestProperty_SearchEqualsBruteForce] [rapid] draw op4: 1
+# 2026/10/04 14:02:54.652440 [TestProperty_SearchEqualsBruteForce] [rapid] draw q0n: 0
+# 2026/10/04 14:02:54.652446 [TestProperty_SearchEqualsBruteForce] [rapid] draw order0: 0
+# 2026/10/04 14:02:54.652449 [TestProperty_SearchEqualsBruteForce] [rapid] draw from0: 0
+# 2026/10/04 14:02:54.652451 [TestProperty_SearchEqualsBruteForce] [rapid] draw to0: 1
+# 2026/10/04 14:02:54.652453 [TestProperty_SearchEqualsBruteForce] [rapid] draw limit0: 5
+# 2026/10/04 14:02:54.652783 [TestProperty_SearchEqualsBruteForce] query "" [1791115200000,1791115200001] order 0 limit 5: store returned 5 logs, brute force 4
+# first difference: at 0: store {"ts":1791115200005,"message":"refused timeout","status":"debug","service":"worker","host":"h1","tags":["env:dev"],"attrs":{"code":404,"ms":0}} vs brute force {"ts":1791115200001,"message":"timeout refused","status":"debug","service":"worker","host":"h1","attrs":{"code":404,"ms":0}}
+# 
+v0.4.8#1149563937292379933
+0x0
+0x6b74f03291620
+0x4
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x6b74f03291620
+0x2
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x2
+0x1
+0x2c1725429af5e
+0x3
+0x0
+0x2
+0x0
+0x3
+0x1
+0x2
+0xbdb264e63341f
+0x5
+0x79b318491f1d5
+0x1
+0x1955d596f1d3dc
+0x0
+0x2
+0x1
+0x2
+0x1
+0x1
+0x0
+0xc71b0703c821d
+0x3b
+0x0
+0x2
+0x1
+0x1
+0x1
+0x0
+0x1a0cf2c1b4dc45
+0x3
+0x13abf0d3aff3cd
+0x4
+0x1
+0x137d4f3a2f50ed
+0x1
+0x0
+0x1
+0x1
+0x1
+0x1
+0x1c68e71b80be3
+0x1
+0xe5f1b2c94a77
+0x0
+0x3
+0x0
+0x1f9595a098ed9c
+0x1fffffffffffff
+0x105434f8ce5d25
+0x2
+0x1
+0x3
+0x1
+0x1
+0x1
+0x1
+0x0
+0x1
+0x1
+0x0
+0x4
+0x1
+0x0
+0x0
+0x1
+0x1
+0x14ecc8f897f6c
+0x0
+0x0
+0x2
+0x1
+0x1
+0x0
+0x2
+0x0
+0x1
+0x1
+0x0
+0x0
+0xc356340906123
+0x2
+0x0
+0x1
+0x1
+0x0
+0x1
+0xcf9d2f9b52630
+0x1
+0x792c0e7c88c46
+0x1
