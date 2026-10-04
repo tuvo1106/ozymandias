@@ -1,0 +1,33 @@
+# 2026/10/04 13:40:47.705267 [TestProperty_PlanAgreesWithTheWholeQuery] [rapid] draw query: logql.Not{X:logql.Label{Key:"service", Value:"api"}}
+# 2026/10/04 13:40:47.705281 [TestProperty_PlanAgreesWithTheWholeQuery] [rapid] draw log0: &wire.Log{Ts:1, Message:"timeout timeout", Status:"debug", Service:"api", Source:"", Host:"", Tags:[]string(nil), Attrs:map[string]interface {}{"ms":0}, TraceID:"", SpanID:""}
+# 2026/10/04 13:40:47.705287 [TestProperty_PlanAgreesWithTheWholeQuery] query "-service:api" on &{Ts:1 Message:timeout timeout Status:debug Service:api Source: Host: Tags:[] Attrs:map[ms:0] TraceID: SpanID:}: whole=false plan=true
+# plan: {Branches:[{Matchers:[{Key:service Value:api Negate:false}] Filter:<nil>}]}
+# 
+v0.4.8#12415842225046853790
+0x0
+0x0
+0x0
+0x0
+0x1f2b5a0e61c3a6
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

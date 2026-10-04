@@ -1,0 +1,24 @@
+# 2026/10/04 13:41:38.524775 [TestProperty_PrintThenParseIsIdentity] [rapid] draw ast: logql.Attr{Path:"A", Op:0, Value:"<", Num:0, Hi:0}
+# 2026/10/04 13:41:38.524781 [TestProperty_PrintThenParseIsIdentity] Parse("@A:<"): col 5: "" is not a number
+# 
+v0.4.8#17693302927233974894
+0x0
+0x38e38e38e38e4
+0x3
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x6666666666666
+0x0
+0x9867f1f40f739
+0xa
+0x0
