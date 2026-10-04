@@ -1,0 +1,5 @@
+{"ts":1790217645246,"message":"WARNING Memory overcommit must be enabled! Without it, a background save or replication may fail under low memory condition.","status":"warn","service":"svc","source":"redis","host":"box","tags":["env:dev"],"attrs":{"pid":1,"role":"C"}}
+{"ts":1790217645246,"message":"Increased maximum number of open files to 10032 (it was originally set to 1024).","status":"info","service":"svc","source":"redis","host":"box","tags":["env:dev"],"attrs":{"pid":1,"role":"M"}}
+{"ts":1790217946028,"message":"DB saved on disk","status":"info","service":"svc","source":"redis","host":"box","tags":["env:dev"],"attrs":{"pid":17,"role":"C"}}
+{"ts":1790217946100,"message":"0 clients connected (0 replicas), 1048576 bytes in use","status":"debug","service":"svc","source":"redis","host":"box","tags":["env:dev"],"attrs":{"pid":1,"role":"M"}}
+{"ts":1791115200004,"message":"1:signal-handler (1790218022) Received SIGTERM scheduling shutdown...","status":"info","service":"svc","source":"redis","host":"box","tags":["env:dev"]}

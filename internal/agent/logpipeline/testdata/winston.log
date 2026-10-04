@@ -1,0 +1,9 @@
+{"level":"info","message":"api","timestamp":"2026-10-04T12:00:00.123Z","tag":"api","method":"GET","path":"/api/comics","status":200,"ms":12}
+{"level":"info","message":"api","timestamp":"2026-10-04T12:00:01.500Z","tag":"api","method":"GET","path":"/api/comics/42","status":200,"ms":340}
+{"level":"warn","message":"api","timestamp":"2026-10-04T12:00:02.000Z","tag":"api","method":"POST","path":"/api/comics","status":404,"ms":8}
+{"level":"error","message":"database error","timestamp":"2026-10-04T12:00:03.250Z","tag":"db","error":{"code":"SQLITE_BUSY","message":"database is locked"},"order_id":9007199254740993}
+{"level":"debug","message":"cache miss","timestamp":"2026-10-04T12:00:04.000Z","tag":"cache","key":"comics:list"}
+{"level":"info","message":"signed in","timestamp":"2026-10-04T12:00:05.000Z","tag":"auth","user":"jane.doe@example.com","token":"abc123"}
+not json at all: a plain line from the same file
+{"level":"loud","message":"unknown level","timestamp":"2026-10-04T12:00:06.000Z"}
+{"message":"no level or timestamp","tag":"misc"}

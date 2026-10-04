@@ -1,0 +1,5 @@
+2026-10-04T12:00:00.123Z pid=1 tid=gx0 INFO: Booted Rails 8.1.0 application in production environment
+2026-10-04T12:00:01.000Z pid=1 tid=gx4 class=OrderWorker jid=2a9bc1e04f7d3a60 INFO: start
+2026-10-04T12:00:01.480Z pid=1 tid=gx4 class=OrderWorker jid=2a9bc1e04f7d3a60 elapsed=0.48 INFO: done
+2026-10-04T12:00:02.000Z pid=1 tid=gx8 class=MailWorker jid=77be0c1d9a3f5e21 WARN: retrying after Net::ReadTimeout
+2026-10-04T12:00:03.000Z pid=1 tid=gx8 class=MailWorker jid=77be0c1d9a3f5e21 ERROR: Net::ReadTimeout: Net::ReadTimeout with #<TCPSocket:(closed)>
