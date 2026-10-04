@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
+	"github.com/tuvo1106/ozymandias/internal/agent/collector/docker"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 )
 
@@ -199,6 +200,7 @@ func TestAgent_ValidateDocker(t *testing.T) {
 		},
 		"no socket":           func(a *Agent) { a.Collectors.Docker.Socket = "" },
 		"zero concurrency":    func(a *Agent) { a.Collectors.Docker.MaxConcurrency = 0 },
+		"negative name cap":   func(a *Agent) { a.Collectors.Docker.MaxContainerNames = -1 },
 		"fractional interval": func(a *Agent) { a.Collectors.Docker.Interval = 1500 * time.Millisecond },
 	} {
 		a := Default()
@@ -285,5 +287,20 @@ func TestLoad_AMisspeltCheckKeyFails(t *testing.T) {
 	_, _, err := Load(dir+"/agent.yaml", []string{"OZY_AGENT_CONFD_PATH=" + t.TempDir()})
 	if err == nil || !strings.Contains(err.Error(), "instnaces") || !strings.Contains(err.Error(), "line 4") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// The cap ships on (docker.DefaultMaxContainerNames) and the reference file
+// says so: a default nobody can see in the docs is a surprise at 3 a.m.
+func TestLoad_ContainerNameCapDefault(t *testing.T) {
+	a, _, err := Load("../../../deploy/agent.yaml", []string{"OZY_AGENT_CONFD_PATH=" + t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := a.Collectors.Docker.MaxContainerNames; got != docker.DefaultMaxContainerNames {
+		t.Errorf("deploy/agent.yaml max_container_names = %d, the Go default is %d: keep them equal", got, docker.DefaultMaxContainerNames)
+	}
+	if got := Default().Collectors.Docker.MaxContainerNames; got != docker.DefaultMaxContainerNames {
+		t.Errorf("Default() = %d", got)
 	}
 }

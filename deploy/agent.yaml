@@ -117,6 +117,13 @@ collectors:
     # Stats are one-shot (one sample each; CPU % is taken between runs), so
     # a request is quick and a run's length grows only with a busy daemon.
     max_concurrency: 8
+    # Most distinct container_name values the agent reports; the rest become
+    # "other" and ozy.agent.docker.container_names_folded counts them. A name
+    # is a tag, and Docker mints a new generated one (admiring_allen) per
+    # unnamed `docker run`, so without a bound they bury container.* over
+    # time. Names a container_name_rewrite rule groups do not count. Names
+    # admitted stay admitted until the agent restarts. 0 means unlimited.
+    max_container_names: 200
     # Rename matching containers (the whole name becomes replace, which may
     # use the match's groups, ${1}) before the name becomes a tag, and drop
     # their container_id: for containers that are many and short-lived by

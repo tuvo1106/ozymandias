@@ -142,6 +142,7 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 	var (
 		dockerAPI      docker.API
 		dockerRewrites []docker.Rewrite
+		nameCap        *docker.NameCap
 	)
 	if d := cfg.Collectors.Docker; d.Enabled {
 		rewrites, err := d.Rewrites()
@@ -153,12 +154,14 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 			a.dockerClient = dockerapi.New(dockerapi.Options{Socket: d.Socket, MaxIdleConns: d.MaxConcurrency})
 			api = a.dockerClient
 		}
+		folded := a.reg.Counter("ozy.agent.docker.container_names_folded")
+		nameCap = docker.NewNameCap(d.MaxContainerNames, folded.Inc)
 		dc := docker.New(docker.Options{
-			API: api, Interval: d.Interval, MaxConcurrency: d.MaxConcurrency, Rewrites: rewrites,
+			API: api, Interval: d.Interval, MaxConcurrency: d.MaxConcurrency, Rewrites: rewrites, NameCap: nameCap,
 		})
 		collectors = append(collectors, dc)
 		a.watcher = docker.NewWatcher(docker.WatcherOptions{
-			API: api, Sink: a.fromDockerEvent, Rewrites: rewrites, OnStart: dc.ContainerStarted,
+			API: api, Sink: a.fromDockerEvent, Rewrites: rewrites, NameCap: nameCap, OnStart: dc.ContainerStarted,
 			Clock: a.clock, Registry: a.reg, Logger: a.log,
 		})
 		dockerAPI, dockerRewrites = api, rewrites
@@ -193,7 +196,7 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		}
 		a.discovery = autodiscovery.New(autodiscovery.Options{
 			Reserved: reserved,
-			API:      dockerAPI, Checks: checks, Scheduler: a.sched, Rewrites: dockerRewrites,
+			API:      dockerAPI, Checks: checks, Scheduler: a.sched, Rewrites: dockerRewrites, NameCap: nameCap,
 			Network: cfg.Collectors.Docker.AutodiscoveryNetwork,
 			Clock:   a.clock, Logger: a.log, Registry: a.reg,
 		})

@@ -32,7 +32,10 @@ type Rewrite struct {
 }
 
 // tagger turns a container's identity into tags.
-type tagger struct{ rewrites []Rewrite }
+type tagger struct {
+	rewrites []Rewrite
+	cap      *NameCap
+}
 
 // tags returns the tags for a container, from its name, id, image reference
 // and labels:
@@ -61,6 +64,14 @@ func (t tagger) tags(name, id, image string, labels map[string]string) []string 
 			break
 		}
 	}
+	if !rewritten {
+		// A rewrite says "these are one thing" on purpose, so only the names
+		// nobody grouped count against the cap. A folded container is one
+		// thing too, and loses its id like a rewritten one.
+		if n := t.cap.Admit(name); n != name {
+			name, rewritten = n, true
+		}
+	}
 	add("container_name", name)
 	if !rewritten {
 		add("container_id", dockerapi.ShortID(id))
@@ -84,6 +95,6 @@ func (t tagger) tags(name, id, image string, labels map[string]string) []string 
 // other components that report about a container (autodiscovery tags a
 // check it started for one the same way, so its metrics join the
 // container's on a dashboard).
-func Tags(c dockerapi.Container, rewrites []Rewrite) []string {
-	return tagger{rewrites: rewrites}.tags(c.Name(), c.ID, c.Image, c.Labels)
+func Tags(c dockerapi.Container, rewrites []Rewrite, nameCap *NameCap) []string {
+	return tagger{rewrites: rewrites, cap: nameCap}.tags(c.Name(), c.ID, c.Image, c.Labels)
 }

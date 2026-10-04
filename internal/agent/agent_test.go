@@ -491,6 +491,102 @@ func TestRun_DockerEventsToIntake(t *testing.T) {
 	}
 }
 
+// The container-name cap is wired through the agent: with room for one name,
+// the second unnamed container's exit reaches the intake as container_name:other
+// (and the fold is counted), so the watcher and the cap really are connected.
+func TestRun_DockerEventsFoldNamesOverTheCap(t *testing.T) {
+	testutil.CheckGoroutines(t)
+	var mu sync.Mutex
+	var got []wire.Series
+	intake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		var p wire.SeriesPayload
+		_ = json.NewDecoder(zr).Decode(&p)
+		mu.Lock()
+		got = append(got, p.Series...)
+		mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer intake.Close()
+
+	at := time.Unix(1790000000, 0)
+	ev := func(name string, t time.Time) dockerapi.Event {
+		a := map[string]string{"name": name, "image": "sandbox:1", "exitCode": "3"}
+		return dockerapi.Event{Type: "container", Action: "die", Actor: dockerapi.Actor{ID: strings.Repeat(name[:1], 64), Attributes: a}, Time: t.Unix(), TimeNano: t.UnixNano()}
+	}
+	api := &eventsAPI{
+		evs:       []dockerapi.Event{ev("admiring_allen", at), ev("bold_bohr", at)},
+		delivered: make(chan struct{}),
+	}
+	clk := testutil.NewFakeClock(at.Add(-time.Second))
+	cfg := testConfig()
+	cfg.Hostname = "box"
+	cfg.Tags = []string{"env:test"}
+	cfg.Intake.URL = intake.URL
+	cfg.Statsd.Enabled = false
+	cfg.Collectors.Docker.Enabled = true
+	cfg.Collectors.Docker.MaxContainerNames = 1
+	a, err := newAgent(t, cfg, Options{Logger: quiet, Clock: clk, DockerAPI: api})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clk.Advance(time.Second) // onto the boundary, a second after the agent started: its first whole bucket (aggregator.Options.Started)
+	ln, _ := httpserve.Listen("127.0.0.1:0")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.Run(ctx, ln) }()
+
+	select {
+	case <-api.delivered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("event stream never read")
+	}
+	// The aggregator's ticker and the docker collector's start-up timer.
+	testutil.Eventually(t, 2*time.Second, func() bool { return clk.Waiters() >= 2 }, "not armed")
+	clk.Advance(10 * time.Second)
+	testutil.Eventually(t, 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.ContainsFunc(got, func(s wire.Series) bool { return s.Metric == "container.exits" })
+	}, "container.exits not forwarded")
+	testutil.Eventually(t, 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, s := range got {
+			if s.Metric == "container.exits" {
+				n++
+			}
+		}
+		return n == 2
+	}, "both exits not forwarded")
+	mu.Lock()
+	var names []string
+	for _, s := range got {
+		if s.Metric != "container.exits" {
+			continue
+		}
+		for _, tg := range s.Tags {
+			if strings.HasPrefix(tg, "container_name:") {
+				names = append(names, tg)
+			}
+		}
+	}
+	mu.Unlock()
+	slices.Sort(names)
+	if want := []string{"container_name:admiring_allen", "container_name:other"}; !slices.Equal(names, want) {
+		t.Fatalf("container_name tags = %v, want %v", names, want)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // The shipped checks are in the default registry: configured instances
 // become collectors, and a misconfigured one fails startup.
 func TestNew_ShippedChecks(t *testing.T) {

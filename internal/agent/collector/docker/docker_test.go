@@ -728,3 +728,32 @@ func TestDocker_AStartOfAnUnknownContainerAddsNothing(t *testing.T) {
 		t.Fatalf("tracking %d lives for containers never listed", len(c.lives))
 	}
 }
+
+// Three unnamed containers under a cap of one name: the collector reports the
+// first by name and sums the other two into "other", the same fold the
+// watcher applies to container.exits.
+func TestDocker_CapFoldsOverflowNamesIntoOne(t *testing.T) {
+	list := []dockerapi.Container{}
+	st := map[string]dockerapi.Stats{}
+	insp := map[string]dockerapi.ContainerJSON{}
+	for i, name := range []string{"admiring_allen", "adoring_hellman", "agitated_bohr"} {
+		id := fmt.Sprintf("%064d", i+1)
+		list = append(list, ctr(id, name, "alpine:3", nil))
+		st[id] = stats(1)
+		insp[id] = dockerapi.ContainerJSON{State: dockerapi.ContainerState{StartedAt: t0.Add(-time.Minute)}}
+	}
+	c := New(Options{API: &fakeAPI{list: list, stats: st, inspect: insp}, NameCap: NewNameCap(1, nil)})
+	g, _ := collect(t, c)
+	var names []string
+	for _, m := range g["container.memory.usage"] {
+		for _, tg := range m.Tags {
+			if strings.HasPrefix(tg, "container_name:") {
+				names = append(names, tg)
+			}
+		}
+	}
+	slices.Sort(names)
+	if len(names) != 2 || names[1] != "container_name:"+OverflowName {
+		t.Fatalf("series = %v, want one named container and %q", names, OverflowName)
+	}
+}

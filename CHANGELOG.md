@@ -9,6 +9,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A cap on distinct container names** (`collectors.docker.max_container_names`, default 200).
+  Docker mints a generated name per unnamed `docker run`, and each is a series on `container.*`,
+  `container.exits` and `container.lifetime`; past the cap the agent reports `container_name:other`
+  and counts the fold in `ozy.agent.docker.container_names_folded`. Names a
+  `container_name_rewrite` rule groups do not count. ADR-0036.
 - **An `app-python` dashboard** for a FastAPI + arq service (M3 §4): requests, errors and
   latency by route, queue depth and age, jobs per minute, judge run durations and verdicts,
   and container CPU, memory and exits. It names no app: service, Compose project and

@@ -136,7 +136,7 @@ func build(d *Discovery, ct dockerapi.Container, check string, labels map[string
 	if err != nil {
 		return nil, err
 	}
-	return d.instance(ct, check, r, docker.Tags(ct, d.opts.Rewrites))
+	return d.instance(ct, check, r, docker.Tags(ct, d.opts.Rewrites, d.opts.NameCap))
 }
 
 // tagsOf runs the named instance once and returns its metric's tags.

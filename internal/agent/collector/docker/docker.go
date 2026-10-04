@@ -38,6 +38,7 @@ type Options struct {
 	Interval       time.Duration
 	MaxConcurrency int // default DefaultMaxConcurrency
 	Rewrites       []Rewrite
+	NameCap        *NameCap // shared with the Watcher; nil means unlimited
 	// No Clock: every time the collector uses is the daemon's (a sample's
 	// read time, a container's start), so the agent's clock has no say.
 }
@@ -149,7 +150,7 @@ func New(opts Options) *Collector {
 	}
 	return &Collector{
 		api: opts.API, iv: opts.Interval, conc: opts.MaxConcurrency,
-		tag:   tagger{rewrites: opts.Rewrites},
+		tag:   tagger{rewrites: opts.Rewrites, cap: opts.NameCap},
 		rates: collector.NewRates(), images: map[string]bool{},
 		seen: map[string]*seen{}, lives: map[string]*life{},
 	}
