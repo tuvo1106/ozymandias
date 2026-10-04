@@ -54,6 +54,8 @@ type Spec struct {
 // Options are the pipeline's dependencies.
 type Options struct {
 	Clock clock.Clock // default clock.Real()
+	// Totals, if set, receives this pipeline's counts (shared with others).
+	Totals *Totals
 }
 
 // Stats counts what happened to the lines a pipeline saw.
@@ -66,7 +68,18 @@ type Stats struct {
 	Redactions  int64 // strings the redactor changed
 }
 
-type counters struct{ lines, emitted, excluded, rateLimited, unparsed, redactions atomic.Int64 }
+// Totals are the counters of one or more pipelines. Pipelines built with the
+// same Totals add into it, so the agent can report one number for every file and
+// container it follows, including the ones that have since gone away.
+type Totals struct{ lines, emitted, excluded, rateLimited, unparsed, redactions atomic.Int64 }
+
+// Stats returns the counters so far.
+func (t *Totals) Stats() Stats {
+	return Stats{
+		Lines: t.lines.Load(), Emitted: t.emitted.Load(), Excluded: t.excluded.Load(),
+		RateLimited: t.rateLimited.Load(), Unparsed: t.unparsed.Load(), Redactions: t.redactions.Load(),
+	}
+}
 
 // Pipeline turns lines into logs: exclude, rate-limit, parse, remap, redact.
 // It is safe for use by one goroutine at a time (a source's tailer); the
@@ -79,7 +92,7 @@ type Pipeline struct {
 	lim     *limiter
 	rails   *railsGrouper
 	clk     clock.Clock
-	n       counters
+	n       *Totals
 }
 
 // New builds a pipeline from spec.
@@ -91,7 +104,10 @@ func New(spec Spec, opts Options) (*Pipeline, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &Pipeline{source: spec.Source, parsers: ps, clk: opts.Clock}
+	if opts.Totals == nil {
+		opts.Totals = &Totals{}
+	}
+	p := &Pipeline{source: spec.Source, parsers: ps, clk: opts.Clock, n: opts.Totals}
 	if p.red, err = NewRedactor(spec.Redact, func(string) { p.n.redactions.Add(1) }); err != nil {
 		return nil, err
 	}
@@ -117,13 +133,8 @@ func New(spec Spec, opts Options) (*Pipeline, error) {
 	return p, nil
 }
 
-// Stats returns the counters so far.
-func (p *Pipeline) Stats() Stats {
-	return Stats{
-		Lines: p.n.lines.Load(), Emitted: p.n.emitted.Load(), Excluded: p.n.excluded.Load(),
-		RateLimited: p.n.rateLimited.Load(), Unparsed: p.n.unparsed.Load(), Redactions: p.n.redactions.Load(),
-	}
-}
+// Stats returns the counters so far (shared with any pipeline using the same Totals).
+func (p *Pipeline) Stats() Stats { return p.n.Stats() }
 
 // Process runs one line. It returns the logs it produced: usually one, none for
 // a line that was dropped or is part of a Rails request still being read, and

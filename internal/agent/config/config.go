@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -15,7 +16,9 @@ import (
 
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/docker"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
+	"github.com/tuvo1106/ozymandias/internal/agent/logpipeline"
 	base "github.com/tuvo1106/ozymandias/internal/config"
+	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
 // EnvPrefix prefixes every agent environment override, e.g.
@@ -66,6 +69,107 @@ type Forwarder struct {
 	MaxQueueBytes int `yaml:"max_queue_bytes"`
 	// ShutdownTimeout bounds the final delivery attempt on shutdown.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+}
+
+// Logs configures log collection (docs/plan/M4-logs.md §1). It is off by
+// default: with it off the agent reads no files and opens no log streams.
+type Logs struct {
+	Enabled bool `yaml:"enabled"`
+	// RegistryPath is where read positions are kept between restarts. Empty keeps
+	// them in memory only, so a restart re-reads from each source's start_position.
+	RegistryPath string `yaml:"registry_path"`
+	// ScanInterval is how often globs and the container list are rescanned.
+	ScanInterval time.Duration `yaml:"scan_interval"`
+	// PollInterval is how often open files are read.
+	PollInterval time.Duration `yaml:"poll_interval"`
+	// BatchLogs is the most logs sent in one request (at most 1000, the wire limit).
+	BatchLogs int `yaml:"batch_logs"`
+	// ContainerCollectAll follows every container the sources do not exclude,
+	// choosing no pipeline in advance (JSON lines are parsed, the rest kept as
+	// text). A container can still opt out with ozy.logs.enabled=false.
+	ContainerCollectAll bool `yaml:"container_collect_all"`
+	// MaxContainerLogs and file limits are deliberately absent: the per-source
+	// rate limit is the bound on volume.
+	Sources []LogSource `yaml:"sources"`
+}
+
+// Multiline says how lines join into one event.
+type Multiline struct {
+	// StartPattern is a regular expression a line matches when it begins an
+	// event; any other line continues the previous one.
+	StartPattern string `yaml:"start_pattern"`
+}
+
+// LogSource is one `logs.sources` entry. The pipeline fields (source, grok,
+// redact, exclude_at_match, rate_limit) are written inline beside the rest.
+type LogSource struct {
+	// Type is "file" or "docker".
+	Type string `yaml:"type"`
+	// Path is a glob (file sources).
+	Path string `yaml:"path"`
+	// Service names the stream. Empty: for a container, its ozy.service label or
+	// compose project-service or its name; for a file, the log's own service field.
+	Service       string    `yaml:"service"`
+	Tags          []string  `yaml:"tags"`
+	StartPosition string    `yaml:"start_position"`
+	Multiline     Multiline `yaml:"multiline"`
+	// IncludeLabels and ExcludeNames select containers (docker sources).
+	IncludeLabels []string `yaml:"include_labels"`
+	ExcludeNames  []string `yaml:"exclude_names"`
+
+	logpipeline.Spec `yaml:",inline"`
+}
+
+// Validate checks the logs section.
+func (l Logs) validate() error {
+	if !l.Enabled {
+		return nil
+	}
+	var errs []error
+	if l.ScanInterval < 0 || l.PollInterval < 0 {
+		errs = append(errs, errors.New("logs.scan_interval and logs.poll_interval must not be negative"))
+	}
+	if l.BatchLogs < 0 || l.BatchLogs > wire.MaxLogsPerRequest {
+		errs = append(errs, fmt.Errorf("logs.batch_logs must be between 0 and %d, got %d", wire.MaxLogsPerRequest, l.BatchLogs))
+	}
+	for i, s := range l.Sources {
+		at := fmt.Sprintf("logs.sources[%d]", i)
+		switch s.Type {
+		case "file":
+			if s.Path == "" {
+				errs = append(errs, fmt.Errorf("%s: a file source needs a path", at))
+			} else if _, err := filepath.Match(s.Path, ""); err != nil {
+				errs = append(errs, fmt.Errorf("%s: path %q: %w", at, s.Path, err))
+			}
+		case "docker":
+			if len(s.IncludeLabels) == 0 {
+				errs = append(errs, fmt.Errorf("%s: a docker source needs include_labels (to follow every container, set logs.container_collect_all)", at))
+			}
+		default:
+			errs = append(errs, fmt.Errorf("%s: type %q: want file or docker", at, s.Type))
+		}
+		switch s.StartPosition {
+		case "", "end", "beginning":
+		default:
+			errs = append(errs, fmt.Errorf("%s: start_position %q: want end or beginning", at, s.StartPosition))
+		}
+		if s.Multiline.StartPattern != "" {
+			if _, err := regexp.Compile(s.Multiline.StartPattern); err != nil {
+				errs = append(errs, fmt.Errorf("%s: multiline.start_pattern: %w", at, err))
+			}
+		}
+		for _, ex := range s.ExcludeNames {
+			if _, err := regexp.Compile(ex); err != nil {
+				errs = append(errs, fmt.Errorf("%s: exclude_names %q: %w", at, ex, err))
+			}
+		}
+		// The pipeline's own checks (grok, redact and exclude patterns) run by
+		// building it, so a typo is a startup error here, not a silent no-op.
+		if _, err := logpipeline.New(s.Spec, logpipeline.Options{}); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", at, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Collectors configures the pull-based collectors (internal/agent/collector).
@@ -288,6 +392,7 @@ type Agent struct {
 	Aggregator Aggregator `yaml:"aggregator"`
 	Forwarder  Forwarder  `yaml:"forwarder"`
 	Collectors Collectors `yaml:"collectors"`
+	Logs       Logs       `yaml:"logs"`
 	// Hostname is the value of the host tag on everything this agent sends.
 	// Empty means the OS hostname. Set it explicitly in containers, where the
 	// OS hostname is a meaningless container id.
@@ -317,6 +422,7 @@ func Default() Agent {
 			Host:   HostCollector{Enabled: true, ExcludeInterfaces: slices.Clone(DefaultExcludeInterfaces)},
 			Docker: DockerCollector{Enabled: true, Socket: dockerapi.DefaultSocket, MaxConcurrency: docker.DefaultMaxConcurrency, MaxContainerNames: docker.DefaultMaxContainerNames, Autodiscovery: true},
 		},
+		Logs:      Logs{ScanInterval: 10 * time.Second, PollInterval: time.Second},
 		ConfdPath: "./deploy/agent.d",
 		Log:       base.Log{Level: "info", Format: "text"},
 	}
@@ -348,7 +454,7 @@ func (a *Agent) Validate() error {
 	if a.Forwarder.Timeout <= 0 || a.Forwarder.ShutdownTimeout <= 0 || a.Forwarder.MaxQueueBytes < 1 {
 		errs = append(errs, errors.New("forwarder: timeout, shutdown_timeout and max_queue_bytes must be positive"))
 	}
-	errs = append(errs, a.Collectors.validate())
+	errs = append(errs, a.Collectors.validate(), a.Logs.validate())
 	for _, t := range a.Tags {
 		if strings.TrimSpace(t) == "" || strings.ContainsAny(t, ",|\n") {
 			errs = append(errs, fmt.Errorf("tags: %q is empty or contains ',', '|' or a newline", t))

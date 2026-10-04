@@ -73,6 +73,8 @@ type DockerOptions struct {
 	// looking at the line (JSON or plain). Containers can still opt out with
 	// ozy.logs.enabled=false.
 	CollectAll bool
+	// Totals receives every container pipeline's counters.
+	Totals *logpipeline.Totals
 	// Backoff bounds for reopening a broken log stream.
 	BackoffMin, BackoffMax time.Duration
 }
@@ -369,7 +371,7 @@ func (d *Docker) startLocked(c dockerapi.Container, cc containerConfig) {
 // follow is one container's goroutine.
 func (d *Docker) follow(ctx context.Context, c *cont, cc containerConfig, atAgentStart bool) {
 	key := "docker:" + c.id
-	pl, err := logpipeline.New(cc.spec, logpipeline.Options{Clock: d.opts.Clock})
+	pl, err := logpipeline.New(cc.spec, logpipeline.Options{Clock: d.opts.Clock, Totals: d.opts.Totals})
 	if err != nil {
 		d.opts.Logger.Error("tailer: building pipeline", "container", c.name, "err", err)
 		return

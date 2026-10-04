@@ -22,6 +22,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/agent/config"
 	"github.com/tuvo1106/ozymandias/internal/agent/forwarder"
 	"github.com/tuvo1106/ozymandias/internal/agent/statsd"
+	"github.com/tuvo1106/ozymandias/internal/agent/tailer"
 	"github.com/tuvo1106/ozymandias/internal/buildinfo"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	base "github.com/tuvo1106/ozymandias/internal/config"
@@ -49,6 +50,8 @@ type Options struct {
 	// DockerAPI replaces the Docker socket client, for tests. Nil means a
 	// client on collectors.docker.socket.
 	DockerAPI docker.API
+	// LogDockerAPI replaces the Docker client the container log tailer uses, for tests.
+	LogDockerAPI tailer.DockerAPI
 	// Checks is the check registry. Nil means DefaultChecks().
 	Checks collector.Registry
 }
@@ -75,6 +78,7 @@ type Agent struct {
 	agg          *aggregator.Aggregator
 	fwd          *forwarder.Forwarder
 	self         *selfmetrics.Reporter
+	logs         *logsRuntime // nil when logs.enabled is false
 }
 
 // New resolves the hostname, binds the statsd socket and builds the
@@ -165,6 +169,9 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 			Clock: a.clock, Registry: a.reg, Logger: a.log,
 		})
 		dockerAPI, dockerRewrites = api, rewrites
+	}
+	if err := a.setupLogs(opts); err != nil {
+		return nil, err
 	}
 	checks := opts.Checks
 	if checks == nil {
@@ -365,6 +372,9 @@ func (a *Agent) Run(ctx context.Context, ln net.Listener) error {
 	if a.watcher != nil {
 		wg.Go(func() { a.watcher.Run(inputs) })
 	}
+	// Log tailers stop with the collectors: they read, and on the way out deliver
+	// what is pending. They send to ozyd themselves, not through the forwarder.
+	a.logs.run(collectors, func(f func()) { wg.Go(f) })
 
 	err := httpserve.Serve(ctx, srv, ln, a.cfg.HTTP.ShutdownTimeout)
 

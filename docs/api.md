@@ -98,6 +98,20 @@ The metric is recorded with type `distribution`, which is what makes it answer
 the four derived series, and returning one for the distribution itself would
 be a different number under the same name.
 
+### `POST /v1/logs`
+
+Log intake from agents. Body, limits and validation are normative in
+[wire-protocol.md §E](wire-protocol.md#e-logs-agent--ozyd-post-v1logs): gzip'd JSON
+`{"logs":[…]}`, at most 1000 logs. `202` with per-log `accepted`/`rejected`
+counts (a bad log is refused and the rest kept); `400` for a body that is not a
+logs payload or has more than 1000 logs; `413` over the size limits; `503` when
+the store cannot take the batch — **nothing was stored or published, so the
+agent sends the whole batch again**; also `503` when this deployment has no log
+store.
+
+A `202` means the batch is durable: it was written to the log store's WAL and
+fsynced. That is the acknowledgement an agent commits its file offsets on.
+
 ### `GET /api/v1/query`, `POST /api/v1/query`
 
 Evaluates a [metricql](query-language.md) query. That document is normative
@@ -358,6 +372,100 @@ Refusals worth knowing:
   `/api/v1/query` only a percentile does.
 
 See [ADR-0019](adr/0019-the-dist-aggregator.md) for why `dist` is an aggregator.
+
+## Logs
+
+Four endpoints over the log store. They share a query string:
+
+| Param | Default | Meaning |
+|---|---|---|
+| `q` | all logs | A logql query ([query-language.md](query-language.md#logql)): `service:web-api status:error "timeout" @route:/orders -@user:bot` |
+| `from`, `to` | last 15 minutes | Unix **milliseconds**, inclusive on both ends — not seconds as in the metrics API: a log's timestamp, a histogram bucket and a cursor are all milliseconds, so a page fed back as a window needs no conversion. `from` after `to` is a `400` |
+
+`400` is a query that does not parse (the message carries the column), a bad
+parameter, or a cursor that did not come from this API. `500` is ours and says
+only that the request failed.
+
+### `GET /api/v1/logs`
+
+A page of logs, newest first.
+
+| Param | Default | Meaning |
+|---|---|---|
+| `limit` | 100 | At most 10000 |
+| `order` | `desc` | `desc` or `asc` |
+| `cursor` | | The previous page's `cursor`. Paging is stable while ingest continues: no log repeats or is skipped (the order is timestamp then arrival) |
+
+```json
+{"logs":[{"ts":1790000000123,"message":"db down","status":"error","service":"web-api","source":"winston","host":"box","tags":["env:dev"],"attrs":{"status_code":503,"route":"/orders"}}],
+ "cursor":"…", "truncated":false,
+ "stats":{"streams":2,"blocks_read":3,"bytes_read":18204,"entries_examined":412}}
+```
+
+`cursor` is absent on the last page. `truncated: true` means the **scan budget**
+(`logs.scan_budget`) ran out first: what came back is a correct prefix in the
+requested order and `cursor` continues from it, but logs further along were not
+examined. `stats` say what the query cost: the label index selects `streams`,
+then the scan decompresses `blocks_read` blocks. A query that names a service
+and a status reads few; a bare word with nothing else to narrow it reads
+everything in the range.
+
+### `GET /api/v1/logs/aggregate`
+
+A histogram of matching logs, for the bars above the list.
+
+| Param | Default | Meaning |
+|---|---|---|
+| `interval` | about 60 bars | Bar width in **milliseconds**. Absent, the smallest of 1s, 5s, 10s, 30s, 1m, 5m, 10m, 30m, 1h, 3h, 6h, 12h, 24h that draws at most 60 bars. More than 5000 bars is a `400`. Bars align to multiples of the interval, so two queries draw the same bars |
+| `by` | none | Split each bar: a label (`service`, `source`, `host`, `env`, `status`) or `@attr.path` |
+
+```json
+{"interval_ms":30000,"buckets":[{"ts":1790000010000,"counts":{"info":12,"error":1}}],"truncated":false,"stats":{…}}
+```
+
+Buckets are sparse: only bars that hold a log appear, in time order. A log with
+no value for `by` counts under `""`.
+
+### `GET /api/v1/logs/facets`
+
+The most frequent values of some keys among the matching logs, for the sidebar.
+
+| Param | Default | Meaning |
+|---|---|---|
+| `keys` | *(required)* | Comma separated, 1 to 10: labels or `@attr.path` |
+| `limit` | 10 | Values per key, 1 to 100, most frequent first (ties by value) |
+
+```json
+{"facets":{"status":[{"value":"info","count":9},{"value":"error","count":3}]},"capped":[],"truncated":false,"stats":{…}}
+```
+
+`capped` lists keys with more than 1000 distinct values: past that a facet stops
+tracking new values, so counts for late-appearing ones may be low. A log that
+lists a value twice (an array) counts it once.
+
+### `GET /api/v1/logs/tail`
+
+Live tail as **server-sent events**: only logs that arrive after the connection
+opens and match `q` (`from`/`to` are ignored). A client that wants the recent
+past reads `/api/v1/logs` first and then tails; it may see a log in both.
+
+```text
+: connected
+
+event: log
+data: {"ts":1790000000123,"message":"db down", …}
+
+event: dropped
+data: {"dropped":42}
+
+: keep-alive
+```
+
+Each subscriber has a buffer of 1000. A reader that falls behind **loses logs
+rather than slowing ingest**; the loss is reported by an `event: dropped` with
+the count since the last notice, sent with the next heartbeat. A comment line
+(`: keep-alive`) goes out every 15 seconds so proxies keep the connection.
+`503` when 64 tails are already open, or this server has none.
 
 ## Dashboards
 

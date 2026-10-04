@@ -50,6 +50,8 @@ type Options struct {
 
 	ScanInterval, IdleClose time.Duration
 	BatchLogs               int
+	// Totals receives every file pipeline's counters (default: not shared).
+	Totals *logpipeline.Totals
 }
 
 // Stats counts what the file tailer did.
@@ -270,7 +272,7 @@ func (f *Files) open(src *fileSource, id fileID, path string, size int64, now ti
 	default:
 		off = size
 	}
-	pl, err := logpipeline.New(pipelineSpec(src.cfg), logpipeline.Options{Clock: f.opts.Clock})
+	pl, err := logpipeline.New(pipelineSpec(src.cfg), logpipeline.Options{Clock: f.opts.Clock, Totals: f.opts.Totals})
 	if err != nil {
 		_ = fh.Close()
 		f.opts.Logger.Error("tailer: building pipeline", "source", src.cfg.Source, "err", err)

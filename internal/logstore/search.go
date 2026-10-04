@@ -160,6 +160,10 @@ func less(a, b rawEntry) bool {
 	return a.Seq < b.Seq
 }
 
+// ErrBadCursor is a cursor that did not come from this store's results (a
+// caller error, not a storage one).
+var ErrBadCursor = errors.New("logstore: malformed cursor")
+
 type cursorKey struct {
 	ts  int64
 	seq uint64
@@ -172,13 +176,13 @@ func encodeCursor(e rawEntry) string {
 func decodeCursor(c string) (cursorKey, error) {
 	raw, err := base64.RawURLEncoding.DecodeString(c)
 	if err != nil {
-		return cursorKey{}, errors.New("logstore: malformed cursor")
+		return cursorKey{}, ErrBadCursor
 	}
 	ts, seq, ok := strings.Cut(string(raw), ".")
 	t, err1 := strconv.ParseInt(ts, 10, 64)
 	q, err2 := strconv.ParseUint(seq, 10, 64)
 	if !ok || err1 != nil || err2 != nil {
-		return cursorKey{}, errors.New("logstore: malformed cursor")
+		return cursorKey{}, ErrBadCursor
 	}
 	return cursorKey{t, q}, nil
 }

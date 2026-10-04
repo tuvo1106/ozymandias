@@ -9,6 +9,7 @@ import (
 
 	"github.com/tuvo1106/ozymandias/internal/agent/collector"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/docker"
+	"github.com/tuvo1106/ozymandias/internal/agent/logpipeline"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 )
 
@@ -302,5 +303,90 @@ func TestLoad_ContainerNameCapDefault(t *testing.T) {
 	}
 	if got := Default().Collectors.Docker.MaxContainerNames; got != docker.DefaultMaxContainerNames {
 		t.Errorf("Default() = %d", got)
+	}
+}
+
+func TestLoad_LogsDefaultToOffAndSourcesLoadWithInlinePipelineFields(t *testing.T) {
+	cfg, _, err := Load("", []string{"OZY_AGENT_CONFD_PATH=" + t.TempDir()})
+	if err != nil || cfg.Logs.Enabled {
+		t.Fatalf("logs must be off by default: %v %+v", err, cfg.Logs)
+	}
+	dir := testutil.TempDirWith(t, map[string]string{
+		"agent.yaml": `confd_path: ` + t.TempDir() + `
+logs:
+  enabled: true
+  batch_logs: 500
+  sources:
+    - type: file
+      path: /var/log/apps/web/*.log
+      service: web-api
+      source: winston
+      start_position: beginning
+      tags: [env:dev]
+      rate_limit: 50
+      exclude_at_match: ['GET /healthz']
+      redact:
+        keys: [customerRef]
+        rules:
+          - pattern: '\d{3}-\d{4}'
+    - type: docker
+      include_labels: ["com.docker.compose.project=demo"]
+      exclude_names: ["^judge-"]
+      source: python
+      multiline: {start_pattern: '^(INFO|ERROR)'}
+`,
+	})
+	cfg, _, err = Load(dir+"/agent.yaml", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, d := cfg.Logs.Sources[0], cfg.Logs.Sources[1]
+	if !cfg.Logs.Enabled || cfg.Logs.BatchLogs != 500 || f.Source != "winston" || f.RateLimit != 50 || f.ExcludeAtMatch[0] != "GET /healthz" ||
+		f.Redact.Keys[0] != "customerRef" || len(f.Redact.Rules) != 1 || d.Source != "python" || d.Multiline.StartPattern != "^(INFO|ERROR)" || d.ExcludeNames[0] != "^judge-" {
+		t.Fatalf("%+v", cfg.Logs)
+	}
+	if cfg.Logs.ScanInterval != 10*time.Second || cfg.Logs.PollInterval != time.Second {
+		t.Fatalf("defaults lost: %+v", cfg.Logs)
+	}
+}
+
+func TestAgent_ValidateLogs(t *testing.T) {
+	ok := func(mod func(*Logs)) error {
+		a := Default()
+		a.Logs.Enabled = true
+		mod(&a.Logs)
+		return a.Validate()
+	}
+	if err := ok(func(*Logs) {}); err != nil {
+		t.Fatalf("enabled with no sources is valid: %v", err)
+	}
+	src := func(s LogSource) func(*Logs) { return func(l *Logs) { l.Sources = []LogSource{s} } }
+	for name, c := range map[string]struct {
+		mod  func(*Logs)
+		want string
+	}{
+		"unknown type":    {src(LogSource{Type: "kafka"}), "want file or docker"},
+		"file no path":    {src(LogSource{Type: "file"}), "needs a path"},
+		"bad glob":        {src(LogSource{Type: "file", Path: "["}), "path"},
+		"docker no label": {src(LogSource{Type: "docker"}), "include_labels"},
+		"bad start":       {src(LogSource{Type: "file", Path: "x", StartPosition: "middle"}), "start_position"},
+		"bad multiline":   {src(LogSource{Type: "file", Path: "x", Multiline: Multiline{StartPattern: "("}}), "multiline"},
+		"bad exclude":     {src(LogSource{Type: "docker", IncludeLabels: []string{"a"}, ExcludeNames: []string{"("}}), "exclude_names"},
+		"bad grok": {func(l *Logs) {
+			l.Sources = []LogSource{{Type: "file", Path: "x"}}
+			l.Sources[0].Grok = []logpipeline.GrokSpec{{Pattern: "("}}
+		}, "grok"},
+		"bad batch": {func(l *Logs) { l.BatchLogs = 5000 }, "batch_logs"},
+		"bad scan":  {func(l *Logs) { l.ScanInterval = -1 }, "scan_interval"},
+	} {
+		if err := ok(c.mod); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: %v, want %q", name, err, c.want)
+		}
+	}
+	// A disabled section is not validated: a broken source is dormant, not fatal.
+	a := Default()
+	a.Logs.Sources = []LogSource{{Type: "kafka"}}
+	if err := a.Validate(); err != nil {
+		t.Fatalf("disabled logs validated: %v", err)
 	}
 }

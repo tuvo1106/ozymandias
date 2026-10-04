@@ -55,6 +55,20 @@ interval's increase.
 | `ozy.agent.forwarder.series_sent` | counter | series | — | agent | Series the intake reported as accepted |
 | `ozy.agent.forwarder.series_rejected` | counter | series | — | agent | Series the intake reported as rejected (the reasons are logged) |
 | `ozy.agent.forwarder.queue_bytes` | gauge | bytes | — | agent | Compressed payloads waiting to be sent or retried |
+| `ozy.agent.logs.sent` | counter | logs | — | agent | Logs ozyd stored |
+| `ozy.agent.logs.rejected` | counter | logs | — | agent | Logs ozyd refused one by one (bad timestamp, status, …); resending cannot fix them |
+| `ozy.agent.logs.batches_refused` | counter | batches | — | agent | Whole batches ozyd refused as malformed or too large, dropped rather than retried forever |
+| `ozy.agent.logs.send_errors` | counter | requests | — | agent | Failed sends (network, 429, 5xx); the lines are read again |
+| `ozy.agent.logs.lines` | counter | lines | — | agent | Lines read from files and containers |
+| `ozy.agent.logs.emitted` | counter | logs | — | agent | Logs the pipeline produced |
+| `ozy.agent.logs.excluded` | counter | lines | — | agent | Lines dropped by `exclude_at_match` |
+| `ozy.agent.logs.rate_limited` | counter | lines | — | agent | Lines dropped by a source's rate limit |
+| `ozy.agent.logs.unparsed` | counter | lines | — | agent | Lines no parser recognized, kept as plain text |
+| `ozy.agent.logs.redactions` | counter | strings | — | agent | Messages and attribute values the redactor changed |
+| `ozy.agent.logs.files_tailed` | gauge | files | — | agent | Files currently open |
+| `ozy.agent.logs.file_truncations` | counter | events | — | agent | Files that shrank in place (copytruncate) and restarted at 0 |
+| `ozy.agent.logs.containers_tailed` | gauge | containers | — | agent | Containers whose log stream is followed |
+| `ozy.agent.logs.container_reconnects` | counter | events | — | agent | Container log streams reopened after breaking |
 | `ozy.agent.collector.runs` | counter | runs | `collector` | agent | Completed runs of a collector, successful or not |
 | `ozy.agent.collector.errors` | counter | runs | `collector` | agent | Runs that returned an error (logged once per distinct error, and on recovery) |
 | `ozy.agent.collector.timeouts` | counter | runs | `collector` | agent | Runs cancelled at their limit: `collectors.timeout`, or the collector's interval if that is shorter |
@@ -74,6 +88,10 @@ interval's increase.
 | `ozy.intake.series_accepted` | counter | series | — | ozyd | Series stored by `/v1/series` (and the self-report) |
 | `ozy.intake.series_rejected` | counter | series | — | ozyd | Series refused, per reason in the response's `errors` |
 | `ozy.intake.points_accepted` | counter | points | — | ozyd | Points stored |
+| `ozy.intake.logs_accepted` | counter | logs | — | ozyd | Logs stored by `/v1/logs` |
+| `ozy.intake.logs_rejected` | counter | logs | — | ozyd | Logs refused, per reason in the response's `errors` |
+| `ozy.loghub.subscribers` | gauge | tails | — | ozyd | Open live tails |
+| `ozy.loghub.dropped` | counter | logs | — | ozyd | Logs a live tail lost because its reader was too slow |
 | `ozy.store.series` | gauge | series | `store` | ozyd | Series in the metric store |
 | `ozy.store.samples` | gauge | samples | `store` | ozyd | Samples in the metric store |
 | `ozy.tsdb.head.series` | gauge | series | `store` | ozyd | Series in the in-memory head (not yet in a block) |
