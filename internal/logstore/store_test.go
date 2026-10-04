@@ -389,3 +389,33 @@ func firstDiff(a, b []string) string {
 	}
 	return fmt.Sprintf("lengths %d vs %d", len(a), len(b))
 }
+
+func TestStore_UsageCountsWhatIsHeldAndWhatIsSealed(t *testing.T) {
+	s, _ := openStore(t, t.TempDir())
+	defer func() { _ = s.Close() }()
+	if u := s.Usage(); u != (Usage{}) {
+		t.Fatalf("an empty store reports %+v", u)
+	}
+	logs := []wire.Log{
+		{Ts: t0.UnixMilli(), Message: "one", Status: "info", Service: "a"},
+		{Ts: t0.UnixMilli() + 1, Message: "two", Status: "error", Service: "a"},
+		{Ts: t0.UnixMilli() + 2, Message: "three", Status: "info", Service: "b"},
+	}
+	if err := s.Append(context.Background(), logs); err != nil {
+		t.Fatal(err)
+	}
+	u := s.Usage()
+	if u.Streams != 3 || u.HeadEntries != 3 || u.HeadBytes <= 0 || u.Entries != 0 || u.Blocks != 0 {
+		t.Fatalf("before a seal: %+v", u)
+	}
+	if err := s.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	u = s.Usage()
+	if u.Entries != 3 || u.HeadEntries != 0 || u.HeadBytes != 0 || u.Chunks != 3 || u.Blocks != 3 {
+		t.Fatalf("after a seal: %+v", u)
+	}
+	if u.RawBytes <= 0 || u.CompressedBytes <= 0 || u.BloomBytes <= 0 {
+		t.Fatalf("sizes: %+v", u)
+	}
+}

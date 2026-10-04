@@ -390,3 +390,19 @@ func TestAgent_ValidateLogs(t *testing.T) {
 		t.Fatalf("disabled logs validated: %v", err)
 	}
 }
+
+// The files the compose stack ships must load together: a setting in two of
+// them is an error at agent start, which a reader of either file alone cannot
+// see (agent.yaml once set logs.enabled and agent.d/logs.yaml could not).
+func TestShippedDeployConfigLoadsWithLogsOn(t *testing.T) {
+	cfg, _, err := Load("../../../deploy/agent.yaml", []string{"OZY_AGENT_CONFD_PATH=../../../deploy/agent.d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Logs.Enabled || cfg.Logs.RegistryPath == "" || len(cfg.Logs.Sources) == 0 {
+		t.Fatalf("logs = %+v", cfg.Logs)
+	}
+	if cfg.Logs.ContainerCollectAll {
+		t.Error("the shipped stack must not follow every container on the host by default")
+	}
+}

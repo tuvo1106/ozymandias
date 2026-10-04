@@ -1,0 +1,20 @@
+# Log collection for the compose stack (M4). A setting may be defined in only
+# one file, so this is the one place logs.enabled is set; agent.yaml documents
+# the rest of the section.
+#
+# Container logs are opt-in, not "everything on the Docker host": a container
+# is followed when it carries the label ozy.logs.enabled=true, or when a
+# source below selects it. Files under /var/log/apps (OZY_APP_LOGS in
+# docker-compose.yml) are followed by `type: file` sources in the per-app
+# fragments.
+logs:
+  enabled: true
+  registry_path: /var/lib/ozymandias-agent/registry.json
+  sources:
+    # Any app can drop one-JSON-object-per-line files here (the Python SDK's
+    # JSONFormatter writes that, so does winston's json format). A file that
+    # appears after the agent started is read from its first line.
+    -
+      type: file
+      path: /var/log/apps/*.log
+      source: json

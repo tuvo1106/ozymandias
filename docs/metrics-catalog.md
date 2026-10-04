@@ -90,6 +90,14 @@ interval's increase.
 | `ozy.intake.points_accepted` | counter | points | — | ozyd | Points stored |
 | `ozy.intake.logs_accepted` | counter | logs | — | ozyd | Logs stored by `/v1/logs` |
 | `ozy.intake.logs_rejected` | counter | logs | — | ozyd | Logs refused, per reason in the response's `errors` |
+| `ozy.logstore.streams` | gauge | streams | — | ozyd | Distinct label sets (service, source, host, env, status) the log store holds |
+| `ozy.logstore.chunks` | gauge | files | — | ozyd | Chunk files: one per stream per UTC day |
+| `ozy.logstore.entries` | gauge | logs | — | ozyd | Logs in sealed blocks |
+| `ozy.logstore.head_entries` | gauge | logs | — | ozyd | Logs still in memory and the WAL, not yet sealed |
+| `ozy.logstore.head_bytes` | gauge | bytes | — | ozyd | Their size |
+| `ozy.logstore.raw_bytes` | gauge | bytes | — | ozyd | Sealed blocks' size before compression |
+| `ozy.logstore.compressed_bytes` | gauge | bytes | — | ozyd | Their size on disk; `raw_bytes / compressed_bytes` is the compression ratio |
+| `ozy.logstore.bloom_bytes` | gauge | bytes | — | ozyd | The per-block bloom filters, in addition to the above |
 | `ozy.loghub.subscribers` | gauge | tails | — | ozyd | Open live tails |
 | `ozy.loghub.dropped` | counter | logs | — | ozyd | Logs a live tail lost because its reader was too slow |
 | `ozy.store.series` | gauge | series | `store` | ozyd | Series in the metric store |

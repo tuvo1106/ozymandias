@@ -198,8 +198,9 @@ log:
 logs:
   # Log collection (M4): tail files and container output, parse, redact, and
   # send to ozyd. Off by default — with it off the agent reads no files and
-  # opens no log streams.
-  enabled: false
+  # opens no log streams. (The compose stack turns it on in agent.d/logs.yaml; a
+  # setting may be defined in only one file, so it is not written here.)
+  # enabled: false
   # Where read positions are kept between restarts, written atomically. Empty
   # keeps them in memory, so a restart starts each source over from its
   # start_position. Offsets are committed only after ozyd has accepted the lines

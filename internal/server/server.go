@@ -178,6 +178,18 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	s.reg.GaugeFunc("ozy.store.series", func() float64 { return float64(store.Stats().Series) }, "store:"+engine)
 	s.reg.GaugeFunc("ozy.store.samples", func() float64 { return float64(store.Stats().Samples) }, "store:"+engine)
 	s.registerStoreMetrics(engine)
+	for name, f := range map[string]func(logstore.Usage) float64{
+		"ozy.logstore.streams":          func(x logstore.Usage) float64 { return float64(x.Streams) },
+		"ozy.logstore.chunks":           func(x logstore.Usage) float64 { return float64(x.Chunks) },
+		"ozy.logstore.entries":          func(x logstore.Usage) float64 { return float64(x.Entries) },
+		"ozy.logstore.head_entries":     func(x logstore.Usage) float64 { return float64(x.HeadEntries) },
+		"ozy.logstore.head_bytes":       func(x logstore.Usage) float64 { return float64(x.HeadBytes) },
+		"ozy.logstore.raw_bytes":        func(x logstore.Usage) float64 { return float64(x.RawBytes) },
+		"ozy.logstore.compressed_bytes": func(x logstore.Usage) float64 { return float64(x.CompressedBytes) },
+		"ozy.logstore.bloom_bytes":      func(x logstore.Usage) float64 { return float64(x.BloomBytes) },
+	} {
+		s.reg.GaugeFunc(name, func() float64 { return f(ls.Usage()) })
+	}
 	s.reg.GaugeFunc("ozy.loghub.subscribers", func() float64 { return float64(s.logHub.Stats().Subscribers) })
 	s.reg.CounterFunc("ozy.loghub.dropped", func() float64 { return float64(s.logHub.Stats().Dropped) })
 

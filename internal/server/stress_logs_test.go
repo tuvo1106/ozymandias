@@ -161,3 +161,38 @@ func TestLogs_StressAppendersSearchersAndTails(t *testing.T) {
 	bg.Wait()
 	testutil.Eventually(t, 5*time.Second, func() bool { return srv.logHub.Stats().Subscribers == 0 }, "tail subscriptions not released")
 }
+
+// Silent emptiness: a metric that is registered but never appears reads as
+// "nothing is wrong". The log store's self-metrics must be in /debug/vars.
+func TestLogs_StoreSelfMetricsAreReported(t *testing.T) {
+	srv, err := New(testConfig(t), Options{Logger: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
+	body, _ := json.Marshal(wire.LogsPayload{Logs: []wire.Log{{Ts: time.Now().UnixMilli(), Message: "x", Status: "info", Service: "s"}}})
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/logs", bytes.NewReader(body)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/debug/vars", nil))
+	for _, name := range []string{"streams", "chunks", "entries", "head_entries", "head_bytes", "raw_bytes", "compressed_bytes", "bloom_bytes"} {
+		if !strings.Contains(rec.Body.String(), `"ozy.logstore.`+name+`"`) {
+			t.Errorf("ozy.logstore.%s is not in /debug/vars", name)
+		}
+	}
+	if !strings.Contains(rec.Body.String(), `"ozy.logstore.head_entries","type":"gauge","value":1`) && !regexpHeadOne(rec.Body.String()) {
+		t.Errorf("head_entries did not count the log: %s", rec.Body)
+	}
+}
+
+func regexpHeadOne(s string) bool {
+	i := strings.Index(s, `"ozy.logstore.head_entries"`)
+	if i < 0 {
+		return false
+	}
+	j := strings.Index(s[i:], `"value":`)
+	return j >= 0 && strings.HasPrefix(s[i+j:], `"value":1`)
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/agent"
+	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
 	agentconfig "github.com/tuvo1106/ozymandias/internal/agent/config"
 	"github.com/tuvo1106/ozymandias/internal/agent/logpipeline"
 	"github.com/tuvo1106/ozymandias/internal/httpserve"
@@ -28,7 +30,7 @@ type logStack struct {
 	dir string
 }
 
-func startLogStack(t *testing.T, sources func(dir string) []agentconfig.LogSource) *logStack {
+func startLogStack(t *testing.T, sources func(dir string) []agentconfig.LogSource, tune ...func(*agent.Options)) *logStack {
 	t.Helper()
 	clk := testutil.NewFakeClock(time.Unix(1790000000, 0))
 	srv, err := New(testConfig(t), Options{Logger: quiet, Clock: clk})
@@ -48,7 +50,11 @@ func startLogStack(t *testing.T, sources func(dir string) []agentconfig.LogSourc
 	acfg.HTTP.ShutdownTimeout = time.Second
 	acfg.Logs.Enabled = true
 	acfg.Logs.Sources = sources(dir)
-	a, err := agent.New(acfg, agent.Options{Logger: quiet, Clock: clk})
+	aopts := agent.Options{Logger: quiet, Clock: clk}
+	for _, f := range tune {
+		f(&aopts)
+	}
+	a, err := agent.New(acfg, aopts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,5 +246,57 @@ WARNING app.auth reset requested password=%s from %s
 	// What was not secret is still there.
 	if got := s.search("lang=en"); len(got) != 1 {
 		t.Errorf("the non-secret part of the reset link was lost: %d", len(got))
+	}
+}
+
+// fakeDaemon is a Docker daemon with one container whose log is a TTY stream
+// (raw text, no 8-byte frames), as `docker run -t` produces.
+type fakeDaemon struct{ labels map[string]string }
+
+func (d fakeDaemon) ListContainers(context.Context) ([]dockerapi.Container, error) {
+	return []dockerapi.Container{{ID: "c1", Names: []string{"/smoke"}, Labels: d.labels}}, nil
+}
+
+func (d fakeDaemon) Inspect(context.Context, string) (dockerapi.ContainerJSON, error) {
+	var j dockerapi.ContainerJSON
+	j.Config.Tty = true
+	return j, nil
+}
+
+func (d fakeDaemon) Logs(_ context.Context, _ string, since time.Time, _ bool) (io.ReadCloser, error) {
+	// One second after the test clock, so it is newer than any "start at the end" position.
+	line := "2026-09-21T14:13:21.000000000Z {\"level\":\"warn\",\"message\":\"container slow\",\"ms\":412}\n"
+	if t, err := time.Parse(time.RFC3339Nano, line[:30]); err == nil && !since.IsZero() && !t.After(since) {
+		line = ""
+	}
+	return io.NopCloser(strings.NewReader(line)), nil
+}
+
+// A container that carries the opt-in label is followed with no log source
+// configured at all: "no sources" must not mean "no tailer". (The live smoke
+// found the tailer was only built when a docker source or collect-all existed.)
+func TestAcceptance_ALabelledContainerIsFollowedWithNoDockerSource(t *testing.T) {
+	s := startLogStack(t, func(string) []agentconfig.LogSource { return nil }, func(o *agent.Options) {
+		o.LogDockerAPI = fakeDaemon{labels: map[string]string{"ozy.logs.enabled": "true", "ozy.logs.service": "labelled"}}
+	})
+	// The follower registers on the fake clock a moment after the scan that finds the
+	// container; give it that moment before racing the clock past its timers.
+	time.Sleep(time.Second)
+	got := s.waitFor("service:labelled status:warn @ms:>400", 1)
+	if got[0].Message != "container slow" {
+		t.Fatalf("%+v", got[0])
+	}
+}
+
+func TestAcceptance_AnUnlabelledContainerIsLeftAlone(t *testing.T) {
+	s := startLogStack(t, func(string) []agentconfig.LogSource { return nil }, func(o *agent.Options) {
+		o.LogDockerAPI = fakeDaemon{labels: map[string]string{}}
+	})
+	for i := 0; i < 30; i++ {
+		s.tick()
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := s.search(""); len(got) != 0 {
+		t.Fatalf("an unlabelled container was followed: %+v", got)
 	}
 }

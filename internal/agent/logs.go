@@ -76,7 +76,10 @@ func (a *Agent) setupLogs(opts Options) error {
 		a.reg.CounterFunc("ozy.agent.logs.file_truncations", func() float64 { return float64(rt.files.Stats().Truncations) })
 		a.reg.GaugeFunc("ozy.agent.logs.files_tailed", func() float64 { return float64(rt.files.Stats().Files) })
 	}
-	if len(dockerSrcs) > 0 || l.ContainerCollectAll {
+	// Always built: a container can opt in with a label and no agent config at all,
+	// so "no docker sources" does not mean "no containers to follow". With no
+	// daemon it costs one warning per outage, not one per scan.
+	{
 		api := opts.LogDockerAPI
 		if api == nil {
 			if a.dockerClient == nil {

@@ -144,6 +144,47 @@ type Store struct {
 	afterBlock func()
 }
 
+// Usage is a cheap summary of what the store holds, for self-metrics and the
+// compression ratio in the operator's hands: compressed against raw bytes is
+// the number that says whether the format earns its keep.
+type Usage struct {
+	Streams int
+	Chunks  int
+	Blocks  int
+	// Entries are logs in sealed blocks; HeadEntries and HeadBytes are those
+	// still in memory (and in the WAL) waiting to be sealed.
+	Entries     int64
+	HeadEntries int64
+	HeadBytes   int64
+	// RawBytes is what sealed blocks hold before compression, CompressedBytes
+	// what they take on disk (compressed data only), BloomBytes the filters.
+	RawBytes        int64
+	CompressedBytes int64
+	BloomBytes      int64
+}
+
+// Usage summarizes the store. It reads the in-memory index only, under the
+// search lock, so it is cheap enough to call on every metrics report.
+func (s *Store) Usage() Usage {
+	s.smu.RLock()
+	defer s.smu.RUnlock()
+	st := Usage{Streams: len(s.streams), Chunks: len(s.chunks)}
+	for _, c := range s.chunks {
+		for _, b := range c.blocks {
+			st.Blocks++
+			st.Entries += int64(b.N)
+			st.RawBytes += int64(b.RawLen)
+			st.CompressedBytes += int64(b.CompLen)
+			st.BloomBytes += int64(b.BloomLen)
+		}
+	}
+	for _, x := range s.streams {
+		st.HeadEntries += int64(len(x.head))
+		st.HeadBytes += int64(x.headBytes)
+	}
+	return st
+}
+
 // ErrClosed is returned by operations on a closed store.
 var ErrClosed = errors.New("logstore: closed")
 

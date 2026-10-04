@@ -66,6 +66,13 @@ services:
     volumes:
       # Per-app fragments, editable without rebuilding the image.
       - ./agent.d:/etc/ozy/agent.d:ro
+      # Where the agent remembers how far it has read each log, so a restart
+      # repeats at most one batch and skips nothing.
+      - ozymandias-agent-data:/var/lib/ozymandias-agent
+      # JSON log files of apps on this host, read-only: drop *.log files in
+      # deploy/app-logs/ or point OZY_APP_LOGS at your own directory. Other
+      # formats get their own source in agent.d/<app>.yaml (agent.d/README.md).
+      - ${OZY_APP_LOGS:-./app-logs}:/var/log/apps:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
     # The socket is root:<docker group>, mode 660; the agent runs as
     # nonroot. The group's id differs per Docker host (991 under Colima), so
@@ -87,6 +94,7 @@ services:
 
 volumes:
   ozymandias-data:
+  ozymandias-agent-data:
 
 networks:
   ozymandias:

@@ -96,6 +96,10 @@ type Docker struct {
 	opts    DockerOptions
 	sources []*dockerSource
 
+	// listFailing is set while the daemon cannot be listed, so an absent Docker
+	// is one warning, not one per scan.
+	listFailing atomic.Bool
+
 	mu      sync.Mutex
 	conts   map[string]*cont
 	started bool
@@ -194,11 +198,12 @@ func (d *Docker) Run(ctx context.Context) {
 func (d *Docker) Scan(ctx context.Context) {
 	list, err := d.opts.API.ListContainers(ctx)
 	if err != nil {
-		if ctx.Err() == nil {
-			d.opts.Logger.Warn("tailer: listing containers", "err", err)
+		if ctx.Err() == nil && !d.listFailing.Swap(true) {
+			d.opts.Logger.Warn("tailer: listing containers (reported once until it works again)", "err", err)
 		}
 		return
 	}
+	d.listFailing.Store(false)
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.ctx == nil {
