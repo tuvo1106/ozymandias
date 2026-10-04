@@ -492,8 +492,9 @@ func TestRun_DockerEventsToIntake(t *testing.T) {
 }
 
 // The container-name cap is wired through the agent: with room for one name,
-// the second unnamed container's exit reaches the intake as container_name:other
-// (and the fold is counted), so the watcher and the cap really are connected.
+// the second unnamed container's exit reaches the intake as container_name:other,
+// so the watcher and the cap really are connected. (The fold counter is not
+// asserted here; namecap_test pins the callback.)
 func TestRun_DockerEventsFoldNamesOverTheCap(t *testing.T) {
 	testutil.CheckGoroutines(t)
 	var mu sync.Mutex
@@ -548,11 +549,6 @@ func TestRun_DockerEventsFoldNamesOverTheCap(t *testing.T) {
 	// The aggregator's ticker and the docker collector's start-up timer.
 	testutil.Eventually(t, 2*time.Second, func() bool { return clk.Waiters() >= 2 }, "not armed")
 	clk.Advance(10 * time.Second)
-	testutil.Eventually(t, 3*time.Second, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return slices.ContainsFunc(got, func(s wire.Series) bool { return s.Metric == "container.exits" })
-	}, "container.exits not forwarded")
 	testutil.Eventually(t, 3*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()

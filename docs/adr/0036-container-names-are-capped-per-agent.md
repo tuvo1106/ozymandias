@@ -18,7 +18,7 @@ predicted.
 0 is unlimited) and reports every container past that as `container_name:other`, without a
 `container_id`.** One `NameCap` is shared by the Docker collector, the event watcher and
 autodiscovery, so a container has one name everywhere. `ozy.agent.docker.container_names_folded`
-counts folded containers.
+counts folds (a container can count more than once).
 
 - Admission is first come, first kept, for the life of the process: a name that changed to
   `other` mid-life would split one container's series in two.
@@ -39,6 +39,13 @@ counts folded containers.
 - A long-running agent on a churning daemon fills the set and then folds every new name, including
   a real service started later, until restart. The fold counter is the signal; the fix is a
   rewrite rule or a higher limit.
+- Slots go to whichever name asks first, and exit events ask too: a throwaway `--rm` container that
+  is never listed still takes a slot when it dies, and at startup the collector's goroutines race, so
+  which of many names is admitted can differ between restarts. Preferring labelled services (compose
+  project, `ozy.service`) was considered and deferred; an operator who needs a service guaranteed
+  its name writes it a `container_name_rewrite` rule (`^(postgres)$` → `${1}`), which never folds.
+- An empty name takes no slot. Names are admitted as the daemon spells them, before tag
+  normalization, so two spellings that normalize alike can use two slots.
 - `other` is a name a container could really have; it is not reserved.
 - Folded containers' `container.*` values sum into one series like a rewritten group's.
 - The cap lives in the agent, so a cap change needs an agent restart.

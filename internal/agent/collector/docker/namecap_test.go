@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -92,7 +93,26 @@ func TestTagger_CapFoldsOverflowNamesAndDropsTheirID(t *testing.T) {
 		}
 	}
 	// A rewritten name neither takes a slot nor is folded, even when full.
+	// An empty name takes no slot either.
+	if got := tagsOf("", "dddddddddddddddd"); slices.ContainsFunc(got, func(s string) bool { return strings.HasPrefix(s, "container_name:") }) {
+		t.Fatalf("an empty name got a name tag: %v", got)
+	}
 	if got := tagsOf("judge-123", "cccccccccccccccc"); !slices.Contains(got, "container_name:judge") {
 		t.Fatalf("a rewritten name must not be capped: %v", got)
+	}
+}
+
+// The claim "a rewritten name does not use a slot", pinned from the other
+// side: a rewritten container seen first must leave the one slot free, and an
+// empty name must too.
+func TestTagger_RewrittenAndEmptyNamesLeaveTheSlotFree(t *testing.T) {
+	tg := tagger{
+		rewrites: []Rewrite{{Match: regexp.MustCompile(`^judge-.*`), Replace: "judge"}},
+		cap:      NewNameCap(1, nil),
+	}
+	tg.tags("judge-1", "aaaaaaaaaaaaaaaa", "img:1", nil)
+	tg.tags("", "bbbbbbbbbbbbbbbb", "img:1", nil)
+	if got := tg.tags("real", "cccccccccccccccc", "img:1", nil); !slices.Contains(got, "container_name:real") {
+		t.Fatalf("the slot was spent before a plain name asked: %v", got)
 	}
 }

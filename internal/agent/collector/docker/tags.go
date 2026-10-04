@@ -52,28 +52,30 @@ func (t tagger) tags(name, id, image string, labels map[string]string) []string 
 			out = append(out, k+":"+v)
 		}
 	}
-	rewritten := false
+	// dropID: the name stands for many containers (grouped by a rewrite, or
+	// folded by the cap), so a container_id would defeat it.
+	dropID := false
 	for _, r := range t.rewrites {
 		if m := r.Match.FindStringSubmatchIndex(name); m != nil {
 			// A replacement that expands to nothing (${2} of a pattern with
 			// one group, a group that matched empty) would leave the
 			// container with neither name nor id: keep the name instead.
 			if n := string(r.Match.ExpandString(nil, r.Replace, name, m)); n != "" {
-				name, rewritten = n, true
+				name, dropID = n, true
 			}
 			break
 		}
 	}
-	if !rewritten {
+	if !dropID && name != "" {
 		// A rewrite says "these are one thing" on purpose, so only the names
-		// nobody grouped count against the cap. A folded container is one
-		// thing too, and loses its id like a rewritten one.
+		// nobody grouped count against the cap. An empty name has no tag to
+		// bound and must not take a slot.
 		if n := t.cap.Admit(name); n != name {
-			name, rewritten = n, true
+			name, dropID = n, true
 		}
 	}
 	add("container_name", name)
-	if !rewritten {
+	if !dropID {
 		add("container_id", dockerapi.ShortID(id))
 	}
 	img, tag := dockerapi.ParseImage(image)
