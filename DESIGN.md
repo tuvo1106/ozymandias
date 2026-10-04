@@ -5,10 +5,11 @@ say what is planned; this file describes what exists. It grows with every
 milestone, and a section still waiting for its milestone says so. Decisions
 and the alternatives they beat are in [docs/adr/](docs/adr/).
 
-**Status: M2 (the real TSDB).** One metric type flows end to end: a
-statsd counter from an app reaches the agent, is aggregated, forwarded, stored
-and queried back through the UI — now through a real storage engine (§11)
-rather than a row per sample. Logs, traces and monitors are still ahead.
+**Status: M4 (logs).** Metrics flow end to end (a statsd counter from an app reaches
+the agent, is aggregated, forwarded, stored in the real TSDB (§11), and is queried back
+through the UI with metricql and dashboards), and so do logs (§14): files and container
+output are tailed, parsed, redacted, stored in an index-light store and searched or
+live-tailed in the Log Explorer. Traces and monitors are still ahead.
 
 ---
 
@@ -533,5 +534,96 @@ the two copies are kept identical.)
 
 ---
 
-*Sections added by later milestones: log path (M4), traces (M5), monitors (M6),
+## 14. Log path
+
+A log line takes one of two roads in, and both end in the same store.
+
+```mermaid
+%% The path one log line takes, from an app's stdout or file to a search result.
+%% Kept identical to the copy in DESIGN.md §14.
+flowchart TB
+    subgraph app["App / container"]
+        LINE["a line: file, or container stdout/stderr"]
+    end
+
+    subgraph ag["agent"]
+        direction TB
+        TAIL["tailer<br/>file: poll, (dev,inode), rotation, truncation<br/>docker: logs API, demux frames, resume by timestamp"]
+        ML["multiline<br/>start pattern · caps · timeout flush"]
+        PIPE["pipeline<br/>exclude → rate-limit → parse (json/grok/Rails group)<br/>→ remap → redact (last)"]
+        SINK["sink<br/>one synchronous POST per batch"]
+        REG[("registry<br/>offset / timestamp,<br/>committed only after a 2xx")]
+    end
+
+    subgraph dd["ozyd"]
+        IN["intake POST /v1/logs<br/>validate · store, THEN publish"]
+        WAL[("WAL<br/>fsync = the acknowledgement")]
+        HEAD["head block per stream<br/>(service, source, host, env, status)"]
+        CHUNK[("chunk files, one per stream per day<br/>zstd blocks + trigram bloom + footer index")]
+        HUB["hub<br/>filter · never blocks · drop + notice"]
+        API["GET /api/v1/logs · aggregate · facets"]
+        SSE["GET /api/v1/logs/tail (SSE)"]
+    end
+
+    LINE --> TAIL --> ML --> PIPE --> SINK
+    SINK -- "HTTPS + gzip" --> IN
+    IN --> WAL --> HEAD -- "seal: size or age" --> CHUNK
+    IN -- "after the store accepted" --> HUB --> SSE
+    IN -. "2xx" .-> SINK
+    SINK -. "success only" .-> REG
+    HEAD --> API
+    CHUNK -- "label index → bloom skip → scan" --> API
+```
+
+(Source: [docs/diagrams/log-path.mmd](docs/diagrams/log-path.mmd); the two copies
+are kept identical.)
+
+**Delivery is at-least-once, and the ordering is the proof.** The agent keeps a
+registry of how far it has read each file (device+inode, offset) and each
+container (timestamp). It writes a position only after `Sink.Send` returned
+nil, which is only after ozyd answered `202`, which is only after the batch is
+in the WAL and fsynced. A crash anywhere before that repeats the lines; nothing
+can skip them. Committing *before* sending would be at-most-once, and silently
+losing a line is the failure a log system exists to prevent, so the price is
+duplicates, bounded to one batch per crash (`TestFiles_ACrashAtAnyPoint…` kills
+the agent at every instant of random runs and counts).
+
+**The tailer is polling, not inotify.** File events do not cross the bind
+mounts the agent usually reads through (a Mac's Docker VM), and a poll is the
+same code on every platform. The cost is up to one poll interval (1s) of
+latency; the measured tail latency end to end through the real stack is 1.1 s.
+Rotation is handled by identity, not name: a renamed file keeps its handle open
+until it has been idle, so lines written to it after `mv` are not lost, and a
+shrunk file is a truncation and restarts at 0.
+
+**The pipeline runs in a fixed order, and redaction is last.** Parsers and
+remappers see the raw text (a JWT may be exactly the field a rule keys on);
+redaction runs after everything that could *create* a field, so no stage can
+re-introduce a secret. The Rails parser groups the interleaved lines of
+concurrent requests by request id into one event (`Started`…`Completed`), which
+is why a crash can lose a request that was still open: documented, not hidden.
+
+**ozyd stores, then publishes.** `POST /v1/logs` appends to the log store and
+only then hands the batch to the live-tail hub; a store error is a `503` with
+nothing published, so a tail never shows a log a search cannot find, and the
+agent resends the whole batch. The hub never blocks ingest: a subscriber has a
+buffer of 1000, and one that falls behind loses logs and is told how many.
+
+**The store is index-light** (ADR-0039). A stream is one label set of five
+low-cardinality labels (`service`, `source`, `host`, `env`, `status`; status is
+a label because "just the errors" is the first question). Everything else is
+found by scanning: the label index selects streams, per-block bloom filters
+(ADR-0040) rule out blocks that cannot contain a literal in the query, and the
+remaining blocks are decompressed and filtered by the same matcher the tail
+uses, so a query means the same thing on stored and arriving logs. This is the
+Loki trade (cheap writes and storage, scan-priced search) against
+Elasticsearch's (an inverted index over every term: cheap search, expensive
+writes and disk). `docs/notes/M4.md` has the measured numbers.
+
+**Retention** deletes whole days (a chunk file is one stream-day), so it is a
+file unlink, not a rewrite. A seal writes one block per day for that reason.
+
+---
+
+*Sections added by later milestones: traces (M5), monitors (M6),
 the queued pipeline (M7), OTLP (M8).*

@@ -82,6 +82,9 @@ func TestBloom_MeasuredSkipRateAndOverhead(t *testing.T) {
 	with, rare := benchCorpus(t, dirA, true)
 	without, _ := benchCorpus(t, dirB, false)
 	defer func() { _ = with.Close(); _ = without.Close() }()
+	u := with.Usage()
+	t.Logf("compression: %d logs, %d raw bytes -> %d compressed (%.1fx), plus %d bytes of filters",
+		u.Entries, u.RawBytes, u.CompressedBytes, float64(u.RawBytes)/float64(u.CompressedBytes), u.BloomBytes)
 	totalA, bloomsA := chunkBytes(t, dirA)
 	totalB, _ := chunkBytes(t, dirB)
 	t.Logf("disk: %d bytes with filters, %d without; the filters are %d bytes (%.1f%% of the chunk files)",
@@ -154,6 +157,26 @@ func BenchmarkAppend(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.SetBytes(int64(len(batch)))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := s.Append(context.Background(), batch); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportMetric(float64(b.N*len(batch))/b.Elapsed().Seconds(), "logs/s")
+}
+
+// BenchmarkAppend_Fsync is the same write with the WAL fsync on: what one
+// acknowledged request costs on this disk, which is what bounds a single
+// agent's batch rate (the agent sends one batch per poll).
+func BenchmarkAppend_Fsync(b *testing.B) {
+	s, _ := openStore(b, b.TempDir(), func(o *Options) { o.BlockBytes = 256 << 10; o.NoSync = false })
+	defer func() { _ = s.Close() }()
+	batch := make([]wire.Log, 500)
+	for i := range batch {
+		batch[i] = wire.Log{Ts: t0.UnixMilli() + int64(i), Service: "web-api", Status: "info", Host: "box",
+			Message: fmt.Sprintf("GET /api/orders/%d 200 in %dms", i, i%900), Attrs: map[string]any{"request_id": fmt.Sprintf("req-%08x", i*7919), "user": "bob"}}
+	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if err := s.Append(context.Background(), batch); err != nil {

@@ -486,6 +486,84 @@ port.
 
 TCP (the UI, `/healthz`, trace intake on 8126) is unaffected.
 
+## Logs
+
+Log collection is **off in `agent.yaml` and on in the compose stack** (`deploy/agent.d/logs.yaml`). With it
+off the agent reads no files and opens no log streams, and ozyd's log store is
+empty but present.
+
+### What gets collected
+
+- **Files.** A `type: file` source follows a glob. The compose stack mounts
+  `deploy/app-logs/` (or `$OZY_APP_LOGS`) read-only at `/var/log/apps` and ships a source for
+  `*.log` there that reads one JSON object per line. A file present when the agent starts is read from its
+  end (history is not replayed); a file that appears later is read from its first line;
+  `start_position: beginning` replays the first kind too.
+- **Containers.** A container is followed if it carries the label `ozy.logs.enabled=true`, or a
+  `type: docker` source selects it (`include_labels`, minus `exclude_names`), or
+  `container_collect_all` is on. `ozy.logs.enabled=false` always wins. Labels
+  `ozy.logs.{source,service,multiline_start,tags}` configure it with no agent config.
+  Container discovery is a poll (`scan_interval`, 10s), not a subscription to Docker events.
+- **Formats** (`source:`): `json`, `winston`, `caddy`, `python`, `rails`, `sidekiq`, `postgres`, `redis`,
+  `plain`. A line no parser recognizes is kept whole as the message; one that arrived on
+  stderr and no parser recognized is `status:error`. The reference for every key is the commented
+  `logs:` section of `deploy/agent.yaml`.
+- **The Python SDK's `JSONFormatter`** writes the `json` shape, so tracebacks are one event and `extra=`
+  fields are queryable attributes (docs/sdk/python.md).
+
+### Pipeline order and redaction
+
+Per line: exclude, rate-limit, parse, remap, **redact**. Redaction is last and on by default: JWTs,
+`Authorization`/`Bearer` values, secrets in URLs (`?token=…`), `password=`/`token=`-style pairs and email
+addresses become `[REDACTED]` in the message and in every string attribute, and the values of attributes
+whose key contains one of a few secret words (`password`, `passwd`, `secret`, `api_key`, `private_key`,
+`credential`, `cookie`, `authorization`, `phone`, `ssn`, `card_number`, `cvv`, `cvc`, and `token` or
+`access_key` at the end of the key, so `csrftoken` counts and `token_count` does not), plus any
+`redact.keys` you add, are replaced whatever they contain. Turn a default off with `redact.disable`, add
+patterns with `redact.rules`. Redaction costs most of the agent's per-line time (about 10 µs of 14 µs on one
+core, `BenchmarkPipeline_*`): the price of never storing a secret, paid on every line. Verify with
+`make smoke` (it plants a token and an email and searches for them) and `TestAcceptance_NoSecretIsFindable…`.
+
+### Delivery guarantee
+
+**At-least-once.** Positions are saved in `logs.registry_path` after ozyd accepted the lines. After a crash
+the agent repeats at most one batch (`logs.batch_logs`, default 1000) and skips nothing. With **no registry
+path** positions live in memory: a restart starts every file over from its `start_position`. Mount a volume
+at the registry's directory in any real deployment (compose does: `ozymandias-agent-data`).
+
+### Known limits
+
+- A Rails request still open in the pipeline when the agent dies is lost (its lines were consumed into
+  the group, and the commit covers them). Other formats lose nothing.
+- A line over 256 KiB is truncated. A multiline event ends at 500 lines or 256 KiB and the rest starts a new event; neither cap is configurable.
+- A tail whose reader falls behind drops logs (buffer 1000, 64 tails per server) and says how many.
+- A search is bounded by `logs.scan_budget`: past it the answer is a correct newest-first *prefix* with
+  `truncated: true`, never a silent partial.
+- Clock skew: a log stamped more than 10 minutes in the future is rejected (the response says which, and
+  the agent logs it). A log older than the retention window is stored and removed with its day at the next
+  sweep.
+- Docker log files are read through the daemon's API, so log drivers that do not support reading
+  (`none`, some remote drivers) give nothing.
+
+### Storage
+
+`logs.retention` (default 7d) drops whole days, so a log lives between the retention and the retention plus 24 hours. Chunk files live under `data_dir/logs/`, the WAL under
+`data_dir/logs/wal`. `ozy.logstore.*` reports streams, entries, head size, raw and compressed bytes and the
+bloom filters (docs/metrics-catalog.md); `raw_bytes / compressed_bytes` is the compression ratio.
+`logs.no_sync: true` skips the WAL fsync: faster, and an ozyd crash can lose the last unsynced batch that the
+agent already considered delivered. Leave it off. Chunk layout: [docs/formats/log-chunk.md](formats/log-chunk.md).
+
+### Logs troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Nothing appears | `curl :8126/debug/vars`: `ozy.agent.logs.lines` 0 means nothing was read (`files_tailed`, `containers_tailed`: is the source matching?); `lines` rising but `emitted` flat means excluded or rate-limited; both rising means look at `forwarder` errors and ozyd's `ozy.intake.logs_rejected` |
+| A file's old lines are missing | It existed when the agent first saw it, so it was read from its end. Set `start_position: beginning` |
+| Lines repeat after a restart | Expected, at most one batch. Many repeats mean the registry is not persisted: set `registry_path` on a volume |
+| A search is slow | `stats` in the response: `blocks_read` high with `blocks_skipped` 0 means the query has nothing a filter can test (a label, a number comparison, a negation, a word under 3 bytes). Narrow it with `service:` and `status:` |
+| `truncated: true` | The scan budget ran out. Narrow the range or query, or raise `logs.scan_budget` |
+| The tail shows "skipped" | The browser could not keep up; narrow the query |
+
 ## Troubleshooting
 
 | Symptom | Check |

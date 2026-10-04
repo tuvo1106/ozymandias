@@ -16,6 +16,10 @@ package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `ozy.integrations.logging.JSONFormatter`: a `logging` formatter that writes one JSON object per
+  line (timestamp, level, message, logger, exception, `error.kind`, `trace_id`, `span_id`, service/env/version
+  and every `extra=` field), so the agent reads fields rather than parsing text and a traceback is one event.
+  It never raises. See docs/sdk/python.md.
 - `ozy.integrations.asgi.MetricsMiddleware`: a pure ASGI middleware that records
   `http.request.count` and `http.request.duration` tagged by route pattern, method and
   status. It never raises into a request and is inert until `ozy.init()` enables the client.

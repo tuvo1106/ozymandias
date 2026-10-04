@@ -1,0 +1,34 @@
+%% The path one log line takes, from an app's stdout or file to a search result.
+%% Kept identical to the copy in DESIGN.md §14.
+flowchart TB
+    subgraph app["App / container"]
+        LINE["a line: file, or container stdout/stderr"]
+    end
+
+    subgraph ag["agent"]
+        direction TB
+        TAIL["tailer<br/>file: poll, (dev,inode), rotation, truncation<br/>docker: logs API, demux frames, resume by timestamp"]
+        ML["multiline<br/>start pattern · caps · timeout flush"]
+        PIPE["pipeline<br/>exclude → rate-limit → parse (json/grok/Rails group)<br/>→ remap → redact (last)"]
+        SINK["sink<br/>one synchronous POST per batch"]
+        REG[("registry<br/>offset / timestamp,<br/>committed only after a 2xx")]
+    end
+
+    subgraph dd["ozyd"]
+        IN["intake POST /v1/logs<br/>validate · store, THEN publish"]
+        WAL[("WAL<br/>fsync = the acknowledgement")]
+        HEAD["head block per stream<br/>(service, source, host, env, status)"]
+        CHUNK[("chunk files, one per stream per day<br/>zstd blocks + trigram bloom + footer index")]
+        HUB["hub<br/>filter · never blocks · drop + notice"]
+        API["GET /api/v1/logs · aggregate · facets"]
+        SSE["GET /api/v1/logs/tail (SSE)"]
+    end
+
+    LINE --> TAIL --> ML --> PIPE --> SINK
+    SINK -- "HTTPS + gzip" --> IN
+    IN --> WAL --> HEAD -- "seal: size or age" --> CHUNK
+    IN -- "after the store accepted" --> HUB --> SSE
+    IN -. "2xx" .-> SINK
+    SINK -. "success only" .-> REG
+    HEAD --> API
+    CHUNK -- "label index → bloom skip → scan" --> API
