@@ -176,7 +176,7 @@ func (f *Files) Shutdown(ctx context.Context) {
 	for _, src := range f.sources {
 		for _, t := range src.tail {
 			evs := t.st.ml.flush(now, true)
-			if end, err := t.st.deliver(ctx, evs, t.committed, now); err == nil {
+			if end, err := t.st.deliver(ctx, evs, t.committed, now, nil); err == nil {
 				t.committed = end
 			}
 			// Open Rails requests have no file offset to commit against; they are
@@ -295,6 +295,12 @@ func pipelineSpec(c FileSource) logpipeline.Spec {
 	return s
 }
 
+func (f *Files) flushRegistry() {
+	if err := f.opts.Registry.Flush(); err != nil {
+		f.opts.Logger.Warn("tailer: writing registry", "err", err)
+	}
+}
+
 func (f *Files) commit(t *tracked, now time.Time) {
 	f.opts.Registry.Set("file:"+t.id.String(), Entry{Path: t.path, Offset: t.committed, LastSeen: now.Unix()})
 }
@@ -322,7 +328,11 @@ func (f *Files) pollOne(ctx context.Context, src *fileSource, t *tracked, now ti
 	if len(lines) > 0 {
 		t.idle = now
 	}
-	end, err := t.st.deliver(ctx, events, t.committed, now)
+	end, err := t.st.deliver(ctx, events, t.committed, now, func(end int64) {
+		t.committed = end
+		f.commit(t, now)
+		f.flushRegistry()
+	})
 	t.committed = end
 	if err != nil {
 		f.stats.SendErrors++

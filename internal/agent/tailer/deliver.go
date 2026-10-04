@@ -49,7 +49,13 @@ func newStream(pl *logpipeline.Pipeline, meta logpipeline.Meta, start *regexp.Re
 // them, and re-reading them after a crash would only exclude them again. The
 // exception is a request still open in the pipeline, which a crash loses; that
 // is a documented limit (docs/operations.md).
-func (s *stream) deliver(ctx context.Context, events []event, committed int64, now time.Time) (int64, error) {
+//
+// commit, if set, is called with the new committed position right after each
+// batch the sink accepted, not once at the end. That is what bounds the repeat
+// after a crash to one batch: the position is made durable (the caller flushes
+// the registry) between batches, so a kill can only land between a batch's
+// acknowledgement and its commit.
+func (s *stream) deliver(ctx context.Context, events []event, committed int64, now time.Time, commit func(end int64)) (int64, error) {
 	var logs []wire.Log
 	lastEnd := committed
 	flush := func(end int64) error {
@@ -60,6 +66,9 @@ func (s *stream) deliver(ctx context.Context, events []event, committed int64, n
 			logs = logs[:0]
 		}
 		lastEnd = end
+		if commit != nil {
+			commit(end)
+		}
 		return nil
 	}
 	for _, e := range events {

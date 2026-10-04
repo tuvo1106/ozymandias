@@ -1,0 +1,35 @@
+# 2026/10/04 14:51:33.248188 [TestFiles_ACrashAtAnyPointLosesNothingAndRepeatsAtMostOneBatchPerCrash] [rapid] draw batch: 1
+# 2026/10/04 14:51:33.248190 [TestFiles_ACrashAtAnyPointLosesNothingAndRepeatsAtMostOneBatchPerCrash] [rapid] draw crashes: 1
+# 2026/10/04 14:51:33.248191 [TestFiles_ACrashAtAnyPointLosesNothingAndRepeatsAtMostOneBatchPerCrash] [rapid] draw crashAt0: 2
+# 2026/10/04 14:51:33.248194 [TestFiles_ACrashAtAnyPointLosesNothingAndRepeatsAtMostOneBatchPerCrash] [rapid] draw rounds0: 1
+# 2026/10/04 14:51:33.248194 [TestFiles_ACrashAtAnyPointLosesNothingAndRepeatsAtMostOneBatchPerCrash] [rapid] draw w0.0: 2
+# 2026/10/04 14:51:33.248414 [TestFiles_ACrashAtAnyPointLosesNothingAndRepeatsAtMostOneBatchPerCrash] [rapid] draw crashAt1: 1
+# 2026/10/04 14:51:33.248420 [TestFiles_ACrashAtAnyPointLosesNothingAndRepeatsAtMostOneBatchPerCrash] [rapid] draw rounds1: 1
+# 2026/10/04 14:51:33.248420 [TestFiles_ACrashAtAnyPointLosesNothingAndRepeatsAtMostOneBatchPerCrash] [rapid] draw w1.0: 0
+# 2026/10/04 14:51:33.248937 [TestFiles_ACrashAtAnyPointLosesNothingAndRepeatsAtMostOneBatchPerCrash] 2 duplicates after 1 crashes with batches of 1; at most one batch per crash is allowed
+# 
+v0.4.8#2760296766270997906
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

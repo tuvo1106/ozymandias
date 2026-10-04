@@ -3,6 +3,7 @@ package tailer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -501,4 +502,53 @@ func TestMultiline_AnEventIsStderrIfItsFirstLineWas(t *testing.T) {
 	if evs := m.flush(t0, true); len(evs) != 1 || evs[0].stderr {
 		t.Fatalf("%+v", evs)
 	}
+}
+
+// A daily-rotating logger (winston-daily-rotate-file) writes app-2026-10-04.log
+// until midnight, then creates app-2026-10-05.log. Lines written around the
+// switch, to either file, must all arrive, in order within each file, however
+// the scan and the poll fall relative to midnight.
+func TestFiles_MidnightRotationOfADailyFileLosesNothing(t *testing.T) {
+	r := newRig(t, FileSource{})
+	day1, day2 := "app-2026-10-04.log", "app-2026-10-05.log"
+	r.write(day1, "") // present at agent start: tailed from its end
+	r.poll(time.Second)
+	var want []string
+	appendLine := func(name, s string) {
+		r.write(name, s+"\n")
+		want = append(want, s)
+	}
+	for i := 0; i < 5; i++ {
+		appendLine(day1, fmt.Sprintf("late evening %d", i))
+	}
+	r.poll(time.Second)
+	// Midnight: the new file appears and the logger writes to it, while a straggler
+	// still lands in yesterday's, and the agent has not rescanned yet.
+	appendLine(day2, "00:00:00 first line of the new day")
+	appendLine(day1, "23:59:59 straggler to the old file")
+	r.poll(time.Second) // no scan yet: only day1 is open
+	appendLine(day2, "00:00:01 second line of the new day")
+	r.poll(DefaultScanInterval) // the scan finds day2 and reads it from its start
+	r.poll(time.Second)
+	got := r.sink.messages()
+	have := map[string]bool{}
+	for _, m := range got {
+		have[m] = true
+	}
+	for _, w := range want {
+		if !have[w] {
+			t.Errorf("lost %q; got %q", w, got)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("%d delivered for %d written: %q", len(got), len(want), got)
+	}
+	// Within one file, order is preserved.
+	var d2 []string
+	for _, m := range got {
+		if strings.HasPrefix(m, "00:00") {
+			d2 = append(d2, m)
+		}
+	}
+	eq(t, d2, "00:00:00 first line of the new day", "00:00:01 second line of the new day")
 }

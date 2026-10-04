@@ -471,7 +471,13 @@ func (d *Docker) pump(ctx context.Context, rc io.Reader, tty bool, st *stream, c
 	defer tick.Stop()
 
 	commit := func(events []event, now time.Time) error {
-		end, err := st.deliver(ctx, events, committed, now)
+		end, err := st.deliver(ctx, events, committed, now, func(end int64) {
+			committed = end
+			d.opts.Registry.Set(key, Entry{Path: c.name, TS: committed, LastSeen: now.Unix()})
+			if err := d.opts.Registry.Flush(); err != nil {
+				d.opts.Logger.Warn("tailer: writing registry", "err", err)
+			}
+		})
 		committed = end
 		d.opts.Registry.Set(key, Entry{Path: c.name, TS: committed, LastSeen: now.Unix()})
 		if err != nil {
@@ -485,7 +491,7 @@ func (d *Docker) pump(ctx context.Context, rc io.Reader, tty bool, st *stream, c
 		case <-ctx.Done():
 			// Shutdown: deliver what is pending (with a context that is not cancelled).
 			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			end, err := st.deliver(sctx, st.ml.flush(d.opts.Clock.Now(), true), committed, d.opts.Clock.Now())
+			end, err := st.deliver(sctx, st.ml.flush(d.opts.Clock.Now(), true), committed, d.opts.Clock.Now(), nil)
 			cancel()
 			if err == nil {
 				committed = end

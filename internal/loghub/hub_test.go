@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/tuvo1106/ozymandias/internal/query/logql"
+	"github.com/tuvo1106/ozymandias/internal/testutil"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
@@ -109,4 +110,27 @@ func TestHub_ConcurrentPublishAndSubscribe(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// L6: a tail that comes and goes must leave nothing behind.
+func TestHub_ThousandSubscribeUnsubscribeCyclesLeakNothing(t *testing.T) {
+	testutil.CheckGoroutines(t)
+	h := New(0)
+	filter := parse(t, "status:error")
+	for i := 0; i < 1000; i++ {
+		s, ok := h.Subscribe(filter, 4)
+		if !ok {
+			t.Fatalf("cycle %d: the hub refused a subscriber although none are open", i)
+		}
+		h.Publish([]wire.Log{mk("a", "error", "x")})
+		s.Close()
+	}
+	if st := h.Stats(); st.Subscribers != 0 {
+		t.Fatalf("%d subscribers left after 1000 cycles", st.Subscribers)
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if len(h.subs) != 0 {
+		t.Fatalf("the subscriber map holds %d entries", len(h.subs))
+	}
 }

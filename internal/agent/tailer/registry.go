@@ -35,9 +35,12 @@ type Entry struct {
 // same reason, and the corruption is reported to the caller.
 type Registry struct {
 	path string
-	mu   sync.Mutex
-	m    map[string]Entry
-	dirt bool
+	// noSync skips the fsync, for tests that simulate crashes at the logical level and would
+	// otherwise spend their time on the disk.
+	noSync bool
+	mu     sync.Mutex
+	m      map[string]Entry
+	dirt   bool
 }
 
 // OpenRegistry loads the registry at path ("" keeps it in memory only). A
@@ -138,7 +141,9 @@ func (r *Registry) Flush() error {
 		_ = tmp.Close()
 		return fmt.Errorf("tailer: writing registry: %w", err)
 	}
-	if err := tmp.Sync(); err != nil {
+	if r.noSync {
+		// no fsync
+	} else if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("tailer: syncing registry: %w", err)
 	}
