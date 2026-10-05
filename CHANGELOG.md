@@ -9,6 +9,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Logs** (M4). The agent tails files and container output (label `ozy.logs.enabled=true`), parses
+  (json, winston, python, rails with request grouping, grok), redacts secrets, and sends at-least-once;
+  ozyd stores them in an index-light store with per-block bloom filters (chunk format v2, ADR-0039/0040),
+  and serves `/api/v1/logs`, `/aggregate`, `/facets` and an SSE `/tail`. The **Log Explorer** (`/logs`) has
+  search with completion, a status histogram, facets, a virtual list, a detail panel, live tail and saved views.
+  `ozy.logstore.*` self-metrics. Python SDK `JSONFormatter`. See docs/operations.md, "Logs".
 - **A cap on distinct container names** (`collectors.docker.max_container_names`, default 200).
   Docker mints a generated name per unnamed `docker run`, and each is a series on `container.*`,
   `container.exits` and `container.lifetime`; past the cap the agent reports `container_name:other`
