@@ -194,3 +194,56 @@ log:
   level: info
   # text | json
   format: text
+
+logs:
+  # Log collection (M4): tail files and container output, parse, redact, and
+  # send to ozyd. Off by default — with it off the agent reads no files and
+  # opens no log streams. (The compose stack turns it on in agent.d/logs.yaml; a
+  # setting may be defined in only one file, so it is not written here.)
+  # enabled: false
+  # Where read positions are kept between restarts, written atomically. Empty
+  # keeps them in memory, so a restart starts each source over from its
+  # start_position. Offsets are committed only after ozyd has accepted the lines
+  # (at-least-once: a crash can repeat lines, never skip them).
+  # registry_path: /var/lib/ozymandias-agent/registry.json
+  # How often globs and the container list are rescanned, and open files read.
+  # Polling, not inotify: file events do not cross the bind mounts the agent
+  # often reads through.
+  scan_interval: 10s
+  poll_interval: 1s
+  # Most logs in one request (the wire limit is 1000).
+  # batch_logs: 1000
+  # Follow every container that is not excluded or opted out, not only those a
+  # source selects. A container can always opt out with ozy.logs.enabled=false,
+  # and opt in (or configure itself) with ozy.logs.{enabled,source,service,
+  # multiline_start,tags} labels, with no agent config at all.
+  # container_collect_all: false
+  #
+  # sources: each is one `type: file` or `type: docker`. Per-app sources belong
+  # in deploy/agent.d/<app>.yaml (lists append across conf.d fragments).
+  # sources:
+  #   -
+  #     type: file
+  #     path: /var/log/apps/web/*.log     # a glob
+  #     service: web-api                  # the stream's service (empty: the log's own field)
+  #     source: winston                   # json | winston | caddy | python | rails | sidekiq | postgres | redis | plain
+  #     tags: [team:web]
+  #     start_position: end               # end (default) | beginning, for a file seen at agent start
+  #     multiline:
+  #       start_pattern: '^\d{4}-\d{2}-\d{2}'
+  #     exclude_at_match: ['GET /healthz'] # drop matching lines before parsing
+  #     rate_limit: 1000                   # lines/s per source; excess dropped and counted. Default: none (a backlog after an outage would look like a flood)
+  #     redact:
+  #       disable: []                      # default rules to turn off: jwt authorization url-secret kv-secret email
+  #       keys: [customerRef]              # extra attribute names whose value is always redacted
+  #       rules: [{pattern: '\d{3}-\d{4}'}] # extra text patterns (replace: "${1}x" optional)
+  #     grok:                              # tried before the built-in patterns
+  #       - pattern: '^(?P<method>[A-Z]+) (?P<path>\S+) (?P<ms_int>\d+)ms$'
+  #         message: '${method} ${path}'
+  #   -
+  #     type: docker
+  #     include_labels: ["com.docker.compose.project=demo"]   # "key" or "key=value"; any match
+  #     exclude_names: ['^judge-']          # regexes on the container name
+  #     source: python
+  #     multiline:
+  #       start_pattern: '^(DEBUG|INFO|WARNING|ERROR|CRITICAL|\{|\d{4}-\d{2}-\d{2})'

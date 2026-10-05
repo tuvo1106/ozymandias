@@ -1,0 +1,20 @@
+# 2026/10/04 13:41:22.684415 [TestProperty_PrintThenParseIsIdentity] [rapid] draw ast: logql.Not{X:logql.Not{X:logql.Not{X:logql.Text{Value:"a:b"}}}}
+# 2026/10/04 13:41:22.684421 [TestProperty_PrintThenParseIsIdentity] Parse("---a:b"): col 4: unknown key "a": the keys are service, source, host, status, env, trace_id; attributes start with @ (@a:…); quote text that contains a colon
+# 
+v0.4.8#9980447656502032697
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x6b74f03291620
+0x6

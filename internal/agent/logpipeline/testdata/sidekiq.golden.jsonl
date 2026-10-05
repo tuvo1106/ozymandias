@@ -1,0 +1,5 @@
+{"ts":1791115200123,"message":"Booted Rails 8.1.0 application in production environment","status":"info","service":"svc","source":"sidekiq","host":"box","tags":["env:dev"],"attrs":{"pid":1,"tid":"gx0"}}
+{"ts":1791115201000,"message":"start","status":"info","service":"svc","source":"sidekiq","host":"box","tags":["env:dev"],"attrs":{"class":"OrderWorker","jid":"2a9bc1e04f7d3a60","pid":1,"tid":"gx4"}}
+{"ts":1791115201480,"message":"done","status":"info","service":"svc","source":"sidekiq","host":"box","tags":["env:dev"],"attrs":{"class":"OrderWorker","elapsed":0.48,"jid":"2a9bc1e04f7d3a60","pid":1,"tid":"gx4"}}
+{"ts":1791115202000,"message":"retrying after Net::ReadTimeout","status":"warn","service":"svc","source":"sidekiq","host":"box","tags":["env:dev"],"attrs":{"class":"MailWorker","jid":"77be0c1d9a3f5e21","pid":1,"tid":"gx8"}}
+{"ts":1791115203000,"message":"Net::ReadTimeout: Net::ReadTimeout with #\u003cTCPSocket:(closed)\u003e","status":"error","service":"svc","source":"sidekiq","host":"box","tags":["env:dev"],"attrs":{"class":"MailWorker","jid":"77be0c1d9a3f5e21","pid":1,"tid":"gx8"}}

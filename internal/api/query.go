@@ -125,10 +125,10 @@ func (m *Metrics) readQueryRequest(w http.ResponseWriter, r *http.Request) (quer
 	// [queryRequest.window] is the only thing that decides a default. The
 	// zero passed to intParam is unreachable for the same reason.
 	if raw := v.Get("to"); raw != "" {
-		q.To = ptr(intParam(raw, 0, "to", &errs))
+		q.To = ptr(intParam(raw, 0, "to (unix seconds)", &errs))
 	}
 	if raw := v.Get("from"); raw != "" {
-		q.From = ptr(intParam(raw, 0, "from", &errs))
+		q.From = ptr(intParam(raw, 0, "from (unix seconds)", &errs))
 	}
 	q.Interval = intParam(v.Get("interval"), 0, "interval", &errs)
 	// `var.env=env:prod&var.env=env:dev` binds $env to two values. Repeating

@@ -255,6 +255,50 @@ own error handler still sits outside it, which is why a handler that raises is r
 - **It never raises into a request.** A failure while recording is logged at debug level
   and dropped. Until `ozy.init()` enables the client it is a straight passthrough.
 
+## Structured logging
+
+`ozy.integrations.logging.JSONFormatter` writes each `logging` record as one JSON line, which the
+agent's `json` source reads as fields instead of guessing at text:
+
+```python
+import logging
+from ozy.integrations.logging import JSONFormatter
+
+handler = logging.StreamHandler()          # stdout/stderr of a container, or a FileHandler
+handler.setFormatter(JSONFormatter())
+logging.getLogger().addHandler(handler)
+
+logging.getLogger("shop").info("order placed", extra={"order_id": 42, "total": 19.5})
+```
+
+```json
+{"timestamp":"2026-10-04T12:00:00.123Z","level":"info","message":"order placed","logger":"shop","order_id":42,"total":19.5}
+```
+
+| Field | From |
+|---|---|
+| `timestamp` | the record's creation time, UTC ISO 8601 with milliseconds |
+| `level` | the level name, lowercase (`warning` stays `warning`; the agent maps it to `status:warn`) |
+| `message` | the formatted message |
+| `logger` | the logger name |
+| `exception`, `error.kind` | the formatted traceback and the exception class, when there is one |
+| `trace_id`, `span_id` | the record's attributes of those names (`extra=`; the tracer sets them from M5) |
+| `service`, `env`, `version` | the constructor's arguments, else `OZY_SERVICE`, `OZY_ENV`, `OZY_VERSION` |
+| anything else in `extra=` | a field of the same name, searchable as `@name:value` |
+
+- **A traceback is one event.** JSON escapes newlines, so the whole stack is one line and one log; no
+  multiline pattern is needed. Search it with `status:error "ValueError"`.
+- **It never raises** and never writes two lines. A value that cannot be serialized becomes its `repr`, and a
+  record that cannot be formatted at all becomes a line saying so, because a formatter that throws takes the
+  log call down with it.
+- **An `extra=` key that collides with a field above** (`level`, `message`, …) is kept as `<name>_`, so a
+  caller cannot overwrite what the pipeline relies on.
+- Secrets in extras are redacted by the agent, not here: the formatter does not know what a secret is. The
+  agent's defaults cover keys like `password` and `token` (docs/operations.md, "Logs").
+
+Point the agent at the output with a container label (`ozy.logs.enabled=true`; `ozy.logs.source` defaults to
+`json`) or a file source.
+
 ## Fork behaviour
 
 Gunicorn, Celery prefork and `multiprocessing` all `fork()` worker processes. A forked child

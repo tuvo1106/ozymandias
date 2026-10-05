@@ -1,3 +1,7 @@
+# Query languages
+
+Two languages live here: [metricql](#metricql), for metrics, and [logql](#logql), for logs.
+
 # metricql
 
 The query language the dashboards and `/api/v1/query` are written in. This
@@ -314,4 +318,92 @@ sum:http.request.count{service:api,status:5*}.as_rate()
 p95:judge.run.duration{language:python} by {problem_difficulty}.rollup(max, 60)
 
 top(sum:container.cpu.usage{compose_project:demo} by {container_name}, 5, "mean", "desc")
+```
+
+
+# logql
+
+The log search syntax, used by the Log Explorer and `GET /api/v1/logs`. Normative
+like the section above: `internal/query/logql` implements exactly this.
+
+```
+service:api status:error "connection refused" @duration:>500 -@route:/health
+└────┬────┘ └────┬─────┘ └────────┬─────────┘ └──────┬──────┘ └─────┬──────┘
+     │           │                │                   │              └ negated attribute
+     │           │                │                   └ attribute comparison
+     │           │                └ free text
+     │           └ reserved field
+     └ reserved field
+```
+
+## Grammar
+
+```
+query    = or_expr | (empty: matches every log) ;
+or_expr  = and_expr { "OR" and_expr } ;
+and_expr = unary { ["AND"] unary } ;          (* juxtaposition is AND; AND binds tighter than OR *)
+unary    = ( "-" | "NOT" ) unary | atom ;     (* "-" must touch the term it negates *)
+atom     = "(" or_expr ")" | term ;
+term     = key ":" value                      (* key is reserved: service source host status env trace_id *)
+         | "@" path ":" value                 (* attribute equality *)
+         | "@" path ":" (">" | ">=" | "<" | "<=") number
+         | "@" path ":[" number " TO " number "]"   (* inclusive *)
+         | quoted | word ;                    (* free text *)
+```
+
+`AND`, `OR` and `NOT` are operators only in capitals and standing alone; `ORDER` and
+`"OR"` are text. A quoted string takes `\"`, `\\`, `\n`, `\t` and `\r`. Parentheses and negations nest at
+most 63 deep. The empty query is valid and matches everything.
+
+### The three kinds of term
+
+| Term | Matches |
+|---|---|
+| `service:api` (reserved key) | the log's field, as a **whole**, case-sensitively. `*` stands for any run of characters (`service:app-*`); `host:*` means "has a host", and `-host:*` "has none". A missing label is the empty string. `env` is the value of the log's `env:` tag. |
+| `@path:value` (attribute) | an attribute of the structured log. `path` is dotted (`@http.status`); a key that itself contains a dot is found too, and an array contributes each element, so `@items.sku:B2` searches every element's `sku`. Equality compares two numbers as numbers (`@ms:250` finds `250` and `250.0`), anything else as text with `*` wildcards (`@path:/api/*`); `@x:*` means "the attribute exists". Comparisons and ranges apply to numbers only: a string that looks like a number is not one. |
+| `timeout`, `"refused by"`, `conn*err` (free text) | a **case-insensitive substring** of the message, or of any **string** attribute value (numbers and booleans are not text). `*` is a wildcard for any run, and order of the pieces matters. |
+
+### Why a bare `foo:bar` is an error
+
+Only the six reserved keys take `key:value`. `level:error` is almost always an attribute typed
+without its `@`, and quietly searching for that string would return nothing and say nothing. The
+error names the keys and the fix: `unknown key "level": the keys are service, source, host,
+status, env, trace_id; attributes start with @ (@level:…); quote text that contains a colon`.
+Free text that really contains a colon is quoted: `"level:error"`.
+
+## How a query runs: index, then scan
+
+`logql.Split` divides a query into
+
+1. **stream matchers**, the top-level conjuncts that name a stream label (`service`, `source`,
+   `host`, `env`, `status`, negated or not). The index answers them without reading any log.
+2. a **filter**, everything else, checked against the logs of the streams that survive.
+
+`trace_id` is a field but **not** a stream label (it is the highest-cardinality thing a log has),
+so `trace_id:…` is always a scan. A top-level `OR` is a union of branches, each with its own
+matchers, so `service:api OR service:worker` stays an index lookup. An `OR` *inside* an `AND`
+(`service:api (status:error OR status:critical)`) is not distributed: it is scanned, which is
+still correct and costs reading `service:api`'s logs.
+
+The same compiled filter runs over stored logs and over the live tail, so a query means one thing
+in both places.
+
+## Canonical form and errors
+
+`Node.String()` prints one spelling: juxtaposition for AND, `-` for NOT, parentheses only where
+the tree needs them (an OR inside an AND, and any AND or OR the author nested), and quotes
+only on text that would otherwise be syntax. Printing then parsing is the identity (a property
+test and a fuzz target).
+
+A parse failure is a `*logql.Error` with `Col`, the 1-based byte column the search bar
+underlines, exactly like metricql's.
+
+## Examples
+
+```
+service:api status:error "connection refused"
+@duration:>=500 @route:/api/* -@route:/api/health
+service:worker (status:error OR status:critical) -timeout
+@user.id:42 trace_id:0123abcd*
+service:api OR service:worker status:warn
 ```

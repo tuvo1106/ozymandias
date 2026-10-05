@@ -33,6 +33,10 @@ type Options struct {
 	// the endpoint answers 503 rather than 404: the route exists, this
 	// deployment just cannot serve it.
 	Sketches SketchStore
+	// Logs stores the logs POST /v1/logs carries; nil answers 503, as for Sketches.
+	Logs LogStore
+	// LogHub, if set, is told of every stored log (live tail).
+	LogHub LogPublisher
 	// MaxAge rejects points older than this; 0 accepts any age.
 	MaxAge  time.Duration
 	Clock   clock.Clock           // default clock.Real()
@@ -46,6 +50,7 @@ type Intake struct {
 
 	accepted, rejected, points *selfmetrics.Counter
 	sketchPoints               *selfmetrics.Counter
+	logsAccepted, logsRejected *selfmetrics.Counter
 }
 
 // New returns the intake handlers.
@@ -66,6 +71,9 @@ func New(opts Options) *Intake {
 		points:   opts.Metrics.Counter("ozy.intake.points_accepted"),
 
 		sketchPoints: opts.Metrics.Counter("ozy.intake.sketch_points_accepted"),
+
+		logsAccepted: opts.Metrics.Counter("ozy.intake.logs_accepted"),
+		logsRejected: opts.Metrics.Counter("ozy.intake.logs_rejected"),
 	}
 }
 
@@ -73,6 +81,7 @@ func New(opts Options) *Intake {
 func (in *Intake) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/series", in.series)
 	mux.HandleFunc("POST /v1/sketches", in.sketches)
+	mux.HandleFunc("POST /v1/logs", in.logs)
 }
 
 // errTooLarge marks a body over one of the size limits.

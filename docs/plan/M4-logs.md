@@ -194,7 +194,7 @@ ozymandias is enabled.
   registry persistence + resume, commit-only-after-ack; docker demux (frames
   splitting lines, interleaved stdout/stderr, TTY mode); multiline (traceback
   assembly, timeout flush, caps); each processor incl. every built-in grok
-  pattern against real captured lines from all three apps (scrubbed, committed as testdata); Rails request grouping with interleaved concurrent requests;
+  pattern against captured lines: real and scrubbed for app-python, synthetic for app-node and app-ruby (ADR-0038); all committed as testdata; Rails request grouping with interleaved concurrent requests;
   redaction rules (positive + negative cases — must not mangle normal text);
   logql parser + planner split; block seal thresholds; footer index; search
   ordering + cursor stability across pages while ingest continues; scan budget;
@@ -234,11 +234,11 @@ ADR: index-light log store; the apps' docs; `docs/notes/M4.md`.
 
 ## 10. Acceptance criteria
 
-- [ ] `service:app-node @tag:api @ms:>200` returns the slow requests; `service:app-python-worker status:error` shows judge errors with full multi-line tracebacks as single events.
-- [ ] Midnight rotation of app-node's log file loses nothing (fake-clock integration test + one real overnight run noted).
+- [ ] `service:app-node @tag:api @ms:>200` returns the slow requests *(on synthetic winston lines; the real-app half stays open, ADR-0038)*; `service:app-python-worker status:error` shows judge errors with full multi-line tracebacks as single events.
+- [ ] Midnight rotation of a winston-style daily file loses nothing (fake-clock integration test; the real overnight run is dropped, ADR-0038).
 - [ ] Restarting the agent neither loses nor re-sends more than one batch of lines.
 - [ ] No JWT, reset token or `Authorization` value is findable by search after running app-python's signup/login/reset flows (explicit test).
-- [ ] *(Needs app-ruby onboarded, which ADR-0037 moved out of M3: do that first, or amend this box in an ADR.)* app-ruby: `service:app-ruby-api @controller:OrdersController @duration:>200` works on its plain-text Rails logs with no app change; placing an order with a phone number leaves **no phone number findable** in ozymandias (explicit scan test).
+- [ ] *(On a synthetic Rails log, ADR-0038: "no app change" is unverified until app-ruby is onboarded.)* app-ruby: `service:app-ruby-api @controller:OrdersController @duration:>200` works on its plain-text Rails logs with no app change; placing an order with a phone number leaves **no phone number findable** in ozymandias (explicit scan test).
 - [ ] Live tail shows a new line < 2s after it is written.
 - [ ] Compression ratio and v1-vs-v2 search speedup reported in the notes.
 - [ ] Tests and docs deliverables complete; `docs/notes/M4.md` has evidence.

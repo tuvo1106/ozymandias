@@ -1,0 +1,10 @@
+{"ts":1790217645365,"message":"starting PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit","status":"info","service":"svc","source":"postgres","host":"box","tags":["env:dev"],"attrs":{"pid":54}}
+{"ts":1790217645365,"message":"listening on IPv4 address \"0.0.0.0\", port 5432","status":"info","service":"svc","source":"postgres","host":"box","tags":["env:dev"],"attrs":{"pid":54}}
+{"ts":1790217645368,"message":"database system is ready to accept connections","status":"info","service":"svc","source":"postgres","host":"box","tags":["env:dev"],"attrs":{"pid":54}}
+{"ts":1790217646352,"message":"database \"app\" does not exist","status":"critical","service":"svc","source":"postgres","host":"box","tags":["env:dev"],"attrs":{"pid":80}}
+{"ts":1790217845248,"message":"checkpoint starting: immediate force wait","status":"info","service":"svc","source":"postgres","host":"box","tags":["env:dev"],"attrs":{"pid":68}}
+{"ts":1790217870776,"message":"duplicate key value violates unique constraint \"users_email_key\"","status":"error","service":"svc","source":"postgres","host":"box","tags":["env:dev"],"attrs":{"pid":259}}
+{"ts":1790217870776,"message":"Key (email)=([REDACTED]) already exists.","status":"info","service":"svc","source":"postgres","host":"box","tags":["env:dev"],"attrs":{"pid":259}}
+{"ts":1790217870776,"message":"INSERT INTO users (email, name) VALUES ($1, $2)","status":"info","service":"svc","source":"postgres","host":"box","tags":["env:dev"],"attrs":{"pid":259}}
+{"ts":1791041750951,"message":"terminating connection due to administrator command","status":"critical","service":"svc","source":"postgres","host":"box","tags":["env:dev"],"attrs":{"pid":375}}
+{"ts":1791115200009,"message":"this is a continuation or something unexpected","status":"error","service":"svc","source":"postgres","host":"box","tags":["env:dev"]}

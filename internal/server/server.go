@@ -19,6 +19,8 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/dashboard"
 	"github.com/tuvo1106/ozymandias/internal/httpserve"
 	"github.com/tuvo1106/ozymandias/internal/intake"
+	"github.com/tuvo1106/ozymandias/internal/loghub"
+	"github.com/tuvo1106/ozymandias/internal/logstore"
 	"github.com/tuvo1106/ozymandias/internal/meta"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/internal/sketchstore"
@@ -46,6 +48,8 @@ const (
 	tsdbDir = "tsdb"
 	// sketchDir holds the Pebble database of DDSketches.
 	sketchDir = "sketches"
+	// logDir holds the log store: its WAL, catalog and per-day chunks.
+	logDir = "logs"
 )
 
 // sketchSweepInterval is how often retention runs over the sketch store.
@@ -79,6 +83,8 @@ type Server struct {
 
 	store    tsdb.MetricStore
 	sketches *sketchstore.Store
+	logs     *logstore.Store
+	logHub   *loghub.Hub
 	meta     *meta.DB
 	intake   *intake.Intake
 	self     *selfmetrics.Reporter
@@ -147,9 +153,20 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close())
 	}
-	s.meta, s.store, s.sketches = md, store, sk
+	ls, err := logstore.Open(logstore.Options{
+		Dir:        filepath.Join(cfg.DataDir, logDir),
+		Clock:      s.clock,
+		Retention:  cfg.Logs.Retention,
+		NoSync:     cfg.Logs.NoSync,
+		MaxStreams: cfg.Logs.MaxStreams,
+		Logger:     s.log.With("component", "logstore"),
+	})
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close(), sk.Close())
+	}
+	s.meta, s.store, s.sketches, s.logs, s.logHub = md, store, sk, ls, loghub.New(0)
 	s.intake = intake.New(intake.Options{
-		Store: store, Sketches: sk, Registry: md,
+		Store: store, Sketches: sk, Registry: md, Logs: ls, LogHub: s.logHub,
 		Clock: s.clock, Metrics: s.reg, Logger: s.log,
 	})
 
@@ -162,6 +179,35 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	s.reg.GaugeFunc("ozy.store.series", func() float64 { return float64(store.Stats().Series) }, "store:"+engine)
 	s.reg.GaugeFunc("ozy.store.samples", func() float64 { return float64(store.Stats().Samples) }, "store:"+engine)
 	s.registerStoreMetrics(engine)
+	// One walk of the log index serves all the gauges of a report: Usage visits
+	// every block under the search lock, so one call per gauge would be one walk
+	// per gauge (the same reason cachedHeadStats exists for the TSDB).
+	var umu sync.Mutex
+	var uAt time.Time
+	var uCur logstore.Usage
+	usage := func() logstore.Usage {
+		umu.Lock()
+		defer umu.Unlock()
+		if now := s.clock.Now(); now.Sub(uAt) > time.Second || uAt.After(now) {
+			uCur, uAt = ls.Usage(), now
+		}
+		return uCur
+	}
+	for name, f := range map[string]func(logstore.Usage) float64{
+		"ozy.logstore.streams":          func(x logstore.Usage) float64 { return float64(x.Streams) },
+		"ozy.logstore.chunks":           func(x logstore.Usage) float64 { return float64(x.Chunks) },
+		"ozy.logstore.entries":          func(x logstore.Usage) float64 { return float64(x.Entries) },
+		"ozy.logstore.head_entries":     func(x logstore.Usage) float64 { return float64(x.HeadEntries) },
+		"ozy.logstore.head_bytes":       func(x logstore.Usage) float64 { return float64(x.HeadBytes) },
+		"ozy.logstore.raw_bytes":        func(x logstore.Usage) float64 { return float64(x.RawBytes) },
+		"ozy.logstore.compressed_bytes": func(x logstore.Usage) float64 { return float64(x.CompressedBytes) },
+		"ozy.logstore.bloom_bytes":      func(x logstore.Usage) float64 { return float64(x.BloomBytes) },
+		"ozy.logstore.streams_folded":   func(x logstore.Usage) float64 { return float64(x.Folded) },
+	} {
+		s.reg.GaugeFunc(name, func() float64 { return f(usage()) })
+	}
+	s.reg.GaugeFunc("ozy.loghub.subscribers", func() float64 { return float64(s.logHub.Stats().Subscribers) })
+	s.reg.CounterFunc("ozy.loghub.dropped", func() float64 { return float64(s.logHub.Stats().Dropped) })
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", httpserve.Health(Component, s.started, s.clock.Now, nil))
@@ -170,6 +216,10 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	(&api.Metrics{
 		Store: store, Types: md, Sketches: sk, Clock: s.clock,
 		Logger: s.log.With("component", "query"),
+	}).Register(mux)
+	(&api.Logs{
+		Store: ls, Hub: s.logHub, Clock: s.clock, ScanBudget: cfg.Logs.ScanBudget,
+		Logger: s.log.With("component", "logs-api"),
 	}).Register(mux)
 	(&api.Dashboards{
 		Store: md, Values: store, Types: md, Clock: s.clock,
@@ -267,7 +317,7 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 // Close releases the stores. Run calls it on the way out.
 func (s *Server) Close() error {
-	return errors.Join(s.store.Close(), s.sketches.Close(), s.meta.Close())
+	return errors.Join(s.logs.Close(), s.store.Close(), s.sketches.Close(), s.meta.Close())
 }
 
 // Run serves on ln (or on the configured address if ln is nil) until ctx is

@@ -1,0 +1,62 @@
+# 2026/10/04 13:59:41.850983 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw batches: 1
+# 2026/10/04 13:59:41.850993 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw n0: 1
+# 2026/10/04 13:59:41.850996 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw l0.0ts: 0
+# 2026/10/04 13:59:41.850998 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw l0.0svc: "api"
+# 2026/10/04 13:59:41.851000 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw l0.0st: "debug"
+# 2026/10/04 13:59:41.851006 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw l0.0host: ""
+# 2026/10/04 13:59:41.851007 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw l0.0w1: "timeout"
+# 2026/10/04 13:59:41.851008 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw l0.0w2: "timeout"
+# 2026/10/04 13:59:41.851010 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw l0.0ms: 0
+# 2026/10/04 13:59:41.851012 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw l0.0code: 200
+# 2026/10/04 13:59:41.851013 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw l0.0env: ""
+# 2026/10/04 13:59:41.851014 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw n0: 1
+# 2026/10/04 13:59:41.851254 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw flush0: true
+# 2026/10/04 13:59:41.851565 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw batches: 1
+# 2026/10/04 13:59:41.851567 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw qn: 0
+# 2026/10/04 13:59:41.851571 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw by: ""
+# 2026/10/04 13:59:41.851572 [TestProperty_AggregateAndFacetsEqualBruteForce] [rapid] draw step: 1000000000
+# 2026/10/04 13:59:41.851656 [TestProperty_AggregateAndFacetsEqualBruteForce] query "" by "" every 1s:
+#  got  map[1791115200000:map[:2]]
+#  want map[1791115200000:map[:1]]
+# 
+v0.4.8#3470597320734544060
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

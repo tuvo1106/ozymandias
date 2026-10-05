@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -492,5 +493,48 @@ func TestEvents_ADaemonThatDiesMidStream(t *testing.T) {
 	err := c.Events(context.Background(), time.Time{}, func(Event) error { return nil }, nil)
 	if !errors.Is(err, ErrStreamClosed) {
 		t.Fatalf("err = %v, want ErrStreamClosed", err)
+	}
+}
+
+func TestLogs_RequestAndBody(t *testing.T) {
+	var got string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /containers/{id}/logs", func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.RawQuery
+		_, _ = w.Write([]byte("frames"))
+	})
+	c := fakeDaemon(t, mux, Options{})
+	rc, err := c.Logs(context.Background(), apiID, time.Unix(1790000000, 5), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if string(b) != "frames" {
+		t.Fatalf("body %q", b)
+	}
+	for _, want := range []string{"follow=1", "stdout=1", "stderr=1", "timestamps=1", "since=1790000000.000000005"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("query %q lacks %s", got, want)
+		}
+	}
+	rc, _ = c.Logs(context.Background(), apiID, time.Time{}, false)
+	_ = rc.Close()
+	if strings.Contains(got, "since") || strings.Contains(got, "follow") {
+		t.Errorf("a zero since and no follow should send neither: %q", got)
+	}
+	if _, err := c.Logs(context.Background(), "", time.Time{}, true); err == nil {
+		t.Error("empty id accepted")
+	}
+}
+
+func TestLogs_GoneContainerIsNotFound(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /containers/{id}/logs", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"No such container"}`, http.StatusNotFound)
+	})
+	c := fakeDaemon(t, mux, Options{})
+	if _, err := c.Logs(context.Background(), apiID, time.Time{}, true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
 	}
 }

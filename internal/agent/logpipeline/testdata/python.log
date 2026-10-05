@@ -1,0 +1,23 @@
+INFO:     Started server process [1]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:58064 - "GET /api/v1/healthz HTTP/1.1" 200 OK
+INFO:     172.21.0.7:57574 - "GET /api/v1/problems/any-peak HTTP/1.1" 401 Unauthorized
+INFO:     172.21.0.7:57590 - "POST /api/v1/submissions HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/app/.venv/lib/python3.12/site-packages/uvicorn/protocols/http/httptools_impl.py", line 422, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+psycopg.errors.UndefinedTable: relation "submissions" does not exist
+21:01:00:   1.02s → cron:reap_orphans()
+INFO arq.worker   1.02s → cron:reap_orphans()
+21:01:00:   0.02s ← cron:reap_orphans ● 
+INFO arq.worker redis_version=7.4.11 mem_usage=1.61M clients_connected=2 db_keys=11
+00:49:13: recording health: Oct-03 00:49:13 j_complete=154 j_failed=0 j_retried=0 j_ongoing=0 queued=0
+ERROR watchdog Account email is backed up: 2 job(s) on arq:accounts, the oldest queued (or stuck) for 13.9 min. The accounts worker is down or wedged; verification and password-reset links are not being sent.
+WARNING app.worker verification link: https://example.test/verify?token=3f9a1c7e5b2d4a60&lang=en for jane.doe@example.com
+2026-10-03 08:15:02,417 INFO app.judge run finished language=python outcome=accepted
+INFO:app.legacy:basicConfig style line
+{"level": "info", "message": "json from a python app", "timestamp": "2026-10-03T08:15:02.417Z", "trace_id": "0af7651916cd43dd8448eb211c80319c", "span_id": "b7ad6b7169203331", "route": "/api/v1/problems"}

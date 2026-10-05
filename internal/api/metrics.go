@@ -127,13 +127,16 @@ func listLimit(w http.ResponseWriter, r *http.Request) (int, bool) {
 	return int(limit), true
 }
 
+// intParam reads an integer query parameter. The caller puts the unit in `name`
+// ("from (unix seconds)"): the metrics API takes seconds and the logs API
+// milliseconds, and an error that names the wrong unit sends the caller to the wrong fix.
 func intParam(s string, def int64, name string, errs *[]error) int64 {
 	if s == "" {
 		return def
 	}
 	v, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
-		*errs = append(*errs, errors.New(name+" must be an integer (unix seconds for from/to)"))
+		*errs = append(*errs, errors.New(name+" must be an integer"))
 		return def
 	}
 	return v

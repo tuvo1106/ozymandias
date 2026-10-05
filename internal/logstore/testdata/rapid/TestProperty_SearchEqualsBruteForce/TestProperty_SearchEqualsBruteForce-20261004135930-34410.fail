@@ -1,0 +1,76 @@
+# 2026/10/04 13:59:30.448880 [TestProperty_SearchEqualsBruteForce] [rapid] draw ops: 4
+# 2026/10/04 13:59:30.448894 [TestProperty_SearchEqualsBruteForce] [rapid] draw op0: 2
+# 2026/10/04 13:59:30.448899 [TestProperty_SearchEqualsBruteForce] [rapid] draw n0: 1
+# 2026/10/04 13:59:30.448903 [TestProperty_SearchEqualsBruteForce] [rapid] draw b0.0ts: 0
+# 2026/10/04 13:59:30.448904 [TestProperty_SearchEqualsBruteForce] [rapid] draw b0.0svc: "api"
+# 2026/10/04 13:59:30.448908 [TestProperty_SearchEqualsBruteForce] [rapid] draw b0.0st: "debug"
+# 2026/10/04 13:59:30.448909 [TestProperty_SearchEqualsBruteForce] [rapid] draw b0.0host: ""
+# 2026/10/04 13:59:30.448910 [TestProperty_SearchEqualsBruteForce] [rapid] draw b0.0w1: "timeout"
+# 2026/10/04 13:59:30.448911 [TestProperty_SearchEqualsBruteForce] [rapid] draw b0.0w2: "timeout"
+# 2026/10/04 13:59:30.448912 [TestProperty_SearchEqualsBruteForce] [rapid] draw b0.0ms: 0
+# 2026/10/04 13:59:30.448915 [TestProperty_SearchEqualsBruteForce] [rapid] draw b0.0code: 200
+# 2026/10/04 13:59:30.448916 [TestProperty_SearchEqualsBruteForce] [rapid] draw b0.0env: ""
+# 2026/10/04 13:59:30.449279 [TestProperty_SearchEqualsBruteForce] [rapid] draw op1: 1
+# 2026/10/04 13:59:30.454550 [TestProperty_SearchEqualsBruteForce] [rapid] draw op2: 0
+# 2026/10/04 13:59:30.454704 [TestProperty_SearchEqualsBruteForce] [rapid] draw op3: 0
+# 2026/10/04 13:59:30.454706 [TestProperty_SearchEqualsBruteForce] [rapid] draw q0n: 0
+# 2026/10/04 13:59:30.454707 [TestProperty_SearchEqualsBruteForce] [rapid] draw order0: 0
+# 2026/10/04 13:59:30.454708 [TestProperty_SearchEqualsBruteForce] [rapid] draw from0: 0
+# 2026/10/04 13:59:30.454711 [TestProperty_SearchEqualsBruteForce] [rapid] draw to0: 0
+# 2026/10/04 13:59:30.454712 [TestProperty_SearchEqualsBruteForce] [rapid] draw limit0: 5
+# 2026/10/04 13:59:30.454780 [TestProperty_SearchEqualsBruteForce] query "" [1791115200000,1791115200000] order 0 limit 5: store returned 2 logs, brute force 1
+# first difference: lengths 2 vs 1
+# 
+v0.4.8#13531487127682425522
+0x0
+0x38e38e38e38e4
+0x3
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1

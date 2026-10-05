@@ -138,6 +138,38 @@ func (s Storage) Validate() error {
 	return errors.Join(errs...)
 }
 
+// Logs configures the log store.
+type Logs struct {
+	// Retention is how long a day of logs is kept, counted from the end of that
+	// day (so a log lives between Retention and Retention+24h). Negative keeps
+	// everything. Zero is rejected for the reason storage.retention's is.
+	Retention time.Duration `yaml:"retention"`
+	// ScanBudget caps the raw bytes one log query may decompress before it
+	// returns a partial answer with a cursor; zero is the store's default.
+	ScanBudget int64 `yaml:"scan_budget"`
+	// NoSync skips fsync: a crash can lose acknowledged logs. For benchmarks
+	// and throwaway dev stacks only.
+	NoSync bool `yaml:"no_sync"`
+	// MaxStreams bounds distinct label combinations; past it new ones are filed
+	// under "_overflow". Zero is the store's default (5000).
+	MaxStreams int `yaml:"max_streams"`
+}
+
+// Validate checks the log settings.
+func (l Logs) Validate() error {
+	var errs []error
+	if l.Retention == 0 {
+		errs = append(errs, errors.New("logs.retention is 0, which is ambiguous: use a negative value to keep everything, or a positive duration"))
+	}
+	if l.MaxStreams < 0 {
+		errs = append(errs, fmt.Errorf("logs.max_streams must not be negative, got %d", l.MaxStreams))
+	}
+	if l.ScanBudget < 0 {
+		errs = append(errs, fmt.Errorf("logs.scan_budget must not be negative, got %d", l.ScanBudget))
+	}
+	return errors.Join(errs...)
+}
+
 // Ozyd is the ozyd server's configuration.
 type Ozyd struct {
 	HTTP    HTTP   `yaml:"http"`
@@ -153,6 +185,7 @@ type Ozyd struct {
 	Hostname     string       `yaml:"hostname"`
 	Log          Log          `yaml:"log"`
 	Storage      Storage      `yaml:"storage"`
+	Logs         Logs         `yaml:"logs"`
 	Provisioning Provisioning `yaml:"provisioning"`
 }
 
@@ -162,6 +195,7 @@ func DefaultOzyd() Ozyd {
 		HTTP:    HTTP{Addr: ":9400", ShutdownTimeout: 10 * time.Second},
 		DataDir: "./data/ozyd",
 		Log:     Log{Level: "info", Format: "text"},
+		Logs:    Logs{Retention: 7 * 24 * time.Hour},
 		Storage: Storage{
 			MetricStore:        "tsdb",
 			BlockRange:         2 * time.Hour,
@@ -180,7 +214,7 @@ func DefaultOzyd() Ozyd {
 // Validate checks every section.
 func (c *Ozyd) Validate() error {
 	var errs []error
-	errs = append(errs, c.HTTP.Validate(), c.Log.Validate(), c.Storage.Validate(), ValidateHostname(c.Hostname))
+	errs = append(errs, c.HTTP.Validate(), c.Log.Validate(), c.Storage.Validate(), c.Logs.Validate(), ValidateHostname(c.Hostname))
 	if c.DataDir == "" {
 		errs = append(errs, errors.New("data_dir must be set"))
 	}

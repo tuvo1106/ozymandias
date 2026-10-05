@@ -1,0 +1,9 @@
+{"ts":1791115200123,"message":"api","status":"info","service":"svc","source":"winston","host":"box","tags":["env:dev"],"attrs":{"method":"GET","ms":12,"path":"/api/comics","status_code":200,"tag":"api"}}
+{"ts":1791115201500,"message":"api","status":"info","service":"svc","source":"winston","host":"box","tags":["env:dev"],"attrs":{"method":"GET","ms":340,"path":"/api/comics/42","status_code":200,"tag":"api"}}
+{"ts":1791115202000,"message":"api","status":"warn","service":"svc","source":"winston","host":"box","tags":["env:dev"],"attrs":{"method":"POST","ms":8,"path":"/api/comics","status_code":404,"tag":"api"}}
+{"ts":1791115203250,"message":"database error","status":"error","service":"svc","source":"winston","host":"box","tags":["env:dev"],"attrs":{"error":{"code":"SQLITE_BUSY","message":"database is locked"},"order_id":9007199254740993,"tag":"db"}}
+{"ts":1791115204000,"message":"cache miss","status":"debug","service":"svc","source":"winston","host":"box","tags":["env:dev"],"attrs":{"key":"comics:list","tag":"cache"}}
+{"ts":1791115205000,"message":"signed in","status":"info","service":"svc","source":"winston","host":"box","tags":["env:dev"],"attrs":{"tag":"auth","token":"[REDACTED]","user":"[REDACTED]"}}
+{"ts":1791115200006,"message":"not json at all: a plain line from the same file","status":"info","service":"svc","source":"winston","host":"box","tags":["env:dev"]}
+{"ts":1791115206000,"message":"unknown level","status":"info","service":"svc","source":"winston","host":"box","tags":["env:dev"],"attrs":{"level":"loud"}}
+{"ts":1791115200008,"message":"no level or timestamp","status":"info","service":"svc","source":"winston","host":"box","tags":["env:dev"],"attrs":{"tag":"misc"}}

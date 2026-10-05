@@ -45,3 +45,7 @@ sdk/**/dist/
 # public repo on purpose (ADR-0012); the archive of record is the original
 # private repo.
 docs/private/
+
+# Log files an app drops for the agent (deploy/docker-compose.yml mounts this read-only)
+deploy/app-logs/*
+!deploy/app-logs/.gitkeep

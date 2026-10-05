@@ -32,12 +32,14 @@ RUN CGO_ENABLED=0 go build -trimpath \
       -o /out/ ./cmd/...
 # Data dir owned by the distroless nonroot user, so a fresh named volume
 # mounted here inherits writable ownership (distroless has no shell to chown).
-RUN mkdir -p /out/data
+RUN mkdir -p /out/data /out/agent-data
 
 # --- final --------------------------------------------------------------------
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/ozyd /out/agent /usr/local/bin/
 COPY --from=build --chown=65532:65532 /out/data /data
+# The agent's log read positions (logs.registry_path), same trick.
+COPY --from=build --chown=65532:65532 /out/agent-data /var/lib/ozymandias-agent
 COPY deploy/ozyd.yaml deploy/agent.yaml /etc/ozy/
 COPY deploy/agent.d/ /etc/ozy/agent.d/
 # Dashboards-as-code are baked in rather than mounted, so the image is

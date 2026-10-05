@@ -692,4 +692,79 @@ check "which reads the server"                 wait_since "max:redis.net.clients
 check "and runs without errors"                no_errors "redis:$smoke_ct-redis"
 docker stop -t 1 "$smoke_ct-redis" >/dev/null 2>&1 || true
 
+# --- M4: logs -------------------------------------------------------------------
+# Three ways a line gets in, each through the real agent and the real store:
+# a container that opts in with a label (docker logs API), a file dropped in
+# deploy/app-logs (the compose bind mount), and the live tail. Every token is
+# unique to this run, so a previous run's lines can't satisfy a check.
+RUN_ID="$(date +%s)$RANDOM"
+logs_count() { # <logql> — how many logs match, over everything stored
+  curl -fsS --max-time 5 --get "$OZY_URL/api/v1/logs" --data-urlencode "q=$1" \
+    -d from=0 -d "to=$(( $(now_s) * 1000 + 3600000 ))" -d limit=100 |
+    python3 -c 'import json,sys; print(len(json.load(sys.stdin)["logs"]))'
+}
+wait_logs() { # <logql> <want> <seconds>
+  local n i
+  for ((i = 0; i < $3; i++)); do
+    n=$(logs_count "$1" 2>/dev/null) || n=err
+    [[ $n == "$2" ]] && return 0
+    sleep 1
+  done
+  echo "logs matching '$1': $n after $3s, want $2" >&2
+  return 1
+}
+log_ct=ozy-smoke-logs
+logfile=deploy/app-logs/smoke-$RUN_ID.log
+docker rm -f "$log_ct" >/dev/null 2>&1 || true
+trap 'docker rm -f "$smoke_ct-long" "$smoke_ct-short" "$smoke_ct-redis" "$log_ct" >/dev/null 2>&1 || true; rm -f "$logfile"' EXIT
+
+# A container that opts in by label; its JSON line and its plain stderr line.
+check "an opted-in container starts"       docker run -d --name "$log_ct" \
+  --label ozy.logs.enabled=true --label ozy.logs.service=smoke-logs \
+  busybox sh -c "echo '{\"level\":\"warn\",\"message\":\"container-$RUN_ID slow\",\"ms\":412}'; echo plain-$RUN_ID >&2; sleep 60"
+check "its JSON line is searchable by attribute" wait_logs "service:smoke-logs status:warn @ms:>400 container-$RUN_ID" 1 40
+check "its stderr line is an error"        wait_logs "service:smoke-logs status:error plain-$RUN_ID" 1 20
+docker rm -f "$log_ct" >/dev/null 2>&1 || true
+
+# A file the agent has not seen before: read from its first line. One line
+# carries a secret, which must not be findable anywhere afterwards.
+check "an app log file is picked up"       sh -c "printf '%s\n' \
+  '{\"level\":\"info\",\"message\":\"file-$RUN_ID order\",\"service\":\"smoke-file\",\"user\":\"smoke.user@example.test\",\"token\":\"s3cr3t-$RUN_ID\"}' > $logfile"
+check "its line is searchable"             wait_logs "service:smoke-file file-$RUN_ID" 1 40
+check "the secret was redacted before storage" wait_logs "\"s3cr3t-$RUN_ID\"" 0 3
+check "so was the email"                   wait_logs "\"smoke.user@example.test\"" 0 3
+check "redaction left the line itself"     wait_logs "service:smoke-file file-$RUN_ID @token:\"[REDACTED]\"" 1 5
+
+# Live tail: connect, then write, and the line arrives while the stream is open.
+tailout=$(mktemp)
+curl -fsSN --max-time 12 "$OZY_URL/api/v1/logs/tail?q=tail-$RUN_ID" >"$tailout" 2>/dev/null &
+tailpid=$!
+sleep 1
+printf '%s\n' "{\"level\":\"info\",\"message\":\"tail-$RUN_ID live\",\"service\":\"smoke-file\"}" >> "$logfile"
+# The milestone says "a new line shows in under 2s": one poll (1s) plus the
+# agent's post and the hub's publish. Measured, with a little slack for the VM.
+tail_latency_ms=
+tail_has() {
+  local t0 t
+  t0=$(python3 -c 'import time; print(int(time.time()*1000))')
+  for _ in $(seq 1 50); do
+    if grep -q "tail-$RUN_ID live" "$tailout"; then
+      t=$(python3 -c 'import time; print(int(time.time()*1000))')
+      tail_latency_ms=$((t - t0)); echo "tail latency: ${tail_latency_ms}ms" >&2
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+check "a line appears in the live tail"    tail_has
+check "and in under 2.5s (${tail_latency_ms}ms)" test "${tail_latency_ms:-99999}" -le 2500
+kill "$tailpid" 2>/dev/null; wait "$tailpid" 2>/dev/null || true
+rm -f "$tailout"
+
+check "the facets answer"                  body_has "$OZY_URL/api/v1/logs/facets?keys=service&from=0&to=$(( $(now_s) * 1000 + 3600000 ))" 'smoke-file'
+check "the histogram answers"              body_has "$OZY_URL/api/v1/logs/aggregate?by=status&from=0&to=$(( $(now_s) * 1000 + 3600000 ))" '"buckets":\['
+check "the log store reports itself"       body_has "$OZY_URL/debug/vars" 'ozy.logstore'
+check "the Log Explorer deep link is served" body_has "$OZY_URL/logs?q=status%3Aerror" '<div id="root">'
+
 echo "smoke: $pass checks passed"

@@ -299,6 +299,24 @@ same trace.
 - An app field that collides with a reserved one is moved: the app's `status`
   → `attrs.status_code` when numeric (app-node's `api` lines do this).
 
+Validation (`wire.DecodeLogs`), per log, as for §C: a bad log is refused and the
+rest of the body is kept; only a body that is not a logs payload at all is a 400.
+
+- `ts` must be a positive unix time in **milliseconds**: a value below
+  1 000 000 000 000 (before 2001) is refused as seconds, and one more than 10
+  minutes ahead of the receiver's clock is refused as a clock bug. An agent-side
+  retention window may refuse older logs.
+- `status` must be one of `debug`, `info`, `warn`, `error`, `critical`.
+- `service` is required. `service`, `source` and `host` are at most 200 bytes of
+  valid UTF-8 with no control characters: they become stream labels (M4 §3).
+- `tags` follow §C (at most 100, each `key:value`); they are stored sorted.
+- `trace_id` is 32 and `span_id` 16 **lowercase** hex characters, when present.
+- `attrs` must be a JSON object of at most 64 KiB serialized. Numbers keep every
+  digit as sent (an id above 2^53 is not rounded).
+- A `message` over 256 KiB is cut on a character boundary and gets
+  `attrs._truncated = true`. The room for that flag is reserved inside the 64 KiB,
+  so an attrs object that only fits without it is refused when the message is long.
+
 ## F. Traces, agent → ozyd (`POST /v1/traces`)
 
 ```json

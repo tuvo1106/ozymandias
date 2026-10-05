@@ -114,3 +114,21 @@ provisioning:
   #   - ./deploy/dashboards
   #   - /etc/ozy/dashboards.d   # an app's own, mounted
   #   - ./deploy/monitors
+
+logs:
+  # How long a day of logs is kept, counted from the END of that day, so a log
+  # lives between this and this + 24h. Negative keeps everything. Zero is
+  # rejected (it would read as "off" and mean something else).
+  retention: 168h
+  # Raw bytes one log query may decompress before it returns what it has so far
+  # with a cursor to continue (`truncated: true`). 0 means the store's default
+  # (2 GiB). A free-text search with nothing else to narrow it is what hits it.
+  # scan_budget: 0
+  # Skip fsync: a crash can lose logs ozyd already acknowledged. For benchmarks
+  # and throwaway dev stacks, never for data you want back.
+  # no_sync: false
+  # Most distinct (service, source, host, env, status) combinations. A stream
+  # costs a catalog row, a head block and an open file, and the labels come from
+  # whoever posts logs. Past the limit a new combination is stored under service,
+  # source and host "_overflow" and counted in ozy.logstore.streams_folded.
+  # max_streams: 5000

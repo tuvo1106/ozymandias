@@ -1,0 +1,125 @@
+# 2026/10/04 14:03:43.244718 [TestProperty_SearchEqualsBruteForce] [rapid] draw ops: 8
+# 2026/10/04 14:03:43.244728 [TestProperty_SearchEqualsBruteForce] [rapid] draw op0: 0
+# 2026/10/04 14:03:43.244734 [TestProperty_SearchEqualsBruteForce] [rapid] draw op1: 0
+# 2026/10/04 14:03:43.244736 [TestProperty_SearchEqualsBruteForce] [rapid] draw op2: 0
+# 2026/10/04 14:03:43.244738 [TestProperty_SearchEqualsBruteForce] [rapid] draw op3: 0
+# 2026/10/04 14:03:43.244739 [TestProperty_SearchEqualsBruteForce] [rapid] draw op4: 0
+# 2026/10/04 14:03:43.244740 [TestProperty_SearchEqualsBruteForce] [rapid] draw op5: 0
+# 2026/10/04 14:03:43.244740 [TestProperty_SearchEqualsBruteForce] [rapid] draw op6: 2
+# 2026/10/04 14:03:43.244741 [TestProperty_SearchEqualsBruteForce] [rapid] draw n6: 1
+# 2026/10/04 14:03:43.244744 [TestProperty_SearchEqualsBruteForce] [rapid] draw b6.0ts: 0
+# 2026/10/04 14:03:43.244746 [TestProperty_SearchEqualsBruteForce] [rapid] draw b6.0svc: "api"
+# 2026/10/04 14:03:43.244749 [TestProperty_SearchEqualsBruteForce] [rapid] draw b6.0st: "debug"
+# 2026/10/04 14:03:43.244750 [TestProperty_SearchEqualsBruteForce] [rapid] draw b6.0host: ""
+# 2026/10/04 14:03:43.244750 [TestProperty_SearchEqualsBruteForce] [rapid] draw b6.0w1: "timeout"
+# 2026/10/04 14:03:43.244751 [TestProperty_SearchEqualsBruteForce] [rapid] draw b6.0w2: "timeout"
+# 2026/10/04 14:03:43.244752 [TestProperty_SearchEqualsBruteForce] [rapid] draw b6.0ms: 0
+# 2026/10/04 14:03:43.244756 [TestProperty_SearchEqualsBruteForce] [rapid] draw b6.0code: 200
+# 2026/10/04 14:03:43.244757 [TestProperty_SearchEqualsBruteForce] [rapid] draw b6.0env: ""
+# 2026/10/04 14:03:43.245203 [TestProperty_SearchEqualsBruteForce] [rapid] draw op7: 2
+# 2026/10/04 14:03:43.245204 [TestProperty_SearchEqualsBruteForce] [rapid] draw n7: 1
+# 2026/10/04 14:03:43.245205 [TestProperty_SearchEqualsBruteForce] [rapid] draw b7.0ts: 0
+# 2026/10/04 14:03:43.245206 [TestProperty_SearchEqualsBruteForce] [rapid] draw b7.0svc: "api"
+# 2026/10/04 14:03:43.245207 [TestProperty_SearchEqualsBruteForce] [rapid] draw b7.0st: "debug"
+# 2026/10/04 14:03:43.245208 [TestProperty_SearchEqualsBruteForce] [rapid] draw b7.0host: ""
+# 2026/10/04 14:03:43.245208 [TestProperty_SearchEqualsBruteForce] [rapid] draw b7.0w1: "timeout"
+# 2026/10/04 14:03:43.245209 [TestProperty_SearchEqualsBruteForce] [rapid] draw b7.0w2: "timeout"
+# 2026/10/04 14:03:43.245209 [TestProperty_SearchEqualsBruteForce] [rapid] draw b7.0ms: 0
+# 2026/10/04 14:03:43.245211 [TestProperty_SearchEqualsBruteForce] [rapid] draw b7.0code: 200
+# 2026/10/04 14:03:43.245211 [TestProperty_SearchEqualsBruteForce] [rapid] draw b7.0env: ""
+# 2026/10/04 14:03:43.245231 [TestProperty_SearchEqualsBruteForce] [rapid] draw q0n: 0
+# 2026/10/04 14:03:43.245232 [TestProperty_SearchEqualsBruteForce] [rapid] draw order0: 0
+# 2026/10/04 14:03:43.245233 [TestProperty_SearchEqualsBruteForce] [rapid] draw from0: 0
+# 2026/10/04 14:03:43.245234 [TestProperty_SearchEqualsBruteForce] [rapid] draw to0: 0
+# 2026/10/04 14:03:43.245235 [TestProperty_SearchEqualsBruteForce] [rapid] draw limit0: 1
+# 2026/10/04 14:03:43.245287 [TestProperty_SearchEqualsBruteForce] query "" [1791115200000,1791115200000] order 0 limit 1: store returned 1 logs, brute force 2
+# first difference: lengths 1 vs 2
+# 
+v0.4.8#4657948465814843307
+0x0
+0x9867f1f40f739
+0x7
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

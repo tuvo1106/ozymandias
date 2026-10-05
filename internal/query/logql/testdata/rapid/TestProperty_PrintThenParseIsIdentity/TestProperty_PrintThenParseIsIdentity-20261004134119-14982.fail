@@ -1,0 +1,54 @@
+# 2026/10/04 13:41:19.516486 [TestProperty_PrintThenParseIsIdentity] [rapid] draw ast: logql.Or{Args:[]logql.Node{logql.Not{X:logql.Or{Args:[]logql.Node{logql.Text{Value:""}, logql.Attr{Path:"A", Op:2, Value:"", Num:1, Hi:0}}}}, logql.Text{Value:""}}}
+# 2026/10/04 13:41:19.516490 [TestProperty_PrintThenParseIsIdentity] round trip changed the tree
+#  text "-(\"\" OR @A:>=1) OR \"\""
+#   got logql.Or{Args:[]logql.Node{logql.Not{X:logql.Or{Args:[]logql.Node{logql.Text{Value:""}, logql.Attr{Path:"A", Op:1, Value:"", Num:1, Hi:0}}}}, logql.Text{Value:""}}}
+#  want logql.Or{Args:[]logql.Node{logql.Not{X:logql.Or{Args:[]logql.Node{logql.Text{Value:""}, logql.Attr{Path:"A", Op:2, Value:"", Num:1, Hi:0}}}}, logql.Text{Value:""}}}
+# 
+v0.4.8#6232149027177939195
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x2
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x38e38e38e38e4
+0x3
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0

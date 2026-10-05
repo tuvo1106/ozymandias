@@ -1,0 +1,14 @@
+[8f3a1c7e-5b2d-4a60-9e11-aa01bb02cc03] Started GET "/orders?page=2" for 127.0.0.1 at 2026-10-04 12:00:00 +0000
+[1d2e3f40-aaaa-bbbb-cccc-111122223333] Started POST "/orders" for 10.0.0.5 at 2026-10-04 12:00:00 +0000
+[8f3a1c7e-5b2d-4a60-9e11-aa01bb02cc03] Processing by OrdersController#index as JSON
+[1d2e3f40-aaaa-bbbb-cccc-111122223333] Processing by OrdersController#create as JSON
+[1d2e3f40-aaaa-bbbb-cccc-111122223333]   Parameters: {"order"=>{"customer_name"=>"Jane Doe", "customer_phone"=>"+1 555 123 4567", "item_ids"=>[3, 4]}}
+[8f3a1c7e-5b2d-4a60-9e11-aa01bb02cc03]   Parameters: {"page"=>"2"}
+[8f3a1c7e-5b2d-4a60-9e11-aa01bb02cc03]   Order Load (0.5ms)  SELECT "orders".* FROM "orders" LIMIT $1  [["LIMIT", 20]]
+[8f3a1c7e-5b2d-4a60-9e11-aa01bb02cc03] Completed 200 OK in 212ms (Views: 1.2ms | ActiveRecord: 3.4ms | Allocations: 1234)
+[1d2e3f40-aaaa-bbbb-cccc-111122223333]   TRANSACTION (0.2ms)  BEGIN
+[1d2e3f40-aaaa-bbbb-cccc-111122223333] ActiveRecord::RecordInvalid (Validation failed: Customer phone is invalid):
+[1d2e3f40-aaaa-bbbb-cccc-111122223333] Completed 422 Unprocessable Content in 15ms (ActiveRecord: 0.9ms | Allocations: 410)
+[77aa88bb-cccc-dddd-eeee-ffff00001111] Started GET "/orders/9" for 127.0.0.1 at 2026-10-04 12:00:02 +0000
+[77aa88bb-cccc-dddd-eeee-ffff00001111] Processing by OrdersController#show as HTML
+a line with no request id: Puma starting in single mode

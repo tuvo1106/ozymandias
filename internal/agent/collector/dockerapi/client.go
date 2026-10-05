@@ -420,3 +420,39 @@ func (e Event) ExitCode() (code int, ok bool) {
 	}
 	return n, true
 }
+
+// Logs opens a container's log stream (GET /containers/{id}/logs) and returns
+// its raw body for the caller to demultiplex: with timestamps on, every line
+// begins with an RFC 3339 nanosecond timestamp, which is what lets a reader
+// that was cut off resume exactly where it stopped. since is the daemon's
+// "from this time on" (zero: from the start of the log); follow keeps the
+// stream open for new lines. The caller closes the body.
+//
+// The request carries no deadline of its own beyond the header timeout: a log
+// stream is meant to stay open, and ctx bounds it.
+func (c *Client) Logs(ctx context.Context, id string, since time.Time, follow bool) (io.ReadCloser, error) {
+	if err := checkID(id); err != nil {
+		return nil, err
+	}
+	q := url.Values{"stdout": {"1"}, "stderr": {"1"}, "timestamps": {"1"}}
+	if follow {
+		q.Set("follow", "1")
+	}
+	if !since.IsZero() {
+		q.Set("since", formatSince(since))
+	}
+	path := "/containers/" + url.PathEscape(id) + "/logs"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+path+"?"+q.Encode(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("dockerapi: GET %s: %w", path, err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("dockerapi: GET %s: %w", path, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer func() { _ = resp.Body.Close() }()
+		return nil, c.apiError(resp, http.MethodGet, path)
+	}
+	return resp.Body, nil
+}
