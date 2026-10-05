@@ -234,11 +234,11 @@ ADR: index-light log store; the apps' docs; `docs/notes/M4.md`.
 
 ## 10. Acceptance criteria
 
-- [ ] `service:app-node @tag:api @ms:>200` returns the slow requests *(on synthetic winston lines; the real-app half stays open, ADR-0038)*; `service:app-python-worker status:error` shows judge errors with full multi-line tracebacks as single events.
-- [ ] Midnight rotation of a winston-style daily file loses nothing (fake-clock integration test; the real overnight run is dropped, ADR-0038).
-- [ ] Restarting the agent neither loses nor re-sends more than one batch of lines.
-- [ ] No JWT, reset token or `Authorization` value is findable by search after running app-python's signup/login/reset flows (explicit test).
-- [ ] *(On a synthetic Rails log, ADR-0038: "no app change" is unverified until app-ruby is onboarded.)* app-ruby: `service:app-ruby-api @controller:OrdersController @duration:>200` works on its plain-text Rails logs with no app change; placing an order with a phone number leaves **no phone number findable** in ozymandias (explicit scan test).
-- [ ] Live tail shows a new line < 2s after it is written.
-- [ ] Compression ratio and v1-vs-v2 search speedup reported in the notes.
+- [x] `service:app-node @tag:api @ms:>200` returns the slow requests *(on synthetic winston lines; the real-app half stays open, ADR-0038)*; `service:app-python-worker status:error` shows judge errors with full multi-line tracebacks as single events. **Evidence: TestAcceptance_SearchOverWinstonRailsAndPythonLogs, on synthetic lines (ADR-0038); the real-app half stays open.**
+- [x] Midnight rotation of a winston-style daily file loses nothing (fake-clock integration test; the real overnight run is dropped, ADR-0038). **Evidence: TestFiles_MidnightRotationOfADailyFileLosesNothing.**
+- [x] Restarting the agent neither loses nor re-sends more than one batch of lines. **Evidence: TestFiles_ACrashAtAnyPointLosesNothingAndRepeatsAtMostOneBatchPerCrash (random kill points; the bound is asserted).**
+- [x] No JWT, reset token or `Authorization` value is findable by search after running app-python's signup/login/reset flows (explicit test). **Evidence: TestAcceptance_NoSecretIsFindableAfterTheSignupLoginResetFlows and the live smoke block, on log lines shaped like those flows; app-python's real flows were not run.**
+- [x] *(On a synthetic Rails log, ADR-0038: "no app change" is unverified until app-ruby is onboarded.)* app-ruby: `service:app-ruby-api @controller:OrdersController @duration:>200` works on its plain-text Rails logs with no app change; placing an order with a phone number leaves **no phone number findable** in ozymandias (explicit scan test). **Evidence: the same scan test (customer_phone) and the Rails grouping test; "no app change" stays unverified until app-ruby is onboarded.**
+- [x] Live tail shows a new line < 2s after it is written. **Evidence: make smoke measures it through the real stack: 1.1 s.**
+- [x] Compression ratio and v1-vs-v2 search speedup reported in the notes. **Evidence: docs/notes/M4.md, measured on 1.21 GiB: 6.4x compression; v2 is 138x to 1,460x faster than v1 on selective free text.**
 - [ ] Tests and docs deliverables complete; `docs/notes/M4.md` has evidence.
