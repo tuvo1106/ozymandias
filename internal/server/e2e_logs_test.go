@@ -89,7 +89,6 @@ func TestEndToEnd_FileToSearchAndTail(t *testing.T) {
 	ms := func(offset time.Duration) int64 { return clk.Now().Add(offset).UnixMilli() }
 	appendLine(fmt.Sprintf(`{"level":"info","message":"signed in","timestamp":%d,"user":"jane@example.test","token":"s3cr3t","route":"/login"}`, ms(0)))
 	appendLine(fmt.Sprintf(`{"level":"error","message":"db down","timestamp":%d,"status":503,"route":"/orders"}`, ms(0)))
-	clk.Advance(time.Second) // the agent's poll tick
 
 	search := func(q url.Values) map[string]any {
 		rec := httptest.NewRecorder()
@@ -98,7 +97,10 @@ func TestEndToEnd_FileToSearchAndTail(t *testing.T) {
 		_ = json.Unmarshal(rec.Body.Bytes(), &out)
 		return out
 	}
+	// Each attempt is one poll tick: a single Advance can land before the poller has
+	// re-armed its timer on a loaded machine, and then nothing would ever tick again.
 	testutil.Eventually(t, 5*time.Second, func() bool {
+		clk.Advance(time.Second)
 		return len(search(url.Values{"q": {"service:web-api"}})["logs"].([]any)) == 2
 	}, "the two lines were not searchable")
 
