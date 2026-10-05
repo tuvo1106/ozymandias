@@ -204,6 +204,7 @@ func (d *Docker) Scan(ctx context.Context) {
 		return
 	}
 	d.listFailing.Store(false)
+	d.opts.Registry.Prune(d.opts.Clock.Now().Add(-RegistryTTL))
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.ctx == nil {
@@ -416,7 +417,11 @@ func (d *Docker) follow(ctx context.Context, c *cont, cc containerConfig, atAgen
 			continue
 		}
 		var ended bool
+		before := committed
 		committed, ended, err = d.pump(ctx, rc, tty, st, committed, c, key)
+		if committed != before {
+			backoff = d.opts.BackoffMin // it worked: the next break starts from the short wait
+		}
 		_ = rc.Close()
 		if ended {
 			return // the container stopped; a restart is found by the next scan

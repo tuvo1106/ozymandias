@@ -80,8 +80,8 @@ func (l *Logs) params(r *http.Request) (logParams, url.Values, error) {
 	}
 	p.q = q
 	now := l.Clock.Now().UnixMilli()
-	p.to = intParam(v.Get("to"), now, "to", &errs)
-	p.from = intParam(v.Get("from"), p.to-defaultLogRange.Milliseconds(), "from", &errs)
+	p.to = intParam(v.Get("to"), now, "to (unix milliseconds)", &errs)
+	p.from = intParam(v.Get("from"), p.to-defaultLogRange.Milliseconds(), "from (unix milliseconds)", &errs)
 	if len(errs) > 0 {
 		return p, v, errors.Join(errs...)
 	}

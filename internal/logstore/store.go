@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/clock"
@@ -68,9 +69,25 @@ type Options struct {
 	// the catalog). A crash can then lose batches the store acknowledged: for
 	// benchmarks and tests of everything but durability, never for production.
 	NoSync bool
+	// MaxStreams bounds the distinct (service, source, host, env, status)
+	// combinations. A stream costs a catalog row, a head and an open chunk file,
+	// and its labels come from whoever posts logs, so without a bound one app that
+	// puts an id in `service` makes the store grow without limit. Past it a log
+	// whose combination is new is filed under service, source and host
+	// "_overflow" (status and env, which have few values, are kept) and counted in
+	// Usage.Folded: still stored and findable by text, no longer by its own
+	// service label. Zero means DefaultMaxStreams.
+	MaxStreams int
 	// Logger defaults to slog.Default().
 	Logger *slog.Logger
 }
+
+// DefaultMaxStreams is generous for a fleet (hundreds of services x a few
+// hosts x environments x five statuses) and small enough to bound a leak.
+const DefaultMaxStreams = 5000
+
+// OverflowLabel is the service, source and host of a log folded by MaxStreams.
+const OverflowLabel = "_overflow"
 
 // stream is one label set's unsealed logs. Everything here is guarded by the
 // store's locks as described on [Store].
@@ -134,6 +151,7 @@ type Store struct {
 	byID    map[int64]*stream
 	chunks  map[chunkKey]*chunkState
 	closed  bool
+	folded  atomic.Int64 // logs filed under OverflowLabel by MaxStreams
 
 	stop chan struct{}
 	done chan struct{}
@@ -161,6 +179,8 @@ type Usage struct {
 	RawBytes        int64
 	CompressedBytes int64
 	BloomBytes      int64
+	// Folded counts logs filed under OverflowLabel because the store was at MaxStreams.
+	Folded int64
 }
 
 // Usage summarizes the store. It reads the in-memory index only, under the
@@ -168,7 +188,7 @@ type Usage struct {
 func (s *Store) Usage() Usage {
 	s.smu.RLock()
 	defer s.smu.RUnlock()
-	st := Usage{Streams: len(s.streams), Chunks: len(s.chunks)}
+	st := Usage{Streams: len(s.streams), Chunks: len(s.chunks), Folded: s.folded.Load()}
 	for _, c := range s.chunks {
 		for _, b := range c.blocks {
 			st.Blocks++
@@ -207,6 +227,9 @@ func Open(opts Options) (*Store, error) {
 	}
 	if opts.BlockAge <= 0 {
 		opts.BlockAge = DefaultBlockAge
+	}
+	if opts.MaxStreams <= 0 {
+		opts.MaxStreams = DefaultMaxStreams
 	}
 	if opts.Tick <= 0 {
 		opts.Tick = DefaultTick
@@ -381,6 +404,19 @@ func (s *Store) streamFor(l *wire.Log) (*stream, error) {
 	if st != nil {
 		return st, nil
 	}
+	if len(s.streams) >= s.opts.MaxStreams {
+		// Fold: the folded set is bounded by statuses x envs, so this cannot recurse
+		// into creating unboundedly many streams.
+		s.folded.Add(1)
+		ls[0], ls[1], ls[2] = OverflowLabel, OverflowLabel, OverflowLabel
+		key = ls.key()
+		s.smu.RLock()
+		st = s.streams[key]
+		s.smu.RUnlock()
+		if st != nil {
+			return st, nil
+		}
+	}
 	id, err := s.cat.create(ls)
 	if err != nil {
 		return nil, err
@@ -506,6 +542,12 @@ func (s *Store) Append(ctx context.Context, batch []wire.Log) error {
 	if err := s.wal.Log(recs...); err != nil {
 		return fmt.Errorf("logstore: WAL: %w", err)
 	}
+	// The numbers are spent from here on, whether or not the sync below succeeds:
+	// the records may be on disk, and a retry that reused them would put two
+	// different logs under one sequence number, which breaks the (ts, seq) order
+	// and recovery's "already sealed" test. A failed sync can repeat logs after a
+	// restart (the caller was told to retry); it can never confuse two of them.
+	s.seq = base + uint64(len(batch)) - 1
 	if !s.opts.NoSync {
 		if err := s.wal.Sync(); err != nil {
 			return fmt.Errorf("logstore: syncing WAL: %w", err)
@@ -518,7 +560,6 @@ func (s *Store) Append(ctx context.Context, batch []wire.Log) error {
 	for i := range batch {
 		streams[i].add(rawEntry{Ts: batch[i].Ts, Seq: base + uint64(i), Body: bodies[i]}, now, seg)
 	}
-	s.seq = base + uint64(len(batch)) - 1
 	s.smu.Unlock()
 
 	var full []*stream

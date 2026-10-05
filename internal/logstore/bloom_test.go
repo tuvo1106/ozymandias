@@ -101,6 +101,11 @@ func TestBloom_WhatGoesInAndWhatDoesNot(t *testing.T) {
 			t.Errorf("%q should be in the filter", in)
 		}
 	}
+	// A JSON null is the text "null" to the matcher (`@user:null` finds it), so the
+	// filter must hold it, or a block with such a log is wrongly skipped.
+	if nv := bloomOfLogs(t, wire.Log{Ts: 1, Service: "s", Status: "info", Message: "zzz", Attrs: map[string]any{"user": nil}}); !nv.hasLiteral("null") {
+		t.Error("a null attribute value is not in the filter, although @user:null matches it")
+	}
 	// Not in it (and, for a 3-byte window, absent with overwhelming probability at this size).
 	for _, out := range []string{"svc-label", "hostname-label", "attrname"} {
 		if v.hasLiteral(out) {

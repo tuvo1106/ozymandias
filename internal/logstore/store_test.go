@@ -419,3 +419,37 @@ func TestStore_UsageCountsWhatIsHeldAndWhatIsSealed(t *testing.T) {
 		t.Fatalf("sizes: %+v", u)
 	}
 }
+
+// The first bug class in AGENTS.md: a value from outside becomes a label. A
+// service name per log must not become a stream per log.
+func TestStore_StreamsAreBoundedWhateverServicesArrive(t *testing.T) {
+	s, _ := openStore(t, t.TempDir(), func(o *Options) { o.MaxStreams = 20 })
+	defer func() { _ = s.Close() }()
+	var batch []wire.Log
+	for i := 0; i < 500; i++ {
+		batch = append(batch, wire.Log{Ts: t0.UnixMilli() + int64(i), Service: fmt.Sprintf("svc-%d", i), Source: fmt.Sprintf("src-%d", i),
+			Host: fmt.Sprintf("h%d", i), Status: "info", Message: fmt.Sprintf("hello %d", i)})
+	}
+	if err := s.Append(context.Background(), batch); err != nil {
+		t.Fatal(err)
+	}
+	u := s.Usage()
+	if u.Streams > 21 { // the cap, plus the one folded stream
+		t.Fatalf("%d streams for a cap of 20", u.Streams)
+	}
+	if u.Folded != 480 {
+		t.Fatalf("folded %d, want 480", u.Folded)
+	}
+	// Nothing is lost: every log is still found, by text, and the first ones by their service.
+	if got := all(t, s, "hello", wideFrom, wideTo, SearchOpts{Limit: 1000}); len(got) != 500 {
+		t.Fatalf("%d of 500 logs found", len(got))
+	}
+	if got := all(t, s, "service:svc-3", wideFrom, wideTo, SearchOpts{Limit: 10}); len(got) != 1 {
+		t.Fatalf("a stream created before the cap lost its label: %d", len(got))
+	}
+	if got := all(t, s, "service:_overflow", wideFrom, wideTo, SearchOpts{Limit: 1000}); len(got) != 480 {
+		t.Fatalf("%d logs under _overflow", len(got))
+	}
+	// And a restart keeps them where they were.
+	_ = s.Flush()
+}

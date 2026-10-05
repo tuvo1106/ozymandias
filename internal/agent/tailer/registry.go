@@ -77,12 +77,31 @@ func (r *Registry) Get(key string) (Entry, bool) {
 func (r *Registry) Set(key string, e Entry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if old, ok := r.m[key]; ok && old == e {
-		return
+	if old, ok := r.m[key]; ok {
+		if old == e {
+			return
+		}
+		// Only the liveness stamp moved: every poll of every tracked file says "seen
+		// now", and writing (and fsyncing) the whole registry each second for that
+		// is steady disk wear that grows with the number of files. The stamp only
+		// has to be fresher than the prune cutoff, which is days.
+		if e.LastSeen-old.LastSeen < lastSeenRefresh && old.Path == e.Path && old.Offset == e.Offset && old.TS == e.TS {
+			return
+		}
 	}
 	r.m[key] = e
 	r.dirt = true
 }
+
+// RegistryTTL is how long an entry for a file or container nobody has seen is
+// kept before a scan forgets it: long enough for a service that is down over a
+// holiday to resume where it stopped, short enough that churned containers
+// (one entry each, for ever) do not grow the file without bound.
+const RegistryTTL = 30 * 24 * time.Hour
+
+// lastSeenRefresh is how stale a stored LastSeen may get, in seconds, before a
+// poll that read nothing rewrites it.
+const lastSeenRefresh = 600
 
 // Delete forgets key.
 func (r *Registry) Delete(key string) {

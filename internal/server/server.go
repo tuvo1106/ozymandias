@@ -154,11 +154,12 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close())
 	}
 	ls, err := logstore.Open(logstore.Options{
-		Dir:       filepath.Join(cfg.DataDir, logDir),
-		Clock:     s.clock,
-		Retention: cfg.Logs.Retention,
-		NoSync:    cfg.Logs.NoSync,
-		Logger:    s.log.With("component", "logstore"),
+		Dir:        filepath.Join(cfg.DataDir, logDir),
+		Clock:      s.clock,
+		Retention:  cfg.Logs.Retention,
+		NoSync:     cfg.Logs.NoSync,
+		MaxStreams: cfg.Logs.MaxStreams,
+		Logger:     s.log.With("component", "logstore"),
 	})
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close(), sk.Close())
@@ -178,6 +179,20 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	s.reg.GaugeFunc("ozy.store.series", func() float64 { return float64(store.Stats().Series) }, "store:"+engine)
 	s.reg.GaugeFunc("ozy.store.samples", func() float64 { return float64(store.Stats().Samples) }, "store:"+engine)
 	s.registerStoreMetrics(engine)
+	// One walk of the log index serves all the gauges of a report: Usage visits
+	// every block under the search lock, so one call per gauge would be one walk
+	// per gauge (the same reason cachedHeadStats exists for the TSDB).
+	var umu sync.Mutex
+	var uAt time.Time
+	var uCur logstore.Usage
+	usage := func() logstore.Usage {
+		umu.Lock()
+		defer umu.Unlock()
+		if now := s.clock.Now(); now.Sub(uAt) > time.Second || uAt.After(now) {
+			uCur, uAt = ls.Usage(), now
+		}
+		return uCur
+	}
 	for name, f := range map[string]func(logstore.Usage) float64{
 		"ozy.logstore.streams":          func(x logstore.Usage) float64 { return float64(x.Streams) },
 		"ozy.logstore.chunks":           func(x logstore.Usage) float64 { return float64(x.Chunks) },
@@ -187,8 +202,9 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		"ozy.logstore.raw_bytes":        func(x logstore.Usage) float64 { return float64(x.RawBytes) },
 		"ozy.logstore.compressed_bytes": func(x logstore.Usage) float64 { return float64(x.CompressedBytes) },
 		"ozy.logstore.bloom_bytes":      func(x logstore.Usage) float64 { return float64(x.BloomBytes) },
+		"ozy.logstore.streams_folded":   func(x logstore.Usage) float64 { return float64(x.Folded) },
 	} {
-		s.reg.GaugeFunc(name, func() float64 { return f(ls.Usage()) })
+		s.reg.GaugeFunc(name, func() float64 { return f(usage()) })
 	}
 	s.reg.GaugeFunc("ozy.loghub.subscribers", func() float64 { return float64(s.logHub.Stats().Subscribers) })
 	s.reg.CounterFunc("ozy.loghub.dropped", func() float64 { return float64(s.logHub.Stats().Dropped) })

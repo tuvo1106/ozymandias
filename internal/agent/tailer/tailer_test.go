@@ -552,3 +552,34 @@ func TestFiles_MidnightRotationOfADailyFileLosesNothing(t *testing.T) {
 	}
 	eq(t, d2, "00:00:00 first line of the new day", "00:00:01 second line of the new day")
 }
+
+// A batch is bounded by bytes as well as count: ozyd refuses an oversized body
+// with a 413 and the sink drops it as poison, so 1000 lines of 20 KiB sent as
+// one batch would be lost for good with their offsets committed. (A file poll
+// reads about 1 MiB, so only a larger source of events, a container's stream,
+// can reach the cap; deliver is where it is enforced.)
+func TestDeliver_BatchesAreBoundedByBytesNotOnlyCount(t *testing.T) {
+	pl, err := logpipeline.New(logpipeline.Spec{Source: "plain"}, logpipeline.Options{Clock: testutil.NewFakeClock(t0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink := &recSink{}
+	st := newStream(pl, logpipeline.Meta{Service: "s"}, nil, sink, 1000)
+	big := strings.Repeat("x", 20<<10)
+	var events []event
+	for i := 0; i < 400; i++ { // 8 MiB of lines, far fewer than the 1000-log count cap
+		events = append(events, event{text: big, end: int64(i + 1)})
+	}
+	end, err := st.deliver(context.Background(), events, 0, t0, nil)
+	if err != nil || end != 400 || len(sink.messages()) != 400 {
+		t.Fatalf("end=%d delivered=%d err=%v", end, len(sink.messages()), err)
+	}
+	for _, n := range sink.sizes {
+		if n*(20<<10) > wire.MaxDecompressedBytes/4 {
+			t.Fatalf("a batch of %d lines of 20 KiB is %d bytes: too close to the server's limit", n, n*(20<<10))
+		}
+	}
+	if len(sink.sizes) < 4 {
+		t.Fatalf("8 MiB went out in %d batches", len(sink.sizes))
+	}
+}

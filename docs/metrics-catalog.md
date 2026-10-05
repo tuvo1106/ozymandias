@@ -98,6 +98,7 @@ interval's increase.
 | `ozy.logstore.raw_bytes` | gauge | bytes | — | ozyd | Sealed blocks' size before compression |
 | `ozy.logstore.compressed_bytes` | gauge | bytes | — | ozyd | Their size on disk; `raw_bytes / compressed_bytes` is the compression ratio |
 | `ozy.logstore.bloom_bytes` | gauge | bytes | — | ozyd | The per-block bloom filters, in addition to the above |
+| `ozy.logstore.streams_folded` | gauge | logs | — | ozyd | Logs filed under `_overflow` because the store was at `logs.max_streams`. Non-zero means a label (usually `service`) is taking unbounded values |
 | `ozy.loghub.subscribers` | gauge | tails | — | ozyd | Open live tails |
 | `ozy.loghub.dropped` | counter | logs | — | ozyd | Logs a live tail lost because its reader was too slow |
 | `ozy.store.series` | gauge | series | `store` | ozyd | Series in the metric store |

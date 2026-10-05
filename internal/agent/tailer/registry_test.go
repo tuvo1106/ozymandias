@@ -70,3 +70,49 @@ func TestRegistry_CorruptOrMissingFilesStartEmpty(t *testing.T) {
 		t.Fatal("an in-memory registry has nothing to flush")
 	}
 }
+
+// Polling an idle file stamps "seen now" every second; that alone must not
+// make the registry dirty, or the agent rewrites and fsyncs it once a second for ever.
+func TestRegistry_AnIdlePollDoesNotDirtyTheRegistry(t *testing.T) {
+	r, err := OpenRegistry(filepath.Join(t.TempDir(), "r.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Set("file:1", Entry{Path: "/a", Offset: 10, LastSeen: 1000})
+	if err := r.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	r.Set("file:1", Entry{Path: "/a", Offset: 10, LastSeen: 1001})
+	if regDirty(r) {
+		t.Fatal("a one-second-newer LastSeen made the registry dirty")
+	}
+	r.Set("file:1", Entry{Path: "/a", Offset: 11, LastSeen: 1002})
+	if !regDirty(r) {
+		t.Fatal("a new offset did not")
+	}
+	_ = r.Flush()
+	r.Set("file:1", Entry{Path: "/a", Offset: 11, LastSeen: 1002 + lastSeenRefresh})
+	if !regDirty(r) {
+		t.Fatal("a stamp that has gone stale was never refreshed")
+	}
+}
+
+func regDirty(r *Registry) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.dirt
+}
+
+func TestFiles_AScanForgetsEntriesNothingHasSeenForAMonth(t *testing.T) {
+	r := newRig(t, FileSource{})
+	r.reg.Set("docker:gone", Entry{Path: "old", TS: 1, LastSeen: r.clk.Now().Add(-RegistryTTL - time.Hour).Unix()})
+	r.reg.Set("docker:recent", Entry{Path: "new", TS: 1, LastSeen: r.clk.Now().Unix()})
+	r.write("a.log", "")
+	r.poll(DefaultScanInterval)
+	if _, ok := r.reg.Get("docker:gone"); ok {
+		t.Error("an entry unseen for over a month survived a scan")
+	}
+	if _, ok := r.reg.Get("docker:recent"); !ok {
+		t.Error("a recent entry was pruned")
+	}
+}

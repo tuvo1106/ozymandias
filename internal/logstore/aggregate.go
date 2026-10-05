@@ -203,10 +203,16 @@ func (s *Store) Facets(ctx context.Context, q logql.Node, from, to int64, keys [
 			return nil, fmt.Errorf("logstore: cannot facet on %q: want one of %s or an @attribute", k, strings.Join(logql.ReservedKeys, ", "))
 		}
 	}
+	// A repeated key would share one counts map and be counted once per repeat.
+	var uniq []string
 	counts := make(map[string]map[string]int64, len(keys))
 	for _, k := range keys {
-		counts[k] = map[string]int64{}
+		if _, dup := counts[k]; !dup {
+			counts[k] = map[string]int64{}
+			uniq = append(uniq, k)
+		}
 	}
+	keys = uniq
 	capped := map[string]bool{}
 	trunc, st, err := s.scan(ctx, q, from, to, 0, func(l *wire.Log) {
 		for _, k := range keys {

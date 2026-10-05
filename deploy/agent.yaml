@@ -232,7 +232,7 @@ logs:
   #     multiline:
   #       start_pattern: '^\d{4}-\d{2}-\d{2}'
   #     exclude_at_match: ['GET /healthz'] # drop matching lines before parsing
-  #     rate_limit: 1000                   # lines/s per source; excess dropped and counted (negative: off)
+  #     rate_limit: 1000                   # lines/s per source; excess dropped and counted. Default: none (a backlog after an outage would look like a flood)
   #     redact:
   #       disable: []                      # default rules to turn off: jwt authorization url-secret kv-secret email
   #       keys: [customerRef]              # extra attribute names whose value is always redacted

@@ -53,6 +53,11 @@ describe("mergeTail", () => {
   it("caps the list, dropping the oldest", () => {
     expect(mergeTail([log(1), log(2)], [log(3), log(4)], 3).map((l) => l.ts)).toEqual([4, 3, 1]);
   });
+  it("keeps genuinely repeated logs, and cancels each overlap once", () => {
+    expect(mergeTail([], [log(1, "a"), log(1, "a"), log(1, "a")], 10)).toHaveLength(3);
+    // the page already holds two copies; the tail replays two of the three
+    expect(mergeTail([log(1, "a"), log(1, "a")], [log(1, "a"), log(1, "a"), log(1, "a")], 10)).toHaveLength(3);
+  });
   it("does not collapse distinct logs that share a timestamp", () => {
     expect(mergeTail([], [log(1, "a"), log(1, "b")], 10)).toHaveLength(2);
     expect(rowKey(log(1, "a"))).not.toBe(rowKey(log(1, "b")));

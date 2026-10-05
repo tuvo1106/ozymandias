@@ -513,7 +513,7 @@ empty but present.
 
 ### Pipeline order and redaction
 
-Per line: exclude, rate-limit, parse, remap, **redact**. Redaction is last and on by default: JWTs,
+Per line: exclude, rate-limit (off unless you set `rate_limit`: it drops the excess for good, and a backlog read after an outage would look like a flood), parse, remap, **redact**. Redaction is last and on by default: JWTs,
 `Authorization`/`Bearer` values, secrets in URLs (`?token=…`), `password=`/`token=`-style pairs and email
 addresses become `[REDACTED]` in the message and in every string attribute, and the values of attributes
 whose key contains one of a few secret words (`password`, `passwd`, `secret`, `api_key`, `private_key`,

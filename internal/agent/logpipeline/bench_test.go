@@ -46,3 +46,17 @@ func BenchmarkPipeline_JSONLineNoRedaction(b *testing.B) {
 		`{"level":"info","message":"GET /api/orders 200","timestamp":"2026-10-04T12:00:00.123Z","route":"/api/orders","status":200,"ms":12,"user":"bob"}`,
 	})
 }
+
+// A backlog is many seconds of lines read in one poll, all stamped with the
+// same instant. With no rate_limit set none of it may be dropped: the app never
+// exceeded its rate, the agent was just catching up.
+func TestPipeline_ABacklogIsNotRateLimitedByDefault(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "plain"})
+	n := 0
+	for i := 0; i < 20_000; i++ {
+		n += len(p.Process("a backlog line", meta()))
+	}
+	if n != 20_000 {
+		t.Fatalf("%d of 20000 lines survived a default pipeline", n)
+	}
+}

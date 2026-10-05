@@ -109,7 +109,7 @@ func TestQuery_BadRequests(t *testing.T) {
 	for url, want := range map[string]string{
 		"/api/v1/query":                               "q (a query) or metric",
 		"/api/v1/query?metric=9bad":                   "valid metric name",
-		"/api/v1/query?metric=m&from=x":               "from must be an integer",
+		"/api/v1/query?metric=m&from=x":               "from (unix seconds) must be an integer",
 		"/api/v1/query?metric=m&agg=nope":             "agg",
 		"/api/v1/query?metric=m&filter=:x":            "no tag key",
 		"/api/v1/query?metric=m&from=10&to=5":         "must be after",

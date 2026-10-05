@@ -57,7 +57,11 @@ export function useLogTail(q: string, enabled: boolean, make?: (url: string) => 
     const close = openTail(
       q,
       {
-        onLog: (l) => pending.current.push(l),
+        onLog: (l) => {
+          pending.current.push(l);
+          // Paused for an hour on a busy query must not grow without bound.
+          if (pending.current.length > 2 * TAIL_CAP) pending.current.splice(0, pending.current.length - TAIL_CAP);
+        },
         onDropped: (n) => patch((s) => ({ dropped: s.dropped + n })),
         onOpen: () => patch(() => ({ connected: true })),
         onError: () => patch(() => ({ connected: false })),

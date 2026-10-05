@@ -220,6 +220,7 @@ func (f *Files) Poll(ctx context.Context) {
 // scan matches the globs, starts tailing files it has not seen, and notes
 // which tracked files no longer sit at their path.
 func (f *Files) scan(now time.Time) {
+	f.opts.Registry.Prune(now.Add(-RegistryTTL))
 	for _, src := range f.sources {
 		paths, _ := filepath.Glob(src.cfg.Path)
 		sort.Strings(paths)

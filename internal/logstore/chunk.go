@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 )
@@ -477,6 +478,18 @@ func openChunk(path string, noSync bool) (*chunkWriter, error) {
 		return w, nil
 	}
 	ix, err := readIndex(f, st.Size())
+	if errors.Is(err, ErrCorruptChunk) {
+		// A header torn by a crash (the file exists, its first fsync never happened)
+		// or damaged since. Recovery already skipped this file, and retrying the open
+		// on every seal would wedge the stream-day for good while its head grows in
+		// memory and pins the WAL. Set it aside for inspection and start a fresh file.
+		_ = f.Close()
+		quarantine := fmt.Sprintf("%s.corrupt-%d", path, time.Now().Unix())
+		if rerr := os.Rename(path, quarantine); rerr != nil {
+			return nil, fmt.Errorf("logstore: %s is unreadable (%w) and cannot be set aside: %w", path, err, rerr)
+		}
+		return openChunk(path, noSync)
+	}
 	if err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("logstore: reopening %s: %w", path, err)

@@ -89,8 +89,9 @@ func textsOf(l *wire.Log, add func(string)) {
 			for _, e := range v {
 				walk(e)
 			}
-		case nil:
 		default:
+			// Includes null: the matcher reads it as the text "null", so @user:null
+			// finds it, and the filter must hold what the matcher can find.
 			add(logql.ValueText(v))
 		}
 	}

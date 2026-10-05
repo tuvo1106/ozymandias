@@ -150,6 +150,9 @@ type Logs struct {
 	// NoSync skips fsync: a crash can lose acknowledged logs. For benchmarks
 	// and throwaway dev stacks only.
 	NoSync bool `yaml:"no_sync"`
+	// MaxStreams bounds distinct label combinations; past it new ones are filed
+	// under "_overflow". Zero is the store's default (5000).
+	MaxStreams int `yaml:"max_streams"`
 }
 
 // Validate checks the log settings.
@@ -157,6 +160,9 @@ func (l Logs) Validate() error {
 	var errs []error
 	if l.Retention == 0 {
 		errs = append(errs, errors.New("logs.retention is 0, which is ambiguous: use a negative value to keep everything, or a positive duration"))
+	}
+	if l.MaxStreams < 0 {
+		errs = append(errs, fmt.Errorf("logs.max_streams must not be negative, got %d", l.MaxStreams))
 	}
 	if l.ScanBudget < 0 {
 		errs = append(errs, fmt.Errorf("logs.scan_budget must not be negative, got %d", l.ScanBudget))

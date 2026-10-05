@@ -143,6 +143,11 @@ func TestLogsList_BadRequestsAre400(t *testing.T) {
 			t.Errorf("%s: %d %s", name, rec.Code, rec.Body.String())
 		}
 	}
+	// The logs API takes milliseconds; an error that said seconds would send the caller to the wrong fix.
+	_, out := e.get("/api/v1/logs", url.Values{"from": {"yesterday"}})
+	if msg, _ := out["error"].(string); !strings.Contains(msg, "unix milliseconds") {
+		t.Errorf("the bad-from message is %q", msg)
+	}
 }
 
 func TestLogsList_TheWindowDefaultsToTheLast15MinutesInMilliseconds(t *testing.T) {

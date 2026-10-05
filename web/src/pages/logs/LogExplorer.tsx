@@ -226,6 +226,11 @@ export function LogExplorer() {
           <p className="mt-1 text-xs text-zinc-500">
             {logs.length} logs{hasNext ? "+" : ""}
             {truncated && " — the scan budget ran out; this is the newest part of the range, not all of it"}
+            {truncated && hasNext && !state.tail && (
+              <button type="button" className="ml-2 underline" disabled={fetching} onClick={() => void fetchNext()}>
+                Search further back
+              </button>
+            )}
             {logsQ.data?.pages[0]?.stats && ` · ${logsQ.data.pages[0].stats.blocks_read} blocks read, ${logsQ.data.pages[0].stats.blocks_skipped} skipped`}
           </p>
         </div>

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -307,6 +308,13 @@ func (s *Store) Search(ctx context.Context, q logql.Node, from, to int64, opts S
 	next := 0
 	var out []wire.Log
 	var lastKey rawEntry
+	// lastExamined is the last entry looked at, matching or not, and resume is where
+	// a search stopped by the scan budget picks up if it has examined nothing yet.
+	// A cursor that only knew the last *emitted* log could not move past a stretch of
+	// non-matching blocks bigger than the budget: the search would stop there every time.
+	var lastExamined rawEntry
+	examined := false
+	var resume *rawEntry
 	more := false
 scan:
 	for {
@@ -323,12 +331,17 @@ scan:
 				continue
 			}
 			if r.isBlock {
-				if budget < int64(r.meta.RawLen) {
+				if budget < int64(r.meta.RawLen) && res.Stats.BlocksRead > 0 {
 					// This block might hold an entry that sorts before
 					// anything in hand, so nothing more may be emitted:
 					// what has been is a correct prefix, and stopping here
 					// keeps it one.
 					res.Truncated = true
+					if desc {
+						resume = &rawEntry{Ts: r.maxTs + 1}
+					} else {
+						resume = &rawEntry{Ts: r.minTs - 1, Seq: math.MaxUint64}
+					}
 					break scan
 				}
 				budget -= int64(r.meta.RawLen)
@@ -355,6 +368,7 @@ scan:
 			heap.Fix(h, 0)
 		}
 		res.Stats.EntriesExamined++
+		lastExamined, examined = e, true
 		l, err := decodeLog(e.Body)
 		if err != nil {
 			return nil, fmt.Errorf("logstore: decoding a stored log: %w", err)
@@ -370,10 +384,13 @@ scan:
 		lastKey = e
 	}
 	res.Logs = out
-	if more || res.Truncated {
-		if len(out) > 0 {
-			res.Cursor = encodeCursor(lastKey)
-		}
+	switch {
+	case more:
+		res.Cursor = encodeCursor(lastKey)
+	case res.Truncated && examined:
+		res.Cursor = encodeCursor(lastExamined)
+	case res.Truncated && resume != nil:
+		res.Cursor = encodeCursor(*resume)
 	}
 	return res, nil
 }

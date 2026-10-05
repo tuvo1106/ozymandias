@@ -39,6 +39,14 @@ func newStream(pl *logpipeline.Pipeline, meta logpipeline.Meta, start *regexp.Re
 	return &stream{ml: newMultiline(start), pl: pl, meta: meta, sink: sink, batch: batch}
 }
 
+// maxBatchRawBytes bounds a batch by the bytes of the lines behind it, not only
+// by their count: ozyd refuses a body over wire.MaxDecompressedBytes (or 4 MiB
+// gzip'd) with a 413, which the sink treats as poison and drops, committing the
+// offset. 1000 lines of 20 KiB would be that, and the whole batch would be lost.
+// JSON framing and parsed attributes can multiply a line's size several times;
+// an eighth of the limit leaves room for that.
+const maxBatchRawBytes = wire.MaxDecompressedBytes / 8
+
 // deliver pushes events through the pipeline and the sink in batches. It
 // returns the end of the last event whose logs the sink accepted, which is the
 // offset that may be committed; on error that is how far it got, and the
@@ -57,6 +65,7 @@ func newStream(pl *logpipeline.Pipeline, meta logpipeline.Meta, start *regexp.Re
 // acknowledgement and its commit.
 func (s *stream) deliver(ctx context.Context, events []event, committed int64, now time.Time, commit func(end int64)) (int64, error) {
 	var logs []wire.Log
+	rawBytes := 0
 	lastEnd := committed
 	flush := func(end int64) error {
 		if len(logs) > 0 {
@@ -65,6 +74,7 @@ func (s *stream) deliver(ctx context.Context, events []event, committed int64, n
 			}
 			logs = logs[:0]
 		}
+		rawBytes = 0
 		lastEnd = end
 		if commit != nil {
 			commit(end)
@@ -75,8 +85,12 @@ func (s *stream) deliver(ctx context.Context, events []event, committed int64, n
 		m := s.meta
 		m.Received = now
 		m.Stderr = e.stderr
-		logs = append(logs, s.pl.Process(e.text, m)...)
-		if len(logs) >= s.batch {
+		out := s.pl.Process(e.text, m)
+		logs = append(logs, out...)
+		if len(out) > 0 {
+			rawBytes += len(e.text)
+		}
+		if len(logs) >= s.batch || rawBytes >= maxBatchRawBytes {
 			if err := flush(e.end); err != nil {
 				return lastEnd, err
 			}

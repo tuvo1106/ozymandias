@@ -525,3 +525,42 @@ func forEachVersion(t *testing.T, fn func(*testing.T)) {
 		t.Run(fmt.Sprintf("v%d", v), fn)
 	}
 }
+
+// A chunk whose header a crash tore must not wedge its stream-day: opening it
+// to append sets it aside and starts a fresh file, instead of failing on every
+// seal for ever.
+func TestOpenChunk_AUnreadableFileIsSetAsideNotRetriedForEver(t *testing.T) {
+	for name, content := range map[string][]byte{
+		"three bytes":    []byte("OZY"),
+		"zero-filled":    make([]byte, 64),
+		"wrong magic":    append([]byte("NOPE\x00\x01\x00\x00"), make([]byte, 40)...),
+		"header only ok": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "c.chunk")
+			if content != nil {
+				if err := os.WriteFile(path, content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w, err := openChunk(path, true)
+			if err != nil {
+				t.Fatalf("openChunk wedged on %s: %v", name, err)
+			}
+			m, comp := mustEncode(t, []rawEntry{{Ts: 1, Seq: 1, Body: []byte(`{"message":"x"}`)}})
+			if _, err := w.appendBlock(m, comp, nil); err != nil {
+				t.Fatal(err)
+			}
+			_ = w.close()
+			ix, err := indexFile(path)
+			if err != nil || len(ix.Blocks) != 1 {
+				t.Fatalf("%+v %v", ix, err)
+			}
+			left, _ := filepath.Glob(path + ".corrupt-*")
+			if content != nil && len(left) != 1 {
+				t.Fatalf("the damaged file was not kept for inspection: %v", left)
+			}
+		})
+	}
+}

@@ -290,3 +290,65 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(code)
 }
+
+// A rare match behind a stretch of non-matching blocks bigger than the scan
+// budget: the first pages find nothing, and each must still carry a cursor that
+// moves on, or the search stops in the same place for ever.
+func TestSearch_BudgetCursorMovesPastNonMatchingBlocks(t *testing.T) {
+	s, _ := openStore(t, t.TempDir())
+	defer func() { _ = s.Close() }()
+	base := t0.UnixMilli()
+	for i := 0; i < 20; i++ {
+		ms := 0
+		if i >= 18 { // only the two oldest hours hold a match
+			ms = 500
+		}
+		var batch []wire.Log
+		for j := 0; j < 12; j++ {
+			batch = append(batch, mkLog(base-int64(i)*3_600_000+int64(j), "api", "info", fmt.Sprintf("m%02d.%02d", i, j), ms))
+		}
+		_ = s.Append(context.Background(), batch)
+		_ = s.Flush()
+	}
+	q := mustParse(t, "@ms:>100") // a number comparison: nothing for a bloom filter to skip on
+	var found int
+	opts := SearchOpts{Limit: 1000, ScanBudget: 6000}
+	pages := 0
+	for ; pages < 100; pages++ {
+		r, err := s.Search(context.Background(), q, wideFrom, wideTo, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found += len(r.Logs)
+		if r.Cursor == "" {
+			if r.Truncated {
+				t.Fatalf("page %d was truncated with no cursor to continue from, after %d matches", pages, found)
+			}
+			break
+		}
+		opts.Cursor = r.Cursor
+	}
+	if found != 24 {
+		t.Fatalf("%d matches after %d pages, want 24", found, pages)
+	}
+	if pages < 2 {
+		t.Fatal("the budget never bit: the test proves nothing")
+	}
+}
+
+func TestFacets_ARepeatedKeyIsCountedOnce(t *testing.T) {
+	s, _ := openStore(t, t.TempDir())
+	defer func() { _ = s.Close() }()
+	_ = s.Append(context.Background(), batchOf("a", 0, 5, t0.UnixMilli()))
+	one, err := s.Facets(context.Background(), mustParse(t, ""), wideFrom, wideTo, []string{"service"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := s.Facets(context.Background(), mustParse(t, ""), wideFrom, wideTo, []string{"service", "service"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(one.Facets) != fmt.Sprint(two.Facets) || len(one.Facets["service"]) == 0 {
+		t.Fatalf("one key: %v, the same key twice: %v", one.Facets, two.Facets)
+	}
+}

@@ -74,18 +74,21 @@ export function rowKey(l: LogEntry): string {
 
 /**
  * Puts tailed logs above a list, newest first, without repeating one the list
- * already has (the API says a log may be seen both in the page and the tail),
+ * already has (once per copy) (the API says a log may be seen both in the page and the tail),
  * and keeps at most `cap` rows so a long tail cannot grow memory forever.
  */
 export function mergeTail(list: readonly LogEntry[], incoming: readonly LogEntry[], cap: number): LogEntry[] {
-  const seen = new Set(list.map(rowKey));
+  // A multiset, not a set: two distinct logs can share a timestamp, service, host and
+  // message (a retry loop), and collapsing them would hide real logs. Each log already
+  // in the list cancels at most one incoming log of the same key.
+  const have = new Map<string, number>();
+  for (const l of list) have.set(rowKey(l), (have.get(rowKey(l)) ?? 0) + 1);
   const fresh: LogEntry[] = [];
   for (const l of incoming) {
     const k = rowKey(l);
-    if (!seen.has(k)) {
-      seen.add(k);
-      fresh.push(l);
-    }
+    const n = have.get(k) ?? 0;
+    if (n > 0) have.set(k, n - 1);
+    else fresh.push(l);
   }
   // Incoming is oldest first (arrival order); the list is newest first.
   return [...fresh.reverse(), ...list].slice(0, cap);

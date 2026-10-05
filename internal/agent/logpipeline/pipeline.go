@@ -10,9 +10,13 @@ import (
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
-// DefaultRateLimit is lines per second a source may emit before the excess is
-// dropped.
-const DefaultRateLimit = 1000
+// DefaultRateLimit is the lines per second a source may emit when rate_limit is
+// not set: none. A limit drops the excess for good, and the limiter is driven
+// by the poll's clock, so a backlog read after an ozyd outage (many seconds of
+// lines in one poll) would look like a storm and be mostly dropped although the
+// app never exceeded its rate. A limit is therefore opt-in, for a source known
+// to be able to flood.
+const DefaultRateLimit = 0
 
 // DefaultRailsGroupTimeout is how long a Rails request may stay open without
 // its "Completed" line before it is emitted as incomplete.
@@ -44,8 +48,8 @@ type Spec struct {
 	// ExcludeAtMatch drops any line matching one of these regular expressions,
 	// before it is parsed (health checks, for one).
 	ExcludeAtMatch []string `yaml:"exclude_at_match"`
-	// RateLimit is lines per second; zero means DefaultRateLimit, negative
-	// means unlimited.
+	// RateLimit is lines per second, the excess dropped and counted. Zero (the
+	// default) and negative mean unlimited. Opt-in: see DefaultRateLimit.
 	RateLimit int `yaml:"rate_limit"`
 	// RailsGroupTimeout applies to the rails source; zero means the default.
 	RailsGroupTimeout time.Duration `yaml:"rails_group_timeout"`
