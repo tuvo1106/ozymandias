@@ -1,0 +1,35 @@
+# 2026/10/05 16:47:29.552393 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw n: 4
+# 2026/10/05 16:47:29.552395 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw f: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln"
+# 2026/10/05 16:47:29.552395 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw s: " "
+# 2026/10/05 16:47:29.552396 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw f: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln"
+# 2026/10/05 16:47:29.552396 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw s: " "
+# 2026/10/05 16:47:29.552396 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw f: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln"
+# 2026/10/05 16:47:29.552397 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw s: " "
+# 2026/10/05 16:47:29.552397 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw f: "ſecret=x"
+# 2026/10/05 16:47:29.552397 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw s: " "
+# 2026/10/05 16:47:29.552398 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw upper: false
+# 2026/10/05 16:47:29.552411 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] input "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln ſecret=x "
+#  filtered: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln ſecret=x " (false)
+#  plain:    "[REDACTED] [REDACTED] [REDACTED] ſecret=x " (true)
+# 
+v0.4.8#18166464205738891302
+0x0
+0x38e38e38e38e4
+0x3
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0xe3e05a098777c
+0x36
+0x0
+0x0
+0x0

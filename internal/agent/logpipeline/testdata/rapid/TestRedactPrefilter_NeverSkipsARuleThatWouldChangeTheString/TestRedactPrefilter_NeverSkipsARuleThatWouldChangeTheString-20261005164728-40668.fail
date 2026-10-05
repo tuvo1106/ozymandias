@@ -1,0 +1,23 @@
+# 2026/10/05 16:47:28.351419 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw n: 2
+# 2026/10/05 16:47:28.351422 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw f: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln"
+# 2026/10/05 16:47:28.351423 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw s: " "
+# 2026/10/05 16:47:28.351423 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw f: "credentials=c"
+# 2026/10/05 16:47:28.351424 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw s: " "
+# 2026/10/05 16:47:28.351425 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] [rapid] draw upper: false
+# 2026/10/05 16:47:28.351442 [TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString] input "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2ln credentials=c "
+#  filtered: "[REDACTED] credentials=c " (true)
+#  plain:    "[REDACTED] credentials=[REDACTED] " (true)
+# 
+v0.4.8#5067028971179061405
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0xc05c654ab866b
+0x14
+0x0
+0x0
+0x0

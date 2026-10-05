@@ -28,21 +28,63 @@ const (
 // (the key, the separator, the URL up to the value) and replaces only the
 // value, so a redacted line still reads as the line it was.
 var defaultTextRules = []textRule{
-	{"jwt", regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*`), Redacted},
-	{"authorization", regexp.MustCompile(`(?i)\b((?:proxy-)?authorization)(["']?\s*[:=]\s*["']?)(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;]+`), "${1}${2}" + Redacted},
-	{"url-secret", regexp.MustCompile(`(?i)([?&](?:token|code|key|signature|sig|api_?key|access_token|id_token|refresh_token|password|secret|reset_token|verify_token)=)[^&\s"'#]+`), "${1}" + Redacted},
+	{"jwt", regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*`), Redacted, nil},
+	{"authorization", regexp.MustCompile(`(?i)\b((?:proxy-)?authorization)(["']?\s*[:=]\s*["']?)(?:(?:bearer|basic|token|digest)\s+)?[^\s"',;]+`), "${1}${2}" + Redacted, nil},
+	{"url-secret", regexp.MustCompile(`(?i)([?&](?:token|code|key|signature|sig|api_?key|access_token|id_token|refresh_token|password|secret|reset_token|verify_token)=)[^&\s"'#]+`), "${1}" + Redacted, nil},
 	// key=value, key: value, "key": "value", key=>"value" (Ruby's inspect). The value is
 	// a quoted string (spaces allowed) or a bare run; a quoted one keeps its quotes.
-	{"kv-secret-dq", kvRule(`"[^"]*"`), `${1}${2}"` + Redacted + `"`},
-	{"kv-secret-sq", kvRule(`'[^']*'`), `${1}${2}'` + Redacted + `'`},
+	{"kv-secret-dq", kvRule(`"[^"]*"`), `${1}${2}"` + Redacted + `"`, nil},
+	{"kv-secret-sq", kvRule(`'[^']*'`), `${1}${2}'` + Redacted + `'`, nil},
 	// A bare value may not start with '>' (that is the tail of Ruby's =>) and an
 	// already-redacted value is matched whole, so applying the rules twice
 	// changes nothing: "[REDACTED]" would otherwise match as "[REDACTED" and
 	// leave a stray bracket behind.
-	{"kv-secret", kvRule(`\[REDACTED\]|[^\s"',;&})\]>][^\s"',;&})\]]*`), "${1}${2}" + Redacted},
+	{"kv-secret", kvRule(`\[REDACTED\]|[^\s"',;&})\]>][^\s"',;&})\]]*`), "${1}${2}" + Redacted, nil},
 }
 
-var emailRule = textRule{"email", regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b`), Redacted}
+var emailRule = textRule{"email", regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b`), Redacted, nil}
+
+// prefilter gives each default rule its cheap necessary condition, keyed by rule
+// name. `low` is the string lowercased (ASCII only; see String for why a string
+// with any other byte skips the filters entirely).
+//
+// Soundness is the whole point: a condition that wrongly says no lets a secret
+// through unredacted. Each is a literal the rule's regular expression cannot
+// match without, and TestRedactPrefilter_NeverSkipsARuleThatWouldChangeTheString
+// checks them against the unfiltered rules over generated strings, and
+// TestRedactPrefilter_CoversEverySecretWord against the word lists.
+func prefilter(name string) func(low string) bool {
+	switch name {
+	case "jwt":
+		return func(low string) bool { return strings.Contains(low, "eyj") }
+	case "authorization":
+		return func(low string) bool { return strings.Contains(low, "authorization") }
+	case "url-secret":
+		return func(low string) bool {
+			return strings.IndexByte(low, '=') >= 0 && (strings.IndexByte(low, '?') >= 0 || strings.IndexByte(low, '&') >= 0)
+		}
+	case "kv-secret-dq", "kv-secret-sq", "kv-secret":
+		return func(low string) bool {
+			if strings.IndexByte(low, '=') < 0 && strings.IndexByte(low, ':') < 0 {
+				return false
+			}
+			for _, w := range secretNeedles {
+				if strings.Contains(low, w) {
+					return true
+				}
+			}
+			return false
+		}
+	case "email":
+		return func(low string) bool { return strings.IndexByte(low, '@') >= 0 }
+	}
+	return nil
+}
+
+// secretNeedles are substrings at least one of which every key the kv rules
+// match contains: wordsAnywhere and wordsAtEnd, cut down to the part that does
+// not vary (`api[_-]?key` always contains "key", `card[_-]?number` "number").
+var secretNeedles = []string{"passw", "secret", "key", "credential", "cookie", "authorization", "phone", "ssn", "number", "cvv", "cvc", "token"}
 
 func kvRule(value string) *regexp.Regexp {
 	key := `\b((?:[\w.-]*[._-])?(?:` + wordsAnywhere + `)(?:s|[._-][\w.-]*)?|[\w.-]*(?:` + wordsAtEnd + `)s?)`
@@ -53,6 +95,11 @@ type textRule struct {
 	name    string
 	re      *regexp.Regexp
 	replace string
+	// need is a cheap necessary condition for re to match: it may say yes when
+	// there is no match, never no when there is one. It is how almost every line
+	// skips the regular expressions, which are most of the agent's per-line cost.
+	// nil means always run (custom rules). See [prefilter].
+	need func(low string) bool
 }
 
 // RedactConfig adds to, or switches off parts of, the default rules.
@@ -97,10 +144,13 @@ func NewRedactor(cfg RedactConfig, onMatch func(rule string)) (*Redactor, error)
 		if off[tr.name] || (tr.name == "kv-secret-dq" || tr.name == "kv-secret-sq") && off["kv-secret"] {
 			continue
 		}
+		tr.need = prefilter(tr.name)
 		r.text = append(r.text, tr)
 	}
 	if !off["email"] {
-		r.text = append(r.text, emailRule)
+		em := emailRule
+		em.need = prefilter("email")
+		r.text = append(r.text, em)
 	}
 	for i, rs := range cfg.Rules {
 		re, err := regexp.Compile(rs.Pattern)
@@ -111,7 +161,7 @@ func NewRedactor(cfg RedactConfig, onMatch func(rule string)) (*Redactor, error)
 		if rep == "" {
 			rep = Redacted
 		}
-		r.text = append(r.text, textRule{fmt.Sprintf("custom-%d", i), re, rep})
+		r.text = append(r.text, textRule{fmt.Sprintf("custom-%d", i), re, rep, nil})
 	}
 	r.keyRe = regexp.MustCompile(`(?i)^(?:[\w.-]*[._-])?(?:` + wordsAnywhere + `)(?:s|[._-][\w.-]*)?$|^[\w.-]*(?:` + wordsAtEnd + `)s?$`)
 	for _, k := range cfg.Keys {
@@ -123,15 +173,53 @@ func NewRedactor(cfg RedactConfig, onMatch func(rule string)) (*Redactor, error)
 // String redacts a string and reports whether it changed.
 func (r *Redactor) String(s string) (string, bool) {
 	changed := false
+	// The prefilters read a lowercased copy. Only ASCII is lowercased here, and a string
+	// with any other byte skips them: the rules are case-insensitive by Unicode folding
+	// ("K" the Kelvin sign folds to "k"), which an ASCII lowercase does not model, and
+	// guessing wrong lets a secret through. Non-ASCII lines are rare and pay full price.
+	low, filter := lowerASCII(s)
 	for _, tr := range r.text {
+		if filter && tr.need != nil && !tr.need(low) {
+			continue
+		}
 		if out := tr.re.ReplaceAllString(s, tr.replace); out != s {
 			s, changed = out, true
 			if r.onMatch != nil {
 				r.onMatch(tr.name)
 			}
+			// `low` is not recomputed: a replacement only removes text or inserts
+			// "[REDACTED]" (or a custom replacement, which only custom rules, always run,
+			// could care about), and "[REDACTED]" contains no character or word any filter
+			// looks for, so the stale copy can only say yes where the fresh one says no.
 		}
 	}
 	return s, changed
+}
+
+// lowerASCII returns s lowercased and whether that is a faithful stand-in for
+// matching s case-insensitively: true only when s is entirely ASCII. It does not
+// allocate when s has no upper-case letters.
+func lowerASCII(s string) (string, bool) {
+	upper := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 0x80 {
+			return s, false
+		}
+		if c >= 'A' && c <= 'Z' {
+			upper = true
+		}
+	}
+	if !upper {
+		return s, true
+	}
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b), true
 }
 
 // SensitiveKey reports whether an attribute named key holds a secret by name.

@@ -520,8 +520,7 @@ whose key contains one of a few secret words (`password`, `passwd`, `secret`, `a
 `credential`, `cookie`, `authorization`, `phone`, `ssn`, `card_number`, `cvv`, `cvc`, and `token` or
 `access_key` at the end of the key, so `csrftoken` counts and `token_count` does not), plus any
 `redact.keys` you add, are replaced whatever they contain. Turn a default off with `redact.disable`, add
-patterns with `redact.rules`. Redaction costs most of the agent's per-line time (about 10 µs of 14 µs on one
-core, `BenchmarkPipeline_*`): the price of never storing a secret, paid on every line. Verify with
+patterns with `redact.rules`. Each rule has a cheap necessary condition (the literal it cannot match without), so a line with no `@`, no `eyJ`, no secret word near a `=` or `:` skips the regular expressions: about 3.5 µs per JSON line against 14 µs before that, and the same as with redaction off. A line with any non-ASCII byte skips the conditions and pays full price, because the rules fold case by Unicode rules the conditions do not model. The conditions are tested against the unfiltered rules over generated strings (`TestRedactPrefilter_*`). Verify with
 `make smoke` (it plants a token and an email and searches for them) and `TestAcceptance_NoSecretIsFindable…`.
 
 ### Delivery guarantee
