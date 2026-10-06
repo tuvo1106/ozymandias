@@ -58,9 +58,15 @@ func decodeID(s string, n int) ([]byte, bool) {
 // resourceHash is the 8-byte name of a resource in the 'r' index. It is not
 // trusted to be unique: a collision makes the search read a few extra entries,
 // and the reader compares the resource itself before returning one.
+//
+// It hashes the lower-cased resource, so a resource filter ignores case. That is
+// deliberate: the request statistics are metrics, whose tags are lower-cased, so
+// the resource a service page shows (and links back with) is "get /items/:id"
+// while the span says "GET /items/:id". An exact-case filter would make that
+// link find nothing.
 func resourceHash(resource string) [8]byte {
 	h := fnv.New64a()
-	_, _ = h.Write([]byte(resource))
+	_, _ = h.Write([]byte(strings.ToLower(resource)))
 	var out [8]byte
 	binary.BigEndian.PutUint64(out[:], h.Sum64())
 	return out

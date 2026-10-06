@@ -396,6 +396,67 @@ Refusals worth knowing:
 
 See [ADR-0019](adr/0019-the-dist-aggregator.md) for why `dist` is an aggregator.
 
+## Tracing (APM)
+
+Two sources, on purpose. **Traces and the service map** come from the trace store, which holds
+only the traces the agent's samplers kept. **The service and resource tables** (requests, errors,
+latency) come from the `trace.*` metrics the agent computed from *every* span before sampling,
+because a count of stored traces is a sample and would understate load by the sample rate.
+[DESIGN.md](../DESIGN.md) has the argument; the end-to-end test
+`TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices` pins it (200 requests sent, 10%
+kept, the table says 200).
+
+Time parameters `from` and `to` are **unix milliseconds** (as in the logs API), defaulting to the
+last hour. Times *in* trace and span objects are **microseconds**, as on the wire.
+Metric tags are lower-cased, so a resource in a service table reads `get /items/:id` where the span
+says `GET /items/:id`; the `resource` filter of `GET /api/v1/traces` ignores case so the one links to the other.
+
+### `GET /api/v1/traces`
+
+Entry spans, newest first. Parameters: `env`, `service`, `resource`, `name`, `error=true`
+(entry spans that failed, or whose trace holds a failed span *that arrived in the same request*),
+`min_duration_ms`, `max_duration_ms`, `status_code`, `from`, `to`, `limit` (default 50, max 500),
+`cursor`.
+
+```console
+$ curl -s 'localhost:9400/api/v1/traces?service=shop&error=true&limit=1'
+{"traces":[{"trace_id":"0000…0014","span_id":"0000…0014","env":"dev","service":"shop","name":"http.request",
+"resource":"GET /items/:id","start":1790000000000000,"duration":24000,"error":true,"trace_error":true,
+"status_code":503}],"cursor":"…","examined":37}
+```
+
+`cursor` is present when more results may exist; pass it back to continue. A search with a
+selective filter over a long window stops after examining 100000 index entries and returns a cursor
+(`examined` shows the cost) rather than scanning without bound. `400` for a bad parameter or cursor.
+
+### `GET /api/v1/traces/{trace_id}`
+
+Every stored span of one trace, oldest first, with `services`, `start`, `duration` (first start to
+last end), `span_count`, `errors`, and `orphans`: the ids of spans whose `parent_id` is not in the
+store (the parent's process was not sampled, crashed, or has not flushed). `404` when nothing is
+stored (never sampled, or past retention); `400` for a malformed id.
+
+### `GET /api/v1/service-map`
+
+`{"nodes":[{service, calls_in, errors_in}], "edges":[{parent, child, calls, errors, avg_duration}]}`
+for the window, from counters maintained as spans arrive: an edge is a call from one service's span to
+another service's entry span. `avg_duration` is the callee entry span's mean, in microseconds. Edges
+are counted from stored spans, so under sampling they are samples: use them for shape, not rate.
+Parameter `env` filters.
+
+### `GET /api/v1/services`
+
+One row per (service, env, entry span name): `requests`, `requests_per_second`, `errors`,
+`error_pct`, `p50_ms`, `p95_ms`, `p99_ms` (null when the window has no latency sketches) and a
+30-point `sparkline` of requests. Computed from metrics, so exact under sampling. A service with
+two kinds of entry span (`http.request`, `arq.job`) has a row for each: latency percentiles of
+different operations cannot be merged honestly. Parameters `env`, `from`, `to`; `400` if `env`
+holds a comma, brace or newline, which a metric query cannot express.
+
+### `GET /api/v1/services/{service}/resources`
+
+The same rows for one service, one per resource.
+
 ## Logs
 
 Four endpoints over the log store. They share a query string:

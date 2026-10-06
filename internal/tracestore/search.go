@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/cockroachdb/pebble"
 )
@@ -28,7 +29,7 @@ const (
 // Filter selects entry spans. Zero fields do not filter.
 type Filter struct {
 	Env, Service string
-	// Resource is an exact match, answered from the resource index.
+	// Resource matches ignoring case, answered from the resource index.
 	Resource string
 	// Name is an exact match on the span name, applied while scanning.
 	Name string
@@ -200,7 +201,7 @@ func matches(f Filter, s Summary) bool {
 	switch {
 	case f.Name != "" && s.Name != f.Name:
 		return false
-	case f.Resource != "" && s.Resource != truncate(f.Resource, summaryResource):
+	case f.Resource != "" && !strings.EqualFold(s.Resource, truncate(f.Resource, summaryResource)):
 		return false
 	case f.ErrorsOnly && s.Error == 0 && s.TraceError == 0:
 		return false

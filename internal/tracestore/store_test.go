@@ -157,16 +157,17 @@ func TestSearch_Filters(t *testing.T) {
 		f    Filter
 		want int
 	}{
-		"all":                {Filter{}, 4},
-		"resource":           {Filter{Resource: "POST /b"}, 1},
-		"resource, no match": {Filter{Resource: "GET /nope"}, 0},
-		"name":               {Filter{Name: "arq.job"}, 1},
-		"errors only":        {Filter{ErrorsOnly: true}, 2},
-		"errors + resource":  {Filter{ErrorsOnly: true, Resource: "GET /a"}, 1},
-		"min duration":       {Filter{MinDurationUs: 100_000}, 1},
-		"max duration":       {Filter{MaxDurationUs: 10_000}, 1},
-		"duration band":      {Filter{MinDurationUs: 10_000, MaxDurationUs: 100_000}, 2},
-		"status":             {Filter{StatusCode: 500}, 1},
+		"all":                  {Filter{}, 4},
+		"resource":             {Filter{Resource: "POST /b"}, 1},
+		"resource, other case": {Filter{Resource: "post /B"}, 1},
+		"resource, no match":   {Filter{Resource: "GET /nope"}, 0},
+		"name":                 {Filter{Name: "arq.job"}, 1},
+		"errors only":          {Filter{ErrorsOnly: true}, 2},
+		"errors + resource":    {Filter{ErrorsOnly: true, Resource: "GET /a"}, 1},
+		"min duration":         {Filter{MinDurationUs: 100_000}, 1},
+		"max duration":         {Filter{MaxDurationUs: 10_000}, 1},
+		"duration band":        {Filter{MinDurationUs: 10_000, MaxDurationUs: 100_000}, 2},
+		"status":               {Filter{StatusCode: 500}, 1},
 	} {
 		if got := n(c.f); got != c.want {
 			t.Errorf("%s: %d, want %d", name, got, c.want)

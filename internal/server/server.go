@@ -239,6 +239,10 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		Store: ls, Hub: s.logHub, Clock: s.clock, ScanBudget: cfg.Logs.ScanBudget,
 		Logger: s.log.With("component", "logs-api"),
 	}).Register(mux)
+	(&api.APM{
+		Traces: ts, Store: store, Sketches: sk, Types: md, Clock: s.clock,
+		Logger: s.log.With("component", "apm"),
+	}).Register(mux)
 	(&api.Dashboards{
 		Store: md, Values: store, Types: md, Clock: s.clock,
 		Logger: s.log.With("component", "dashboards"),

@@ -216,6 +216,9 @@ func decodeSpan(item json.RawMessage, opts DecodeOptions) (Span, error) {
 	return sp, nil
 }
 
+// ValidTraceID reports whether s is a 32-character lowercase hex, non-zero trace id.
+func ValidTraceID(s string) bool { return isLowerHex(s, 32) && !allZero(s) }
+
 func allZero(s string) bool { return strings.Trim(s, "0") == "" }
 
 // ValidSpanIDs reports whether the ids satisfy §B: 32 and 16 lowercase hex, neither
