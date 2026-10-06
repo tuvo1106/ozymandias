@@ -6,6 +6,20 @@ All notable changes to the `ozy` Node.js SDK are documented here. The format is 
 
 ## [Unreleased]
 
+### Added
+
+- **Tracing (M5).** `tracer.trace / wrap / startSpan / scope / inject / extract / stats / flush`
+  on an `AsyncLocalStorage` context; head sampling with the shared BigInt algorithm; a bounded
+  (1000 chunks, drop-oldest) writer to `POST /v1/traces` that reads `rate_by_service`, never
+  keeps the process alive and flushes on `beforeExit` within 1 s. New config: `OZY_TRACE_ENABLED`,
+  `OZY_TRACE_PORT`, `OZY_TRACE_SAMPLE_RATE` (`traceEnabled`, `tracePort`, `traceSampleRate`,
+  `integrations` in `init()`).
+- **Integrations** behind a public `Integration` interface and `registerIntegration()`:
+  `withTelemetry` / `traceRoute` for Next.js App Router handlers, `instrumentSqlite(db)` for
+  better-sqlite3, `instrumentFetch({ propagateTo })` (header injection only for allow-listed
+  hosts) and `traceFormat()` for winston. There is deliberately no require-hook auto-patcher.
+- `normalizePath()` and `sampleKeep()` exports, checked against the shared Go vectors.
+
 ### Fixed
 
 - **Numbers outside `[1e-4, 1e16)` now match the Python SDK byte for byte.**
