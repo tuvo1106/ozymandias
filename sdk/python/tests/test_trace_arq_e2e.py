@@ -2,8 +2,8 @@
 
 Needs a Redis. Set ``OZY_TEST_REDIS_URL`` to a *dedicated, non-zero database* (the test
 flushes it), for example ``redis://localhost:6379/15``. Unset, the test is skipped: CI has
-no Redis container yet (docs/plan/M5-tracing.md L8 calls for one, marked with a docker marker
-``docker`` marker), so this is verified by hand until it has one.
+no Redis container yet (the plan, docs/plan/M5-tracing.md L8, asks for one and for the
+test to carry a docker marker; neither exists), so this is verified by hand until then.
 """
 
 from __future__ import annotations
