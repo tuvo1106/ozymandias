@@ -55,7 +55,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
     path: "/apm",
     milestone: "M5",
     description: "Services, traces, flame graphs and the service map — with logs one click from any span.",
-    live: false,
+    live: true,
   },
   {
     label: "Monitors",

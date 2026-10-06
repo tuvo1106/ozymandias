@@ -80,6 +80,17 @@ export const routes: RouteObject[] = [
           { path: "*", element: <NotFound /> },
         ],
       },
+      {
+        path: "apm",
+        children: [
+          { index: true, lazy: async () => ({ Component: (await import("../pages/apm/ServiceList")).ServiceList }) },
+          { path: "services/:service", lazy: async () => ({ Component: (await import("../pages/apm/ServicePage")).ServicePage }) },
+          { path: "traces", lazy: async () => ({ Component: (await import("../pages/apm/TraceSearch")).TraceSearch }) },
+          { path: "traces/:traceId", lazy: async () => ({ Component: (await import("../pages/apm/TraceView")).TraceView }) },
+          { path: "map", lazy: async () => ({ Component: (await import("../pages/apm/ServiceMap")).ServiceMap }) },
+          { path: "*", element: <NotFound /> },
+        ],
+      },
       ...NAV_ITEMS.filter((item) => !item.live).map((item) => ({
         path: `${item.path.slice(1)}/*`,
         element: <ComingSoon />,
