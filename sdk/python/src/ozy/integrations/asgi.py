@@ -53,6 +53,17 @@ through Starlette's ``Mount`` the route may be absent (``unmatched``) or
 relative to the mount, depending on the Starlette version. Add the middleware
 inside a mounted sub-app if its routes need exact patterns.
 
+Tracing
+-------
+:class:`TraceMiddleware` is the same middleware plus one ``http.request`` span per request, so
+an app adds *one* middleware, not two, and the span and the metrics cannot disagree about the
+route or the status (they are computed once). The span is started before the inner app runs
+(so spans created while handling the request become its children, through the tracer's
+context variable, which pure ASGI does not break) and finished after it, when the route
+pattern is known. Propagation headers (``x-ozy-trace-id`` / ``x-ozy-parent-id`` /
+``x-ozy-sampling-priority``) continue an upstream trace; malformed ones start a fresh one.
+A 5xx, or an exception, marks the span as an error; a client that went away (499) is not one.
+
 Rejected alternative: tagging the route in the middleware's *entry* from
 ``scope["path"]`` with an id-stripping regex. It needs a rule per app and
 guesses wrong on slugs; the route table already knows the answer.
@@ -61,13 +72,18 @@ guesses wrong on slugs; the route table already knows the answer.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, MutableMapping
 from typing import Any
 
-from .. import StatsdClient
+from .. import StatsdClient, Tracer
 from .. import statsd as _default_client
+from .. import tracer as _default_tracer
+from .._tracing import HEADER_PARENT_ID, HEADER_PRIORITY, HEADER_TRACE_ID, normalize_path
+from . import register_integration
+from ._patching import PatchSet
 
 Scope = MutableMapping[str, Any]
 Message = MutableMapping[str, Any]
@@ -127,13 +143,14 @@ class MetricsMiddleware:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Run the wrapped app, then record the request."""
-        if scope.get("type") != "http" or not self._client.enabled:
+        if scope.get("type") != "http" or not self._active():
             await self.app(scope, receive, send)
             return
         if scope.get("path") in self._exclude:
             await self.app(scope, receive, send)
             return
 
+        state = self._begin(scope)
         started = time.perf_counter()
         # The raw value from the app's ``http.response.start``, coerced only inside ``_record``'s
         # guard: an app or middleware that sends a bad status must not break its own response
@@ -160,9 +177,11 @@ class MetricsMiddleware:
                 return
             await send(message)
 
+        failure: BaseException | None = None
         try:
             await self.app(scope, receive_wrapper, send_wrapper)
         except BaseException as exc:
+            failure = exc
             # With no response started the client's disconnect decides, but only for failures
             # that look like a closed connection (a cancellation, an OSError from a write, a
             # framework's ClientDisconnect). A plain handler bug that happens to follow a
@@ -171,7 +190,27 @@ class MetricsMiddleware:
                 status = CLIENT_CLOSED if disconnected and _client_gone(exc) else SERVER_ERROR
             raise
         finally:
-            self._record(scope, status, (time.perf_counter() - started) * 1000.0)
+            self._end(state, scope, status, (time.perf_counter() - started) * 1000.0, failure)
+            failure = None  # the exception holds its traceback, which holds this frame
+
+    # Two hooks so one middleware can do both jobs: ``_begin`` runs before the inner app
+    # (a tracing subclass starts its span there) and ``_end`` after it, with the status
+    # this class already worked out. Subclasses must not raise from either.
+    def _active(self) -> bool:
+        return self._client.enabled
+
+    def _begin(self, scope: Scope) -> Any:
+        return None
+
+    def _end(
+        self,
+        state: Any,
+        scope: Scope,
+        status: Any,
+        elapsed_ms: float,
+        failure: BaseException | None,
+    ) -> None:
+        self._record(scope, status, elapsed_ms)
 
     def _record(self, scope: Scope, status: Any, elapsed_ms: float) -> None:
         try:
@@ -224,3 +263,169 @@ def _client_gone(exc: BaseException) -> bool:
         isinstance(exc, asyncio.CancelledError | OSError)
         or type(exc).__name__ in _CONNECTION_GONE_NAMES
     )
+
+
+_PROPAGATION_HEADERS = {
+    HEADER_TRACE_ID.encode(),
+    HEADER_PARENT_ID.encode(),
+    HEADER_PRIORITY.encode(),
+}
+
+
+class TraceMiddleware(MetricsMiddleware):
+    """:class:`MetricsMiddleware` that also records an ``http.request`` span per request.
+
+    The span is type ``web``, named ``http.request``, with resource
+    ``"<METHOD> <route pattern>"`` (the pattern is read from ``scope["route"]`` after
+    the inner app returns; with no match, the normalized raw path). Tags:
+    ``http.method``, ``http.url`` (path only, no query string), ``http.route``,
+    ``http.status_code``, ``span.kind=server``. WebSockets and lifespan pass through
+    untouched. Like its base it never raises into the request.
+
+    Args:
+        app: The ASGI application to wrap.
+        client: The statsd client for the request metrics (default ``ozy.statsd``).
+        tracer: The tracer for spans (default ``ozy.tracer``).
+        exclude_paths: Exact paths to leave untraced and unrecorded (health checks).
+        count_name: Metric name for the counter.
+        duration_name: Metric name for the duration distribution.
+    """
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        client: StatsdClient | None = None,
+        tracer: Tracer | None = None,
+        exclude_paths: Iterable[str] = (),
+        count_name: str = "http.request.count",
+        duration_name: str = "http.request.duration",
+    ) -> None:
+        """Wrap ``app``; see the class docstring for the arguments."""
+        super().__init__(
+            app,
+            client=client,
+            exclude_paths=exclude_paths,
+            count_name=count_name,
+            duration_name=duration_name,
+        )
+        self._tracer = tracer if tracer is not None else _default_tracer
+
+    def _active(self) -> bool:
+        return self._client.enabled or self._tracer.enabled
+
+    def _begin(self, scope: Scope) -> Any:
+        try:
+            if not self._tracer.enabled:
+                return None
+            carrier = {
+                name.decode("latin-1"): value
+                for name, value in scope.get("headers") or ()
+                if name in _PROPAGATION_HEADERS
+            }
+            return self._tracer.start_span(
+                "http.request",
+                type="web",
+                tags={"span.kind": "server"},
+                child_of=self._tracer.extract(carrier),
+            )
+        except Exception:
+            _log.debug("ozy: starting the request span failed", exc_info=True)
+            return None
+
+    def _end(
+        self,
+        state: Any,
+        scope: Scope,
+        status: Any,
+        elapsed_ms: float,
+        failure: BaseException | None,
+    ) -> None:
+        if state is not None:
+            try:
+                self._finish_span(state, scope, status, failure)
+            except Exception:
+                _log.debug("ozy: finishing the request span failed", exc_info=True)
+        super()._end(state, scope, status, elapsed_ms, failure)
+
+    @staticmethod
+    def _finish_span(span: Any, scope: Scope, status: Any, failure: BaseException | None) -> None:
+        code = _status_code(status)
+        method = _method(scope)
+        route = _route_pattern(scope)
+        path = scope.get("path")
+        path = path if isinstance(path, str) else ""
+        span.resource = f"{method} {route if route != UNMATCHED else normalize_path(path)}"
+        span.set_tag("http.method", method)
+        span.set_tag("http.url", path)
+        if route != UNMATCHED:
+            span.set_tag("http.route", route)
+        span.set_tag("http.status_code", code)
+        if isinstance(failure, Exception):
+            span.set_error(failure)
+        elif code >= 500:
+            span.set_error()
+        span.finish()
+
+
+class AsgiIntegration:
+    """Trace every Starlette / FastAPI app built after ``patch()`` (no code change needed).
+
+    Wraps ``build_middleware_stack`` so a :class:`TraceMiddleware` sits outermost: it
+    then sees the 500 that ``ServerErrorMiddleware`` sends for an unhandled exception.
+    An app that already added :class:`MetricsMiddleware` or :class:`TraceMiddleware`
+    itself is left alone, so a request is never counted twice. Apps whose stack was
+    built before ``patch()`` are unaffected.
+    """
+
+    name = "asgi"
+
+    def __init__(self) -> None:
+        """Create an unpatched integration."""
+        self._patches = PatchSet()
+
+    def is_available(self) -> bool:
+        """Starlette (which FastAPI is built on) is importable."""
+        try:
+            import starlette.applications  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    def patch(self) -> None:
+        """Wrap ``build_middleware_stack`` on Starlette (and FastAPI, which overrides it)."""
+        if self._patches.active or not self.is_available():
+            return
+        from starlette.applications import Starlette
+
+        self._patches.wrap(Starlette, "build_middleware_stack", _wrap_build)
+        try:
+            from fastapi import FastAPI
+        except ImportError:
+            return
+        self._patches.wrap(FastAPI, "build_middleware_stack", _wrap_build)
+
+    def unpatch(self) -> None:
+        """Restore ``build_middleware_stack``."""
+        self._patches.undo()
+
+
+def _wrap_build(original: Callable[..., ASGIApp]) -> Callable[..., ASGIApp]:
+    @functools.wraps(original)
+    def build_middleware_stack(self: Any) -> ASGIApp:
+        stack = original(self)
+        try:
+            for user in getattr(self, "user_middleware", ()):
+                cls = getattr(user, "cls", None)
+                if isinstance(cls, type) and issubclass(cls, MetricsMiddleware):
+                    return stack
+            return TraceMiddleware(stack)
+        except Exception:
+            _log.debug("ozy: wrapping the middleware stack failed", exc_info=True)
+            return stack
+
+    return build_middleware_stack
+
+
+INTEGRATION = AsgiIntegration()
+register_integration(INTEGRATION)

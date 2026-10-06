@@ -4,9 +4,9 @@
 runtime dependencies, it never raises into your code, and it does nothing at all until you
 point it at an agent.
 
-The SDK ships the statsd client and, from M3, an ASGI metrics middleware
-([below](#asgi-middleware)). Tracing and the other framework integrations arrive in M5
-(see [PLAN.md](../../PLAN.md)).
+The SDK ships the statsd client, an ASGI metrics middleware ([below](#asgi-middleware)) and,
+from M5, a tracer with integrations for ASGI, SQLAlchemy, Redis, httpx, arq and `logging`
+([Tracing](#tracing)).
 
 The SDK is a convenience layer. The public interface is the wire protocol
 ([`docs/wire-protocol.md`](../wire-protocol.md) §A), so any extended StatsD client can talk to the
@@ -62,6 +62,10 @@ still pins the values it owns, such as its service name.
 | `debug` | `OZY_DEBUG` | off | `1`/`true`/`yes`/`on`: send failures go to the `ozy` logger at WARNING and payloads at DEBUG |
 | `max_payload` | none | `1432` | Maximum datagram size in bytes (one Ethernet MTU minus headers). The agent reads at most 8192 |
 | `flush_interval` | none | `0.1` | Seconds between background flushes |
+| `trace_enabled` | `OZY_TRACE_ENABLED` | on | Whether spans are recorded **when an agent host is set**. `0`/`false`/`no`/`off` switches tracing off and leaves metrics on |
+| `trace_port` | `OZY_TRACE_PORT` | `8126` | Agent TCP port for `POST /v1/traces`. An invalid value falls back to 8126 |
+| `trace_sample_rate` | `OZY_TRACE_SAMPLE_RATE` | `1.0` | Head-sampling rate, clamped to [0, 1]; the agent's `rate_by_service` answer overrides it per service ([Sampling](#sampling)) |
+| `integrations` | none | none | Names or [`Integration`](#writing-your-own-integration) objects to patch (`"sqlalchemy"`, `"redis"`, `"httpx"`, `"arq"`, `"logging"`, `"asgi"`). Applied only when tracing is enabled |
 
 Calling `init()` again flushes and closes the previous configuration, then applies the new
 one. `init()` never raises. If configuration fails, it logs a warning and leaves the SDK
@@ -255,6 +259,310 @@ own error handler still sits outside it, which is why a handler that raises is r
 - **It never raises into a request.** A failure while recording is logged at debug level
   and dropped. Until `ozy.init()` enables the client it is a straight passthrough.
 
+## Tracing
+
+`from ozy import tracer`. A **span** is one timed unit of work with an id, a parent id and the id
+of the **trace** it belongs to; a trace is the tree of spans one request caused, across every
+process it touched. Spans are sent to the agent (`POST :8126/v1/traces`, wire-protocol §B), which
+computes request/error/latency statistics from them, samples them and forwards the kept ones to the
+trace store.
+
+```python
+import ozy
+from ozy import tracer
+
+ozy.init(service="api", env="dev", integrations=["sqlalchemy", "redis", "httpx", "arq", "logging"])
+
+with tracer.trace("judge.run", resource=language, type="worker") as span:
+    span.set_tag("problem.id", problem_id)
+    span.set_metric("tests.count", n)
+
+@tracer.wrap("cover.resize")        # sync or async; bare @tracer.wrap names it after the function
+async def resize(...): ...
+```
+
+Without an agent host (or with `OZY_TRACE_ENABLED=0`) the tracer is inert: `trace()` returns one
+shared no-op span, your code still runs, and no thread, socket or exit hook is created.
+
+### API
+
+| Call | What it does |
+|---|---|
+| `tracer.trace(name, *, resource=None, service=None, type="custom", tags=None, child_of=None)` | Start an **active** span; use it as `with` or `async with`. Leaving the block finishes it. |
+| `tracer.wrap(name=None, *, resource, service, type, tags)` | Decorator, sync and async. A generator function is traced only while it is created, not across its yields. |
+| `tracer.start_span(name, ..., child_of=None, activate=True)` | The manual API: you call `span.finish()`. `activate=False` for a leaf that needs no children. |
+| `tracer.current_span()` | The active span of this task or thread, or `None`. |
+| `tracer.current_trace_context()` | The active span's `Context(trace_id, span_id, sampling_priority)`, or `None`. |
+| `tracer.inject(carrier, context=None)` | Write the three `x-ozy-*` propagation headers into a mutable mapping. |
+| `tracer.extract(carrier)` | Read a `Context` from headers (any case, `str` or `bytes`) or from a job carrier dict; `None` for absent or malformed. |
+| `tracer.wrap_executor(executor)` | An executor whose tasks run in the submitter's context (see below). |
+| `tracer.stats()` | `TracerStats(spans_started, spans_finished, chunks_sent, chunks_dropped, send_errors)`. |
+| `tracer.flush()` / `tracer.close()` | Send everything queued now, on the calling thread / drain and disable. Rarely needed: the writer flushes every second and on exit. |
+| `ozy.normalize_path(path)` | The path normalizer ([below](#resources-and-the-path-normalizer)). |
+
+A span has `set_tag(key, value)` (strings; `None` is ignored, other values are stringified),
+`set_metric(key, number)` (finite numbers only), `set_error(exc=None)`, `finish()` and the read-only
+`trace_id`, `span_id`, `parent_id`, `context`. Everything is safe to call on a finished span; nothing
+raises.
+
+**Lifecycle.** Ids are random (`os.urandom`; 128-bit trace, 64-bit span, lowercase hex, never zero).
+`start` is wall-clock microseconds; `duration` comes from the monotonic clock, so a clock step during
+a span cannot make it negative. An exception leaving a `with` block sets `error=1` and
+`error.type` / `error.message` / `error.stack`, then **propagates unchanged**: the same object, not a
+wrapper. A `CancelledError` ends the span but is not an error. `finish()` is idempotent.
+
+**Context.** The active span lives in a `contextvars.ContextVar`, so it survives `await`, is copied
+into `asyncio.create_task` (a span opened inside the task cannot disturb its spawner), and is **not**
+copied into plain threads: a new thread starts a new trace. `asyncio.to_thread` copies the context
+for you; for a `ThreadPoolExecutor` use `tracer.wrap_executor(pool)`. A span finished from a different
+context than the one that started it does not corrupt the stack (the SDK compares against the active
+span instead of using `ContextVar.reset(token)`, which raises there).
+
+### The trace buffer
+
+Spans are not sent one by one. The finished spans of a trace accumulate in a buffer held by the
+**local root**, the first span this process saw for the trace. When the local root finishes the buffer
+goes to the writer as one **chunk**, which is what lets the agent judge a whole trace (error and
+rare-trace sampling look at every span of a chunk). A trace holding more than 500 finished spans
+flushes a *partial* chunk; a span that finishes after its root (a detached task) is sent as a *late*
+chunk of its own. Partial and late chunks carry `_sampling_priority` on their first span, because
+there is no root in them to carry it. Unfinished spans are never sent.
+
+`_top_level=1` is set on a span whose parent is absent or belongs to another service (including a
+span continued from another process): the agent counts these, and only these, as service entry
+spans in its request statistics.
+
+### Sampling
+
+The head-sampling decision is made once, at the trace's first span, as a pure function of the trace
+id: `keep == (low64(trace_id) * 1111111111111111111 mod 2**64) < rate * 2**64`. Every service in a
+trace, in any language, computes the same answer without talking to the others, and a downstream
+service **inherits** the upstream priority rather than re-deciding. The rate is
+`OZY_TRACE_SAMPLE_RATE`, then overridden per service by the agent's `rate_by_service` response
+(key `service:<name>,env:<env>`); the shared vectors in `pkg/wire/testdata/traces/sampling.json` pin
+the function.
+
+**A dropped trace is still sent**, with `_sampling_priority = 0`. The agent computes its statistics
+over every span *before* it samples, so a 10% sample must not show up as 10% of the traffic; the drop
+happens in the agent. This is why sampled and unsampled traces cost the same in the SDK
+([overhead](#overhead)).
+
+### Propagation
+
+Between services, three headers (wire-protocol §B):
+
+```
+x-ozy-trace-id: <32 hex>    x-ozy-parent-id: <16 hex>    x-ozy-sampling-priority: <-1|0|1|2>
+```
+
+`tracer.inject(headers)` writes them for the active span; `tracer.extract(headers)` reads them back.
+A header that is malformed in any way (wrong length, zero id, a priority outside -1..2) yields **no
+context at all**, and the receiver starts a fresh trace instead of continuing a corrupt one. Uppercase
+hex is accepted and lowered. `extract(inject(ctx)) == ctx` for every valid context; garbage never
+raises.
+
+### Resources and the path normalizer
+
+An HTTP span's resource is `"<METHOD> <route pattern>"` when the framework knows the pattern. When it
+does not (a 404, a framework that never sets `scope["route"]`), `normalize_path()` produces a
+low-cardinality guess: a segment that is all digits, a UUID, hex of 12 or more characters, or
+nanoid-like (16 or more of `[A-Za-z0-9_-]` containing a digit) becomes `:id`, the query string and
+fragment are dropped, and at most 8 segments are kept. Vectors:
+`pkg/wire/testdata/traces/normalize-path.json`, shared with Go.
+
+### Limits the SDK applies
+
+So that it never sends a span the agent would normalize or refuse: `resource` and each `meta` value
+are cut to 5000 bytes on a character boundary, a span keeps at most 100 `meta` and 50 `metrics`
+entries (extras dropped in sorted key order; `_sampling_priority` and `_top_level` always survive),
+`name` and `service` are cut to 100 bytes, an unknown `type` becomes `custom`, and a non-finite metric
+is dropped. Queued chunks are bounded (1000; the **oldest** is dropped and counted in
+`stats().chunks_dropped`). The writer is a daemon thread that posts every second or at 100 queued
+chunks, with a 2 s timeout and **no retries** (traces are best-effort; a `429` means "agent busy" and
+the chunk is dropped). It drains on exit within a 1 s budget, and restarts after `fork()` like the
+statsd flusher ([Fork behaviour](#fork-behaviour)). `rate_by_service` from a `200` response is applied
+to later decisions; garbage in it is ignored.
+
+### Integrations
+
+`ozy.init(integrations=[...])` patches the named integrations (only when tracing is enabled);
+`ozy.integrations.patch_all()` patches every one whose library is installed; an unavailable one is a
+silent no-op and a failing one is logged and skipped. Each imports its target lazily, is idempotent,
+and has an `unpatch()`. **The client integrations (SQLAlchemy, Redis, httpx, arq's enqueue) only record
+inside an active trace**: a query with no active span (a migration, a startup probe) would otherwise
+become a root span, and a root span counts as a service entry in the agent's request statistics.
+
+| Integration | Mechanism | Span |
+|---|---|---|
+| `asgi` | `TraceMiddleware(app)`, pure ASGI; or `patch()` to wrap `build_middleware_stack` of Starlette/FastAPI apps built afterwards | `http.request`, type `web`, resource `"<METHOD> <route pattern>"`, `http.method`, `http.url` (path only), `http.route`, `http.status_code`, `span.kind=server` |
+| `sqlalchemy` | event listeners (`before_cursor_execute`, `after_cursor_execute`, `handle_error`) on the `Engine` class (`patch()`) or one engine (`instrument(engine)`, also `AsyncEngine`) | `<dialect>.query` (`postgres.query`, `sqlite.query`), type `db`, resource = statement text cut to 2000 chars, `db.rowcount` |
+| `redis` | wraps `execute_command` and pipeline `execute` on `redis` and `redis.asyncio` | `redis.command`, type `cache`, resource = command **name** only; a pipeline is one span, resource `PIPELINE`, metric `redis.pipeline.commands` |
+| `httpx` | wraps `Client.send` / `AsyncClient.send`, injects the headers | `http.client`, type `http`, resource `"<METHOD> <host>"`, `http.status_code`; a 5xx marks it as an error |
+| `arq` | `inject_job_kwargs` / `traced` ([below](#arq-the-trace-crosses-the-queue)); `patch()` wraps `ArqRedis.enqueue_job` | `arq.enqueue` (queue, producer) and `arq.job` (worker, consumer) |
+| `logging` | a record factory (or `TraceLogFilter` on a handler) stamping `trace_id` / `span_id` | none |
+
+**ASGI.** `TraceMiddleware` extends [`MetricsMiddleware`](#asgi-middleware): one middleware, one
+set of facts, so the span and the `http.request.count` metric cannot disagree about the route or the
+status. Use it instead of `MetricsMiddleware`, not beside it. The span is started before the inner app
+runs (so spans made while handling the request are its children) and finished after, when the route
+pattern is known. A 5xx or an exception marks it as an error; a 4xx and a client disconnect (499) do
+not. WebSockets and lifespan pass through unrecorded. With FastAPI 0.142 / Starlette 1.7 an
+`include_router(prefix=...)` prefix **is** part of the pattern the span reports (checked in
+`tests/test_trace_asgi.py`); the version-dependent behaviour of `Mount`ed sub-apps described under
+[ASGI middleware](#asgi-middleware) still applies, and the span falls back to the normalized path.
+`patch()` leaves an app alone that already added `MetricsMiddleware` or `TraceMiddleware`, so a
+request is never counted twice.
+
+**SQLAlchemy.** The statement text is the resource; **parameters are never read**, so no bound value
+(an email, a token) can reach a span. A driver's error message can quote a value (PostgreSQL's
+`DETAIL: Key (email)=(a@b.c) already exists`), so a failed statement records the exception type and
+only the **first line** of its message, and no stack. The one thing this cannot protect is a statement
+an application built by pasting values into the SQL string itself.
+
+**Redis.** Only the command name is recorded: keys and values are user data often enough
+(`session:<token>`) that "keys are fine" is a leak waiting to happen. A failure records the exception
+type only, since Redis errors quote arguments.
+
+**httpx.** Headers are injected for every host by default. A trace id is not a secret, but it is a
+correlation handle you may not want to hand to a third party:
+`ozy.integrations.httpx.INTEGRATION.inject_hosts = {"payments.internal"}` restricts injection to an
+allow-list (the span is recorded either way). The `http.url` tag has no query string and no
+credentials.
+
+#### arq: the trace crosses the queue
+
+arq pickles `enqueue_job(function, *args, **kwargs)` into Redis and a worker, in another process, calls
+`function(ctx, *args, **kwargs)` later. The trace context therefore rides in a reserved kwarg,
+`_ozymandias={"trace_id", "parent_id", "sampling_priority"}`, and the two ends agree on it:
+
+```
+API process                                       worker process
+http.request
+  └─ arq.enqueue (producer) ── _ozymandias ──►    arq.job (consumer, queue.wait_ms)
+                                                    └─ postgres.query ...
+```
+
+```python
+from ozy.integrations.arq import inject_job_kwargs, traced
+
+# producer: either patch() (init(integrations=["arq"])) -- every enqueue_job inside a trace -- or
+await pool.enqueue_job("judge", **inject_job_kwargs({"submission_id": sid}, function="judge"))
+
+# consumer: wrap the worker's functions; plain coroutines, arq.func(...) and arq.cron(...) all work
+class WorkerSettings:
+    functions = [traced(judge), traced(arq.func(grade, timeout=30, max_tries=2))]
+    cron_jobs = [traced(arq.cron(nightly, hour=3))]
+```
+
+`traced` (alias `traced_job`, usable as a decorator) **pops** `_ozymandias` from the kwargs before
+calling your function, so it never sees an argument it does not declare; extracts the context; starts
+`arq.job` as a child (type `worker`, resource the function name, `span.kind=consumer`); tags `job.id`
+and `job.try`; and sets the metric `queue.wait_ms` from `ctx["enqueue_time"]`. The gap between
+`arq.enqueue` and `arq.job` is the time the job sat in the queue. An exception marks the span and
+re-raises the same object; `arq.Retry` is control flow and does not mark an error; a cancellation ends
+the span without one. `arq.func(...)` options and `__name__` are preserved. A cron job has no
+enqueuer, so it carries no context and starts a new root trace per run. A legacy job with no kwarg
+(from an API that predates the integration) still runs and starts a root trace.
+
+**Deploy workers before the API.** `inject_job_kwargs` and the enqueue `patch()` add a kwarg your job
+functions do not declare, and a worker whose functions are not wrapped with `traced` would call
+`fn(ctx, _ozymandias={...})` and fail with a `TypeError`. A worker with `traced` and no tracing
+configured still strips the kwarg.
+
+`inject_job_kwargs` starts *and finishes* its `arq.enqueue` span in one call, so that span is an
+instant: it marks when the job was enqueued and is the job's parent, but it does not time the Redis
+write. The `patch()` wraps `enqueue_job` itself and times the real call, which is why it is the better
+choice.
+
+`tests/test_trace_arq_e2e.py` runs the whole chain (`http.request` -> `arq.enqueue` -> `arq.job` ->
+`sqlite.query`, one trace id, the parent chain asserted) through a real arq worker against a real
+Redis; it is skipped unless `OZY_TEST_REDIS_URL` points at a dedicated non-zero database, because CI
+has no Redis container yet.
+
+**Logging.** The `logging` integration installs a record factory, so *every* record in the process
+carries `trace_id` and `span_id` whichever logger or handler produced it (a filter on a logger would
+miss its children's records, since filters do not propagate); `TraceLogFilter` does the same on one
+handler. [`JSONFormatter`](#structured-logging) already emits both fields from the record. Outside a
+span the fields are simply absent.
+
+### Writing your own integration
+
+An integration is any object with this shape (`ozy.integrations.Integration`, a runtime-checkable
+`Protocol`), registered with `register_integration()` and built on **only** the public tracer API, so
+a third party has exactly the power the built-ins have:
+
+```python
+from ozy import tracer
+from ozy.integrations import register_integration
+
+class MyLibIntegration:
+    name = "mylib"
+
+    def is_available(self) -> bool:          # no side effects; never raise
+        try:
+            import mylib  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    def patch(self) -> None:                 # idempotent
+        import mylib
+        original = mylib.Client.call
+        def call(self, *args, **kwargs):
+            if tracer.current_span() is None:        # client spans: only inside a trace
+                return original(self, *args, **kwargs)
+            with tracer.trace("mylib.call", type="http", resource=args[0]):
+                return original(self, *args, **kwargs)
+        mylib.Client.call = call
+        self._original = original
+
+    def unpatch(self) -> None:               # idempotent
+        import mylib
+        mylib.Client.call = self._original
+
+register_integration(MyLibIntegration())     # then init(integrations=["mylib"]) or patch_all()
+```
+
+Rules the built-ins follow, and yours should: import the target lazily and no-op when it is absent;
+never raise into the host (`patch()`/`patch_all()` log and skip a failing integration, but a wrapper
+that raises at call time is yours to guard); never record parameters, keys, credentials or query
+strings; start a span only when one is active unless the call is a genuine entry point; and let the
+host's exception propagate unchanged. `ozy.integrations._patching.PatchSet` (private; copy it if you
+like) shows how to restore an *inherited* method on undo by deleting it rather than copying it onto
+the subclass.
+
+### Safety guarantees (tracing)
+
+Each is pinned by a test in `sdk/python/tests/`:
+
+- **Disabled means inert**: no agent host, or `OZY_TRACE_ENABLED=0`, means no thread, socket, `atexit`
+  or fork hook (`test_disabled_means_no_thread_no_hooks`), and your wrapped code behaves identically.
+- **Nothing raises into the host.** Every tracer entry point and every integration wrapper swallows its
+  own failures (tests break the tracer, the id source and the integrations deliberately). The one
+  deliberate exception is user code inside `trace()` / `wrap()`, whose exceptions propagate unchanged.
+- **A slow or dead agent never slows the app**: `submit` is a lock and a list append
+  (`test_a_slow_agent_never_blocks_the_caller`), and memory is bounded by the queue
+  (`test_the_queue_is_bounded_and_drops_the_oldest`).
+- **No SQL parameter, Redis key/value or query string reaches a span**: each integration's test
+  scans the raw bytes it posted for a sentinel value.
+
+### Overhead
+
+`uv run python benchmarks/trace_overhead.py` measures per-span time and allocation with tracing
+disabled / enabled-unsampled / enabled-sampled (the writer replaced by a counter, so it measures the
+tracer, not the loopback). No budget is set; the numbers are recorded in the M5 notes so a regression
+is visible. Measured on an Apple-silicon laptop, CPython 3.12, `--n 50000` (a reference, not a promise):
+
+| | disabled | unsampled | sampled |
+|---|---|---|---|
+| root span | 0.12 us | 3.6 us | 3.7 us |
+| child span (11-span trace) | 0.12 us | 2.5 us | 2.5 us |
+| `@wrap` call overhead | 0.16 us | 3.7 us | 3.8 us |
+| peak bytes, one root span | 128 | 1174 | 1174 |
+| bytes retained per buffered span | 0 | 669 | 669 |
+
+Unsampled costs the same as sampled by design: the trace is still built and sent.
+
 ## Structured logging
 
 `ozy.integrations.logging.JSONFormatter` writes each `logging` record as one JSON line, which the
@@ -314,6 +622,10 @@ the child. When the SDK is enabled, it registers
 - a new flusher thread, started by the child's first metric;
 - zeroed `stats()` counters.
 
+The tracer's writer gets the same treatment (fresh locks, an empty queue, no thread until the
+child's first finished trace; spans already buffered by a trace that started before the fork finish
+and send from the child).
+
 You don't need to call `init()` again in the worker, although doing so is harmless. On
 platforms without `fork()`, the hook and its test are skipped.
 
@@ -344,6 +656,10 @@ Two more details:
 | `stats().errors` climbs | Set `OZY_DEBUG=1` and configure logging (`logging.basicConfig()`). Failures are logged on the `ozy` logger |
 | Metrics stop after a fork | This shouldn't happen (see [Fork behaviour](#fork-behaviour)). Check that the child doesn't exit with `os._exit()` before a flush. Call `statsd.flush()` first |
 | Lines are rejected as parse errors by the agent | Check the agent's `ozy.agent.statsd.parse_errors`. Common causes are an empty metric name, or a value from another client that isn't a finite number. Empty tag entries (`tags=["a", ""]`) are harmless, because the agent skips them |
+| `tracer.enabled` is `False` | No agent host, or `OZY_TRACE_ENABLED=0`. `tracer.stats()` stays at zero |
+| `tracer.stats().chunks_dropped` or `send_errors` climbs | The agent is down, busy (`429`) or unreachable on `OZY_TRACE_PORT` (default 8126, TCP). Traces are best-effort and never retried |
+| A trace is missing the worker half | The worker's functions are not wrapped with `ozy.integrations.arq.traced`, or the API was deployed before the workers (see the arq section) |
+| SQL / Redis / httpx spans never appear | They only record inside an active trace: check that an `http.request` (or other) span is active where the call is made, and that a thread was not started without `tracer.wrap_executor` |
 | Metrics missing at shutdown | `atexit` doesn't run on `os._exit()` or on a SIGKILL. Call `statsd.flush()` or `statsd.close()` yourself |
 
 ## Developing the SDK
@@ -354,7 +670,14 @@ uv sync
 uv run pytest                               # includes the 90% coverage gate
 uv run ruff check && uv run ruff format --check
 uv run mypy                                 # strict, src + tests
+uv run python benchmarks/trace_overhead.py  # tracer overhead per span
 ```
+
+The tracing tests run each integration against the real library, so the dev group carries
+`fastapi`, `httpx`, `httpx2` (Starlette's `TestClient` warns without it, and warnings are errors),
+`sqlalchemy`, `redis` and `arq`; the SDK itself still has no runtime dependencies. The arq end-to-end
+test needs a Redis: `OZY_TEST_REDIS_URL=redis://localhost:6379/15 uv run pytest tests/test_trace_arq_e2e.py`
+(it flushes that database, so never point it at database 0).
 
 The contract suite (`tests/test_contract.py`) loads the shared goldens through a path
 relative to the test file, so it needs a full checkout of the repository.
