@@ -18,10 +18,13 @@
  *
  * @module
  */
+import type { AsyncLocalStorage } from "node:async_hooks";
 import type { StatsdClient } from "./client.js";
+import type { Integration } from "./integrations/types.js";
+import type { Span, TraceRuntime } from "./trace/tracer.js";
 
 /** The layout version of {@link GlobalState}. */
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 
 /** Everything the SDK keeps per process. Later milestones add the tracer here. */
 export interface GlobalState {
@@ -31,6 +34,18 @@ export interface GlobalState {
   statsd: StatsdClient | null;
   /** Whether the process exit hooks have been installed (at most once). */
   exitHooksInstalled: boolean;
+  /** The tracer runtime (config, writer, agent-provided rates), or null when tracing is off. */
+  trace: TraceRuntime | null;
+  /**
+   * The async context holding the active span. It lives here, not in the
+   * tracer module, so two copies of the package share one context: a span
+   * started through one copy is the parent of a span started through the other.
+   */
+  als: AsyncLocalStorage<Span> | null;
+  /** Integrations registered by third parties through `registerIntegration()`. */
+  integrations: Map<string, Integration>;
+  /** Hosts the fetch integration injects propagation headers for (default none). */
+  fetchAllow: string[];
 }
 
 const KEY = Symbol.for("ozy");
@@ -44,8 +59,24 @@ export function globalState(): GlobalState {
   const holder = globalThis as unknown as Record<symbol, GlobalState | undefined>;
   let state = holder[KEY];
   if (!state) {
-    state = { version: STATE_VERSION, statsd: null, exitHooksInstalled: false };
+    state = {
+      version: STATE_VERSION,
+      statsd: null,
+      exitHooksInstalled: false,
+      trace: null,
+      als: null,
+      integrations: new Map(),
+      fetchAllow: [],
+    };
     holder[KEY] = state;
+  } else if (state.version < STATE_VERSION) {
+    // Created by an older copy of the package (M1 layout): fill what it lacks
+    // in place, so both copies keep sharing the one object.
+    state.trace ??= null;
+    state.als ??= null;
+    state.integrations ??= new Map();
+    state.fetchAllow ??= [];
+    state.version = STATE_VERSION;
   }
   return state;
 }
@@ -80,6 +111,20 @@ export function installExitHooks(state: GlobalState): void {
       // Exit paths must never throw.
     }
   };
-  process.on("beforeExit", flush);
+  // Traces go over HTTP, which needs the event loop: only `beforeExit` can
+  // deliver them (`exit` allows no further I/O). The writer holds the loop
+  // open for at most its 1 s exit budget, then the event fires again with an
+  // empty queue and the process ends.
+  const flushTraces = () => {
+    try {
+      void globalState().trace?.writer.flushOnExit();
+    } catch {
+      // Exit paths must never throw.
+    }
+  };
+  process.on("beforeExit", () => {
+    flush();
+    flushTraces();
+  });
   process.on("exit", flush);
 }
