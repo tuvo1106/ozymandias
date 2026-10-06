@@ -108,6 +108,14 @@ interval's increase.
 | `ozy.logstore.compressed_bytes` | gauge | bytes | — | ozyd | Their size on disk; `raw_bytes / compressed_bytes` is the compression ratio |
 | `ozy.logstore.bloom_bytes` | gauge | bytes | — | ozyd | The per-block bloom filters, in addition to the above |
 | `ozy.logstore.streams_folded` | gauge | logs | — | ozyd | Logs filed under `_overflow` because the store was at `logs.max_streams`. Non-zero means a label (usually `service`) is taking unbounded values |
+| `ozy.tracestore.spans_appended` | counter | spans | — | ozyd | Spans stored |
+| `ozy.tracestore.entries_indexed` | counter | spans | — | ozyd | Entry spans written to the search indexes |
+| `ozy.tracestore.edges_recorded` | counter | edges | — | ozyd | Service-to-service calls added to the service map |
+| `ozy.tracestore.edges_unresolved` | counter | edges | — | ozyd | Cross-service entry spans whose parent span never arrived within the TTL, so no edge was recorded |
+| `ozy.tracestore.edges_dropped` | counter | edges | — | ozyd | Children not parked because 100000 were already waiting for a parent |
+| `ozy.tracestore.edges_pending` | gauge | edges | — | ozyd | Children currently waiting for their parent span |
+| `ozy.tracestore.traces_swept` | counter | traces | — | ozyd | Traces deleted by retention |
+| `ozy.tracestore.disk_bytes` | gauge | bytes | — | ozyd | Disk used by the trace store |
 | `ozy.loghub.subscribers` | gauge | tails | — | ozyd | Open live tails |
 | `ozy.loghub.dropped` | counter | logs | — | ozyd | Logs a live tail lost because its reader was too slow |
 | `ozy.store.series` | gauge | series | `store` | ozyd | Series in the metric store |
