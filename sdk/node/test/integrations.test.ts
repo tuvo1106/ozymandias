@@ -493,6 +493,21 @@ describe("fetch", () => {
     }
   });
 
+  it("a 404 from upstream is not an error on the client span", async () => {
+    const real = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("no", { status: 404 })) as typeof fetch;
+    try {
+      instrumentFetch();
+      await tracer.trace("req", {}, async () => fetch("http://upstream.test/x"));
+      await tracer.flush();
+      expect(byName("http.client")[0]).toMatchObject({ error: 0 });
+      expect(byName("http.client")[0]!.meta["http.status_code"]).toBe("404");
+    } finally {
+      uninstrumentFetch();
+      globalThis.fetch = real;
+    }
+  });
+
   it("returns the very same Response and marks 5xx as errors", async () => {
     const real = globalThis.fetch;
     const response = new Response("boom", { status: 502 });

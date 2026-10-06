@@ -47,6 +47,18 @@ describe("path normalizer vectors (normalize-path.json)", () => {
   it("handles a path without a leading slash like Go does", () => {
     expect(normalizePath("api/42")).toBe("/api/:id");
   });
+  it("keeps exactly 8 segments", () => {
+    expect(normalizePath("/a/b/c/d/e/f/g/h/i/j")).toBe("/a/b/c/d/e/f/g/h");
+    expect(normalizePath("/a/b/c/d/e/f/g/h")).toBe("/a/b/c/d/e/f/g/h");
+    expect(normalizePath("/a/b/c/d/e/f/g/h/i")).toBe("/a/b/c/d/e/f/g/h");
+  });
+  it("hex segments become :id from 12 characters, not 11", () => {
+    expect(normalizePath("/x/abcdefabcde")).toBe("/x/abcdefabcde");
+    expect(normalizePath("/x/abcdefabcdef")).toBe("/x/:id");
+  });
+  it("floors rate * 2^64 like Go's uint64 conversion: a tiny rate keeps nothing, even a zero low half", () => {
+    expect(sampleKeep("1".repeat(16) + "0".repeat(16), 1e-30)).toBe(false);
+  });
 });
 
 describe("parsePropagation", () => {

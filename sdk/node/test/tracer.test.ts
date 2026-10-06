@@ -1,6 +1,6 @@
 // Tracer core: span lifecycle, context, buffering, sampling, rate uptake,
 // propagation, and the guarantee that the host's code runs and fails unchanged.
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NOOP_SPAN, init, tracer } from "../src/index.js";
 import { globalState } from "../src/state.js";
 import { PARTIAL_FLUSH_SPANS, newId, setEntropyForTest } from "../src/trace/tracer.js";
@@ -63,6 +63,21 @@ describe("span lifecycle", () => {
     const d = agent.spans()[0]!.duration;
     expect(d).toBeGreaterThanOrEqual(25_000);
     expect(d).toBeLessThan(2_000_000);
+  });
+
+  it("re-anchors the wall clock when it jumps (laptop sleep: the monotonic clock paused, the wall clock did not)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    try {
+      tracer.trace("before", {}, () => {});
+      vi.setSystemTime(Date.now() + 3_600_000);
+      const wallUs = Date.now() * 1000;
+      tracer.trace("after", {}, () => {});
+      await tracer.flush();
+      const after = agent.spans().find((s) => s.name === "after")!;
+      expect(Math.abs(after.start - wallUs)).toBeLessThan(100_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("defaults the resource to the name and unknown types to custom", async () => {

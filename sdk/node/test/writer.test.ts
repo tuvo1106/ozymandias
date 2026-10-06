@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FLUSH_AT_CHUNKS, MAX_QUEUE_CHUNKS, TraceWriter } from "../src/trace/writer.js";
 import type { WireSpan } from "../src/trace/wire.js";
-import { closedPort } from "./helpers.js";
+import { closedPort, eventually } from "./helpers.js";
 import { FakeTraceAgent, type SeenSpan } from "./trace-helpers.js";
 
 let agent: FakeTraceAgent;
@@ -68,8 +68,32 @@ describe("TraceWriter", () => {
   it("flushes early at 100 queued chunks", async () => {
     const w = new TraceWriter({ host: "127.0.0.1", port: agent.port, info, flushIntervalMs: 60_000 });
     for (let i = 0; i < FLUSH_AT_CHUNKS; i++) w.enqueue(chunk(`c${i}`));
+    // No explicit flush: the 100th chunk must trigger it, long before the 60 s timer.
+    await eventually(() => agent.chunks().length === FLUSH_AT_CHUNKS);
+  });
+
+  it("99 chunks wait for the timer (the early flush is exactly at 100)", async () => {
+    const w = new TraceWriter({ host: "127.0.0.1", port: agent.port, info, flushIntervalMs: 60_000 });
+    for (let i = 0; i < FLUSH_AT_CHUNKS - 1; i++) w.enqueue(chunk(`c${i}`));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(agent.chunks()).toHaveLength(0);
+  });
+
+  it("the flush timer is unref'd, so an idle queue cannot keep the process alive", () => {
+    const w = new TraceWriter({ host: "127.0.0.1", port: agent.port, info, flushIntervalMs: 60_000 });
+    w.enqueue(chunk("a"));
+    const timer = (w as unknown as { timer: NodeJS.Timeout }).timer;
+    expect(timer.hasRef()).toBe(false);
+    clearTimeout(timer);
+  });
+
+  it("clamps rates from the agent into [0, 1] before handing them on", async () => {
+    let got: Record<string, number> = {};
+    const w = new TraceWriter({ host: "127.0.0.1", port: agent.port, info, onRates: (r) => (got = r) });
+    agent.rates = { hi: 7, lo: -2, ok: 0.3 };
+    w.enqueue(chunk("a"));
     await w.flush();
-    expect(agent.chunks()).toHaveLength(FLUSH_AT_CHUNKS);
+    expect(got).toEqual({ hi: 1, lo: 0, ok: 0.3 });
   });
 
   it("drops the OLDEST chunk past 1000 and counts it", async () => {
