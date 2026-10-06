@@ -16,6 +16,28 @@ package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Tracing (M5).** `from ozy import tracer`: `trace()` (a `with` / `async with` context manager),
+  `wrap()` (sync and async decorator), `start_span()`, `current_span()`, `current_trace_context()`,
+  `inject()` / `extract()` for the `x-ozy-*` propagation headers, `wrap_executor()` and `stats()`.
+  The active span lives in a `ContextVar` (survives `await`, copied into tasks, not into threads).
+  Spans buffer per local root and flush as one chunk (partial past 500 spans, late chunks for spans
+  that outlive their root); head sampling is the shared function of the trace id, with the rate from
+  `OZY_TRACE_SAMPLE_RATE` and the agent's `rate_by_service`; unsampled traces are still sent. The writer
+  is a bounded (1000 chunks, drop-oldest), fork-safe daemon thread posting `POST :8126/v1/traces` with a
+  2 s timeout and no retries, draining on exit within 1 s. New config: `OZY_TRACE_ENABLED`,
+  `OZY_TRACE_PORT`, `OZY_TRACE_SAMPLE_RATE` and `init(trace_enabled=, trace_port=, trace_sample_rate=,
+  integrations=)`. Inert without an agent host.
+- `ozy.normalize_path()`, identical to Go's `wire.NormalizePath`, and `Context`, `Span`, `Tracer`,
+  `TracerStats` exported from `ozy`.
+- Integrations behind a public `Integration` protocol, `register_integration()` and `patch_all()`:
+  `ozy.integrations.asgi.TraceMiddleware` (the metrics middleware plus an `http.request` span, one
+  middleware for both) and an `asgi` patch for Starlette/FastAPI apps; `sqlalchemy` (statement text,
+  never parameters), `redis` (command name, never keys), `httpx` (header injection), `arq`
+  (`inject_job_kwargs`, `traced` / `traced_job`, and an `enqueue_job` patch: one trace across the
+  queue), and `logging` (`TraceLogFilter` and a record factory stamping `trace_id` / `span_id`).
+- `benchmarks/trace_overhead.py`: tracer time and allocations per span, disabled / unsampled / sampled.
+- Dev dependencies for the integration tests: `fastapi`, `httpx`, `httpx2`, `sqlalchemy`, `redis`, `arq`.
+  The SDK itself still has no runtime dependencies.
 - `ozy.integrations.logging.JSONFormatter`: a `logging` formatter that writes one JSON object per
   line (timestamp, level, message, logger, exception, `error.kind`, `trace_id`, `span_id`, service/env/version
   and every `extra=` field), so the agent reads fields rather than parsing text and a traceback is one event.

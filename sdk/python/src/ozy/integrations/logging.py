@@ -44,6 +44,16 @@ Everything else in ``extra=`` is added as a field of the same name, so it is
 queryable as ``@name:value``. An extra that collides with one of the fields
 above is kept under ``<name>_`` rather than replacing it: the fields above are
 what the pipeline relies on.
+
+Trace correlation
+-----------------
+``trace_id`` and ``span_id`` come from the log *record*, so something has to put them there.
+:class:`TraceLogFilter` does, from the tracer's active span, and ``patch()`` of the ``logging``
+integration installs the same logic in the record factory so *every* record in the process
+carries them, whichever logger or handler produced it. A filter attached to a logger would
+miss the records of its children (filters do not propagate), which is why the integration
+does not use one. Outside a span the attributes are simply not set, and the formatter
+leaves the fields out.
 """
 
 from __future__ import annotations
@@ -52,10 +62,13 @@ import datetime
 import json
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
-__all__ = ["JSONFormatter"]
+from .. import tracer as _tracer
+from . import register_integration
+
+__all__ = ["INTEGRATION", "JSONFormatter", "LoggingIntegration", "TraceLogFilter"]
 
 # Attributes every LogRecord has. Anything else on a record came from ``extra=``
 # (or a filter), and is a field of the log.
@@ -192,3 +205,69 @@ def _default(value: Any) -> Any:
     if isinstance(value, (datetime.datetime, datetime.date)):
         return value.isoformat()
     return repr(value)
+
+
+class TraceLogFilter(logging.Filter):
+    """A :class:`logging.Filter` that stamps ``trace_id`` and ``span_id`` on each record.
+
+    Attach it to a handler (a filter on a *logger* only sees that logger's own
+    records)::
+
+        handler.addFilter(TraceLogFilter())
+
+    It never rejects a record and never raises. A record that already has a
+    ``trace_id`` (set via ``extra=``) keeps it.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Add the active span's ids to ``record``; always returns true."""
+        _stamp(record)
+        return True
+
+
+def _stamp(record: logging.LogRecord) -> None:
+    try:
+        span = _tracer.current_span()
+        if span is not None and not hasattr(record, "trace_id"):
+            record.trace_id = span.trace_id
+            record.span_id = span.span_id
+    except Exception:  # a log call must never fail because of us
+        pass
+
+
+class LoggingIntegration:
+    """Stamp every :class:`logging.LogRecord` in the process with the active trace and span ids."""
+
+    name = "logging"
+
+    def __init__(self) -> None:
+        """Create an unpatched integration."""
+        self._previous: Callable[..., logging.LogRecord] | None = None
+
+    def is_available(self) -> bool:
+        """The standard library is always there."""
+        return True
+
+    def patch(self) -> None:
+        """Wrap the log record factory."""
+        if self._previous is not None:
+            return
+        previous = logging.getLogRecordFactory()
+        self._previous = previous
+
+        def factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
+            record = previous(*args, **kwargs)
+            _stamp(record)
+            return record
+
+        logging.setLogRecordFactory(factory)
+
+    def unpatch(self) -> None:
+        """Restore the previous factory."""
+        if self._previous is not None:
+            logging.setLogRecordFactory(self._previous)
+            self._previous = None
+
+
+INTEGRATION = LoggingIntegration()
+register_integration(INTEGRATION)

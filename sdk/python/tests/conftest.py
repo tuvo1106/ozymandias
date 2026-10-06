@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
 import socket
+import threading
 import time
 from collections.abc import Callable, Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
 
 import ozy
-from ozy import Config, StatsdClient
+from ozy import Config, StatsdClient, Tracer
 
 
 class FakeAgent:
@@ -57,6 +61,134 @@ def reset_global_client() -> Iterator[None]:
     """Leave the process-wide ``ozy.statsd`` disabled after every test."""
     yield
     ozy.statsd.configure(Config())
+
+
+@pytest.fixture(autouse=True)
+def reset_global_tracer() -> Iterator[None]:
+    """Leave the process-wide ``ozy.tracer`` disabled and every integration unpatched."""
+    yield
+    from ozy._tracer import _current
+    from ozy.integrations import _BUILTIN, _registry, unpatch_all
+
+    _current.set(None)
+    unpatch_all()
+    for name in [n for n in _registry if n not in _BUILTIN]:
+        del _registry[name]  # third-party registrations made by a test do not outlive it
+    ozy.tracer.configure(Config())
+
+
+class FakeTraceAgent:
+    """A real HTTP server on 127.0.0.1:<ephemeral> standing in for the agent's trace receiver.
+
+    Records every body it is sent; ``status``, ``response`` and ``delay`` can be changed
+    between requests to play a down, busy or slow agent.
+    """
+
+    def __init__(self) -> None:
+        self.bodies: list[dict[str, Any]] = []
+        self.raw: list[bytes] = []
+        self.paths: list[str] = []
+        self.status = 200
+        self.response: dict[str, Any] = {"rate_by_service": {}, "accepted": 0, "rejected": 0}
+        self.delay = 0.0
+        self._lock = threading.Lock()
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                if outer.delay:
+                    time.sleep(outer.delay)
+                with outer._lock:
+                    outer.raw.append(body)
+                    outer.paths.append(self.path)
+                    with contextlib.suppress(ValueError):
+                        outer.bodies.append(json.loads(body))
+                payload = json.dumps(outer.response).encode()
+                self.send_response(outer.status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args: Any) -> None:
+                pass
+
+        class QuietServer(ThreadingHTTPServer):
+            def handle_error(self, request: Any, client_address: Any) -> None:
+                pass  # a client that timed out and hung up is a scenario here, not a traceback
+
+        self.server = QuietServer(("127.0.0.1", 0), Handler)
+        self.port: int = self.server.server_address[1]
+        self._thread = threading.Thread(
+            target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
+        self._thread.start()
+
+    def chunks(self) -> list[list[dict[str, Any]]]:
+        """Every chunk received so far, in arrival order."""
+        with self._lock:
+            return [chunk for body in self.bodies for chunk in body["traces"]]
+
+    def spans(self) -> list[dict[str, Any]]:
+        """Every span received so far, flattened."""
+        return [span for chunk in self.chunks() for span in chunk]
+
+    def wait_for_chunks(self, count: int, timeout: float = 3.0) -> bool:
+        """Poll until at least ``count`` chunks arrived."""
+        return eventually(lambda: len(self.chunks()) >= count, timeout)
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+@pytest.fixture
+def trace_agent() -> Iterator[FakeTraceAgent]:
+    fake = FakeTraceAgent()
+    yield fake
+    fake.close()
+
+
+TracerFactory = Callable[..., Tracer]
+
+
+@pytest.fixture
+def make_tracer(trace_agent: FakeTraceAgent) -> Iterator[TracerFactory]:
+    """Build an enabled, *private* tracer pointed at the fake trace agent; closed at teardown.
+
+    Keyword arguments go to ``Config`` except ``wall_ns``/``mono_ns``/``random_bytes``,
+    which go to the ``Tracer`` constructor.
+    """
+    tracers: list[Tracer] = []
+    ctor_keys = {"wall_ns", "mono_ns", "random_bytes"}
+
+    def factory(**kwargs: Any) -> Tracer:
+        ctor = {k: kwargs.pop(k) for k in list(kwargs) if k in ctor_keys}
+        settings: dict[str, Any] = {
+            "agent_host": "127.0.0.1",
+            "trace_port": trace_agent.port,
+            "service": "svc",
+            "env": "test",
+        }
+        settings.update(kwargs)
+        tracer = Tracer(**ctor)
+        tracer.configure(Config(**settings))
+        tracers.append(tracer)
+        return tracer
+
+    yield factory
+    for tracer in tracers:
+        tracer.close()
+
+
+@pytest.fixture
+def traced(trace_agent: FakeTraceAgent) -> FakeTraceAgent:
+    """Enable the *global* ``ozy.tracer`` against the fake agent (integrations use it)."""
+    ozy.tracer.configure(
+        Config(agent_host="127.0.0.1", trace_port=trace_agent.port, service="svc", env="test")
+    )
+    return trace_agent
 
 
 @pytest.fixture

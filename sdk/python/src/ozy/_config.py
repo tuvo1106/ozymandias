@@ -26,6 +26,12 @@ from ._format import sanitize_tag
 DEFAULT_STATSD_PORT = 8125
 """The extended StatsD convention; the agent listens here by default."""
 
+DEFAULT_TRACE_PORT = 8126
+"""Where the agent's trace receiver listens (``POST /v1/traces``, TCP)."""
+
+DEFAULT_TRACE_SAMPLE_RATE = 1.0
+"""Keep every trace until the agent says otherwise (``rate_by_service``)."""
+
 DEFAULT_MAX_PAYLOAD = 1432
 """Bytes per datagram: one Ethernet MTU (1500) minus IPv4/UDP headers and slack.
 
@@ -37,6 +43,7 @@ DEFAULT_FLUSH_INTERVAL = 0.1
 """Seconds a partially filled buffer may wait before it is sent anyway."""
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +60,9 @@ class Config:
         debug: Log send failures and payloads to the ``ozy`` logger.
         max_payload: Maximum datagram size in bytes.
         flush_interval: Seconds between background flushes.
+        trace_enabled: Whether tracing is on when an agent host is configured.
+        trace_port: Agent TCP port for ``POST /v1/traces``.
+        trace_sample_rate: Head-sampling rate in [0, 1] until the agent overrides it.
     """
 
     agent_host: str | None = None
@@ -64,11 +74,19 @@ class Config:
     debug: bool = False
     max_payload: int = DEFAULT_MAX_PAYLOAD
     flush_interval: float = DEFAULT_FLUSH_INTERVAL
+    trace_enabled: bool = True
+    trace_port: int = DEFAULT_TRACE_PORT
+    trace_sample_rate: float = DEFAULT_TRACE_SAMPLE_RATE
 
     @property
     def enabled(self) -> bool:
         """Whether metrics are sent at all (an agent host is configured)."""
         return bool(self.agent_host)
+
+    @property
+    def traces_enabled(self) -> bool:
+        """Whether spans are recorded: an agent host is configured and tracing not switched off."""
+        return self.enabled and self.trace_enabled
 
     def global_tags(self) -> tuple[str, ...]:
         """Tags appended to every message, in wire order, already sanitized.
@@ -89,14 +107,27 @@ def _env_str(env: Mapping[str, str], key: str) -> str | None:
     return value or None
 
 
-def _parse_port(raw: str | None) -> int:
+def _parse_port(raw: str | None, default: int = DEFAULT_STATSD_PORT) -> int:
     if raw is None:
-        return DEFAULT_STATSD_PORT
+        return default
     try:
         port = int(raw)
     except ValueError:
-        return DEFAULT_STATSD_PORT
-    return port if 0 < port < 65536 else DEFAULT_STATSD_PORT
+        return default
+    return port if 0 < port < 65536 else default
+
+
+def _parse_rate(raw: str | float | None) -> float:
+    """A sample rate clamped to [0, 1]; anything unparseable (or NaN) is the default."""
+    if raw is None:
+        return DEFAULT_TRACE_SAMPLE_RATE
+    try:
+        rate = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_TRACE_SAMPLE_RATE
+    if rate != rate:  # NaN
+        return DEFAULT_TRACE_SAMPLE_RATE
+    return min(1.0, max(0.0, rate))
 
 
 def resolve_config(
@@ -110,6 +141,9 @@ def resolve_config(
     debug: bool | None = None,
     max_payload: int | None = None,
     flush_interval: float | None = None,
+    trace_enabled: bool | None = None,
+    trace_port: int | None = None,
+    trace_sample_rate: float | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> Config:
     """Merge explicit arguments over ``OZY_*`` environment variables.
@@ -128,6 +162,11 @@ def resolve_config(
         debug: Log failures and payloads (``OZY_DEBUG``: 1/true/yes/on).
         max_payload: Datagram size limit in bytes (default 1432).
         flush_interval: Background flush period in seconds (default 0.1).
+        trace_enabled: Record spans when an agent host is set (``OZY_TRACE_ENABLED``,
+            default true; ``0``/``false``/``no``/``off`` disables).
+        trace_port: Agent TCP port for traces (``OZY_TRACE_PORT``, default 8126).
+        trace_sample_rate: Head-sampling rate, clamped to [0, 1]
+            (``OZY_TRACE_SAMPLE_RATE``, default 1.0).
         environ: Environment to read; defaults to ``os.environ`` (tests pass
             a dict instead of mutating the process environment).
 
@@ -149,6 +188,9 @@ def resolve_config(
     if debug is None:
         debug = environ.get("OZY_DEBUG", "").strip().lower() in _TRUTHY
 
+    if trace_enabled is None:
+        trace_enabled = environ.get("OZY_TRACE_ENABLED", "").strip().lower() not in _FALSY
+
     return Config(
         agent_host=(agent_host if agent_host is not None else _env_str(environ, "OZY_AGENT_HOST"))
         or None,
@@ -169,5 +211,16 @@ def resolve_config(
             flush_interval
             if flush_interval is not None and flush_interval > 0
             else DEFAULT_FLUSH_INTERVAL
+        ),
+        trace_enabled=trace_enabled,
+        trace_port=(
+            trace_port
+            if trace_port is not None and 0 < trace_port < 65536
+            else _parse_port(_env_str(environ, "OZY_TRACE_PORT"), DEFAULT_TRACE_PORT)
+        ),
+        trace_sample_rate=(
+            _parse_rate(trace_sample_rate)
+            if trace_sample_rate is not None
+            else _parse_rate(_env_str(environ, "OZY_TRACE_SAMPLE_RATE"))
         ),
     )
