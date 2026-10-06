@@ -99,6 +99,8 @@ interval's increase.
 | `ozy.intake.points_accepted` | counter | points | — | ozyd | Points stored |
 | `ozy.intake.logs_accepted` | counter | logs | — | ozyd | Logs stored by `/v1/logs` |
 | `ozy.intake.logs_rejected` | counter | logs | — | ozyd | Logs refused, per reason in the response's `errors` |
+| `ozy.intake.spans_accepted` | counter | spans | — | ozyd | Spans stored by POST /v1/traces |
+| `ozy.intake.spans_rejected` | counter | spans | — | ozyd | Spans refused one by one (bad ids, negative duration, start not in microseconds, …) |
 | `ozy.logstore.streams` | gauge | streams | — | ozyd | Distinct label sets (service, source, host, env, status) the log store holds |
 | `ozy.logstore.chunks` | gauge | files | — | ozyd | Chunk files: one per stream per UTC day |
 | `ozy.logstore.entries` | gauge | logs | — | ozyd | Logs in sealed blocks |

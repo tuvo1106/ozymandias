@@ -27,6 +27,9 @@ func (s *Store) Sweep(ctx context.Context) (int, error) {
 	if s.closed.Load() {
 		return 0, errors.New("tracestore: closed")
 	}
+	if s.retention < 0 {
+		return 0, nil
+	}
 	cutoff := hourOf(s.clock.Now().Add(-s.retention).UnixMicro())
 	total := 0
 	for {

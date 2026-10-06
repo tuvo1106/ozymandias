@@ -132,3 +132,13 @@ logs:
   # whoever posts logs. Past the limit a new combination is stored under service,
   # source and host "_overflow" and counted in ozy.logstore.streams_folded.
   # max_streams: 5000
+
+traces:
+  # How long a trace is kept, counted from the hour it was first seen. Negative
+  # keeps everything. Zero is rejected (it would read as "off" and mean
+  # something else). Request/error/latency statistics are metrics, kept for
+  # storage.retention, not for this.
+  retention: 168h
+  # Skip fsync: a crash can lose spans ozyd already acknowledged. For
+  # benchmarks and throwaway dev stacks, never for data you want back.
+  # no_sync: false

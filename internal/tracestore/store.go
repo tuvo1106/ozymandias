@@ -33,7 +33,8 @@ const (
 
 // Options configure a Store.
 type Options struct {
-	Dir       string
+	Dir string
+	// Retention is how long a trace is kept; negative keeps everything, zero is the default.
 	Retention time.Duration
 	// PendingTTL is how long a cross-service child waits for its parent span to
 	// arrive before the edge is given up on (counted, not fatal).
@@ -110,7 +111,7 @@ func Open(opts Options) (*Store, error) {
 	if opts.Registry == nil {
 		opts.Registry = selfmetrics.NewRegistry()
 	}
-	if opts.Retention <= 0 {
+	if opts.Retention == 0 {
 		opts.Retention = DefaultRetention
 	}
 	if opts.PendingTTL <= 0 {

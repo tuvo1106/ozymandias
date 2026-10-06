@@ -458,3 +458,12 @@ func (s *Store) countKeys(prefix byte) int {
 	_ = it.Close()
 	return n
 }
+
+func TestSweep_NegativeRetentionKeepsEverything(t *testing.T) {
+	s, clk := open(t, func(o *Options) { o.Retention = -1 })
+	_ = s.Append(ctx, []wire.Span{sp(1, 1, "api", 0, time.Second)})
+	clk.Advance(10 * 365 * 24 * time.Hour)
+	if n, err := s.Sweep(ctx); err != nil || n != 0 || len(must(s.Trace(ctx, tid(1)))) != 1 {
+		t.Errorf("swept %d, %v", n, err)
+	}
+}

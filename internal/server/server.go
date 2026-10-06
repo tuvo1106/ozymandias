@@ -24,6 +24,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/meta"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/internal/sketchstore"
+	"github.com/tuvo1106/ozymandias/internal/tracestore"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/db"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/head"
@@ -49,7 +50,8 @@ const (
 	// sketchDir holds the Pebble database of DDSketches.
 	sketchDir = "sketches"
 	// logDir holds the log store: its WAL, catalog and per-day chunks.
-	logDir = "logs"
+	logDir   = "logs"
+	traceDir = "traces"
 )
 
 // sketchSweepInterval is how often retention runs over the sketch store.
@@ -58,6 +60,10 @@ const (
 // issues one DeleteRange per series and frees at most an hour of data, so
 // running it more often costs tombstones without freeing anything sooner.
 const sketchSweepInterval = time.Hour
+
+// traceSweepInterval is how often the trace store applies retention and gives up on
+// orphaned service-map edges. Retention is by hour, so more often buys nothing.
+const traceSweepInterval = 10 * time.Minute
 
 // Options carries the server's dependencies. Zero values get sensible
 // production defaults, so tests set only what they care about.
@@ -84,6 +90,7 @@ type Server struct {
 	store    tsdb.MetricStore
 	sketches *sketchstore.Store
 	logs     *logstore.Store
+	traces   *tracestore.Store
 	logHub   *loghub.Hub
 	meta     *meta.DB
 	intake   *intake.Intake
@@ -164,9 +171,20 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close(), sk.Close())
 	}
-	s.meta, s.store, s.sketches, s.logs, s.logHub = md, store, sk, ls, loghub.New(0)
+	ts, err := tracestore.Open(tracestore.Options{
+		Dir:       filepath.Join(cfg.DataDir, traceDir),
+		Clock:     s.clock,
+		Retention: cfg.Traces.Retention,
+		NoSync:    cfg.Traces.NoSync,
+		Logger:    s.log.With("component", "tracestore"),
+		Registry:  s.reg,
+	})
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close(), sk.Close(), ls.Close())
+	}
+	s.meta, s.store, s.sketches, s.logs, s.logHub, s.traces = md, store, sk, ls, loghub.New(0), ts
 	s.intake = intake.New(intake.Options{
-		Store: store, Sketches: sk, Registry: md, Logs: ls, LogHub: s.logHub,
+		Store: store, Sketches: sk, Registry: md, Logs: ls, LogHub: s.logHub, Traces: ts,
 		Clock: s.clock, Metrics: s.reg, Logger: s.log,
 	})
 
@@ -317,7 +335,7 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 // Close releases the stores. Run calls it on the way out.
 func (s *Server) Close() error {
-	return errors.Join(s.logs.Close(), s.store.Close(), s.sketches.Close(), s.meta.Close())
+	return errors.Join(s.traces.Close(), s.logs.Close(), s.store.Close(), s.sketches.Close(), s.meta.Close())
 }
 
 // Run serves on ln (or on the configured address if ln is nil) until ctx is
@@ -342,12 +360,14 @@ func (s *Server) Run(ctx context.Context, ln net.Listener) error {
 	// they must outlive the cancellation that begins the shutdown, so an
 	// in-flight request is not racing a store that is already closing.
 	bgCtx, stopBG := context.WithCancel(context.Background())
-	bgDone := make(chan struct{}, 2)
+	bgDone := make(chan struct{}, 3)
 	go func() { s.reportSelf(bgCtx); bgDone <- struct{}{} }()
 	go func() { s.sweepSketches(bgCtx); bgDone <- struct{}{} }()
+	go func() { s.traces.Run(bgCtx, traceSweepInterval); bgDone <- struct{}{} }()
 
 	err := httpserve.Serve(ctx, srv, ln, s.cfg.HTTP.ShutdownTimeout)
 	stopBG()
+	<-bgDone
 	<-bgDone
 	<-bgDone
 	err = errors.Join(err, s.Close())

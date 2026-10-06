@@ -57,8 +57,8 @@ gzip'd) `{"tracer":{…},"traces":[[span,…],…]}`; `200` with
 `400` for a body that is not a traces payload; `413` over `traces.max_body_bytes`; `429` when 8
 bodies are already being decoded (the SDK drops that chunk; traces are best-effort). Every valid
 span feeds the `trace.*` statistics before any sampling; the response tells the SDK what head
-rate to use next. The route is absent when `traces.enabled` is false. ozyd's route of the same
-path is the agent → ozyd hop (§F), below.
+rate to use next. The route is absent when `traces.enabled` is false. ozyd serves a route of the
+same path for the agent → ozyd hop (§F), below.
 
 ## ozyd only
 
@@ -125,6 +125,15 @@ store.
 
 A `202` means the batch is durable: it was written to the log store's WAL and
 fsynced. That is the acknowledgement an agent commits its file offsets on.
+
+### `POST /v1/traces` (ozyd)
+
+Span intake from agents (the agent → ozyd hop). Body, limits and validation are normative in
+[wire-protocol.md §F](wire-protocol.md#f-traces-agent--ozyd-post-v1traces): JSON (optionally gzip'd)
+`{"env":…,"host":…,"spans":[…]}`, at most 5000 spans. `202` with per-span `accepted`/`rejected`
+counts; `400` for a body that is not a spans payload; `413` over the size limits; `503` when the
+store cannot take the batch (nothing was stored; the agent resends it) or this deployment has no
+trace store. A `202` means the spans are durable. Storing is idempotent: the agent may resend.
 
 ### `GET /api/v1/query`, `POST /api/v1/query`
 

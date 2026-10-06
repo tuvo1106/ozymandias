@@ -37,6 +37,8 @@ type Options struct {
 	Logs LogStore
 	// LogHub, if set, is told of every stored log (live tail).
 	LogHub LogPublisher
+	// Traces stores the spans POST /v1/traces carries; nil answers 503.
+	Traces SpanStore
 	// MaxAge rejects points older than this; 0 accepts any age.
 	MaxAge  time.Duration
 	Clock   clock.Clock           // default clock.Real()
@@ -48,9 +50,10 @@ type Options struct {
 type Intake struct {
 	opts Options
 
-	accepted, rejected, points *selfmetrics.Counter
-	sketchPoints               *selfmetrics.Counter
-	logsAccepted, logsRejected *selfmetrics.Counter
+	accepted, rejected, points   *selfmetrics.Counter
+	sketchPoints                 *selfmetrics.Counter
+	logsAccepted, logsRejected   *selfmetrics.Counter
+	spansAccepted, spansRejected *selfmetrics.Counter
 }
 
 // New returns the intake handlers.
@@ -74,6 +77,9 @@ func New(opts Options) *Intake {
 
 		logsAccepted: opts.Metrics.Counter("ozy.intake.logs_accepted"),
 		logsRejected: opts.Metrics.Counter("ozy.intake.logs_rejected"),
+
+		spansAccepted: opts.Metrics.Counter("ozy.intake.spans_accepted"),
+		spansRejected: opts.Metrics.Counter("ozy.intake.spans_rejected"),
 	}
 }
 
@@ -82,6 +88,7 @@ func (in *Intake) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/series", in.series)
 	mux.HandleFunc("POST /v1/sketches", in.sketches)
 	mux.HandleFunc("POST /v1/logs", in.logs)
+	mux.HandleFunc("POST /v1/traces", in.traces)
 }
 
 // errTooLarge marks a body over one of the size limits.
