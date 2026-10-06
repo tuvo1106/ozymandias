@@ -1,0 +1,18 @@
+%% Trace context across a queue: POST /submissions -> arq -> worker.
+sequenceDiagram
+    participant C as Client
+    participant A as API (ASGI middleware)
+    participant R as Redis (arq)
+    participant W as arq worker
+    C->>A: POST /api/v1/submissions
+    Note over A: span http.request (root, head-sampled)
+    A->>A: span postgres.query
+    A->>A: span arq.enqueue (queue, producer)
+    A->>R: enqueue_job(fn, **kwargs + _ozymandias={trace_id, parent_id=enqueue span, sampling_priority})
+    A-->>C: 202
+    Note over A: root finishes -> chunk flushed to the agent
+    R->>W: job (after queue wait)
+    Note over W: traced() pops _ozymandias, extract() -> child of arq.enqueue
+    W->>W: span arq.job (worker, consumer), queue.wait_ms from enqueue_time
+    W->>W: span judge.container.run, span postgres.query
+    Note over W: arq.job finishes -> its own chunk, same trace_id

@@ -1,0 +1,28 @@
+%% The path one span takes, from an instrumented app to the trace view and the service table.
+%% Kept identical to the copy in DESIGN.md §15.
+flowchart TB
+    subgraph app["App (SDK)"]
+        SPAN["span: ids, wall start, monotonic duration<br/>per-trace buffer, flushed when the local root finishes"]
+        HEAD["head sampling at the root<br/>f(trace_id, rate) -> priority 1 or 0<br/>inherited downstream"]
+        WR["writer: bounded queue, drop-oldest<br/>POST :8126/v1/traces, no retries"]
+    end
+
+    subgraph ag["agent"]
+        direction TB
+        RECV["tracerecv<br/>8 concurrent decodes, 429 beyond<br/>validate + normalize each span"]
+        CONC["concentrator (100% of spans)<br/>entry spans -> trace.NAME.hits / .errors / .duration<br/>through the metric aggregator"]
+        SAMP["samplers: priority, error (10/s), rare (5/s)<br/>user drop is final"]
+        FWD["forwarder: kept spans, same queue as metrics"]
+    end
+
+    subgraph dd["ozyd"]
+        IN["intake POST /v1/traces<br/>validate, store, ack"]
+        PEB[("Pebble: spans, entry indexes,<br/>edge counters (merge), first-seen")]
+        TSDB[("TSDB + sketches<br/>trace.* RED statistics")]
+        API["/api/v1/traces, /traces/{id}, /service-map<br/>/services (from metrics)"]
+    end
+
+    SPAN --> HEAD --> WR --> RECV
+    RECV --> CONC --> SAMP --> FWD --> IN --> PEB --> API
+    CONC -. "series + sketches (hops C, D)" .-> TSDB --> API
+    SAMP -. "rate_by_service in the response" .-> HEAD

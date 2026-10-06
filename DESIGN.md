@@ -627,3 +627,81 @@ file unlink, not a rewrite. A seal writes one block per day for that reason.
 
 *Sections added by later milestones: traces (M5), monitors (M6),
 the queued pipeline (M7), OTLP (M8).*
+
+## 15. Trace path
+
+```mermaid
+flowchart TB
+    subgraph app["App (SDK)"]
+        SPAN["span: ids, wall start, monotonic duration<br/>per-trace buffer, flushed when the local root finishes"]
+        HEAD["head sampling at the root<br/>f(trace_id, rate) -> priority 1 or 0<br/>inherited downstream"]
+        WR["writer: bounded queue, drop-oldest<br/>POST :8126/v1/traces, no retries"]
+    end
+
+    subgraph ag["agent"]
+        direction TB
+        RECV["tracerecv<br/>8 concurrent decodes, 429 beyond<br/>validate + normalize each span"]
+        CONC["concentrator (100% of spans)<br/>entry spans -> trace.NAME.hits / .errors / .duration<br/>through the metric aggregator"]
+        SAMP["samplers: priority, error (10/s), rare (5/s)<br/>user drop is final"]
+        FWD["forwarder: kept spans, same queue as metrics"]
+    end
+
+    subgraph dd["ozyd"]
+        IN["intake POST /v1/traces<br/>validate, store, ack"]
+        PEB[("Pebble: spans, entry indexes,<br/>edge counters (merge), first-seen")]
+        TSDB[("TSDB + sketches<br/>trace.* RED statistics")]
+        API["/api/v1/traces, /traces/{id}, /service-map<br/>/services (from metrics)"]
+    end
+
+    SPAN --> HEAD --> WR --> RECV
+    RECV --> CONC --> SAMP --> FWD --> IN --> PEB --> API
+    CONC -. "series + sketches (hops C, D)" .-> TSDB --> API
+    SAMP -. "rate_by_service in the response" .-> HEAD
+```
+
+**The span model.** A span is one unit of work: 128-bit trace id, 64-bit span id, parent id, a
+service, a low-cardinality `name` (`http.request`, `postgres.query`), a `resource` (what was
+operated on: a route pattern, SQL text, a job name), a type, `start` in unix microseconds,
+`duration` from the monotonic clock (so a clock step cannot make it negative), an error flag and two
+tag maps ([ADR-0042](docs/adr/0042-span-times-are-unix-microseconds.md)). A span is an *entry span*
+(`_top_level`) when its parent is absent or belongs to another service: the first thing a service
+does for a request. Entry spans are what APM counts and lists.
+
+**In-process context** is a `contextvars.ContextVar` (Python) or `AsyncLocalStorage` (Node): the
+"current span" follows `await` and `asyncio.create_task`, and does not follow a thread, which is why
+`wrap_executor` exists. Spans of one trace gather in a buffer held by the local root; when the root
+finishes the buffer, a *chunk*, goes to the writer. **Cross-process** the context is carried as
+three headers (`x-ozy-*`) or, for a queue, a dict under the `_ozymandias` job kwarg
+([arq sequence](docs/diagrams/arq-propagation-sequence.mmd)); the consumer extracts it and starts a
+child, so the queue wait is the visible gap between `arq.enqueue` and `arq.job`
+([ADR-0041](docs/adr/0041-ozymandias-trace-headers-before-w3c.md)). In Node, instrumentation is
+explicit wrapping, because a bundler hides modules from `require` hooks
+([ADR-0043](docs/adr/0043-explicit-wrapping-instead-of-patching-in-nextjs.md)).
+
+**Statistics before sampling.** If a service sends 1000 traces/s and 5% are kept, counting stored
+traces says 50/s: wrong by the sample rate, and wrong in a direction no one can correct once
+the error sampler has biased the sample. So the agent counts *every* entry span first (the
+concentrator turns each into a counter increment and a distribution sample on the ordinary metric
+aggregator, stamped with the span's own end time) and only then runs the samplers. Request, error and
+latency tables therefore come from metrics, and the trace store is a set of examples. The price is
+that SDKs send unsampled traces too. The end-to-end test sends 200 requests, keeps 10%, and
+asserts the table says 200 and the 20 failures say 20.
+
+**Samplers** ([ADR-0044](docs/adr/0044-head-sampling-in-the-sdk-error-and-rare-in-the-agent.md)).
+Head sampling is a pure function of the trace id (`low64 * 1111111111111111111 mod 2^64 < rate * 2^64`),
+so services in a trace agree without talking, and three languages are checked against one vector
+file. The agent keeps a chunk if the priority says so, or it holds an error (token bucket, 10/s),
+or it is the first of its (service, name, resource) in five minutes (5/s). Each service's head rate
+is fed back as `min(1, target / observed)`.
+
+**Key design** ([format](docs/formats/tracestore-keys.md),
+[ADR-0045](docs/adr/0045-trace-store-indexes-entry-spans-only.md)). Spans by `(trace, span)`; narrow
+indexes over entry spans by `(env, service, ^start)` so "the latest N" is a seek, plus a resource
+index and an errors index; first-seen hours for retention. The **service map** is derived, not
+joined: when an entry span has a parent in another service, a counter for `(hour, env, parent,
+child)` is incremented through a Pebble merge operator, resolving a not-yet-arrived parent from a
+bounded 60-second waiting list. Under sampling it shows shape, not rate.
+
+**What does not hold.** A trace kept by the error or rare sampler may be partial. "Errors only" sees
+a failing span only if it arrived in the same request as its entry span. Edges and the trace list are
+samples; only the service table is exact.
