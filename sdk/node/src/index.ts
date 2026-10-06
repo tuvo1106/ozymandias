@@ -30,10 +30,38 @@
  */
 import { type StatsdStats, type MetricOptions, StatsdClient } from "./client.js";
 import { type InitOptions, resolveConfig } from "./config.js";
+import { patchIntegrations } from "./integrations/index.js";
 import { globalState, installExitHooks } from "./state.js";
+import { configureTracer } from "./trace/tracer.js";
+
+/** Reported in the `tracer` field of trace payloads; keep in step with package.json. */
+const SDK_VERSION = "0.1.0";
 
 export type { ClientHooks, MetricOptions, StatsdStats } from "./client.js";
 export type { InitOptions } from "./config.js";
+export { tracer, NOOP_SPAN } from "./trace/tracer.js";
+export type {
+  HeaderCarrier,
+  HeaderSource,
+  Scope,
+  Span,
+  SpanContext,
+  SpanOptions,
+  TraceStats,
+  Tracer,
+} from "./trace/tracer.js";
+export { normalizePath, sampleKeep } from "./trace/wire.js";
+export {
+  type Integration,
+  listIntegrations,
+  patchIntegrations,
+  registerIntegration,
+  unpatchIntegrations,
+} from "./integrations/index.js";
+export { type RequestLike, type WithTelemetryOptions, traceRoute, withTelemetry } from "./integrations/next.js";
+export { instrumentSqlite } from "./integrations/sqlite.js";
+export { type InstrumentFetchOptions, instrumentFetch, uninstrumentFetch } from "./integrations/fetch.js";
+export { type FormatFactory, type LogFormat, traceFormat } from "./integrations/winston.js";
 
 /**
  * Configures the SDK. Arguments win over `OZY_*` environment variables,
@@ -54,12 +82,16 @@ export function init(options: InitOptions = {}): void {
     const previous = state.statsd;
     state.statsd = null;
     if (previous) void previous.close();
+    // Before the enabled check: a re-init that disables the SDK must also
+    // tear down a running tracer.
+    configureTracer(config, SDK_VERSION, config.debug ? (m) => process.stderr.write(`[ozy] ${m}\n`) : undefined);
     if (!config.enabled) {
       if (config.debug) process.stderr.write("[ozy] disabled: OZY_AGENT_HOST is not set\n");
       return;
     }
     state.statsd = new StatsdClient(config, opts.hooks);
     installExitHooks(state);
+    if (opts.integrations?.length) patchIntegrations(opts.integrations);
   } catch {
     // init() must never break app startup. There is no client to count the
     // error on; the SDK simply stays disabled.

@@ -54,8 +54,10 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^22.20.4",
     "@vitest/coverage-v8": "^4.1.11",
+    "better-sqlite3": "^13.0.3",
     "eslint": "^10.11.0",
     "eslint-plugin-jsdoc": "^64.5.4",
     "globals": "^17.12.0",
