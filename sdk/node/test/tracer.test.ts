@@ -304,6 +304,21 @@ describe("context and nesting", () => {
   });
 });
 
+describe("two loaded copies of the module", () => {
+  it("a span made by the other copy is still recognised as the parent (brand, not instanceof)", async () => {
+    vi.resetModules();
+    const other = await import("../src/trace/tracer.js");
+    expect(other.tracer).not.toBe(tracer); // a genuinely second copy, with its own SpanImpl class
+    let seen = "";
+    other.tracer.trace("outer", {}, (outer) => {
+      tracer.trace("inner", {}, (inner) => {
+        seen = inner.traceId === outer.traceId ? "same trace" : "different trace";
+      });
+    });
+    expect(seen).toBe("same trace");
+  });
+});
+
 describe("buffer flush rules", () => {
   it("holds children until the local root finishes", async () => {
     const root = tracer.startSpan("root");

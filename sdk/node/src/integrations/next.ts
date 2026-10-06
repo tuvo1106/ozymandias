@@ -92,7 +92,7 @@ export function traceRoute<T>(req: RequestLike, routeHint: string | undefined, f
   // Outside the try: a handler error must not be mistaken for a setup error
   // and run the handler twice.
   if (!ok) return fn(NOOP_SPAN);
-  return tracer.trace(
+  const out = tracer.trace(
     "http.request",
     {
       resource,
@@ -101,29 +101,64 @@ export function traceRoute<T>(req: RequestLike, routeHint: string | undefined, f
       tags: { "http.method": method, "http.route": route, "http.url": url, "span.kind": "server" },
     },
     (span) => {
+      // A control-flow throw (redirect(), notFound()) is a normal answer, not a failure:
+      // it is recorded with its status and handed back to rethrow after the span has
+      // ended without an error, because tracer.trace marks anything thrown through it.
+      const settle = (err: unknown): unknown => {
+        const status = controlFlowStatus(err);
+        span.setTag("http.status_code", status ?? 500);
+        if (status !== undefined) return new ControlFlow(err);
+        throw err;
+      };
       let result: T;
       try {
         result = fn(span);
       } catch (err) {
-        span.setTag("http.status_code", 500);
-        throw err;
+        return settle(err) as T;
       }
       if (result && typeof (result as { then?: unknown }).then === "function") {
-        return (result as unknown as Promise<unknown>).then(
-          (res) => {
-            recordStatus(span, res);
-            return res;
-          },
-          (err: unknown) => {
-            span.setTag("http.status_code", 500);
-            throw err;
-          },
-        ) as T;
+        return (result as unknown as Promise<unknown>).then((res) => {
+          recordStatus(span, res);
+          return res;
+        }, settle) as T;
       }
       recordStatus(span, result);
       return result;
     },
   );
+  if (out instanceof ControlFlow) throw out.error;
+  if (out && typeof (out as { then?: unknown }).then === "function") {
+    return (out as unknown as Promise<unknown>).then((v) => {
+      if (v instanceof ControlFlow) throw v.error;
+      return v;
+    }) as T;
+  }
+  return out;
+}
+
+/** What traceRoute passes out of the span for a thrown redirect or not-found. */
+class ControlFlow {
+  constructor(readonly error: unknown) {}
+}
+
+/**
+ * The HTTP status of a Next.js control-flow error, or undefined for a real one. Next
+ * implements redirect() and notFound() by throwing an error whose `digest` names it:
+ * `NEXT_REDIRECT;replace;/to;307;`, `NEXT_NOT_FOUND`, `NEXT_HTTP_ERROR_FALLBACK;404`.
+ */
+export function controlFlowStatus(err: unknown): number | undefined {
+  const digest = (err as { digest?: unknown } | null)?.digest;
+  if (typeof digest !== "string") return undefined;
+  if (digest.startsWith("NEXT_REDIRECT")) {
+    const code = Number(digest.split(";")[3]);
+    return Number.isInteger(code) && code >= 300 && code < 400 ? code : 307;
+  }
+  if (digest === "NEXT_NOT_FOUND") return 404;
+  if (digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+    const code = Number(digest.split(";")[1]);
+    return Number.isInteger(code) && code >= 100 && code < 600 ? code : undefined;
+  }
+  return undefined;
 }
 
 function recordStatus(span: Span, res: unknown): void {

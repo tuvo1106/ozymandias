@@ -233,7 +233,18 @@ function rateKey(service: string, env: string): string {
 // ---- spans ----------------------------------------------------------------
 
 /** The real span implementation. Created only through the tracer. */
+/**
+ * Brand checked instead of `instanceof`: Next dev can load this module twice, and a span made by one
+ * copy sits in the shared AsyncLocalStorage where the other must still recognise it as a span. An
+ * `instanceof` against the second copy's class would say no and start a new root trace.
+ */
+const SPAN_BRAND = Symbol.for("ozy.span");
+function isSpanImpl(x: unknown): x is SpanImpl {
+  return typeof x === "object" && x !== null && (x as Record<symbol, unknown>)[SPAN_BRAND] === true;
+}
+
 class SpanImpl implements Span {
+  readonly [SPAN_BRAND] = true;
   readonly traceId: string;
   readonly spanId: string;
   private readonly parentId: string | null;
@@ -266,7 +277,7 @@ class SpanImpl implements Span {
     if (opts.tags) for (const k of Object.keys(opts.tags)) this.meta[k] = String(opts.tags[k]);
 
     let parentService: string | undefined;
-    if (parent instanceof SpanImpl) {
+    if (isSpanImpl(parent)) {
       this.traceId = parent.traceId;
       this.parentId = parent.spanId;
       this.priority = parent.priority;
@@ -471,13 +482,13 @@ function resolveParent(opts: SpanOptions): SpanImpl | SpanContext | null {
   if (opts.childOf !== undefined) {
     const c = opts.childOf;
     if (c === null) return null;
-    if (c instanceof SpanImpl) return c;
+    if (isSpanImpl(c)) return c;
     if (c === NOOP_SPAN) return null;
     const ctx = c as SpanContext;
     return typeof ctx.traceId === "string" && typeof ctx.spanId === "string" ? ctx : null;
   }
   const active = als(globalState()).getStore();
-  return active instanceof SpanImpl ? active : null;
+  return isSpanImpl(active) ? active : null;
 }
 
 function create(name: string, opts: SpanOptions): SpanImpl | null {

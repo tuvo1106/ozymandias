@@ -203,3 +203,28 @@ func TestObserve_ThroughTheRealAggregator(t *testing.T) {
 		t.Errorf("sketches = %+v", sketches)
 	}
 }
+
+// A service pinned to _other_ recovers when the hour turns.
+func TestObserve_CapsResetEveryHour(t *testing.T) {
+	r := &rec{}
+	clk := testutil.NewFakeClock(time.Unix(1_790_000_000, 0))
+	c := New(Options{Sink: r, MaxResources: 1, Clock: clk})
+	c.Observe([]wire.Span{sp("api", "http.request", "GET /a", true, nil), sp("api", "http.request", "GET /b", true, nil)})
+	if got := tagOf(r.s[len(r.s)-1], "resource"); got != Other {
+		t.Fatalf("the second resource was %q, want folded", got)
+	}
+	clk.Advance(time.Hour)
+	c.Observe([]wire.Span{sp("api", "http.request", "GET /b", true, nil)})
+	if got := tagOf(r.s[len(r.s)-1], "resource"); got != "GET /b" {
+		t.Errorf("after the reset the resource was %q", got)
+	}
+}
+
+func tagOf(s aggregator.Sample, key string) string {
+	for _, t := range s.Tags {
+		if k, v := wire.SplitTag(t); k == key {
+			return v
+		}
+	}
+	return ""
+}

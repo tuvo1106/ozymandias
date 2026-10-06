@@ -248,7 +248,7 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		}
 		// Statistics first, samplers second: see package concentrator.
 		mux.Handle("POST /v1/traces", tracerecv.New(tracerecv.Options{
-			Observer: concentrator.New(concentrator.Options{Sink: a.agg, Env: env, MaxResources: cfg.Traces.MaxResourcesPerService, Registry: a.reg}),
+			Observer: concentrator.New(concentrator.Options{Sink: a.agg, Env: env, MaxResources: cfg.Traces.MaxResourcesPerService, Registry: a.reg, Clock: a.clock}),
 			Decider: sampler.New(sampler.Options{TargetTPS: cfg.Traces.MaxTracesPerSecond, ErrorTPS: cfg.Traces.ErrorTracesPerSecond,
 				RareTPS: cfg.Traces.RareTracesPerSecond, Env: env, Registry: a.reg}),
 			Sink: a.fwd, Env: env, Host: host, MaxBody: cfg.Traces.MaxBodyBytes, Clock: a.clock, Registry: a.reg, Logger: a.log,

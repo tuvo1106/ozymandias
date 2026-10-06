@@ -173,3 +173,18 @@ func TestRareMemoryIsBounded(t *testing.T) {
 		t.Errorf("%d rare entries", n)
 	}
 }
+
+// An SDK without an env asks for "service:x,env:"; the agent must answer that key too.
+func TestRates_AlsoReportTheServiceWithNoEnvForSDKsThatDoNotKnowTheirs(t *testing.T) {
+	s := New(Options{TargetTPS: 10, RateWindow: 10 * time.Second})
+	for sec := 0; sec < 10; sec++ {
+		for i := 0; i < 100; i++ {
+			s.Decide(chunk("busy", "r", f(0), false), t0.Add(time.Duration(sec)*time.Second))
+		}
+	}
+	s.Decide(chunk("busy", "r", f(0), false), t0.Add(10*time.Second))
+	r := s.Rates()
+	if r[RateKey("busy", "dev")] == 0 || r[RateKey("busy", "")] == 0 || r[RateKey("busy", "")] > 0.2 {
+		t.Errorf("rates = %v", r)
+	}
+}

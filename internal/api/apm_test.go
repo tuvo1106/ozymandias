@@ -36,7 +36,9 @@ func (f *fakeTraces) Search(_ context.Context, fl tracestore.Filter, from, to in
 func (f *fakeTraces) ServiceEdges(context.Context, string, int64, int64) ([]tracestore.Edge, error) {
 	return f.edges, f.err
 }
-func (f *fakeTraces) Services() [][2]string { return f.services }
+func (f *fakeTraces) ServicesIn(context.Context, string, int64, int64) ([][2]string, error) {
+	return f.services, f.err
+}
 
 func apmServer(f *fakeTraces) *http.ServeMux {
 	mux := http.NewServeMux()

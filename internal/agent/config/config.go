@@ -52,8 +52,9 @@ type Statsd struct {
 // Traces configures the trace intake (POST /v1/traces on the agent's HTTP
 // port) and what it keeps (docs/plan/M5-tracing.md §3).
 type Traces struct {
-	// Enabled turns the intake on. Off, the route is absent and the SDKs'
-	// tracers get a 404 and stop wasting their time.
+	// Enabled turns the intake on. Off, the route is absent: the agent answers 404
+	// and SDK tracers keep posting and counting the failures, so turn tracing off in
+	// the SDKs (OZY_TRACE_ENABLED=false) as well.
 	Enabled bool `yaml:"enabled"`
 	// MaxTracesPerSecond is the head-sampling target per service: the agent
 	// tells each SDK a rate of target/observed, capped at 1.

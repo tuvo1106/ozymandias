@@ -86,6 +86,13 @@ type Store struct {
 	known   map[string]struct{} // 'v' keys already written
 	pending map[string][]pendingEdge
 	npend   int
+	// inflight holds the entry keys of Appends that have decided about their edges
+	// but not yet committed, so two concurrent resends of one batch cannot both
+	// count the same call.
+	inflight map[string]struct{}
+
+	// failCommit, if set (tests only), is returned instead of committing.
+	failCommit func() error
 
 	closed atomic.Bool
 
@@ -132,7 +139,7 @@ func Open(opts Options) (*Store, error) {
 	r := opts.Registry
 	s := &Store{
 		db: db, retention: opts.Retention, pendTTL: opts.PendingTTL, noSync: opts.NoSync, clock: opts.Clock, log: opts.Logger,
-		enc: enc, dec: dec, known: map[string]struct{}{}, pending: map[string][]pendingEdge{},
+		enc: enc, dec: dec, known: map[string]struct{}{}, pending: map[string][]pendingEdge{}, inflight: map[string]struct{}{},
 		spansAppended:  r.Counter("ozy.tracestore.spans_appended"),
 		entriesIndexed: r.Counter("ozy.tracestore.entries_indexed"),
 		edgesRecorded:  r.Counter("ozy.tracestore.edges_recorded"),
@@ -221,6 +228,16 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 	}
 
 	var newKnown []string
+	var claimed []string // entry keys this call reserved in s.inflight
+	defer func() {
+		s.mu.Lock()
+		for _, k := range claimed {
+			delete(s.inflight, k)
+		}
+		s.mu.Unlock()
+	}()
+	var taken []edgeDelta // pending edges removed from the waiting map; put back if the commit fails
+	var takenKeys []string
 	var edges []edgeDelta
 	var parked []parkedEdge
 	for i := range spans {
@@ -248,7 +265,20 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 		fmt.Sscanf(sp.Meta["http.status_code"], "%d", &sum.StatusCode) //nolint:errcheck // absent or malformed leaves 0
 		val, _ := json.Marshal(sum)
 		ek := entryKey(env, sp.Service, sp.Start, trace, span)
-		existed := s.exists(ek)
+		// Reserve first, then look: checking before reserving lets a concurrent resend
+		// slip in between another call's commit and its release and count the call again.
+		existed := false
+		s.mu.Lock()
+		if _, dup := s.inflight[string(ek)]; dup {
+			existed = true
+		} else {
+			s.inflight[string(ek)] = struct{}{}
+			claimed = append(claimed, string(ek))
+		}
+		s.mu.Unlock()
+		if !existed {
+			existed = s.exists(ek)
+		}
 		if err := b.Set(ek, val, nil); err != nil {
 			return err
 		}
@@ -293,7 +323,10 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 	}
 	// A span in this batch may be the parent somebody parked earlier.
 	for i := range spans {
-		for _, d := range s.takePending(spans[i].TraceID + spans[i].SpanID) {
+		key := spans[i].TraceID + spans[i].SpanID
+		for _, d := range s.takePending(key) {
+			taken = append(taken, d)
+			takenKeys = append(takenKeys, key)
 			d.parent = spans[i].Service
 			edges = append(edges, d)
 		}
@@ -301,7 +334,20 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 	if err := writeEdges(b, edges); err != nil {
 		return err
 	}
-	if err := b.Commit(s.writeOpts()); err != nil {
+	err := error(nil)
+	if s.failCommit != nil {
+		err = s.failCommit()
+	} else {
+		err = b.Commit(s.writeOpts())
+	}
+	if err != nil {
+		// The agent will resend the batch; the children it had been waiting on must
+		// still be waiting when it does, or their edges are lost without a trace.
+		parkedBack := make([]parkedEdge, len(taken))
+		for i, d := range taken {
+			parkedBack[i] = parkedEdge{key: takenKeys[i], edge: d}
+		}
+		s.park(parkedBack)
 		return fmt.Errorf("tracestore: committing: %w", err)
 	}
 	s.mu.Lock()

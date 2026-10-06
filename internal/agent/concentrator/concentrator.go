@@ -8,6 +8,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/tuvo1106/ozymandias/internal/agent/aggregator"
+	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
@@ -39,6 +40,8 @@ type Options struct {
 	Env                                 string
 	MaxResources, MaxServices, MaxNames int
 	Registry                            *selfmetrics.Registry
+	// Clock times the hourly cap reset; default clock.Real().
+	Clock clock.Clock
 }
 
 // Concentrator turns spans into RED metrics. It is safe for concurrent use.
@@ -66,6 +69,9 @@ func New(opts Options) *Concentrator {
 	}
 	if opts.Registry == nil {
 		opts.Registry = selfmetrics.NewRegistry()
+	}
+	if opts.Clock == nil {
+		opts.Clock = clock.Real()
 	}
 	return &Concentrator{
 		opts: opts, services: map[string]map[string]struct{}{}, names: map[string]struct{}{},
@@ -109,7 +115,7 @@ func (c *Concentrator) Observe(spans []wire.Span) {
 func (c *Concentrator) bound(sp *wire.Span) (service, resource, name string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if h := time.Now().Unix() / int64(ResetEvery.Seconds()); h != c.epoch {
+	if h := c.opts.Clock.Now().Unix() / int64(ResetEvery.Seconds()); h != c.epoch {
 		c.epoch = h
 		clear(c.services)
 		clear(c.names)

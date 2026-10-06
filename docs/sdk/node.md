@@ -364,3 +364,11 @@ sample rate happens in the agent and store, not in the SDK.
 | Bounded memory | 1000 queued chunks, 500 finished spans per trace before a partial flush. |
 | No secrets | SQL parameters are never read; URLs are recorded without query or credentials; headers are only injected for allow-listed hosts. |
 | Two copies of the package | Runtime, async context and the fetch wrapper's record live on `globalThis`; a second copy shares them. |
+
+### Notes added in review
+
+- `traceRoute` treats Next's control-flow throws (`redirect()`, `notFound()`, recognised by their
+  `digest`) as the status they stand for (307, 404, ...), not as a failed 500: the span carries that
+  status, no error, and the error is rethrown unchanged.
+- A span made by another loaded copy of the package is recognised as a parent by a brand
+  (`Symbol.for("ozy.span")`), not `instanceof`, so two copies (Next dev) continue one trace.

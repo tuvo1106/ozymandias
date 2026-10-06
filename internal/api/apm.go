@@ -26,7 +26,7 @@ type TraceReader interface {
 	Trace(ctx context.Context, traceID string) ([]wire.Span, error)
 	Search(ctx context.Context, f tracestore.Filter, fromUs, toUs int64, limit int, cursor string) (*tracestore.SearchResult, error)
 	ServiceEdges(ctx context.Context, env string, fromUs, toUs int64) ([]tracestore.Edge, error)
-	Services() [][2]string
+	ServicesIn(ctx context.Context, env string, fromUs, toUs int64) ([][2]string, error)
 }
 
 // APM serves the trace and service endpoints.
@@ -51,8 +51,12 @@ const (
 	defaultAPMRange = time.Hour
 	// maxEntryNames bounds how many trace.<name>.* metric families one request
 	// queries. Names come from instrumented code and are meant to be a handful.
-	maxEntryNames = 20
+	maxEntryNames = 50
 	sparkPoints   = 30
+	// wholeWindow is an interval of 2^31 seconds (68 years). The evaluator aligns its grid to
+	// multiples of the interval, and the epoch is below 2^31, so every window lies in the one
+	// bucket [0, 2^31): a percentile over the whole window, not over the tail of a two-bucket grid.
+	wholeWindow = int64(1) << 31
 )
 
 // Register mounts the routes.
@@ -236,10 +240,13 @@ func (a *APM) serviceMap(w http.ResponseWriter, r *http.Request) {
 		}
 		return nodes[s]
 	}
-	for _, p := range a.Traces.Services() {
-		if env == "" || p[0] == env {
-			node(p[1])
-		}
+	active, err := a.Traces.ServicesIn(r.Context(), env, fromMs*1000, toMs*1000+999)
+	if err != nil {
+		a.fail(w, r, "service map", err, http.StatusBadRequest)
+		return
+	}
+	for _, p := range active {
+		node(p[1])
 	}
 	out := make([]edgeJSON, 0, len(edges))
 	// Summed across env when none was asked for, so an edge is one line.
@@ -313,7 +320,7 @@ func (a *APM) redTable(w http.ResponseWriter, r *http.Request, service string, b
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	rows, err := a.red(r.Context(), v.Get("env"), service, by, fromMs/1000, toMs/1000)
+	rows, truncated, err := a.red(r.Context(), v.Get("env"), service, by, fromMs/1000, toMs/1000)
 	if err != nil {
 		a.fail(w, r, "service statistics", err, http.StatusBadRequest)
 		return
@@ -322,7 +329,10 @@ func (a *APM) redTable(w http.ResponseWriter, r *http.Request, service string, b
 		Services []red `json:"services"`
 		From     int64 `json:"from"`
 		To       int64 `json:"to"`
-	}{rows, fromMs, toMs})
+		// Truncated says more than maxEntryNames distinct entry-span names exist and the
+		// table holds only the first ones, in name order.
+		Truncated bool `json:"truncated"`
+	}{rows, fromMs, toMs, truncated})
 }
 
 // matcher renders key:value for a metricql filter. Values are raw text there, with
@@ -335,7 +345,7 @@ func matcher(key, value string) (string, error) {
 	return key + ":" + value, nil
 }
 
-func (a *APM) red(ctx context.Context, env, service string, by []string, from, to int64) ([]red, error) {
+func (a *APM) red(ctx context.Context, env, service string, by []string, from, to int64) ([]red, bool, error) {
 	if to <= from {
 		to = from + 1
 	}
@@ -346,13 +356,13 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 		}
 		m, err := matcher(kv[0], kv[1])
 		if err != nil {
-			return nil, &badInput{err}
+			return nil, false, &badInput{err}
 		}
 		matchers = append(matchers, m)
 	}
 	names, err := a.Store.MetricNames(ctx, "trace.", 1000)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var entry []string
 	for _, n := range names {
@@ -360,8 +370,9 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 			entry = append(entry, strings.TrimPrefix(base, "trace."))
 		}
 	}
+	truncated := false
 	if len(entry) > maxEntryNames {
-		entry = entry[:maxEntryNames]
+		entry, truncated = entry[:maxEntryNames], true
 	}
 	sel := "{" + strings.Join(matchers, ",") + "}"
 	if len(matchers) == 0 {
@@ -391,7 +402,7 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 		base := "trace." + name
 		hits, err := run("sum:"+base+".hits"+sel+group+".as_count()", spark)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, s := range hits.Series {
 			rw := row(name, s)
@@ -404,7 +415,7 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 		}
 		errs, err := run("sum:"+base+".errors"+sel+group+".as_count()", spark)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, s := range errs.Series {
 			rw := row(name, s)
@@ -421,9 +432,9 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 				fn  string
 				dst func(*red) **float64
 			}{{"p50", func(r *red) **float64 { return &r.P50Ms }}, {"p95", func(r *red) **float64 { return &r.P95Ms }}, {"p99", func(r *red) **float64 { return &r.P99Ms }}} {
-				res, err := run(q.fn+":"+base+".duration"+sel+group, to-from)
+				res, err := run(q.fn+":"+base+".duration"+sel+group, wholeWindow)
 				if err != nil {
-					return nil, err
+					return nil, false, err
 				}
 				for _, s := range res.Series {
 					for i := len(s.Points) - 1; i >= 0; i-- {
@@ -451,7 +462,7 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 		}
 		return out[i].Service+out[i].Name+out[i].Resource < out[j].Service+out[j].Name+out[j].Resource
 	})
-	return out, nil
+	return out, truncated, nil
 }
 
 func nanToZero(v float64) float64 {

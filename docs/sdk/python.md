@@ -423,10 +423,10 @@ an application built by pasting values into the SQL string itself.
 (`session:<token>`) that "keys are fine" is a leak waiting to happen. A failure records the exception
 type only, since Redis errors quote arguments.
 
-**httpx.** Headers are injected for every host by default. A trace id is not a secret, but it is a
-correlation handle you may not want to hand to a third party:
-`ozy.integrations.httpx.INTEGRATION.inject_hosts = {"payments.internal"}` restricts injection to an
-allow-list (the span is recorded either way). The `http.url` tag has no query string and no
+**httpx.** Headers are injected for **no** host by default (the Node `fetch` integration does the same):
+a trace id and a sampling decision are a correlation handle and a lever a third party should not hold
+or set. `ozy.integrations.httpx.INTEGRATION.inject_hosts = {"payments.internal"}` names the services of
+yours that should join the trace (the span is recorded either way). The `http.url` tag has no query string and no
 credentials.
 
 #### arq: the trace crosses the queue

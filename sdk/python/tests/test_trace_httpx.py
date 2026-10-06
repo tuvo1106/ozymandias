@@ -16,6 +16,12 @@ from .conftest import FakeTraceAgent
 SECRET = "sentinel-secret-5521"
 
 
+@pytest.fixture(autouse=True)
+def _reset_inject_hosts() -> Any:
+    yield
+    INTEGRATION.inject_hosts = ()
+
+
 def make_handler(seen: list[httpx.Request], status: int = 200) -> Any:
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
@@ -31,6 +37,7 @@ def client_spans(agent: FakeTraceAgent) -> list[dict[str, Any]]:
 
 def test_a_sync_request_is_a_span_and_carries_the_trace_headers(traced: FakeTraceAgent) -> None:
     INTEGRATION.patch()
+    INTEGRATION.inject_hosts = {"payments.internal"}
     seen: list[httpx.Request] = []
     with httpx.Client(transport=httpx.MockTransport(make_handler(seen))) as client:
         with ozy.tracer.trace("request") as root:
@@ -56,6 +63,7 @@ def test_a_sync_request_is_a_span_and_carries_the_trace_headers(traced: FakeTrac
 
 def test_an_async_request_is_traced_the_same_way(traced: FakeTraceAgent) -> None:
     INTEGRATION.patch()
+    INTEGRATION.inject_hosts = {"api.example.com"}
     seen: list[httpx.Request] = []
 
     async def run() -> None:
@@ -139,7 +147,7 @@ def test_inject_hosts_restricts_the_headers_but_not_the_span(traced: FakeTraceAg
                 client.get("https://payments.internal/a")
                 client.get("https://third-party.example/b")
     finally:
-        INTEGRATION.inject_hosts = None
+        INTEGRATION.inject_hosts = ()
     assert [("x-ozy-trace-id" in r.headers) for r in seen] == [True, False]
     assert len(client_spans(traced)) == 2
 
@@ -170,3 +178,14 @@ def test_unavailable_library_is_a_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(builtins, "__import__", fake)
     assert INTEGRATION.is_available() is False
     INTEGRATION.patch()
+
+
+def test_by_default_no_host_receives_the_propagation_headers(traced: FakeTraceAgent) -> None:
+    # A trace id and a sampling decision are not for third parties; the Node SDK agrees.
+    INTEGRATION.patch()
+    seen: list[httpx.Request] = []
+    with httpx.Client(transport=httpx.MockTransport(make_handler(seen))) as client:
+        with ozy.tracer.trace("request"):
+            client.get("https://third-party.example/b")
+    assert not any(k.startswith("x-ozy-") for k in seen[0].headers)
+    assert len(client_spans(traced)) == 1

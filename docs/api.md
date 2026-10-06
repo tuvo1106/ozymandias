@@ -442,7 +442,8 @@ stored (never sampled, or past retention); `400` for a malformed id.
 for the window, from counters maintained as spans arrive: an edge is a call from one service's span to
 another service's entry span. `avg_duration` is the callee entry span's mean, in microseconds. Edges
 are counted from stored spans, so under sampling they are samples: use them for shape, not rate.
-Parameter `env` filters.
+Parameter `env` filters. Nodes are the services with an entry span in the window (plus any
+edge endpoint), so a service that stopped sending drops off.
 
 ### `GET /api/v1/services`
 
@@ -450,8 +451,9 @@ One row per (service, env, entry span name): `requests`, `requests_per_second`, 
 `error_pct`, `p50_ms`, `p95_ms`, `p99_ms` (null when the window has no latency sketches) and a
 30-point `sparkline` of requests. Computed from metrics, so exact under sampling. A service with
 two kinds of entry span (`http.request`, `arq.job`) has a row for each: latency percentiles of
-different operations cannot be merged honestly. Parameters `env`, `from`, `to`; `400` if `env`
-holds a comma, brace or newline, which a metric query cannot express.
+different operations cannot be merged honestly. Percentiles are over the whole window. Parameters `env`, `from`, `to`; `400` if `env`
+holds a comma, brace or newline, which a metric query cannot express. At most 50 entry-span names
+are queried, in name order; `truncated: true` says there were more.
 
 ### `GET /api/v1/services/{service}/resources`
 

@@ -118,6 +118,13 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 	if shop["errors"] != float64(failing) || shop["error_pct"] != 10.0 {
 		t.Errorf("errors = %v (%v%%), want exactly %d: statistics must not be sampled", shop["errors"], shop["error_pct"], failing)
 	}
+	// Durations were 10..49 ms in equal numbers: the median is about 29 and p95 about 48. A
+	// This pins the values, not the grid: the data here happens to sit in the first bucket, so
+	// reverting wholeWindow to to-from does NOT fail this test (checked by mutation). The one-bucket
+	// property is by construction: 2^31 seconds exceeds any unix time.
+	if p50, p95 := shop["p50_ms"].(float64), shop["p95_ms"].(float64); p50 < 25 || p50 > 34 || p95 < 44 || p95 > 52 {
+		t.Errorf("p50 = %v, p95 = %v ms: want about 29 and 48 over the whole window", p50, p95)
+	}
 	if shop["p95_ms"] == nil {
 		t.Errorf("no p95 in %v", shop)
 	}

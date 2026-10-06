@@ -16,10 +16,10 @@ paths carry ids and the host is what a service map wants), with ``http.method``,
 ``http.url`` (scheme, host and path only: no query string and no credentials, either of
 which can hold secrets) and ``http.status_code``. A 5xx answer marks it as an error.
 
-Headers are injected for every host by default. A trace id is not a secret, but it is
-a correlation handle you may not want to hand to a third party: set
-``INTEGRATION.inject_hosts = {"payments.internal"}`` to restrict injection to an
-allow-list (the span is recorded either way).
+Headers are injected for **no** host by default, as in the Node SDK: a trace id and a
+sampling decision are a correlation handle and a lever that a third party has no business
+holding or setting. Set ``INTEGRATION.inject_hosts = {"payments.internal"}`` to allow-list
+the services of yours that should join the trace (the span is recorded either way).
 
 Only inside a trace, like every client integration.
 """
@@ -49,8 +49,8 @@ class HttpxIntegration:
     """Trace ``httpx.Client`` and ``httpx.AsyncClient`` requests.
 
     Attributes:
-        inject_hosts: ``None`` (default) injects the propagation headers into every
-            outgoing request; a set of hostnames injects only for those.
+        inject_hosts: hostnames to inject the propagation headers for; empty by default,
+            so no request carries them until you name the hosts that should.
     """
 
     name = "httpx"
@@ -58,7 +58,7 @@ class HttpxIntegration:
     def __init__(self) -> None:
         """Create an unpatched integration."""
         self._patches = PatchSet()
-        self.inject_hosts: Iterable[str] | None = None
+        self.inject_hosts: Iterable[str] = ()
 
     def is_available(self) -> bool:
         """The httpx package is importable."""
@@ -81,7 +81,7 @@ class HttpxIntegration:
             activate=False,
         )
         hosts = self.inject_hosts
-        if hosts is None or request.url.host in hosts:
+        if request.url.host in hosts:
             _tracer.inject(request.headers, span.context)
         return span
 

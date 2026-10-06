@@ -20,6 +20,7 @@ import {
   unpatchIntegrations,
   withTelemetry,
 } from "../src/index.js";
+import { controlFlowStatus } from "../src/integrations/next.js";
 import { globalState } from "../src/state.js";
 import { clearEnv } from "./helpers.js";
 import { FakeTraceAgent, initTracing, resetTracing } from "./trace-helpers.js";
@@ -49,6 +50,27 @@ afterEach(async () => {
 const byName = (name: string) => agent.spans().filter((s) => s.name === name);
 
 describe("next: traceRoute / withTelemetry", () => {
+  it("a thrown redirect or notFound is a normal answer, not a failed request", async () => {
+    const redirect = Object.assign(new Error("NEXT_REDIRECT"), { digest: "NEXT_REDIRECT;replace;/login;307;" });
+    const notFound = Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
+    expect(() => traceRoute(new Request("http://x/a"), undefined, () => { throw redirect; })).toThrow(redirect);
+    await expect(traceRoute(new Request("http://x/b"), undefined, async () => Promise.reject(notFound))).rejects.toBe(notFound);
+    await tracer.flush();
+    const spans = byName("http.request");
+    expect(spans.map((s) => s.meta["http.status_code"]).sort()).toEqual(["307", "404"]);
+    expect(spans.every((s) => s.error === 0)).toBe(true);
+  });
+
+  it("controlFlowStatus reads Next's digests and nothing else", () => {
+    expect(controlFlowStatus({ digest: "NEXT_REDIRECT;push;/x;308;" })).toBe(308);
+    expect(controlFlowStatus({ digest: "NEXT_REDIRECT;push;/x;" })).toBe(307);
+    expect(controlFlowStatus({ digest: "NEXT_NOT_FOUND" })).toBe(404);
+    expect(controlFlowStatus({ digest: "NEXT_HTTP_ERROR_FALLBACK;403" })).toBe(403);
+    expect(controlFlowStatus({ digest: "NEXT_HTTP_ERROR_FALLBACK;abc" })).toBeUndefined();
+    expect(controlFlowStatus(new Error("boom"))).toBeUndefined();
+    expect(controlFlowStatus(null)).toBeUndefined();
+  });
+
   it("names the span 'METHOD /normalized/path', never records the query, and records the status", async () => {
     const req = new Request("http://localhost:3000/api/comics/42/pages/550e8400-e29b-41d4-a716-446655440000?token=secret#frag", { method: "get" });
     const res = await traceRoute(req, undefined, async () => new Response("ok", { status: 200 }));

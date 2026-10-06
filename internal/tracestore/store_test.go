@@ -2,6 +2,7 @@ package tracestore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -466,5 +467,65 @@ func TestSweep_NegativeRetentionKeepsEverything(t *testing.T) {
 	clk.Advance(10 * 365 * 24 * time.Hour)
 	if n, err := s.Sweep(ctx); err != nil || n != 0 || len(must(s.Trace(ctx, tid(1)))) != 1 {
 		t.Errorf("swept %d, %v", n, err)
+	}
+}
+
+// The same cross-service span twice in one batch, and a batch resent concurrently,
+// each count one edge.
+func TestEdges_DuplicatesInOneBatchAndConcurrentResendsCountOnce(t *testing.T) {
+	s, _ := open(t, nil)
+	batch := []wire.Span{sp(1, 1, "api", 0, time.Second), sp(1, 2, "worker", 0, time.Second, child(1)), sp(1, 2, "worker", 0, time.Second, child(1))}
+	if err := s.Append(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	if e := must(s.ServiceEdges(ctx, "", 0, t0.UnixMicro())); len(e) != 1 || e[0].Calls != 1 {
+		t.Fatalf("a duplicate inside one batch: %+v", e)
+	}
+	again := []wire.Span{sp(2, 1, "api", 0, time.Second), sp(2, 2, "worker", 0, time.Second, child(1))}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _ = s.Append(ctx, again) }()
+	}
+	wg.Wait()
+	if e := must(s.ServiceEdges(ctx, "", 0, t0.UnixMicro())); len(e) != 1 || e[0].Calls != 2 {
+		t.Errorf("concurrent resends of one batch: %+v, want 2 calls in all", e)
+	}
+}
+
+func TestServicesIn_OnlyThoseWithEntriesInTheWindow(t *testing.T) {
+	s, _ := open(t, nil)
+	_ = s.Append(ctx, []wire.Span{sp(1, 1, "old", -48*time.Hour, time.Second), sp(2, 1, "new", 0, time.Second)})
+	got := must(s.ServicesIn(ctx, "", t0.Add(-time.Hour).UnixMicro(), t0.Add(time.Hour).UnixMicro()))
+	if len(got) != 1 || got[0][1] != "new" {
+		t.Errorf("%v: a service that stopped sending days ago is not in the window", got)
+	}
+	if len(s.Services()) != 2 {
+		t.Errorf("Services() lists everything ever seen: %v", s.Services())
+	}
+}
+
+// A commit that fails must leave the waiting children waiting: the agent resends the
+// batch, and the parent's arrival then still resolves them.
+func TestEdges_FailedCommitKeepsParkedChildrenWaiting(t *testing.T) {
+	s, _ := open(t, nil)
+	_ = s.Append(ctx, []wire.Span{sp(1, 2, "worker", 0, time.Second, child(1))}) // child first: parked
+	if s.npend != 1 {
+		t.Fatalf("%d parked", s.npend)
+	}
+	parent := []wire.Span{sp(1, 1, "api", 0, time.Second)}
+	s.failCommit = func() error { return errors.New("disk full") }
+	if err := s.Append(ctx, parent); err == nil {
+		t.Fatal("the failure was swallowed")
+	}
+	s.failCommit = nil
+	if s.npend != 1 {
+		t.Fatalf("%d parked after the failed commit: the child was lost", s.npend)
+	}
+	if err := s.Append(ctx, parent); err != nil {
+		t.Fatal(err)
+	}
+	if e := must(s.ServiceEdges(ctx, "", 0, t0.UnixMicro())); len(e) != 1 || e[0].Calls != 1 {
+		t.Errorf("edges after the resend: %+v", e)
 	}
 }

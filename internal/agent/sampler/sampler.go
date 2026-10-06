@@ -188,9 +188,14 @@ func (s *Sampler) count(first *wire.Span, now time.Time) {
 	if env == "" {
 		env = s.opts.Env
 	}
-	k := RateKey(first.Service, env)
-	if _, ok := s.counts[k]; ok || len(s.counts) < maxRateKeys {
-		s.counts[k]++
+	// Two keys per chunk: the service in its env, and the service in no env. An SDK
+	// that was never told its env looks its rate up as "service:x,env:", while the
+	// agent knows the env from its own tags; without the second key the two would
+	// never meet and head sampling would silently stay at the SDK default.
+	for _, k := range []string{RateKey(first.Service, env), RateKey(first.Service, "")} {
+		if _, ok := s.counts[k]; ok || len(s.counts) < maxRateKeys {
+			s.counts[k]++
+		}
 	}
 }
 

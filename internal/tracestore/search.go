@@ -332,3 +332,20 @@ func (s *Store) Services() [][2]string {
 	}
 	return out
 }
+
+// ServicesIn lists the (env, service) pairs with at least one entry span in
+// [fromUs, toUs], for one env (empty means all). Services() lists every pair the
+// store has ever seen; a service that stopped sending a month ago is not in this.
+func (s *Store) ServicesIn(ctx context.Context, env string, fromUs, toUs int64) ([][2]string, error) {
+	var out [][2]string
+	for _, p := range s.pairs(Filter{Env: env}) {
+		r, err := s.Search(ctx, Filter{Env: p.env, Service: p.service}, fromUs, toUs, 1, "")
+		if err != nil {
+			return nil, err
+		}
+		if len(r.Traces) > 0 {
+			out = append(out, [2]string{p.env, p.service})
+		}
+	}
+	return out, nil
+}
