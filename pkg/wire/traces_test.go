@@ -332,3 +332,73 @@ func FuzzParsePropagation(f *testing.F) {
 		}
 	})
 }
+
+func loadGolden(t *testing.T, name string) (nowUs int64, raw map[string]json.RawMessage) {
+	t.Helper()
+	data, err := os.ReadFile("testdata/traces/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw["now_us"], &nowUs); err != nil {
+		t.Fatal(err)
+	}
+	return nowUs, raw
+}
+
+// Hops B and F: the valid golden bodies decode with nothing refused and nothing
+// changed, and survive a round trip through the types.
+func TestGolden_HopsBAndF(t *testing.T) {
+	nowUs, b := loadGolden(t, "hop-b.json")
+	opts := DecodeOptions{Now: time.UnixMicro(nowUs)}
+	_, chunks, rejects, err := DecodeTraces(b["body"], opts)
+	if err != nil || len(rejects) != 0 || len(chunks) != 2 || len(chunks[0]) != 3 || len(chunks[1]) != 1 {
+		t.Fatalf("hop B: %v %v %d chunks", err, rejects, len(chunks))
+	}
+	if w := chunks[1][0]; w.ParentID != "00000000000000a3" || w.Error != 1 || w.Metrics["queue.wait_ms"] != 69.5 {
+		t.Errorf("the worker span lost something: %+v", w)
+	}
+	_, f := loadGolden(t, "hop-f.json")
+	p, rejects, err := DecodeSpans(f["body"], opts)
+	if err != nil || len(rejects) != 0 || len(p.Spans) != 4 || p.Env != "dev" || p.Host != "host-1" {
+		t.Fatalf("hop F: %v %v %+v", err, rejects, p)
+	}
+	// Re-encoding what hop B decoded gives a body that decodes to the same spans.
+	out, _ := json.Marshal(TracesPayload{Traces: chunks})
+	_, again, rejects, err := DecodeTraces(out, opts)
+	if err != nil || len(rejects) != 0 || len(again) != 2 || again[1][0].Metrics["queue.wait_ms"] != 69.5 || again[0][0].ParentID != "" {
+		t.Errorf("round trip: %v %v", err, rejects)
+	}
+}
+
+func TestGolden_InvalidSpansAreEachRefused(t *testing.T) {
+	nowUs, raw := loadGolden(t, "invalid-spans.json")
+	var base map[string]any
+	_ = json.Unmarshal(raw["base"], &base)
+	var cases []struct {
+		Name string
+		Over map[string]any
+	}
+	_ = json.Unmarshal(raw["cases"], &cases)
+	if len(cases) < 5 {
+		t.Fatal("too few cases")
+	}
+	for _, c := range cases {
+		bad := map[string]any{}
+		for k, v := range base {
+			bad[k] = v
+		}
+		for k, v := range c.Over {
+			bad[k] = v
+		}
+		good, _ := json.Marshal(base)
+		badJSON, _ := json.Marshal(bad)
+		body := `{"traces":[[` + string(good) + `,` + string(badJSON) + `]]}`
+		_, chunks, rejects, err := DecodeTraces([]byte(body), DecodeOptions{Now: time.UnixMicro(nowUs)})
+		if err != nil || len(rejects) != 1 || rejects[0].Index != 1 || len(chunks) != 1 || len(chunks[0]) != 1 {
+			t.Errorf("%s: err=%v rejects=%v chunks=%v", c.Name, err, rejects, chunks)
+		}
+	}
+}

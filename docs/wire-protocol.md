@@ -372,5 +372,6 @@ emits them as ordinary series/sketches (`trace.<span.name>.hits`, `.errors`,
 ## Golden files
 
 `pkg/wire/testdata/*.json` and `*.statsd` hold one valid and several invalid
-examples per hop. Go, Python and Node test suites all load the same files
+examples per hop (traces: `traces/hop-b.json`, `hop-f.json`, `invalid-spans.json`, plus the shared
+`sampling.json` and `normalize-path.json` vectors). Go, Python and Node test suites all load the same files
 (the SDKs via a relative path) so the three implementations cannot drift.
