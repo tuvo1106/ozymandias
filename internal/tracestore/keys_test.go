@@ -139,3 +139,26 @@ func TestSuccessor(t *testing.T) {
 		t.Error("successor of all-0xff must be nil (unbounded)")
 	}
 }
+
+// The layout in docs/formats/tracestore-keys.md, byte for byte. A change here is a format change.
+func TestKeys_LayoutMatchesTheFormatDoc(t *testing.T) {
+	trace, span := id(0x11, 16), id(0x22, 8)
+	got := entryKey("dev", "api", 1, trace, span)
+	want := append([]byte("edev\x00api\x00"), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe) // ^1
+	want = append(append(want, trace...), span...)
+	if !bytes.Equal(got, want) {
+		t.Errorf("entry key\n got %x\nwant %x", got, want)
+	}
+	if k := edgeKey(0x01020304, "dev", "a", "b"); !bytes.Equal(k, []byte("g\x01\x02\x03\x04dev\x00a\x00b")) {
+		t.Errorf("edge key %x", k)
+	}
+	if k := seenKey(7, trace); !bytes.Equal(k, append([]byte("t\x00\x00\x00\x07"), trace...)) {
+		t.Errorf("seen key %x", k)
+	}
+	if k := serviceKey("dev", "api"); string(k) != "vdev\x00api" {
+		t.Errorf("service key %q", k)
+	}
+	if k := spanKey(trace, span); !bytes.Equal(k, append(append([]byte("s"), trace...), span...)) {
+		t.Errorf("span key %x", k)
+	}
+}

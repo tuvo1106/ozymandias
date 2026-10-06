@@ -10,6 +10,7 @@ tests happens in the same commit.
 | [wal.md](wal.md) | `internal/tsdb/wal` | replay at startup |
 | [block.md](block.md) | `internal/tsdb/block` | queries, compaction |
 | [log-chunk.md](log-chunk.md) | `internal/logstore` | log search, recovery |
+| [tracestore-keys.md](tracestore-keys.md) | `internal/tracestore` | trace lookup, search, service map, retention |
 
 Conventions used throughout:
 
