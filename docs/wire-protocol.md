@@ -161,13 +161,51 @@ Conventional `metrics` keys: `_sampling_priority` (-1 user drop, 0 auto drop,
 1 auto keep, 2 user keep; set on the local root), `_top_level` (1 if the span
 is a service entry span), `_measured` (1 to force stats), `queue.wait_ms`.
 
+Validation is per span (`pkg/wire` `DecodeTraces`): a span is refused whole or accepted whole, and
+a refused span never takes its chunk down with it. Refused: ids that are not 32 / 16 lowercase hex or
+are all zero, a `parent_id` equal to the span's own id, an empty or over-long `service` (100 bytes) or
+`name` (100), `error` other than 0/1, a negative `duration`, a `start` that is not microseconds (a value
+below 10^15 reads as seconds or milliseconds) or is more than 10 minutes ahead of the receiver, a
+non-finite metric. Normalized, not refused: an unknown `type` becomes `custom`; `resource` and `meta`
+values are cut to 5000 bytes on a rune boundary; a `meta` key over 100 bytes is dropped; a span keeps at
+most 100 `meta` and 50 `metrics` entries (the rest dropped in sorted key order, so the same span always
+normalizes the same way). Limits: 1000 chunks per body, 5000 spans per chunk, 10 MiB of body.
+
 Response `200`:
 
 ```json
-{"rate_by_service": {"service:app-python-api,env:dev": 1.0}}
+{"rate_by_service": {"service:app-python-api,env:dev": 1.0}, "accepted": 12, "rejected": 1}
 ```
 
-SDKs apply these rates to future head-sampling decisions (M5 §sampling).
+`429` when the agent is already decoding 8 bodies: the SDK drops the chunk and moves on. Traces are
+best-effort; nothing retries them.
+
+SDKs apply the rates to future head-sampling decisions.
+
+### Sampling
+
+The head-sampling decision is made once, at the trace's first span, and is a pure function of the
+trace id and the rate:
+
+```
+keep  ==  ((low 64 bits of trace_id) * 1111111111111111111  mod 2^64)  <  rate * 2^64
+```
+
+`rate <= 0` never keeps and `rate >= 1` always does. `rate * 2^64` is exact in a double (a power-of-two
+scaling), so Python (`int`), Node (`BigInt`) and Go (`uint64`) agree bit for bit; the three suites check
+the same vectors, `pkg/wire/testdata/traces/sampling.json`. The decision becomes `_sampling_priority`
+(1 keep, 0 drop) on the local root and rides the propagation headers, so a downstream service inherits it
+instead of re-deciding. A trace that is dropped by the head sampler is **still sent to the agent**: the
+agent computes request/error/latency statistics on every span before it samples, so a 10% sample never
+shows as 10% of the traffic (docs/notes/M5.md).
+
+### Path normalizer
+
+HTTP resources use the route pattern when the framework knows one; when it does not, the SDK
+normalizes the raw path: a segment that is all digits, a UUID (any case), hex of 12 or more characters, or
+nanoid-like (16 or more of `[A-Za-z0-9_-]` containing a digit) becomes `:id`; the query string and
+fragment are dropped; at most 8 segments are kept. Vectors: `pkg/wire/testdata/traces/normalize-path.json`
+(`wire.NormalizePath` in Go).
 
 ### Propagation headers (between services)
 
@@ -178,7 +216,9 @@ x-ozy-sampling-priority: <-1|0|1|2>
 ```
 
 Non-HTTP carriers (arq job kwargs) use a dict with keys `trace_id`,
-`parent_id`, `sampling_priority` under the kwarg `_ozymandias`.
+`parent_id`, `sampling_priority` under the kwarg `_ozymandias`. A header that is malformed in any way
+(wrong length, uppercase is accepted and lowered, zero id, a priority outside -1..2) yields no context
+at all: the receiver starts a fresh trace instead of continuing a corrupt one (`wire.ParsePropagation`).
 
 From M8 the SDKs also accept and emit W3C `traceparent` (the 32-hex trace id
 and 16-hex span id map 1:1) so OpenTelemetry-instrumented services join the
