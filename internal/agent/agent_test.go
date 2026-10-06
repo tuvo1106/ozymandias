@@ -471,8 +471,11 @@ func TestRun_DockerEventsToIntake(t *testing.T) {
 	}
 	// The aggregator's ticker and the docker collector's start-up timer.
 	testutil.Eventually(t, 2*time.Second, func() bool { return clk.Waiters() >= 2 }, "not armed")
-	clk.Advance(10 * time.Second)
-	testutil.Eventually(t, 3*time.Second, func() bool {
+	// One Advance can fire the aggregator's flush before the forwarder has armed the
+	// timer it sends on, and on a loaded machine nothing then ticks again: advance each
+	// attempt (only the flush that carries the exits has anything in it).
+	testutil.Eventually(t, 5*time.Second, func() bool {
+		clk.Advance(10 * time.Second)
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.ContainsFunc(got, func(s wire.Series) bool { return s.Metric == "container.exits" })
@@ -548,8 +551,11 @@ func TestRun_DockerEventsFoldNamesOverTheCap(t *testing.T) {
 	}
 	// The aggregator's ticker and the docker collector's start-up timer.
 	testutil.Eventually(t, 2*time.Second, func() bool { return clk.Waiters() >= 2 }, "not armed")
-	clk.Advance(10 * time.Second)
-	testutil.Eventually(t, 3*time.Second, func() bool {
+	// One Advance can fire the aggregator's flush before the forwarder has armed the
+	// timer it sends on, and on a loaded machine nothing then ticks again: advance each
+	// attempt (only the flush that carries the exits has anything in it).
+	testutil.Eventually(t, 5*time.Second, func() bool {
+		clk.Advance(10 * time.Second)
 		mu.Lock()
 		defer mu.Unlock()
 		n := 0

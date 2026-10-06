@@ -53,6 +53,9 @@ export interface HistogramBucket {
 
 /** The histogram above the list. */
 export interface Histogram {
+  /** The window that was asked for (unix ms): bars are laid out over it, not over the data's own span. */
+  from: number;
+  to: number;
   interval_ms: number;
   buckets: HistogramBucket[];
   truncated: boolean;
@@ -134,7 +137,7 @@ export async function fetchHistogram(
   if (!isRecord(body) || typeof body.interval_ms !== "number" || !Array.isArray(body.buckets)) throw bad("/api/v1/logs/aggregate");
   const buckets = body.buckets.filter((b): b is HistogramBucket => isRecord(b) && typeof b.ts === "number" && isRecord(b.counts));
   if (buckets.length !== body.buckets.length) throw bad("/api/v1/logs/aggregate");
-  return { interval_ms: body.interval_ms, buckets, truncated: body.truncated === true };
+  return { from: query.from, to: query.to, interval_ms: body.interval_ms, buckets, truncated: body.truncated === true };
 }
 
 /** Fetches the most frequent values of `keys` among the matching logs. */
