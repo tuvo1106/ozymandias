@@ -19,10 +19,13 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/docker"
 	"github.com/tuvo1106/ozymandias/internal/agent/collector/dockerapi"
 	hostcoll "github.com/tuvo1106/ozymandias/internal/agent/collector/host"
+	"github.com/tuvo1106/ozymandias/internal/agent/concentrator"
 	"github.com/tuvo1106/ozymandias/internal/agent/config"
 	"github.com/tuvo1106/ozymandias/internal/agent/forwarder"
+	"github.com/tuvo1106/ozymandias/internal/agent/sampler"
 	"github.com/tuvo1106/ozymandias/internal/agent/statsd"
 	"github.com/tuvo1106/ozymandias/internal/agent/tailer"
+	"github.com/tuvo1106/ozymandias/internal/agent/tracerecv"
 	"github.com/tuvo1106/ozymandias/internal/buildinfo"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	base "github.com/tuvo1106/ozymandias/internal/config"
@@ -236,6 +239,21 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		return extra
 	}))
 	mux.Handle("GET /debug/vars", a.reg.Handler())
+	if cfg.Traces.Enabled {
+		env := ""
+		for _, t := range cfg.Tags {
+			if k, v := wire.SplitTag(t); k == "env" {
+				env = v
+			}
+		}
+		// Statistics first, samplers second: see package concentrator.
+		mux.Handle("POST /v1/traces", tracerecv.New(tracerecv.Options{
+			Observer: concentrator.New(concentrator.Options{Sink: a.agg, Env: env, MaxResources: cfg.Traces.MaxResourcesPerService, Registry: a.reg, Clock: a.clock}),
+			Decider: sampler.New(sampler.Options{TargetTPS: cfg.Traces.MaxTracesPerSecond, ErrorTPS: cfg.Traces.ErrorTracesPerSecond,
+				RareTPS: cfg.Traces.RareTracesPerSecond, Env: env, Registry: a.reg}),
+			Sink: a.fwd, Env: env, Host: host, MaxBody: cfg.Traces.MaxBodyBytes, Clock: a.clock, Registry: a.reg, Logger: a.log,
+		}))
+	}
 	a.handler = httpserve.Instrument(a.reg, Component, mux)
 	return a, nil
 }

@@ -1,0 +1,489 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"math"
+	"net/http"
+	"net/url"
+	"slices"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/tuvo1106/ozymandias/internal/clock"
+	"github.com/tuvo1106/ozymandias/internal/query/metricql"
+	"github.com/tuvo1106/ozymandias/internal/query/metricql/eval"
+	"github.com/tuvo1106/ozymandias/internal/tracestore"
+	"github.com/tuvo1106/ozymandias/internal/tsdb"
+	"github.com/tuvo1106/ozymandias/pkg/wire"
+)
+
+// TraceReader is the part of internal/tracestore the APM endpoints read.
+type TraceReader interface {
+	Trace(ctx context.Context, traceID string) ([]wire.Span, error)
+	Search(ctx context.Context, f tracestore.Filter, fromUs, toUs int64, limit int, cursor string) (*tracestore.SearchResult, error)
+	ServiceEdges(ctx context.Context, env string, fromUs, toUs int64) ([]tracestore.Edge, error)
+	ServicesIn(ctx context.Context, env string, fromUs, toUs int64) ([][2]string, error)
+}
+
+// APM serves the trace and service endpoints.
+//
+// Two sources, on purpose. Traces and the service map come from the trace store,
+// which holds only what the samplers kept. The service and resource tables
+// (requests, errors, latency) come from the trace.* metrics the agent computed
+// from every span before sampling, because a count of stored traces is a sample
+// and would understate load by whatever the sample rate was.
+type APM struct {
+	Traces   TraceReader
+	Store    tsdb.MetricStore
+	Sketches eval.SketchReader
+	Types    eval.MetricTypes
+	Clock    clock.Clock
+	Logger   *slog.Logger
+
+	eval *eval.Evaluator
+}
+
+const (
+	defaultAPMRange = time.Hour
+	// maxEntryNames bounds how many trace.<name>.* metric families one request
+	// queries. Names come from instrumented code and are meant to be a handful.
+	maxEntryNames = 50
+	sparkPoints   = 30
+	// wholeWindow is an interval of 2^31 seconds (68 years). The evaluator aligns its grid to
+	// multiples of the interval, and the epoch is below 2^31, so every window lies in the one
+	// bucket [0, 2^31): a percentile over the whole window, not over the tail of a two-bucket grid.
+	wholeWindow = int64(1) << 31
+)
+
+// Register mounts the routes.
+func (a *APM) Register(mux *http.ServeMux) {
+	if a.Clock == nil {
+		a.Clock = clock.Real()
+	}
+	if a.Logger == nil {
+		a.Logger = slog.New(slog.DiscardHandler)
+	}
+	a.eval = &eval.Evaluator{Store: a.Store, Sketches: a.Sketches, Types: a.Types}
+	mux.HandleFunc("GET /api/v1/traces", a.search)
+	mux.HandleFunc("GET /api/v1/traces/{trace_id}", a.trace)
+	mux.HandleFunc("GET /api/v1/service-map", a.serviceMap)
+	mux.HandleFunc("GET /api/v1/services", a.services)
+	mux.HandleFunc("GET /api/v1/services/{service}/resources", a.resources)
+}
+
+// window reads from and to (unix milliseconds), defaulting to the last hour.
+func (a *APM) window(v url.Values) (fromMs, toMs int64, err error) {
+	var errs []error
+	now := a.Clock.Now().UnixMilli()
+	toMs = intParam(v.Get("to"), now, "to (unix milliseconds)", &errs)
+	fromMs = intParam(v.Get("from"), toMs-defaultAPMRange.Milliseconds(), "from (unix milliseconds)", &errs)
+	if len(errs) == 0 && fromMs > toMs {
+		errs = append(errs, fmt.Errorf("from %d is after to %d", fromMs, toMs))
+	}
+	return fromMs, toMs, errors.Join(errs...)
+}
+
+type traceRow struct {
+	TraceID    string `json:"trace_id"`
+	SpanID     string `json:"span_id"`
+	Env        string `json:"env"`
+	Service    string `json:"service"`
+	Name       string `json:"name"`
+	Resource   string `json:"resource"`
+	Start      int64  `json:"start"`    // unix microseconds, as on a span
+	Duration   int64  `json:"duration"` // microseconds
+	Error      bool   `json:"error"`
+	TraceError bool   `json:"trace_error"`
+	StatusCode int    `json:"status_code,omitempty"`
+}
+
+// search handles GET /api/v1/traces.
+func (a *APM) search(w http.ResponseWriter, r *http.Request) {
+	v := r.URL.Query()
+	fromMs, toMs, err := a.window(v)
+	var errs []error
+	if err != nil {
+		errs = append(errs, err)
+	}
+	f := tracestore.Filter{Env: v.Get("env"), Service: v.Get("service"), Resource: v.Get("resource"), Name: v.Get("name")}
+	switch e := v.Get("error"); e {
+	case "", "false":
+	case "true":
+		f.ErrorsOnly = true
+	default:
+		errs = append(errs, fmt.Errorf("error %q: want true or false", e))
+	}
+	f.MinDurationUs = intParam(v.Get("min_duration_ms"), 0, "min_duration_ms", &errs) * 1000
+	f.MaxDurationUs = intParam(v.Get("max_duration_ms"), 0, "max_duration_ms", &errs) * 1000
+	f.StatusCode = int(intParam(v.Get("status_code"), 0, "status_code", &errs))
+	limit := int(intParam(v.Get("limit"), 0, "limit", &errs))
+	if len(errs) > 0 {
+		writeError(w, http.StatusBadRequest, errors.Join(errs...))
+		return
+	}
+	res, err := a.Traces.Search(r.Context(), f, fromMs*1000, toMs*1000+999, limit, v.Get("cursor"))
+	if err != nil {
+		a.fail(w, r, "trace search", err, http.StatusBadRequest)
+		return
+	}
+	rows := make([]traceRow, 0, len(res.Traces))
+	for _, t := range res.Traces {
+		rows = append(rows, traceRow{t.TraceID, t.SpanID, t.Env, t.Service, t.Name, t.Resource, t.StartUs, t.Duration,
+			t.Error == 1, t.TraceError == 1, t.StatusCode})
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Traces   []traceRow `json:"traces"`
+		Cursor   string     `json:"cursor,omitempty"`
+		Examined int        `json:"examined"`
+	}{rows, res.Next, res.Examined})
+}
+
+type traceView struct {
+	TraceID   string      `json:"trace_id"`
+	Spans     []wire.Span `json:"spans"`
+	Services  []string    `json:"services"`
+	Start     int64       `json:"start"`    // microseconds
+	Duration  int64       `json:"duration"` // microseconds: first start to last end
+	SpanCount int         `json:"span_count"`
+	Errors    int         `json:"errors"`
+	// Orphans are spans whose parent_id names a span that is not in the store:
+	// its process was not sampled, crashed, or has not flushed yet. The UI hangs
+	// them under a "missing parent" node rather than hiding them.
+	Orphans []string `json:"orphans"`
+}
+
+// trace handles GET /api/v1/traces/{trace_id}.
+func (a *APM) trace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("trace_id")
+	if !wire.ValidTraceID(id) {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("%q is not a trace id (32 lowercase hex characters)", id))
+		return
+	}
+	spans, err := a.Traces.Trace(r.Context(), id)
+	if err != nil {
+		a.fail(w, r, "trace lookup", err, http.StatusBadRequest)
+		return
+	}
+	if len(spans) == 0 {
+		writeError(w, http.StatusNotFound, fmt.Errorf("no spans stored for trace %s (never sampled, or past retention)", id))
+		return
+	}
+	writeJSON(w, http.StatusOK, buildTraceView(id, spans))
+}
+
+func buildTraceView(id string, spans []wire.Span) traceView {
+	v := traceView{TraceID: id, Spans: spans, SpanCount: len(spans), Start: spans[0].Start, Orphans: []string{}}
+	have := make(map[string]struct{}, len(spans))
+	services := map[string]struct{}{}
+	end := int64(0)
+	for i := range spans {
+		sp := &spans[i]
+		have[sp.SpanID] = struct{}{}
+		services[sp.Service] = struct{}{}
+		v.Start = min(v.Start, sp.Start)
+		end = max(end, sp.End())
+		if sp.Error == 1 {
+			v.Errors++
+		}
+	}
+	v.Duration = end - v.Start
+	for i := range spans {
+		if p := spans[i].ParentID; p != "" {
+			if _, ok := have[p]; !ok {
+				v.Orphans = append(v.Orphans, spans[i].SpanID)
+			}
+		}
+	}
+	v.Services = make([]string, 0, len(services))
+	for s := range services {
+		v.Services = append(v.Services, s)
+	}
+	slices.Sort(v.Services)
+	return v
+}
+
+// serviceMap handles GET /api/v1/service-map.
+func (a *APM) serviceMap(w http.ResponseWriter, r *http.Request) {
+	v := r.URL.Query()
+	fromMs, toMs, err := a.window(v)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	env := v.Get("env")
+	edges, err := a.Traces.ServiceEdges(r.Context(), env, fromMs*1000, toMs*1000)
+	if err != nil {
+		a.fail(w, r, "service map", err, http.StatusBadRequest)
+		return
+	}
+	type edgeJSON struct {
+		Parent        string  `json:"parent"`
+		Child         string  `json:"child"`
+		Env           string  `json:"env,omitempty"`
+		Calls         uint64  `json:"calls"`
+		Errors        uint64  `json:"errors"`
+		AvgDurationUs float64 `json:"avg_duration"`
+	}
+	type nodeJSON struct {
+		Service string `json:"service"`
+		Calls   uint64 `json:"calls_in"`
+		Errors  uint64 `json:"errors_in"`
+	}
+	nodes := map[string]*nodeJSON{}
+	node := func(s string) *nodeJSON {
+		if nodes[s] == nil {
+			nodes[s] = &nodeJSON{Service: s}
+		}
+		return nodes[s]
+	}
+	active, err := a.Traces.ServicesIn(r.Context(), env, fromMs*1000, toMs*1000+999)
+	if err != nil {
+		a.fail(w, r, "service map", err, http.StatusBadRequest)
+		return
+	}
+	for _, p := range active {
+		node(p[1])
+	}
+	out := make([]edgeJSON, 0, len(edges))
+	// Summed across env when none was asked for, so an edge is one line.
+	type k struct{ p, c string }
+	sum := map[k]*edgeJSON{}
+	for _, e := range edges {
+		x := sum[k{e.Parent, e.Child}]
+		if x == nil {
+			x = &edgeJSON{Parent: e.Parent, Child: e.Child, Env: env}
+			sum[k{e.Parent, e.Child}] = x
+		}
+		x.Calls += e.Calls
+		x.Errors += e.Errors
+		x.AvgDurationUs += float64(e.DurationSumUs) // the sum, until divided below
+		node(e.Parent)
+		n := node(e.Child)
+		n.Calls += e.Calls
+		n.Errors += e.Errors
+	}
+	for _, x := range sum {
+		if x.Calls > 0 {
+			x.AvgDurationUs /= float64(x.Calls)
+		}
+		out = append(out, *x)
+	}
+	slices.SortFunc(out, func(a, b edgeJSON) int { return strings.Compare(a.Parent+"\x00"+a.Child, b.Parent+"\x00"+b.Child) })
+	nl := make([]nodeJSON, 0, len(nodes))
+	for _, n := range nodes {
+		nl = append(nl, *n)
+	}
+	slices.SortFunc(nl, func(a, b nodeJSON) int { return strings.Compare(a.Service, b.Service) })
+	writeJSON(w, http.StatusOK, struct {
+		Nodes []nodeJSON `json:"nodes"`
+		Edges []edgeJSON `json:"edges"`
+	}{nl, out})
+}
+
+// red is one row of a requests/errors/latency table.
+type red struct {
+	Service string `json:"service"`
+	Env     string `json:"env,omitempty"`
+	// Name is the entry span's name (http.request, arq.job): a service with two
+	// kinds of entry has a row for each, because latency percentiles of different
+	// operations cannot honestly be merged.
+	Name      string    `json:"name"`
+	Resource  string    `json:"resource,omitempty"`
+	Requests  float64   `json:"requests"`
+	PerSecond float64   `json:"requests_per_second"`
+	Errors    float64   `json:"errors"`
+	ErrorPct  float64   `json:"error_pct"`
+	P50Ms     *float64  `json:"p50_ms"`
+	P95Ms     *float64  `json:"p95_ms"`
+	P99Ms     *float64  `json:"p99_ms"`
+	Spark     []float64 `json:"sparkline"`
+}
+
+// services handles GET /api/v1/services.
+func (a *APM) services(w http.ResponseWriter, r *http.Request) {
+	a.redTable(w, r, "", []string{"service", "env"})
+}
+
+// resources handles GET /api/v1/services/{service}/resources.
+func (a *APM) resources(w http.ResponseWriter, r *http.Request) {
+	a.redTable(w, r, r.PathValue("service"), []string{"service", "env", "resource"})
+}
+
+func (a *APM) redTable(w http.ResponseWriter, r *http.Request, service string, by []string) {
+	v := r.URL.Query()
+	fromMs, toMs, err := a.window(v)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	rows, truncated, err := a.red(r.Context(), v.Get("env"), service, by, fromMs/1000, toMs/1000)
+	if err != nil {
+		a.fail(w, r, "service statistics", err, http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		Services []red `json:"services"`
+		From     int64 `json:"from"`
+		To       int64 `json:"to"`
+		// Truncated says more than maxEntryNames distinct entry-span names exist and the
+		// table holds only the first ones, in name order.
+		Truncated bool `json:"truncated"`
+	}{rows, fromMs, toMs, truncated})
+}
+
+// matcher renders key:value for a metricql filter. Values are raw text there, with
+// no quoting, so one holding a character the grammar reserves cannot be asked
+// for; that is reported rather than silently queried as something else.
+func matcher(key, value string) (string, error) {
+	if strings.ContainsAny(value, ",{}\n\r") {
+		return "", fmt.Errorf("%s %q contains a comma, brace or newline, which a metric query cannot express", key, value)
+	}
+	return key + ":" + value, nil
+}
+
+func (a *APM) red(ctx context.Context, env, service string, by []string, from, to int64) ([]red, bool, error) {
+	if to <= from {
+		to = from + 1
+	}
+	var matchers []string
+	for _, kv := range [][2]string{{"env", env}, {"service", service}} {
+		if kv[1] == "" {
+			continue
+		}
+		m, err := matcher(kv[0], kv[1])
+		if err != nil {
+			return nil, false, &badInput{err}
+		}
+		matchers = append(matchers, m)
+	}
+	names, err := a.Store.MetricNames(ctx, "trace.", 1000)
+	if err != nil {
+		return nil, false, err
+	}
+	var entry []string
+	for _, n := range names {
+		if base, ok := strings.CutSuffix(n, ".hits"); ok {
+			entry = append(entry, strings.TrimPrefix(base, "trace."))
+		}
+	}
+	truncated := false
+	if len(entry) > maxEntryNames {
+		entry, truncated = entry[:maxEntryNames], true
+	}
+	sel := "{" + strings.Join(matchers, ",") + "}"
+	if len(matchers) == 0 {
+		sel = ""
+	}
+	group := " by {" + strings.Join(by, ",") + "}"
+	spark := max((to-from)/sparkPoints, 1)
+	secs := float64(to - from)
+
+	type key struct{ name, svc, env, res string }
+	rows := map[key]*red{}
+	row := func(name string, s eval.Series) *red {
+		k := key{name, s.Tags["service"], s.Tags["env"], s.Tags["resource"]}
+		if rows[k] == nil {
+			rows[k] = &red{Service: k.svc, Env: k.env, Name: name, Resource: k.res}
+		}
+		return rows[k]
+	}
+	run := func(q string, interval int64) (eval.Result, error) {
+		node, err := metricql.Parse(q)
+		if err != nil {
+			return eval.Result{}, err
+		}
+		return a.eval.Eval(ctx, eval.Request{Expr: node, From: from, To: to, Interval: interval})
+	}
+	for _, name := range entry {
+		base := "trace." + name
+		hits, err := run("sum:"+base+".hits"+sel+group+".as_count()", spark)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, s := range hits.Series {
+			rw := row(name, s)
+			for _, p := range s.Points {
+				if !math.IsNaN(p.V) {
+					rw.Requests += p.V
+				}
+				rw.Spark = append(rw.Spark, nanToZero(p.V))
+			}
+		}
+		errs, err := run("sum:"+base+".errors"+sel+group+".as_count()", spark)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, s := range errs.Series {
+			rw := row(name, s)
+			for _, p := range s.Points {
+				if !math.IsNaN(p.V) {
+					rw.Errors += p.V
+				}
+			}
+		}
+		// Percentiles over the whole window are one bucket wide, not an average of
+		// per-bucket percentiles, which would be wrong.
+		if a.Sketches != nil {
+			for _, q := range []struct {
+				fn  string
+				dst func(*red) **float64
+			}{{"p50", func(r *red) **float64 { return &r.P50Ms }}, {"p95", func(r *red) **float64 { return &r.P95Ms }}, {"p99", func(r *red) **float64 { return &r.P99Ms }}} {
+				res, err := run(q.fn+":"+base+".duration"+sel+group, wholeWindow)
+				if err != nil {
+					return nil, false, err
+				}
+				for _, s := range res.Series {
+					for i := len(s.Points) - 1; i >= 0; i-- {
+						if p := s.Points[i]; !math.IsNaN(p.V) {
+							ms := p.V * 1000
+							*q.dst(row(name, s)) = &ms
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	out := make([]red, 0, len(rows))
+	for _, rw := range rows {
+		rw.PerSecond = rw.Requests / secs
+		if rw.Requests > 0 {
+			rw.ErrorPct = rw.Errors / rw.Requests * 100
+		}
+		out = append(out, *rw)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Requests != out[j].Requests {
+			return out[i].Requests > out[j].Requests
+		}
+		return out[i].Service+out[i].Name+out[i].Resource < out[j].Service+out[j].Name+out[j].Resource
+	})
+	return out, truncated, nil
+}
+
+func nanToZero(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return v
+}
+
+// badInput marks an error caused by the request's own parameters.
+type badInput struct{ error }
+
+func (a *APM) fail(w http.ResponseWriter, r *http.Request, what string, err error, badRequest int) {
+	var bi *badInput
+	if errors.As(err, &bi) || errors.Is(err, eval.ErrBadQuery) || strings.Contains(err.Error(), "bad cursor") {
+		writeError(w, badRequest, err)
+		return
+	}
+	if r.Context().Err() != nil {
+		return
+	}
+	a.Logger.Error("apm: "+what, "err", err)
+	writeError(w, http.StatusInternalServerError, errors.New(what+" failed"))
+}

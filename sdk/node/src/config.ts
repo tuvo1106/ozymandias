@@ -18,9 +18,12 @@
  * @module
  */
 import type { ClientHooks } from "./client.js";
+import { parseSampleRate } from "./trace/rate.js";
 
 /** Default extended StatsD port (wire-protocol hop A). */
 export const DEFAULT_STATSD_PORT = 8125;
+/** Default agent trace-intake port (wire-protocol hop B). */
+export const DEFAULT_TRACE_PORT = 8126;
 /**
  * Default maximum datagram payload: one Ethernet MTU (1500) minus IPv4 (20)
  * and UDP (8) headers, minus 40 bytes of slack for IP options/tunnels — the
@@ -54,6 +57,17 @@ export interface InitOptions {
   agentHost?: string;
   /** Agent extended StatsD UDP port. Env: `OZY_STATSD_PORT`. Default 8125. */
   statsdPort?: number;
+  /** Enables tracing (needs an agent host). Env: `OZY_TRACE_ENABLED`. Default true. */
+  traceEnabled?: boolean;
+  /** Agent trace-intake HTTP port. Env: `OZY_TRACE_PORT`. Default 8126. */
+  tracePort?: number;
+  /**
+   * Default head-sampling rate in [0, 1]. Env: `OZY_TRACE_SAMPLE_RATE`.
+   * Default 1. The agent's per-service rates override it once it has answered.
+   */
+  traceSampleRate?: number;
+  /** Names of registered integrations to patch at init (see `registerIntegration`). */
+  integrations?: string[];
   /** Log SDK-internal events to stderr. Env: `OZY_DEBUG` (`1`/`true`). */
   debug?: boolean;
   /**
@@ -77,6 +91,9 @@ export interface ResolvedConfig {
   enabled: boolean;
   agentHost: string;
   statsdPort: number;
+  traceEnabled: boolean;
+  tracePort: number;
+  traceSampleRate: number;
   service: string | undefined;
   env: string | undefined;
   version: string | undefined;
@@ -154,6 +171,14 @@ export function resolveConfig(options: InitOptions, env: Env): ResolvedConfig {
     enabled: agentHost !== "",
     agentHost,
     statsdPort: positiveInt(options.statsdPort, env.OZY_STATSD_PORT, DEFAULT_STATSD_PORT, 65535),
+    // Tracing defaults on (once an agent host exists), unlike debug: an unset
+    // or mistyped value must not silently turn traces off.
+    traceEnabled:
+      typeof options.traceEnabled === "boolean"
+        ? options.traceEnabled
+        : !(env.OZY_TRACE_ENABLED !== undefined && /^(0|false|no|off)$/i.test(env.OZY_TRACE_ENABLED.trim())),
+    tracePort: positiveInt(options.tracePort, env.OZY_TRACE_PORT, DEFAULT_TRACE_PORT, 65535),
+    traceSampleRate: parseSampleRate(options.traceSampleRate, env.OZY_TRACE_SAMPLE_RATE),
     service: str(options.service, env.OZY_SERVICE),
     env: str(options.env, env.OZY_ENV),
     version: str(options.version, env.OZY_VERSION),

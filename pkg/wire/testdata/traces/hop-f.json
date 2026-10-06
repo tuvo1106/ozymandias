@@ -1,0 +1,95 @@
+{
+ "_comment": [
+  "Hop F (section F): the same spans, flat, after the agent normalized and sampled them."
+ ],
+ "now_us": 1790000002000000,
+ "body": {
+  "env": "dev",
+  "host": "host-1",
+  "spans": [
+   {
+    "trace_id": "0123456789abcdef0123456789abcdef",
+    "span_id": "00000000000000a1",
+    "parent_id": null,
+    "service": "app-api",
+    "name": "http.request",
+    "resource": "POST /api/v1/submissions",
+    "type": "web",
+    "start": 1790000000000000,
+    "duration": 52000,
+    "error": 0,
+    "meta": {
+     "env": "dev",
+     "http.method": "POST",
+     "http.route": "/api/v1/submissions",
+     "http.status_code": "202",
+     "span.kind": "server"
+    },
+    "metrics": {
+     "_top_level": 1,
+     "_sampling_priority": 1
+    }
+   },
+   {
+    "trace_id": "0123456789abcdef0123456789abcdef",
+    "span_id": "00000000000000a2",
+    "parent_id": "00000000000000a1",
+    "service": "app-api",
+    "name": "postgres.query",
+    "resource": "INSERT INTO submissions (id, code) VALUES ($1, $2)",
+    "type": "db",
+    "start": 1790000000003000,
+    "duration": 4000,
+    "error": 0,
+    "meta": {
+     "env": "dev",
+     "db.system": "postgresql"
+    },
+    "metrics": {
+     "db.rowcount": 1
+    }
+   },
+   {
+    "trace_id": "0123456789abcdef0123456789abcdef",
+    "span_id": "00000000000000a3",
+    "parent_id": "00000000000000a1",
+    "service": "app-api",
+    "name": "arq.enqueue",
+    "resource": "judge_submission",
+    "type": "queue",
+    "start": 1790000000009000,
+    "duration": 1500,
+    "error": 0,
+    "meta": {
+     "env": "dev",
+     "span.kind": "producer",
+     "queue.name": "arq:queue"
+    },
+    "metrics": {}
+   },
+   {
+    "trace_id": "0123456789abcdef0123456789abcdef",
+    "span_id": "00000000000000b1",
+    "parent_id": "00000000000000a3",
+    "service": "app-worker",
+    "name": "arq.job",
+    "resource": "judge_submission",
+    "type": "worker",
+    "start": 1790000000080000,
+    "duration": 900000,
+    "error": 1,
+    "meta": {
+     "env": "dev",
+     "span.kind": "consumer",
+     "job.id": "j1",
+     "error.type": "TimeoutError",
+     "error.message": "judge timed out"
+    },
+    "metrics": {
+     "_top_level": 1,
+     "queue.wait_ms": 69.5
+    }
+   }
+  ]
+ }
+}

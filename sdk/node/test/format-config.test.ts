@@ -75,6 +75,9 @@ describe("config", () => {
       enabled: false,
       agentHost: "",
       statsdPort: DEFAULT_STATSD_PORT,
+      traceEnabled: true,
+      tracePort: 8126,
+      traceSampleRate: 1,
       service: undefined,
       env: undefined,
       version: undefined,
@@ -83,6 +86,16 @@ describe("config", () => {
       maxPayloadBytes: DEFAULT_MAX_PAYLOAD_BYTES,
       flushIntervalMs: DEFAULT_FLUSH_INTERVAL_MS,
     });
+  });
+
+  it("reads the trace variables, and a bad value falls back instead of throwing", () => {
+    const c = resolveConfig({}, { OZY_TRACE_ENABLED: "false", OZY_TRACE_PORT: "9126", OZY_TRACE_SAMPLE_RATE: "0.25" });
+    expect([c.traceEnabled, c.tracePort, c.traceSampleRate]).toEqual([false, 9126, 0.25]);
+    const bad = resolveConfig({}, { OZY_TRACE_ENABLED: "maybe", OZY_TRACE_PORT: "x", OZY_TRACE_SAMPLE_RATE: "lots" });
+    expect([bad.traceEnabled, bad.tracePort, bad.traceSampleRate]).toEqual([true, 8126, 1]);
+    const clamped = resolveConfig({ traceSampleRate: 7, tracePort: 1, traceEnabled: false }, { OZY_TRACE_SAMPLE_RATE: "0" });
+    expect([clamped.traceSampleRate, clamped.tracePort, clamped.traceEnabled]).toEqual([1, 1, false]);
+    expect(resolveConfig({}, { OZY_TRACE_SAMPLE_RATE: "-3" }).traceSampleRate).toBe(0);
   });
 
   it("reads every OZY_* variable", () => {

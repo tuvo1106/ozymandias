@@ -78,6 +78,9 @@ const ENV_KEYS = [
   "OZY_VERSION",
   "OZY_TAGS",
   "OZY_DEBUG",
+  "OZY_TRACE_ENABLED",
+  "OZY_TRACE_PORT",
+  "OZY_TRACE_SAMPLE_RATE",
 ];
 
 /** Removes every OZY_* variable and returns a function restoring them. */
@@ -100,6 +103,9 @@ export function clearEnv(): () => void {
 export async function resetSdk(): Promise<void> {
   await statsd.close();
   globalState().statsd = null;
+  const rt = globalState().trace;
+  globalState().trace = null;
+  await rt?.writer.close();
   await new Promise((r) => setTimeout(r, 15));
 }
 

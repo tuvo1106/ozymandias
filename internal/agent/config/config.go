@@ -49,6 +49,27 @@ type Statsd struct {
 	QueueSize int `yaml:"queue_size"`
 }
 
+// Traces configures the trace intake (POST /v1/traces on the agent's HTTP
+// port) and what it keeps (docs/plan/M5-tracing.md §3).
+type Traces struct {
+	// Enabled turns the intake on. Off, the route is absent: the agent answers 404
+	// and SDK tracers keep posting and counting the failures, so turn tracing off in
+	// the SDKs (OZY_TRACE_ENABLED=false) as well.
+	Enabled bool `yaml:"enabled"`
+	// MaxTracesPerSecond is the head-sampling target per service: the agent
+	// tells each SDK a rate of target/observed, capped at 1.
+	MaxTracesPerSecond float64 `yaml:"max_traces_per_second"`
+	// ErrorTracesPerSecond and RareTracesPerSecond cap the error and
+	// first-seen-resource samplers, which keep traces the head rate dropped.
+	ErrorTracesPerSecond float64 `yaml:"error_traces_per_second"`
+	RareTracesPerSecond  float64 `yaml:"rare_traces_per_second"`
+	// MaxResourcesPerService caps the resource tag values of one service's
+	// request statistics; the rest fold into resource:_other_.
+	MaxResourcesPerService int `yaml:"max_resources_per_service"`
+	// MaxBodyBytes bounds one request body, compressed or not.
+	MaxBodyBytes int64 `yaml:"max_body_bytes"`
+}
+
 // Aggregator configures bucketing (docs/plan/M1-metrics-tracer-bullet.md §2.2).
 type Aggregator struct {
 	// FlushInterval is the bucket width, in whole seconds.
@@ -393,6 +414,7 @@ type Agent struct {
 	Forwarder  Forwarder  `yaml:"forwarder"`
 	Collectors Collectors `yaml:"collectors"`
 	Logs       Logs       `yaml:"logs"`
+	Traces     Traces     `yaml:"traces"`
 	// Hostname is the value of the host tag on everything this agent sends.
 	// Empty means the OS hostname. Set it explicitly in containers, where the
 	// OS hostname is a meaningless container id.
@@ -422,6 +444,7 @@ func Default() Agent {
 			Host:   HostCollector{Enabled: true, ExcludeInterfaces: slices.Clone(DefaultExcludeInterfaces)},
 			Docker: DockerCollector{Enabled: true, Socket: dockerapi.DefaultSocket, MaxConcurrency: docker.DefaultMaxConcurrency, MaxContainerNames: docker.DefaultMaxContainerNames, Autodiscovery: true},
 		},
+		Traces:    Traces{Enabled: true, MaxTracesPerSecond: 50, ErrorTracesPerSecond: 10, RareTracesPerSecond: 5, MaxResourcesPerService: 500, MaxBodyBytes: 10 << 20},
 		Logs:      Logs{ScanInterval: 10 * time.Second, PollInterval: time.Second},
 		ConfdPath: "./deploy/agent.d",
 		Log:       base.Log{Level: "info", Format: "text"},
@@ -453,6 +476,9 @@ func (a *Agent) Validate() error {
 	}
 	if a.Forwarder.Timeout <= 0 || a.Forwarder.ShutdownTimeout <= 0 || a.Forwarder.MaxQueueBytes < 1 {
 		errs = append(errs, errors.New("forwarder: timeout, shutdown_timeout and max_queue_bytes must be positive"))
+	}
+	if t := a.Traces; t.Enabled && (t.MaxTracesPerSecond <= 0 || t.ErrorTracesPerSecond <= 0 || t.RareTracesPerSecond <= 0 || t.MaxResourcesPerService < 1 || t.MaxBodyBytes < 1) {
+		errs = append(errs, errors.New("traces: the per-second limits, max_resources_per_service and max_body_bytes must be positive"))
 	}
 	errs = append(errs, a.Collectors.validate(), a.Logs.validate())
 	for _, t := range a.Tags {

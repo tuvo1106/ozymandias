@@ -9,6 +9,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Tracing** (M5). Span payloads and head-sampling vectors (`pkg/wire`); the agent's trace intake
+  (`POST :8126/v1/traces`) computes request/error/latency statistics from every span *before*
+  sampling (`trace.<name>.hits|errors|duration`) and keeps traces through priority, error and
+  first-seen-resource samplers; ozyd stores them in Pebble (`internal/tracestore`, format in
+  docs/formats/tracestore-keys.md) with a service map and retention. API: `/api/v1/traces`,
+  `/traces/{id}`, `/service-map`, `/services`, `/services/{service}/resources`. New config
+  `traces:` in agent.yaml and ozyd.yaml. ADR-0041 to 0045. `examples/go-app` posts spans with no SDK.
 - **Logs** (M4). The agent tails files and container output (label `ozy.logs.enabled=true`), parses
   (json, winston, python, rails with request grouping, grok), redacts secrets, and sends at-least-once;
   ozyd stores them in an index-light store with per-block bloom filters (chunk format v2, ADR-0039/0040),

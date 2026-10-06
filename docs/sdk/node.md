@@ -1,7 +1,9 @@
 # Node.js SDK (`ozy`)
 
 The Node SDK is a small convenience layer over ozymandias's public wire protocol. In M1 it is
-a extended-StatsD-compatible metrics client. Tracing and framework integrations come in M5.
+a extended-StatsD-compatible metrics client; M5 adds a tracer and explicit-wrapping
+integrations for Next.js route handlers, better-sqlite3, `fetch` and winston
+([section 10](#10-tracing)).
 Anything that can send a UDP datagram can emit metrics to the agent without this SDK (see
 [wire-protocol.md §A](../wire-protocol.md#a-statsd-datagram-sdk--agent-udp-8125)). The SDK
 adds buffering, sampling, global tags and a guarantee that it cannot hurt the host app.
@@ -50,6 +52,10 @@ counts as unset in both places.
 | `OZY_VERSION` | `version` | unset | Sent as the `version:` tag |
 | `OZY_TAGS` | `tags` | none | Tags on every metric. The env var is a comma list (`team:core,region:eu`); the option *replaces* it. |
 | `OZY_DEBUG` | `debug` | off | Log SDK events (connects, errors, drops) to stderr. `1`, `true`, `yes`, `on`. |
+| `OZY_TRACE_ENABLED` | `traceEnabled` | on | Tracing switch (needs an agent host). Only `0`, `false`, `no`, `off` turn it off. |
+| `OZY_TRACE_PORT` | `tracePort` | `8126` | Agent HTTP trace intake. Invalid values fall back to the default. |
+| `OZY_TRACE_SAMPLE_RATE` | `traceSampleRate` | `1` | Default head-sampling rate, clamped into [0, 1]. The agent's per-service rates override it. |
+| — | `integrations` | none | Names of integrations to patch at `init()` (see [10.5](#105-integrations)). |
 | — | `maxPayloadBytes` | `1432` | Max bytes per datagram (one Ethernet MTU minus headers) |
 | — | `flushIntervalMs` | `100` | Max time a metric waits in the buffer |
 | — | `hooks` | — | Test seams: `random`, `now`, `createSocket`, `lookup`, `timers`, `log`. Apps leave it unset. |
@@ -184,3 +190,185 @@ is fragmented by IP, and losing any one fragment loses the whole datagram.
   before exiting.
 - **Only some metrics are sent.** Check for `sampleRate` below 1. `stats().sent` counts only
   what was sampled in.
+
+## 10. Tracing
+
+Tracing (M5) uses the same `init()`: with an agent host configured and `OZY_TRACE_ENABLED`
+not off, `init()` installs a tracer. Without an agent host the tracer is inert: spans are
+no-ops, **your callbacks still run**, no timer, socket or listener exists.
+
+The wire format is [wire-protocol.md §B](../wire-protocol.md#b-traces-sdk--agent-post-8126v1traces);
+this section is how the Node SDK implements it.
+
+### 10.1 Quick start
+
+```ts
+import { init, tracer } from "ozy";
+
+init({ service: "web", env: "dev" });          // OZY_AGENT_HOST must be set
+
+const rows = await tracer.trace("db.load", { resource: "comics", type: "db" }, async (span) => {
+  span.setTag("comic.id", id).setMetric("rows", 3);
+  return loadRows();                           // a throw here marks the span and propagates unchanged
+});
+```
+
+### 10.2 API
+
+| Call | Meaning |
+|---|---|
+| `tracer.trace(name, opts?, fn)` | Runs `fn(span)` in a new span: a child of the active span, or a new trace root. Finishes when `fn` returns or its promise settles. Returns `fn`'s result (a promise stays a promise). |
+| `tracer.wrap(name, opts, fn)` | `fn` wrapped so each call is `trace(name, opts, …)`; `this` and arguments pass through. |
+| `tracer.scope().active()` | The active span, or `null`. `scope().activate(span, fn)` runs `fn` with a manually started span active. |
+| `tracer.startSpan(name, opts?)` | Manual API. Does **not** activate the span; you must `finish()` it. A span that is never finished is simply absent from its trace. |
+| `tracer.inject(ctx?, carrier)` | Writes `x-ozy-trace-id`, `x-ozy-parent-id`, `x-ozy-sampling-priority` into a plain object or a `Headers`. Default context: the active span. |
+| `tracer.extract(source)` | Reads them from a plain object (case-insensitive), `Headers` or `Request`. Returns a context, or `null` for absent **or malformed** headers (a corrupt header never continues a corrupt trace). Pass it as `childOf`. |
+| `tracer.stats()` | `spans`, `unsampled`, `chunksQueued`, `chunksSent`, `chunksDropped`, `errors`, `queued`. |
+| `tracer.flush()` | Sends what is queued now; never rejects. |
+
+`opts`: `resource` (default: the name), `type` (`web`, `db`, `cache`, `queue`, `http`, `worker`,
+`custom`; anything else becomes `custom`), `service` (default: `init`'s; a span in another
+service is `_top_level`), `childOf` (a span, a context, or `null` to force a new root), `tags`.
+
+Span methods: `setTag`, `setMetric`, `setResource`, `setError`, `finish` (idempotent),
+`context()`. Everything is chainable where it returns anything and none of it throws.
+
+### 10.3 How it works
+
+- **Context** is an `AsyncLocalStorage` kept on `globalThis[Symbol.for("ozy")]`, so two copies
+  of the package share one context.
+- **Ids** come from `crypto.randomBytes` (128-bit trace, 64-bit span, lowercase hex, never
+  zero), drawn from a 4 KiB pool to avoid one call per span.
+- **Time.** `start` is wall-clock microseconds, `duration` comes from `process.hrtime`. The wall
+  start is derived from one (wall, monotonic) anchor so it has real microsecond resolution, and
+  the anchor is re-taken when the two clocks disagree by more than a second (the monotonic clock
+  pauses while a laptop sleeps).
+- **Errors.** A thrown or rejected error sets `error=1`, `error.type`, `error.message`,
+  `error.stack`, and is re-thrown as the same object.
+- **Buffering.** Finished spans collect in a per-trace buffer. When the local root finishes,
+  the buffer goes to the writer as one chunk. A trace past 500 finished spans flushes a partial
+  chunk; a span that finishes after its root goes out as a late chunk. Every chunk's first span
+  carries `_sampling_priority`.
+- **`_top_level=1`** is set on a span whose parent is absent or in another service.
+- **Head sampling** is decided once at the trace root with exactly the §B algorithm, in `BigInt`
+  (`low64(trace_id) * 1111111111111111111 mod 2^64 < rate * 2^64`), so Node, Python and Go agree
+  on every trace id (`sdk/node/test/trace-wire.test.ts` checks all of
+  `pkg/wire/testdata/traces/sampling.json`). The rate is `OZY_TRACE_SAMPLE_RATE`, replaced per
+  service by the agent's `rate_by_service` answer (key `service:<name>,env:<env>`). A trace that
+  continues an extracted context inherits the upstream priority. **An unsampled trace is still
+  sent** with priority 0: the agent needs every span for its request statistics.
+- **Normalization.** The SDK applies the agent's own limits before sending (resource and meta
+  values 5000 bytes on a rune boundary, 100 meta and 50 metrics entries, unknown type to
+  `custom`, service and name 100 bytes, non-finite metrics dropped), so it never sends a span
+  the agent would refuse whole.
+
+### 10.4 The writer
+
+A bounded queue of 1000 chunks (**drop-oldest**, counted in `chunksDropped`); a flush every
+1 s (a timer armed by the first queued chunk, `unref`'d) or at 100 chunks; one request in
+flight; `POST http://<agent host>:<OZY_TRACE_PORT>/v1/traces` with a 2 s timeout and **no
+retries** (a retry holds spans in memory exactly when things are already slow); requests are
+split to stay under 8 MiB. It uses `node:http`, not `fetch`, so the fetch integration never
+traces the tracer. The socket is `unref`'d; the only time the writer holds the event loop is
+the exit flush on `beforeExit`, for at most 1 s. A script that traces and exits delivers its
+last trace; a hung agent cannot delay exit by more than that second. (Tested in a real child
+process in `writer.test.ts`.) After `process.exit()` nothing can be sent: `exit` allows no I/O.
+Await `tracer.flush()` first if you need the last spans.
+
+### 10.5 Integrations
+
+Every integration implements the public `Integration` interface
+(`name`, `isAvailable()`, `patch()`, `unpatch()`), is registered with
+`registerIntegration()`, and uses **only the public tracer API**, so an outside integration
+has the same power as the built-in ones. `init({ integrations: ["fetch"] })` patches by name;
+`patchIntegrations()` / `unpatchIntegrations()` do it by hand.
+
+| Integration | Use | Span |
+|---|---|---|
+| `next` | `withTelemetry(handler, { route? })` wraps an App Router route handler; `traceRoute(req, routeHint, fn)` is the primitive it is built on, for an app that already has a single door for its handlers. | `http.request`, type `web`, resource `"GET /api/comics/:id"` from the path normalizer (or `routeHint`), `http.method`, `http.route`, `http.url` (no query), `http.status_code`. 5xx marks it failed; a throw is recorded as 500 and re-thrown. Continues a trace from `x-ozy-*` headers. |
+| `sqlite` | `instrumentSqlite(db)` wraps `prepare` on the better-sqlite3 `Database` prototype so each statement's `run/get/all/iterate` is timed. | `sqlite.query`, type `db`, resource = statement source, `db.rowcount` for `run`. **Only inside an active trace** (no orphan roots from boot-time work). Parameters are never read, so they cannot be recorded; a test plants a sentinel value and scans every payload. A throwing statement marks the span and re-throws unchanged. `iterate()` ends its span when the iterator finishes or is abandoned. |
+| `fetch` | `instrumentFetch({ propagateTo: ["api.internal", "*.corp.test"] })` wraps `globalThis.fetch` once. | `http.client`, type `http`, resource `"GET host"`, `http.url` without query or credentials. Only inside an active trace. Propagation headers go **only** to allow-listed hosts (host, host:port or `*.suffix`; default none, so a third party never sees your trace ids). It wraps whatever `fetch` is at that moment, so Next's own patch chain stays intact; a second call (or copy) only updates the allow-list; `Response` identity, rejections and abort behaviour are untouched. The span ends when headers arrive, not when the body is read. |
+| `winston` | `traceFormat()` in `winston.format.combine(...)` (or `traceFormat(winston.format)`). | none: adds `trace_id` / `span_id` of the active span to each log entry. winston is not a dependency; the format is built structurally. |
+
+For `next`, `fetch` and `winston` the SDK wraps explicitly; `unpatch()` on `next` and `winston`
+only switches them off. `sqlite.unpatch()` restores every prototype it wrapped.
+
+Next.js sketch:
+
+```ts
+// instrumentation.ts
+import { init, instrumentFetch } from "ozy";
+export function register() {
+  init({ service: "web", env: "dev" });
+  instrumentFetch({ propagateTo: ["image-service.internal"] });
+}
+// app/api/comics/[id]/route.ts
+import { withTelemetry } from "ozy";
+export const GET = withTelemetry(async (req, ctx) => Response.json(await load(ctx)), { route: "/api/comics/[id]" });
+```
+
+List the package in `serverExternalPackages` so exactly one instance loads (state on
+`globalThis` is the second line of defence).
+
+**Writing your own integration:**
+
+```ts
+import { registerIntegration, tracer, type Integration } from "ozy";
+const redis: Integration = {
+  name: "redis",
+  isAvailable: () => { try { require.resolve("ioredis"); return true; } catch { return false; } },
+  patch() { /* wrap a method; call tracer.trace("redis.command", { resource: cmd, type: "cache" }, …) */ },
+  unpatch() { /* restore it */ },
+};
+registerIntegration(redis);
+```
+
+### 10.6 Why explicit wrapping, not a require hook
+
+dd-trace patches libraries by hooking `require` (via `require-in-the-middle`, and
+`import-in-the-middle` for ESM). That does not work for a Next.js app: Next bundles server
+code, so the modules an app imports are already inlined into bundles and the hook never sees
+them; reaching into Next's internals instead would break with every minor release. This SDK
+therefore has **no auto-patcher**. An app wraps the few seams it owns (its route handlers, its
+database handle, `fetch`) explicitly, which also makes it obvious in the code what is traced.
+Hitting this wall is part of the lesson; the milestone notes tell the story.
+
+### 10.7 Overhead
+
+Measured with `scripts/bench-trace.mjs` (`npm run build`, then
+`node --expose-gc --max-semi-space-size=256 scripts/bench-trace.mjs`); no budget is set, the
+numbers are recorded so a regression is visible. See `docs/notes/M5.md` for the run recorded
+with the milestone.
+
+Run on an Apple-silicon laptop, Node 25.8 (the package requires 22+), medians of 200 slices
+of 500 calls; time is the synchronous cost the request pays, allocation is heap growth per span
+including the writer's serialized chunk (approximate: single batch, no GC):
+
+| Shape | disabled | enabled, unsampled | enabled, sampled |
+|---|---|---|---|
+| single-span trace (root) | 0.01 us, ~90 B | 0.88 us, ~4.5 KB | 0.87 us, ~4.6 KB |
+| 10-span trace, per span | 0.01 us, ~110 B | 0.55 us, ~2.5 KB | 0.55 us, ~2.5 KB |
+
+Unsampled costs the same as sampled by design: an unsampled trace is still built and sent
+(priority 0) because the agent needs every span for its statistics. The saving from a low
+sample rate happens in the agent and store, not in the SDK.
+
+### 10.8 Tracing safety guarantees
+
+| Guarantee | How |
+|---|---|
+| Disabled means inert | No agent host (or `OZY_TRACE_ENABLED=false`): spans are no-ops, callbacks run, no timer, socket or listener exists. |
+| Never throws | Span bookkeeping is wrapped; the callback runs whatever happens. |
+| Your errors stay yours | A thrown or rejected error is re-thrown as the same object. |
+| Never keeps the process alive | The flush timer and request socket are `unref`'d; the exit flush is capped at 1 s. |
+| Bounded memory | 1000 queued chunks, 500 finished spans per trace before a partial flush. |
+| No secrets | SQL parameters are never read; URLs are recorded without query or credentials; headers are only injected for allow-listed hosts. |
+| Two copies of the package | Runtime, async context and the fetch wrapper's record live on `globalThis`; a second copy shares them. |
+
+### Notes added in review
+
+- `traceRoute` treats Next's control-flow throws (`redirect()`, `notFound()`, recognised by their
+  `digest`) as the status they stand for (307, 404, ...), not as a failed 500: the span carries that
+  status, no error, and the error is rethrown unchanged.
+- A span made by another loaded copy of the package is recognised as a parent by a brand
+  (`Symbol.for("ozy.span")`), not `instanceof`, so two copies (Next dev) continue one trace.

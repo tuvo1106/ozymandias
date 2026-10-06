@@ -1,3 +1,5 @@
+import { Link } from "react-router";
+import { traceLink } from "../../lib/apmState";
 import type { LogEntry } from "../../lib/logsApi";
 import { flattenAttrs } from "../../lib/logsView";
 
@@ -45,10 +47,9 @@ export function LogDetail({ log, onClose, onPick, onToggleColumn, columns }: Log
           <div className="flex gap-2">
             <dt className="w-24 shrink-0 text-zinc-500">trace_id</dt>
             <dd className="break-all">
-              {log.trace_id}{" "}
-              <span className="text-xs text-zinc-500" title="Traces arrive with APM (M5)">
-                (trace view: coming in M5)
-              </span>
+              <Link to={traceLink(log.trace_id)} className="text-violet-700 hover:underline dark:text-violet-300">
+                {log.trace_id}
+              </Link>
             </dd>
           </div>
         )}

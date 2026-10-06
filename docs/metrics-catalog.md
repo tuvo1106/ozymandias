@@ -59,6 +59,15 @@ interval's increase.
 | `ozy.agent.logs.rejected` | counter | logs | — | agent | Logs ozyd refused one by one (bad timestamp, status, …); resending cannot fix them |
 | `ozy.agent.logs.batches_refused` | counter | batches | — | agent | Whole batches ozyd refused as malformed or too large, dropped rather than retried forever |
 | `ozy.agent.logs.send_errors` | counter | requests | — | agent | Failed sends (network, 429, 5xx); the lines are read again |
+| `ozy.agent.traces.spans_received` | counter | spans | — | agent | Valid spans accepted by the trace intake |
+| `ozy.agent.traces.spans_rejected` | counter | spans | — | agent | Spans refused one by one (bad ids, negative duration, start not in microseconds, …) |
+| `ozy.agent.traces.chunks_received` | counter | chunks | — | agent | Chunks (one trace's spans from one process) accepted |
+| `ozy.agent.traces.chunks_kept` | counter | chunks | `reason` (priority, error, rare) | agent | Chunks forwarded to ozyd, by the sampler that kept them |
+| `ozy.agent.traces.chunks_dropped` | counter | chunks | — | agent | Chunks no sampler kept; their spans still counted in the trace.* statistics |
+| `ozy.agent.traces.requests_busy` | counter | requests | — | agent | Requests answered 429 because 8 decodes were already running; the SDK drops that chunk |
+| `ozy.agent.traces.requests_invalid` | counter | requests | — | agent | Requests refused whole (not a traces payload, bad gzip, over the body limit) |
+| `ozy.agent.traces.stats_spans` | counter | spans | — | agent | Spans that fed the RED statistics (entry or measured spans) |
+| `ozy.agent.traces.stats_folded` | counter | spans | — | agent | Statistics folded into `_other_` because a service, resource or span-name cap was reached |
 | `ozy.agent.logs.lines` | counter | lines | — | agent | Lines read from files and containers |
 | `ozy.agent.logs.emitted` | counter | logs | — | agent | Logs the pipeline produced |
 | `ozy.agent.logs.excluded` | counter | lines | — | agent | Lines dropped by `exclude_at_match` |
@@ -90,6 +99,8 @@ interval's increase.
 | `ozy.intake.points_accepted` | counter | points | — | ozyd | Points stored |
 | `ozy.intake.logs_accepted` | counter | logs | — | ozyd | Logs stored by `/v1/logs` |
 | `ozy.intake.logs_rejected` | counter | logs | — | ozyd | Logs refused, per reason in the response's `errors` |
+| `ozy.intake.spans_accepted` | counter | spans | — | ozyd | Spans stored by POST /v1/traces |
+| `ozy.intake.spans_rejected` | counter | spans | — | ozyd | Spans refused one by one (bad ids, negative duration, start not in microseconds, …) |
 | `ozy.logstore.streams` | gauge | streams | — | ozyd | Distinct label sets (service, source, host, env, status) the log store holds |
 | `ozy.logstore.chunks` | gauge | files | — | ozyd | Chunk files: one per stream per UTC day |
 | `ozy.logstore.entries` | gauge | logs | — | ozyd | Logs in sealed blocks |
@@ -99,6 +110,14 @@ interval's increase.
 | `ozy.logstore.compressed_bytes` | gauge | bytes | — | ozyd | Their size on disk; `raw_bytes / compressed_bytes` is the compression ratio |
 | `ozy.logstore.bloom_bytes` | gauge | bytes | — | ozyd | The per-block bloom filters, in addition to the above |
 | `ozy.logstore.streams_folded` | gauge | logs | — | ozyd | Logs filed under `_overflow` because the store was at `logs.max_streams`. Non-zero means a label (usually `service`) is taking unbounded values |
+| `ozy.tracestore.spans_appended` | counter | spans | — | ozyd | Spans stored |
+| `ozy.tracestore.entries_indexed` | counter | spans | — | ozyd | Entry spans written to the search indexes |
+| `ozy.tracestore.edges_recorded` | counter | edges | — | ozyd | Service-to-service calls added to the service map |
+| `ozy.tracestore.edges_unresolved` | counter | edges | — | ozyd | Cross-service entry spans whose parent span never arrived within the TTL, so no edge was recorded |
+| `ozy.tracestore.edges_dropped` | counter | edges | — | ozyd | Children not parked because 100000 were already waiting for a parent |
+| `ozy.tracestore.edges_pending` | gauge | edges | — | ozyd | Children currently waiting for their parent span |
+| `ozy.tracestore.traces_swept` | counter | traces | — | ozyd | Traces deleted by retention |
+| `ozy.tracestore.disk_bytes` | gauge | bytes | — | ozyd | Disk used by the trace store |
 | `ozy.loghub.subscribers` | gauge | tails | — | ozyd | Open live tails |
 | `ozy.loghub.dropped` | counter | logs | — | ozyd | Logs a live tail lost because its reader was too slow |
 | `ozy.store.series` | gauge | series | `store` | ozyd | Series in the metric store |

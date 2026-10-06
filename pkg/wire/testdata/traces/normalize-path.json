@@ -1,0 +1,35 @@
+{
+  "_comment": [
+    "Path normalizer vectors (docs/wire-protocol.md, 'Path normalizer'). Go (wire.NormalizePath), Python and Node load this",
+    "same file. A segment becomes :id if it is all digits, a UUID, hex of 12+ characters, or nanoid-like (16+ characters of",
+    "[A-Za-z0-9_-] containing a digit). The query string and fragment are dropped, at most 8 segments are kept."
+  ],
+  "cases": [
+    {"in": "/", "out": "/"},
+    {"in": "", "out": "/"},
+    {"in": "/api/comics", "out": "/api/comics"},
+    {"in": "/api/comics/42", "out": "/api/comics/:id"},
+    {"in": "/api/comics/42/pages/7", "out": "/api/comics/:id/pages/:id"},
+    {"in": "/api/comics/42?page=2#top", "out": "/api/comics/:id"},
+    {"in": "/problems/two-sum", "out": "/problems/two-sum"},
+    {"in": "/u/550e8400-e29b-41d4-a716-446655440000/profile", "out": "/u/:id/profile"},
+    {"in": "/u/550E8400-E29B-41D4-A716-446655440000", "out": "/u/:id"},
+    {"in": "/blob/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b", "out": "/blob/:id"},
+    {"in": "/blob/deadbeef", "out": "/blob/deadbeef"},
+    {"in": "/blob/DEADBEEFCAFE", "out": "/blob/:id"},
+    {"in": "/s/V1StGXR8_Z5jdHi6B-myT", "out": "/s/:id"},
+    {"in": "/s/abcdefghijklmnop", "out": "/s/abcdefghijklmnop"},
+    {"in": "/s/abcdefghijklmno1", "out": "/s/:id"},
+    {"in": "/s/abcdefghijklmn1", "out": "/s/abcdefghijklmn1"},
+    {"in": "/s/abcdefghijklmnop1", "out": "/s/:id"},
+    {"in": "/a/b/c/d/e/f/g/h/i/j", "out": "/a/b/c/d/e/f/g/h"},
+    {"in": "/a/1/b/2/c/3/d/4/e/5", "out": "/a/:id/b/:id/c/:id/d/:id"},
+    {"in": "/orders/", "out": "/orders/"},
+    {"in": "//double", "out": "//double"},
+    {"in": "/v2/items", "out": "/v2/items"},
+    {"in": "/2024/10/05", "out": "/:id/:id/:id"},
+    {"in": "/file.tar.gz", "out": "/file.tar.gz"},
+    {"in": "/x/0", "out": "/x/:id"},
+    {"in": "/é/12345", "out": "/é/:id"}
+  ]
+}

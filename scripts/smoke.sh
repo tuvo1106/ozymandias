@@ -767,4 +767,37 @@ check "the histogram answers"              body_has "$OZY_URL/api/v1/logs/aggreg
 check "the log store reports itself"       body_has "$OZY_URL/debug/vars" 'ozy.logstore'
 check "the Log Explorer deep link is served" body_has "$OZY_URL/logs?q=status%3Aerror" '<div id="root">'
 
+# --- M5: traces ----------------------------------------------------------------
+# A canned three-span trace across two services, posted to the agent the way an
+# SDK would: through the receiver, the concentrator, the samplers, the forwarder,
+# ozyd's intake and the store. The trace id is unique to this run.
+TRACE_ID=$(python3 -c 'import uuid; print(uuid.uuid4().hex)')
+SVC_A="smoke-api-$RUN_ID"; SVC_B="smoke-worker-$RUN_ID"
+trace_body() {
+  python3 - "$TRACE_ID" "$SVC_A" "$SVC_B" <<'PY'
+import json, sys, time
+tid, a, b = sys.argv[1:4]
+now = int(time.time() * 1e6) - 50_000
+def span(sid, parent, svc, name, res, off, dur, top, typ="web"):
+    return {"trace_id": tid, "span_id": sid, "parent_id": parent, "service": svc, "name": name, "resource": res,
+            "type": typ, "start": now + off, "duration": dur, "error": 0,
+            "meta": {"env": "smoke"}, "metrics": {"_top_level": top, "_sampling_priority": 1} if top or sid == "0000000000000001" else {"_sampling_priority": 1}}
+print(json.dumps({"tracer": {"lang": "smoke"}, "traces": [[
+    span("0000000000000001", None, a, "http.request", "POST /submit", 0, 30_000, 1),
+    span("0000000000000002", "0000000000000001", a, "postgres.query", "select 1", 5_000, 2_000, 0, "db"),
+    span("0000000000000003", "0000000000000001", b, "arq.job", "judge", 20_000, 8_000, 1, "worker"),
+]]}))
+PY
+}
+check "the agent accepts the trace"        sh -c "curl -fsS --max-time 5 -X POST $AGENT_URL/v1/traces -d '$(trace_body)' | grep -q '\"accepted\":3'"
+trace_spans() { curl -fsS --max-time 5 "$OZY_URL/api/v1/traces/$TRACE_ID" | python3 -c 'import json,sys; print(json.load(sys.stdin)["span_count"])'; }
+wait_trace() { local n i; for ((i = 0; i < 30; i++)); do n=$(trace_spans 2>/dev/null) || n=err; [[ $n == 3 ]] && return 0; sleep 1; done; echo "trace has $n spans after 30s, want 3" >&2; return 1; }
+check "all three spans are in the store"   wait_trace
+check "the search lists its entry span"    body_has "$OZY_URL/api/v1/traces?service=$SVC_A&env=smoke&from=0&to=$(( $(now_s) * 1000 + 3600000 ))" "$TRACE_ID"
+check "the service map has the edge"       body_has "$OZY_URL/api/v1/service-map?env=smoke&from=0&to=$(( $(now_s) * 1000 + 3600000 ))" "\"child\":\"$SVC_B\""
+wait_hits() { local i; for ((i = 0; i < 40; i++)); do body_has "$OZY_URL/api/v1/services?env=smoke&from=0&to=$(( $(now_s) * 1000 + 3600000 ))" "\"service\":\"$SVC_A\"" 2>/dev/null && return 0; sleep 1; done; return 1; }
+check "the service table has the RED row"  wait_hits
+check "the trace view deep link is served" body_has "$OZY_URL/traces/$TRACE_ID" '<div id="root">'
+check "the agent reports its trace metrics" body_has "$AGENT_URL/debug/vars" 'ozy.agent.traces'
+
 echo "smoke: $pass checks passed"
