@@ -173,7 +173,7 @@ describe("layoutTrace", () => {
     expect(byId(other.rects)("j").clamped).toBe(true);
   });
 
-  it("lays out 5000 spans in under 50ms", () => {
+  it("lays out 5000 spans in well under a second (linear, not quadratic)", () => {
     const spans: FlameSpan[] = [sp("0", null, 0, 1_000_000)];
     for (let i = 1; i < 5000; i++) spans.push(sp(String(i), String(Math.floor((i - 1) / 3)), (i * 37) % 900_000, 1000 + ((i * 13) % 5000)));
     layoutTrace(spans); // warm the JIT: the budget is for the steady state
@@ -181,7 +181,9 @@ describe("layoutTrace", () => {
     const l = layoutTrace(spans);
     const took = performance.now() - t;
     expect(l.rects).toHaveLength(5000);
-    expect(took).toBeLessThan(50);
+    // A guard against an accidental O(n^2) (which takes seconds), not a speed claim: ~10-50 ms measured,
+    // and a loaded CI machine moves that by 2x.
+    expect(took).toBeLessThan(500);
   });
 
   it("handles a 5000-deep chain without overflowing the stack", () => {
