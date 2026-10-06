@@ -20,7 +20,7 @@ func unfiltered(t testing.TB, cfg RedactConfig) (*Redactor, *Redactor) {
 		t.Fatal(err)
 	}
 	for i := range plain.text {
-		plain.text[i].need = nil
+		plain.text[i].need = needNone
 	}
 	return filtered, plain
 }
@@ -78,7 +78,7 @@ func TestRedactPrefilter_CoversEverySecretWord(t *testing.T) {
 	if len(words) < 15 {
 		t.Fatalf("only %d words expanded: the expansion is broken", len(words))
 	}
-	need := prefilter("kv-secret")
+	need := func(s string) bool { return needKV.ok(lowerInto(nil, s)) }
 	for _, w := range words {
 		if !need(w + "=x") {
 			t.Errorf("the key %q would be matched by the kv rules but its needle check says no", w)
@@ -91,25 +91,62 @@ func TestRedactPrefilter_CoversEverySecretWord(t *testing.T) {
 	}
 }
 
-func TestRedactPrefilter_NonASCIIStringsSkipTheFiltersAndStillRedact(t *testing.T) {
+// A secret word spelled with the two non-ASCII runes that fold to ASCII under
+// the rules' (?i) must still be found: the filters read a lowercase that maps them.
+func TestRedactPrefilter_FoldedNonASCIISpellingsStillRedact(t *testing.T) {
 	r, err := NewRedactor(RedactConfig{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A Kelvin sign (U+212A) folds to "k" under the rules' case-insensitive matching.
-	got, changed := r.String("api_\u212Aey=hunter2 ünïcode")
-	if !changed || strings.Contains(got, "hunter2") {
-		t.Fatalf("a non-ASCII line leaked a secret past the prefilter: %q", got)
+	for _, in := range []string{
+		"api_\u212Aey=hunter2 ünïcode", "pa\u017F\u017Fword=hunter2", "to\u212Aen: hunter2",
+		"AUTHORIZATION: bearer abc", "日本語 password=hunter2 emoji 😀", "\u017Fig=x https://a.test/?\u017Fig=hunter2",
+	} {
+		got, changed := r.String(in)
+		if !changed || strings.Contains(got, "hunter2") || strings.Contains(got, "abc") {
+			t.Errorf("%q leaked past the prefilter: %q", in, got)
+		}
+	}
+	// And plain non-ASCII text is not a reason to give up the filters: it is skipped, unchanged.
+	if got, changed := r.String("日本語のメッセージ 😀 ünïcode"); changed || got != "日本語のメッセージ 😀 ünïcode" {
+		t.Errorf("non-ASCII text without secrets changed: %q", got)
 	}
 }
 
-func TestLowerASCII(t *testing.T) {
-	for in, want := range map[string]string{"": "", "abc": "abc", "AbC-1": "abc-1"} {
-		if got, ok := lowerASCII(in); !ok || got != want {
-			t.Errorf("lowerASCII(%q) = %q, %v", in, got, ok)
+// Arbitrary strings over an alphabet built from the rules' own vocabulary: every
+// letter of every secret word in both cases, every member of the two fold orbits,
+// the separators and the structural characters. Where the fragment list above
+// tests realistic lines, this one reaches shapes nobody wrote down.
+func TestRedactPrefilter_AgreesWithThePlainRulesOnArbitraryText(t *testing.T) {
+	filtered, plain := unfiltered(t, RedactConfig{})
+	alphabet := []rune("abcdeghikmnoprstuyKS" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" + "\u212A\u017F" + "=:?&@.-_ \"'[]{}>,;/\\é日😀" + "0123456789")
+	words := []string{"password", "token", "secret", "api_key", "key", "authorization", "eyJ", "@", "cookie", "phone"}
+	rapid.Check(t, func(t *rapid.T) {
+		var b strings.Builder
+		for i := 0; i < rapid.IntRange(0, 12).Draw(t, "n"); i++ {
+			if rapid.Bool().Draw(t, "word") {
+				w := rapid.SampledFrom(words).Draw(t, "w")
+				if rapid.Bool().Draw(t, "fold") {
+					w = strings.NewReplacer("k", "\u212A", "s", "\u017F").Replace(w)
+				}
+				b.WriteString(w)
+			} else {
+				b.WriteRune(rapid.SampledFrom(alphabet).Draw(t, "r"))
+			}
 		}
-	}
-	if _, ok := lowerASCII("é"); ok {
-		t.Error("a non-ASCII string must not be trusted to the ASCII filters")
+		in := b.String()
+		got, gc := filtered.String(in)
+		want, wc := plain.String(in)
+		if got != want || gc != wc {
+			t.Fatalf("input %q\n filtered: %q (%v)\n plain:    %q (%v)", in, got, gc, want, wc)
+		}
+	})
+}
+
+func TestLowerInto(t *testing.T) {
+	for in, want := range map[string]string{"": "", "abc": "abc", "AbC-1": "abc-1", "\u212Aey": "key", "\u017Fig": "sig", "é日": "é日", "\xe2\x84": "\xe2\x84", "\xc5": "\xc5"} {
+		if got := string(lowerInto(nil, in)); got != want {
+			t.Errorf("lowerInto(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

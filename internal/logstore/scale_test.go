@@ -22,7 +22,7 @@ func TestScale_OneGiBOfRawLogs(t *testing.T) {
 		t.Skip("set OZY_SCALE_GIB=1 to run")
 	}
 	target := int64(gib * (1 << 30))
-	run := func(blooms bool) {
+	run := func(t *testing.T, blooms bool) {
 		saved := newChunkVersion
 		if !blooms {
 			newChunkVersion = 1
@@ -50,7 +50,7 @@ func TestScale_OneGiBOfRawLogs(t *testing.T) {
 				status = "warn"
 			}
 			msg := fmt.Sprintf("%s %s %d in %dms for user%d", []string{"GET", "POST", "PUT"}[rng.IntN(3)], routes[rng.IntN(len(routes))], 200+rng.IntN(300), rng.IntN(900), rng.IntN(5000))
-			if n%2_000_000 == 777 {
+			if n%1_000_000 == 777 {
 				tok := fmt.Sprintf("incident-%05d", rng.IntN(100000))
 				msg += " " + tok
 				rare = append(rare, tok)
@@ -88,10 +88,12 @@ func TestScale_OneGiBOfRawLogs(t *testing.T) {
 		timeIt("label only: service:billing status:error", "service:billing status:error")
 		timeIt("label + number: @ms:>890", "service:web-api @ms:>890")
 		timeIt("free text, common: \"cart\"", "cart")
-		timeIt("free text, rare id", rare[0])
+		if len(rare) > 0 {
+			timeIt("free text, rare id", rare[0])
+		}
 		timeIt("free text, absent", "zzz-not-there-zzz")
 		timeIt("attr value, one request id", "@user:user4999 incident")
 	}
-	t.Run("v1-no-filters", func(t *testing.T) { run(false) })
-	t.Run("v2-filters", func(t *testing.T) { run(true) })
+	t.Run("v1-no-filters", func(t *testing.T) { run(t, false) })
+	t.Run("v2-filters", func(t *testing.T) { run(t, true) })
 }

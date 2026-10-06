@@ -33,7 +33,7 @@ export function Histogram({ data, onSelect }: HistogramProps) {
     <div
       role="img"
       aria-label={`Histogram of ${data.buckets.length} time buckets`}
-      className="relative flex h-20 items-end gap-px"
+      className="relative flex h-20 items-end gap-px overflow-hidden"
       style={{ width: "100%" }}
     >
       {data.buckets.map((b) => {
@@ -47,7 +47,7 @@ export function Histogram({ data, onSelect }: HistogramProps) {
             aria-label={`${new Date(b.ts).toISOString()} ${n} logs`}
             onClick={() => onSelect(b.ts, b.ts + data.interval_ms - 1)}
             className="absolute bottom-0 flex flex-col-reverse justify-start hover:opacity-80"
-            style={{ left: `${left}%`, width: `${Math.max(100 / slots - 0.1, 0.5)}%`, height: `${(n / max) * 100}%` }}
+            style={{ left: `${left}%`, width: `${Math.max(100 / slots - 0.1, 0.05)}%`, minWidth: 1, height: `${(n / max) * 100}%` }}
           >
             {Object.entries(b.counts)
               .sort(([a], [c]) => rank(a) - rank(c))
