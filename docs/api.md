@@ -46,6 +46,20 @@ Each entry has `name`, `type` (`counter` | `gauge`), `tags` (sorted
 `key:value` strings) and `value`. `value` is `null` for a non-finite gauge.
 Entries are sorted by name, then tags.
 
+## Agent only
+
+### `POST /v1/traces` (agent, :8126)
+
+Trace intake from the SDKs' tracers. Normative in
+[wire-protocol.md §B](wire-protocol.md#b-traces-sdk--agent-post-8126v1traces). JSON (optionally
+gzip'd) `{"tracer":{…},"traces":[[span,…],…]}`; `200` with
+`{"rate_by_service":{…},"accepted":n,"rejected":n}`. A bad span is refused and the rest kept;
+`400` for a body that is not a traces payload; `413` over `traces.max_body_bytes`; `429` when 8
+bodies are already being decoded (the SDK drops that chunk; traces are best-effort). Every valid
+span feeds the `trace.*` statistics before any sampling; the response tells the SDK what head
+rate to use next. The route is absent when `traces.enabled` is false. ozyd's route of the same
+path is the agent → ozyd hop (§F), below.
+
 ## ozyd only
 
 ### `GET /` (web UI)

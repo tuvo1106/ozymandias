@@ -59,6 +59,15 @@ interval's increase.
 | `ozy.agent.logs.rejected` | counter | logs | — | agent | Logs ozyd refused one by one (bad timestamp, status, …); resending cannot fix them |
 | `ozy.agent.logs.batches_refused` | counter | batches | — | agent | Whole batches ozyd refused as malformed or too large, dropped rather than retried forever |
 | `ozy.agent.logs.send_errors` | counter | requests | — | agent | Failed sends (network, 429, 5xx); the lines are read again |
+| `ozy.agent.traces.spans_received` | counter | spans | — | agent | Valid spans accepted by the trace intake |
+| `ozy.agent.traces.spans_rejected` | counter | spans | — | agent | Spans refused one by one (bad ids, negative duration, start not in microseconds, …) |
+| `ozy.agent.traces.chunks_received` | counter | chunks | — | agent | Chunks (one trace's spans from one process) accepted |
+| `ozy.agent.traces.chunks_kept` | counter | chunks | `reason` (priority, error, rare) | agent | Chunks forwarded to ozyd, by the sampler that kept them |
+| `ozy.agent.traces.chunks_dropped` | counter | chunks | — | agent | Chunks no sampler kept; their spans still counted in the trace.* statistics |
+| `ozy.agent.traces.requests_busy` | counter | requests | — | agent | Requests answered 429 because 8 decodes were already running; the SDK drops that chunk |
+| `ozy.agent.traces.requests_invalid` | counter | requests | — | agent | Requests refused whole (not a traces payload, bad gzip, over the body limit) |
+| `ozy.agent.traces.stats_spans` | counter | spans | — | agent | Spans that fed the RED statistics (entry or measured spans) |
+| `ozy.agent.traces.stats_folded` | counter | spans | — | agent | Statistics folded into `_other_` because a service, resource or span-name cap was reached |
 | `ozy.agent.logs.lines` | counter | lines | — | agent | Lines read from files and containers |
 | `ozy.agent.logs.emitted` | counter | logs | — | agent | Logs the pipeline produced |
 | `ozy.agent.logs.excluded` | counter | lines | — | agent | Lines dropped by `exclude_at_match` |

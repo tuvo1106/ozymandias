@@ -53,7 +53,7 @@ type Options struct {
 type Forwarder struct {
 	opts Options
 	// The two intake hops. See [endpoint] on why they share a queue.
-	series, sketches endpoint
+	series, sketches, spans endpoint
 
 	mu     sync.Mutex
 	queue  []*payload // FIFO by enqueue order
@@ -131,6 +131,7 @@ func New(opts Options) *Forwarder {
 		opts:     opts,
 		series:   endpoint{url: opts.URL + "/v1/series", key: "series"},
 		sketches: endpoint{url: opts.URL + "/v1/sketches", key: "sketches"},
+		spans:    endpoint{url: opts.URL + "/v1/traces", key: "spans"},
 		wake:     make(chan struct{}, 1),
 		done:     make(chan struct{}),
 		ctx:      ctx,
@@ -167,6 +168,19 @@ func (f *Forwarder) SubmitSketches(sketches []wire.SketchSeries) {
 	if err != nil {
 		f.opts.Logger.Error("forwarder: encoding sketches", "err", err)
 		f.dropped.Add(int64(len(sketches)))
+		return
+	}
+	f.enqueue(payloads)
+}
+
+// SubmitSpans queues kept spans for POST /v1/traces (§F). They ride the same
+// queue as series, so an ozyd outage drops the oldest of everything together,
+// and a span batch cannot starve the metrics of memory or the reverse.
+func (f *Forwarder) SubmitSpans(spans []wire.Span) {
+	payloads, err := encode(f, f.spans, spans, func(s *wire.Span) string { return s.Name })
+	if err != nil {
+		f.opts.Logger.Error("forwarder: encoding spans", "err", err)
+		f.dropped.Add(int64(len(spans)))
 		return
 	}
 	f.enqueue(payloads)
