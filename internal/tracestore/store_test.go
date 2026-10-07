@@ -496,6 +496,9 @@ func TestEdges_DuplicatesInOneBatchAndConcurrentResendsCountOnce(t *testing.T) {
 	if e := must(s.ServiceEdges(ctx, "", 0, t0.UnixMicro())); len(e) != 1 || e[0].Calls != 2 {
 		t.Errorf("concurrent resends of one batch: %+v, want 2 calls in all", e)
 	}
+	if !s.exists(entryKey("dev", "worker", again[1].Start, mustID(tid(2), traceLen), mustID(sid(2), spanLen))) {
+		t.Error("the entry key is missing after concurrent resends")
+	}
 }
 
 func TestServicesIn_OnlyThoseWithEntriesInTheWindow(t *testing.T) {
@@ -535,39 +538,56 @@ func TestEdges_FailedCommitKeepsParkedChildrenWaiting(t *testing.T) {
 	}
 }
 
-// A duplicate that arrives while a call holds the reservation must not publish the entry key:
-// if the claimant's commit then fails, its retry would find the key, take the call for counted,
-// and the edge would be lost for good. Deterministic: the duplicate runs inside the claimant,
-// between its reservation and its look.
-func TestEdges_ClaimantCommitFailsAfterADuplicateCommitted(t *testing.T) {
+// A duplicate that arrives while a call holds the reservation must neither publish the entry key
+// nor report success if the claimant then fails: its retry would find the key, take the call for
+// counted, and the edge would be lost for good; or the duplicate would be acknowledged for an
+// entry nobody wrote. Deterministic: seams stop the claimant between its reservation and its look
+// until the duplicate has skipped past it.
+func TestEdges_ClaimantCommitFailsAfterADuplicateSkippedPastIt(t *testing.T) {
 	s, _ := open(t, nil)
 	batch := []wire.Span{sp(1, 1, "api", 0, time.Second), sp(1, 2, "worker", 0, time.Second, child(1))}
+	// The duplicate's commit (the first: the claimant is parked in its hook) succeeds; the
+	// claimant's fails.
+	dupCommitted := make(chan struct{})
 	commits := 0
 	s.failCommit = func() error {
 		commits++
-		if commits == 2 { // the claimant's: the duplicate's, inside the hook, is the first
-			return errors.New("disk full")
+		if commits == 1 {
+			close(dupCommitted)
+			return nil
 		}
-		return nil
+		return errors.New("disk full")
 	}
+	deferred := make(chan struct{})
+	var once sync.Once
+	s.afterDefer = func() { once.Do(func() { close(deferred) }) }
+	dupErr := make(chan error, 1)
 	reserved := 0
 	s.afterReserve = func() {
 		reserved++
 		if reserved != 2 { // the worker's reservation, after the api span's
 			return
 		}
-		if err := s.Append(ctx, batch); err != nil {
-			t.Errorf("duplicate: %v", err)
-		}
+		go func() { dupErr <- s.Append(ctx, batch) }()
+		<-deferred
+		<-dupCommitted
 	}
 	if err := s.Append(ctx, batch); err == nil {
 		t.Fatal("the claimant's commit should have failed")
 	}
-	s.failCommit, s.afterReserve = nil, nil
+	if err := <-dupErr; err == nil {
+		t.Error("the duplicate reported success although the claimant failed")
+	}
+	s.failCommit, s.afterReserve, s.afterDefer = nil, nil, nil
 	if err := s.Append(ctx, batch); err != nil {
 		t.Fatal(err)
 	}
 	if e := must(s.ServiceEdges(ctx, "", 0, t0.UnixMicro())); len(e) != 1 || e[0].Calls != 1 {
 		t.Errorf("edges after the retry: %+v, want one call", e)
 	}
+	if !s.exists(entryKey("dev", "worker", batch[1].Start, mustID(tid(1), traceLen), mustID(sid(2), spanLen))) {
+		t.Error("the entry key is missing after the retry")
+	}
 }
+
+func mustID(s string, n int) []byte { b, _ := decodeID(s, n); return b }

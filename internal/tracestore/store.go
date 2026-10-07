@@ -58,6 +58,13 @@ type Summary struct {
 	StatusCode int    `json:"status_code,omitempty"`
 }
 
+// claim is one call's reservation of an entry key. ok is written before done is closed, so a
+// waiter that has received from done may read it.
+type claim struct {
+	done chan struct{}
+	ok   bool
+}
+
 // Store keeps spans in Pebble. Safe for concurrent use.
 //
 // The mental model is one primary table (every span, by trace id) and a few
@@ -89,13 +96,15 @@ type Store struct {
 	// inflight holds the entry keys of Appends that have decided about their edges
 	// but not yet committed, so two concurrent resends of one batch cannot both
 	// count the same call.
-	inflight map[string]struct{}
+	inflight map[string]*claim
 
 	// failCommit, if set (tests only), is asked before each commit; a non-nil error is
 	// returned instead of committing.
 	failCommit func() error
 	// afterReserve, if set (tests only), runs right after an entry key is reserved.
 	afterReserve func()
+	// afterDefer, if set (tests only), runs when a call skips past another call's reservation.
+	afterDefer func()
 
 	closed atomic.Bool
 
@@ -142,7 +151,7 @@ func Open(opts Options) (*Store, error) {
 	r := opts.Registry
 	s := &Store{
 		db: db, retention: opts.Retention, pendTTL: opts.PendingTTL, noSync: opts.NoSync, clock: opts.Clock, log: opts.Logger,
-		enc: enc, dec: dec, known: map[string]struct{}{}, pending: map[string][]pendingEdge{}, inflight: map[string]struct{}{},
+		enc: enc, dec: dec, known: map[string]struct{}{}, pending: map[string][]pendingEdge{}, inflight: map[string]*claim{},
 		spansAppended:  r.Counter("ozy.tracestore.spans_appended"),
 		entriesIndexed: r.Counter("ozy.tracestore.entries_indexed"),
 		edgesRecorded:  r.Counter("ozy.tracestore.edges_recorded"),
@@ -231,14 +240,24 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 	}
 
 	var newKnown []string
-	var claimed []string // entry keys this call reserved in s.inflight
-	defer func() {
+	own := map[string]*claim{} // entry keys this call reserved in s.inflight
+	var deferred []*claim      // other calls' reservations this call saw and skipped past
+	committed := false
+	released := false
+	release := func() {
+		if released {
+			return
+		}
+		released = true
 		s.mu.Lock()
-		for _, k := range claimed {
+		for k, c := range own {
+			c.ok = committed
+			close(c.done)
 			delete(s.inflight, k)
 		}
 		s.mu.Unlock()
-	}()
+	}
+	defer release()
 	var taken []edgeDelta // pending edges removed from the waiting map; put back if the commit fails
 	var takenKeys []string
 	var edges []edgeDelta
@@ -270,26 +289,37 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 		ek := entryKey(env, sp.Service, sp.Start, trace, span)
 		// Reserve first, then look: checking before reserving lets a concurrent resend
 		// slip in between another call's commit and its release and count the call again.
-		// A call that finds the key reserved does not write it: only the claimant publishes
-		// the key, together with its edge in one commit. Were a duplicate to write it, its
-		// commit could land before the claimant's look (so neither counts the edge), or
-		// the claimant's commit could fail after the duplicate's succeeded (so the retry
-		// finds the key and skips the edge). Both are pinned by tests.
+		// A call that finds the key reserved by another call does not write it: only the
+		// claimant publishes the key, together with its edge in one commit. Were a
+		// duplicate to write it, its commit could land before the claimant's look (so
+		// neither counts the edge), or the claimant's commit could fail after the
+		// duplicate's succeeded (so the retry finds the key and skips the edge). The
+		// duplicate then waits for the claimant before it reports success, and fails if
+		// the claimant did, so that the agent resends. The claimant-fails case is pinned
+		// by a test; the other is covered by the concurrent test only, which is
+		// probabilistic.
 		s.mu.Lock()
-		_, dup := s.inflight[string(ek)]
-		existed := dup
-		if !dup {
-			s.inflight[string(ek)] = struct{}{}
-			claimed = append(claimed, string(ek))
+		c, reserved := s.inflight[string(ek)]
+		_, mine := own[string(ek)]
+		if !reserved {
+			c = &claim{done: make(chan struct{})}
+			s.inflight[string(ek)] = c
+			own[string(ek)] = c
 		}
 		s.mu.Unlock()
-		if !dup {
+		claimant := !reserved
+		existed := reserved
+		if reserved && !mine {
+			deferred = append(deferred, c)
+			if s.afterDefer != nil {
+				s.afterDefer()
+			}
+		}
+		if claimant {
 			if s.afterReserve != nil {
 				s.afterReserve()
 			}
 			existed = s.exists(ek)
-		}
-		if !dup {
 			if err := b.Set(ek, val, nil); err != nil {
 				return err
 			}
@@ -312,7 +342,9 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 			}
 			newKnown = append(newKnown, vk)
 		}
-		s.entriesIndexed.Inc()
+		if claimant {
+			s.entriesIndexed.Inc()
+		}
 
 		if sp.ParentID != "" && !existed {
 			d := edgeDelta{env: env, child: sp.Service, hour: hourOf(sp.Start), err: sp.Error == 1, dur: sp.Duration}
@@ -362,6 +394,18 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 		}
 		s.park(parkedBack)
 		return fmt.Errorf("tracestore: committing: %w", err)
+	}
+	committed = true
+	release() // before waiting: two calls each waiting on the other's keys would otherwise deadlock
+	for _, c := range deferred {
+		select {
+		case <-c.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if !c.ok {
+			return errors.New("tracestore: a concurrent resend of this batch failed to commit; resend")
+		}
 	}
 	s.mu.Lock()
 	for _, k := range newKnown {
