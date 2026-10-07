@@ -485,11 +485,19 @@ func TestEdges_DuplicatesInOneBatchAndConcurrentResendsCountOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); _ = s.Append(ctx, again) }()
+		go func() {
+			defer wg.Done()
+			if err := s.Append(ctx, again); err != nil {
+				t.Errorf("append: %v", err)
+			}
+		}()
 	}
 	wg.Wait()
 	if e := must(s.ServiceEdges(ctx, "", 0, t0.UnixMicro())); len(e) != 1 || e[0].Calls != 2 {
 		t.Errorf("concurrent resends of one batch: %+v, want 2 calls in all", e)
+	}
+	if !s.exists(entryKey("dev", "worker", again[1].Start, mustID(tid(2), traceLen), mustID(sid(2), spanLen))) {
+		t.Error("the entry key is missing after concurrent resends")
 	}
 }
 
@@ -527,5 +535,111 @@ func TestEdges_FailedCommitKeepsParkedChildrenWaiting(t *testing.T) {
 	}
 	if e := must(s.ServiceEdges(ctx, "", 0, t0.UnixMicro())); len(e) != 1 || e[0].Calls != 1 {
 		t.Errorf("edges after the resend: %+v", e)
+	}
+}
+
+// A duplicate that arrives while a call holds the reservation must neither publish the entry key
+// nor report success if the claimant then fails: its retry would find the key, take the call for
+// counted, and the edge would be lost for good; or the duplicate would be acknowledged for an
+// entry nobody wrote. Deterministic: seams stop the claimant between its reservation and its look
+// until the duplicate has skipped past it.
+func TestEdges_ClaimantCommitFailsAfterADuplicateSkippedPastIt(t *testing.T) {
+	s, _ := open(t, nil)
+	batch := []wire.Span{sp(1, 1, "api", 0, time.Second), sp(1, 2, "worker", 0, time.Second, child(1))}
+	// The duplicate's commit (the first: the claimant is parked in its hook) succeeds; the
+	// claimant's fails.
+	dupCommitted := make(chan struct{})
+	commits := 0
+	s.failCommit = func() error {
+		commits++
+		if commits == 1 {
+			close(dupCommitted)
+			return nil
+		}
+		return errors.New("disk full")
+	}
+	deferred := make(chan struct{})
+	var once sync.Once
+	s.afterDefer = func() { once.Do(func() { close(deferred) }) }
+	dupErr := make(chan error, 1)
+	reserved := 0
+	s.afterReserve = func() {
+		reserved++
+		if reserved != 2 { // the worker's reservation, after the api span's
+			return
+		}
+		go func() { dupErr <- s.Append(ctx, batch) }()
+		waitFor(t, deferred, "the duplicate to skip past the claimant")
+		waitFor(t, dupCommitted, "the duplicate to commit")
+	}
+	if err := s.Append(ctx, batch); err == nil {
+		t.Fatal("the claimant's commit should have failed")
+	}
+	if err := <-dupErr; err == nil {
+		t.Error("the duplicate reported success although the claimant failed")
+	}
+	s.failCommit, s.afterReserve, s.afterDefer = nil, nil, nil
+	if err := s.Append(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	if e := must(s.ServiceEdges(ctx, "", 0, t0.UnixMicro())); len(e) != 1 || e[0].Calls != 1 {
+		t.Errorf("edges after the retry: %+v, want one call", e)
+	}
+	if !s.exists(entryKey("dev", "worker", batch[1].Start, mustID(tid(1), traceLen), mustID(sid(2), spanLen))) {
+		t.Error("the entry key is missing after the retry")
+	}
+}
+
+func mustID(s string, n int) []byte { b, _ := decodeID(s, n); return b }
+
+func waitFor(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// A duplicate that fails because its claimant did has still committed its own spans, so it must
+// have parked the edges that were waiting on a parent it has not seen: on the resend the child's
+// entry key exists, no edge is created, and the parked one would be gone for good.
+func TestEdges_DuplicateKeepsItsParkedEdgesWhenTheClaimantFails(t *testing.T) {
+	s, _ := open(t, nil)
+	claimantBatch := []wire.Span{sp(1, 1, "api", 0, time.Second)}
+	dupBatch := []wire.Span{sp(1, 1, "api", 0, time.Second), sp(3, 2, "worker", 0, time.Second, child(1))} // trace 3's parent never arrives
+	dupCommitted := make(chan struct{})
+	commits := 0
+	s.failCommit = func() error {
+		commits++
+		if commits == 1 {
+			close(dupCommitted)
+			return nil
+		}
+		return errors.New("disk full")
+	}
+	deferred := make(chan struct{})
+	var once sync.Once
+	s.afterDefer = func() { once.Do(func() { close(deferred) }) }
+	dupErr := make(chan error, 1)
+	var hooked sync.Once
+	s.afterReserve = func() {
+		fired := false
+		hooked.Do(func() { fired = true })
+		if !fired {
+			return // the duplicate's own reservation of the worker key
+		}
+		go func() { dupErr <- s.Append(ctx, dupBatch) }()
+		waitFor(t, deferred, "the duplicate to skip past the claimant")
+		waitFor(t, dupCommitted, "the duplicate to commit")
+	}
+	if err := s.Append(ctx, claimantBatch); err == nil {
+		t.Fatal("the claimant's commit should have failed")
+	}
+	if err := <-dupErr; err == nil {
+		t.Error("the duplicate reported success although the claimant failed")
+	}
+	if s.npend != 1 {
+		t.Errorf("parked edges = %d, want the duplicate's one", s.npend)
 	}
 }
