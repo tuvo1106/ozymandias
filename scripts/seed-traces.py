@@ -3,8 +3,9 @@
 
 Three services (a web api, a worker reached through a queue, a billing service), a few routes,
 some slow requests, some failing, one trace with a queue wait between arq.enqueue and arq.job.
-Everything is invented: no app, no real data. Ids are derived from the run label, so a second
-run with the same label re-posts the same traces (the store is idempotent).
+Everything is invented: no app, no real data. Ids are derived from the run label, but start times
+are relative to now, so re-running with the same label adds a second copy of each trace (same
+ids, new start). Use a fresh --label per run on a store you keep.
 
     python3 scripts/seed-traces.py                      # agent on localhost:8126, label "seed"
     OZY_AGENT=http://localhost:8126 python3 scripts/seed-traces.py --label e2e --count 40
@@ -51,7 +52,6 @@ def build(label: str, i: int, now_us: int, rng: random.Random):
     ]
     if failing:
         api[0]["meta"].update({"error.type": "UpstreamError", "error.message": "billing unavailable"})
-        api[1]["error"] = 0
     chunks = [api]
     if route == "/api/orders":
         enq = span(trace, s(3), s(1), "shop-api", "arq.enqueue", "charge_order", "queue", start + dur // 2, 1_500, 0,
@@ -78,11 +78,16 @@ def main() -> None:
     rng = random.Random(a.label)
     now_us = int(time.time() * 1e6)
     chunks = [c for i in range(a.count) for c in build(a.label, i, now_us, rng)]
+    out = {"accepted": 0, "rejected": 0}
     for k in range(0, len(chunks), 100):
         body = json.dumps({"tracer": {"lang": "seed", "version": "1"}, "traces": chunks[k : k + 100]}).encode()
         req = urllib.request.Request(a.agent + "/v1/traces", body, {"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            out = json.load(r)
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                resp = json.load(r)
+        except OSError as e:
+            raise SystemExit(f"seed-traces: posting to {a.agent} failed: {e}")
+        out = {k2: out[k2] + resp.get(k2, 0) for k2 in out}
     print(f"posted {a.count} traces ({sum(len(c) for c in chunks)} spans) to {a.agent}; last response {out['accepted']} accepted, {out['rejected']} rejected")
 
 

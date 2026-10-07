@@ -164,7 +164,7 @@ export function TraceView() {
                       {r.span ? `${r.span.name} · ${r.span.resource}` : "missing parent"}
                     </button>
                     {/* A slot on every row, empty for a leaf: without it the rows with children push their bars right and the time axis stops lining up. */}
-                    <span className="w-5 shrink-0 text-center">
+                    <span className="min-w-5 shrink-0 text-center">
                       {r.childCount > 0 && (
                         <button type="button" aria-label={r.collapsed ? "Expand" : "Collapse"} className="text-zinc-500" onClick={() => toggle(r.id)}>
                           {r.collapsed ? `+${r.hidden}` : "−"}

@@ -6,7 +6,8 @@ import { expect, test } from "@playwright/test";
 test("search a trace, open it, select a span, read its logs tab", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  // Aborted fetches from the reload-polling below log "Failed to load resource"; not a UI fault.
+  page.on("console", (m) => m.type() === "error" && !/Failed to load resource|ERR_ABORTED/.test(m.text()) && errors.push(m.text()));
 
   await page.goto("/apm/traces?env=dev&service=billing-worker");
   // Traces are queryable as soon as the agent flushes; poll rather than sleep.
@@ -26,8 +27,8 @@ test("search a trace, open it, select a span, read its logs tab", async ({ page 
   await page.getByRole("button", { name: "Waterfall" }).click();
   await page.getByRole("button", { name: /arq\.job/ }).first().click();
   await expect(page.getByText("billing-worker").first()).toBeVisible();
-  await expect(page.getByText("queue.wait_ms")).toBeVisible();
-  await expect(page.getByText("consumer")).toBeVisible();
+  await expect(page.getByText("queue.wait_ms", { exact: true })).toBeVisible();
+  await expect(page.getByText("consumer", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Logs" }).click();
   const panel = page.getByRole("region", { name: "Trace logs" });
