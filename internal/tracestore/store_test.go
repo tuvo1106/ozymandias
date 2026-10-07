@@ -569,8 +569,8 @@ func TestEdges_ClaimantCommitFailsAfterADuplicateSkippedPastIt(t *testing.T) {
 			return
 		}
 		go func() { dupErr <- s.Append(ctx, batch) }()
-		<-deferred
-		<-dupCommitted
+		waitFor(t, deferred, "the duplicate to skip past the claimant")
+		waitFor(t, dupCommitted, "the duplicate to commit")
 	}
 	if err := s.Append(ctx, batch); err == nil {
 		t.Fatal("the claimant's commit should have failed")
@@ -591,3 +591,55 @@ func TestEdges_ClaimantCommitFailsAfterADuplicateSkippedPastIt(t *testing.T) {
 }
 
 func mustID(s string, n int) []byte { b, _ := decodeID(s, n); return b }
+
+func waitFor(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// A duplicate that fails because its claimant did has still committed its own spans, so it must
+// have parked the edges that were waiting on a parent it has not seen: on the resend the child's
+// entry key exists, no edge is created, and the parked one would be gone for good.
+func TestEdges_DuplicateKeepsItsParkedEdgesWhenTheClaimantFails(t *testing.T) {
+	s, _ := open(t, nil)
+	claimantBatch := []wire.Span{sp(1, 1, "api", 0, time.Second)}
+	dupBatch := []wire.Span{sp(1, 1, "api", 0, time.Second), sp(3, 2, "worker", 0, time.Second, child(1))} // trace 3's parent never arrives
+	dupCommitted := make(chan struct{})
+	commits := 0
+	s.failCommit = func() error {
+		commits++
+		if commits == 1 {
+			close(dupCommitted)
+			return nil
+		}
+		return errors.New("disk full")
+	}
+	deferred := make(chan struct{})
+	var once sync.Once
+	s.afterDefer = func() { once.Do(func() { close(deferred) }) }
+	dupErr := make(chan error, 1)
+	var hooked sync.Once
+	s.afterReserve = func() {
+		fired := false
+		hooked.Do(func() { fired = true })
+		if !fired {
+			return // the duplicate's own reservation of the worker key
+		}
+		go func() { dupErr <- s.Append(ctx, dupBatch) }()
+		waitFor(t, deferred, "the duplicate to skip past the claimant")
+		waitFor(t, dupCommitted, "the duplicate to commit")
+	}
+	if err := s.Append(ctx, claimantBatch); err == nil {
+		t.Fatal("the claimant's commit should have failed")
+	}
+	if err := <-dupErr; err == nil {
+		t.Error("the duplicate reported success although the claimant failed")
+	}
+	if s.npend != 1 {
+		t.Errorf("parked edges = %d, want the duplicate's one", s.npend)
+	}
+}

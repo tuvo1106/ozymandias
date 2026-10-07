@@ -309,7 +309,7 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 		s.mu.Unlock()
 		claimant := !reserved
 		existed := reserved
-		if reserved && !mine {
+		if reserved && !mine && (len(deferred) == 0 || deferred[len(deferred)-1] != c) {
 			deferred = append(deferred, c)
 			if s.afterDefer != nil {
 				s.afterDefer()
@@ -342,7 +342,7 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 			}
 			newKnown = append(newKnown, vk)
 		}
-		if claimant {
+		if claimant && !existed {
 			s.entriesIndexed.Inc()
 		}
 
@@ -397,6 +397,16 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 	}
 	committed = true
 	release() // before waiting: two calls each waiting on the other's keys would otherwise deadlock
+	s.mu.Lock()
+	for _, k := range newKnown {
+		s.known[k] = struct{}{}
+	}
+	s.mu.Unlock()
+	s.park(parked)
+	s.spansAppended.Add(int64(len(spans)))
+	s.edgesRecorded.Add(int64(len(edges)))
+	// Last, after this call's own writes are durable and booked: a failed claimant or a
+	// cancelled context must not cost this call its parked edges or its counters.
 	for _, c := range deferred {
 		select {
 		case <-c.done:
@@ -407,14 +417,6 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 			return errors.New("tracestore: a concurrent resend of this batch failed to commit; resend")
 		}
 	}
-	s.mu.Lock()
-	for _, k := range newKnown {
-		s.known[k] = struct{}{}
-	}
-	s.mu.Unlock()
-	s.park(parked)
-	s.spansAppended.Add(int64(len(spans)))
-	s.edgesRecorded.Add(int64(len(edges)))
 	return nil
 }
 
