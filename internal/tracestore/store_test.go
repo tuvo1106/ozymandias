@@ -485,7 +485,12 @@ func TestEdges_DuplicatesInOneBatchAndConcurrentResendsCountOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
-		go func() { defer wg.Done(); _ = s.Append(ctx, again) }()
+		go func() {
+			defer wg.Done()
+			if err := s.Append(ctx, again); err != nil {
+				t.Errorf("append: %v", err)
+			}
+		}()
 	}
 	wg.Wait()
 	if e := must(s.ServiceEdges(ctx, "", 0, t0.UnixMicro())); len(e) != 1 || e[0].Calls != 2 {

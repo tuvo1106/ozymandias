@@ -267,6 +267,10 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 		ek := entryKey(env, sp.Service, sp.Start, trace, span)
 		// Reserve first, then look: checking before reserving lets a concurrent resend
 		// slip in between another call's commit and its release and count the call again.
+		// The look happens under the same lock as the reservation. A call that finds the
+		// key reserved still writes and commits it, so were the look to run after the
+		// lock was released, that commit could land first, the claimant would read it as
+		// "already counted", and neither call would count the edge at all.
 		existed := false
 		s.mu.Lock()
 		if _, dup := s.inflight[string(ek)]; dup {
@@ -274,11 +278,9 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 		} else {
 			s.inflight[string(ek)] = struct{}{}
 			claimed = append(claimed, string(ek))
-		}
-		s.mu.Unlock()
-		if !existed {
 			existed = s.exists(ek)
 		}
+		s.mu.Unlock()
 		if err := b.Set(ek, val, nil); err != nil {
 			return err
 		}
