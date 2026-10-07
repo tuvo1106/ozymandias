@@ -91,8 +91,11 @@ type Store struct {
 	// count the same call.
 	inflight map[string]struct{}
 
-	// failCommit, if set (tests only), is returned instead of committing.
+	// failCommit, if set (tests only), is asked before each commit; a non-nil error is
+	// returned instead of committing.
 	failCommit func() error
+	// afterReserve, if set (tests only), runs right after an entry key is reserved.
+	afterReserve func()
 
 	closed atomic.Bool
 
@@ -267,22 +270,29 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 		ek := entryKey(env, sp.Service, sp.Start, trace, span)
 		// Reserve first, then look: checking before reserving lets a concurrent resend
 		// slip in between another call's commit and its release and count the call again.
-		// The look happens under the same lock as the reservation. A call that finds the
-		// key reserved still writes and commits it, so were the look to run after the
-		// lock was released, that commit could land first, the claimant would read it as
-		// "already counted", and neither call would count the edge at all.
-		existed := false
+		// A call that finds the key reserved does not write it: only the claimant publishes
+		// the key, together with its edge in one commit. Were a duplicate to write it, its
+		// commit could land before the claimant's look (so neither counts the edge), or
+		// the claimant's commit could fail after the duplicate's succeeded (so the retry
+		// finds the key and skips the edge). Both are pinned by tests.
 		s.mu.Lock()
-		if _, dup := s.inflight[string(ek)]; dup {
-			existed = true
-		} else {
+		_, dup := s.inflight[string(ek)]
+		existed := dup
+		if !dup {
 			s.inflight[string(ek)] = struct{}{}
 			claimed = append(claimed, string(ek))
-			existed = s.exists(ek)
 		}
 		s.mu.Unlock()
-		if err := b.Set(ek, val, nil); err != nil {
-			return err
+		if !dup {
+			if s.afterReserve != nil {
+				s.afterReserve()
+			}
+			existed = s.exists(ek)
+		}
+		if !dup {
+			if err := b.Set(ek, val, nil); err != nil {
+				return err
+			}
 		}
 		if err := b.Set(resourceKey(env, sp.Service, sum.Resource, sp.Start, trace, span), nil, nil); err != nil {
 			return err
@@ -336,10 +346,11 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 	if err := writeEdges(b, edges); err != nil {
 		return err
 	}
-	err := error(nil)
+	var err error
 	if s.failCommit != nil {
 		err = s.failCommit()
-	} else {
+	}
+	if err == nil {
 		err = b.Commit(s.writeOpts())
 	}
 	if err != nil {

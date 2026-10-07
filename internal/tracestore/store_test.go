@@ -534,3 +534,40 @@ func TestEdges_FailedCommitKeepsParkedChildrenWaiting(t *testing.T) {
 		t.Errorf("edges after the resend: %+v", e)
 	}
 }
+
+// A duplicate that arrives while a call holds the reservation must not publish the entry key:
+// if the claimant's commit then fails, its retry would find the key, take the call for counted,
+// and the edge would be lost for good. Deterministic: the duplicate runs inside the claimant,
+// between its reservation and its look.
+func TestEdges_ClaimantCommitFailsAfterADuplicateCommitted(t *testing.T) {
+	s, _ := open(t, nil)
+	batch := []wire.Span{sp(1, 1, "api", 0, time.Second), sp(1, 2, "worker", 0, time.Second, child(1))}
+	commits := 0
+	s.failCommit = func() error {
+		commits++
+		if commits == 2 { // the claimant's: the duplicate's, inside the hook, is the first
+			return errors.New("disk full")
+		}
+		return nil
+	}
+	reserved := 0
+	s.afterReserve = func() {
+		reserved++
+		if reserved != 2 { // the worker's reservation, after the api span's
+			return
+		}
+		if err := s.Append(ctx, batch); err != nil {
+			t.Errorf("duplicate: %v", err)
+		}
+	}
+	if err := s.Append(ctx, batch); err == nil {
+		t.Fatal("the claimant's commit should have failed")
+	}
+	s.failCommit, s.afterReserve = nil, nil
+	if err := s.Append(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	if e := must(s.ServiceEdges(ctx, "", 0, t0.UnixMicro())); len(e) != 1 || e[0].Calls != 1 {
+		t.Errorf("edges after the retry: %+v, want one call", e)
+	}
+}
