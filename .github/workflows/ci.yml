@@ -40,6 +40,17 @@ concurrency:
 
 jobs:
   ci:
+    # The one Redis the Python SDK's real-arq trace test needs (sdk/python/tests/
+    # test_trace_arq_e2e.py); it skips itself when OZY_TEST_REDIS_URL is unset, as on a laptop.
+    # Database 15, because the test refuses database 0.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      OZY_TEST_REDIS_URL: redis://127.0.0.1:6379/15
     # ubuntu-latest, deliberately, even though it migrates to Ubuntu 26 on
     # 2026-10-19. Every tool this job runs is pinned by a file in the repo, so
     # the image chooses none of them: go.mod (Go), web/.nvmrc (Node),
