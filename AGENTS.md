@@ -215,6 +215,7 @@ make ci             the full gate, by hand only when a change needs it
 make test / lint / docs-check / web-check / fuzz / fuzz-long
 make up / down / down-v   the compose stack (waits until healthy)
 make smoke          end-to-end checks against the running stack
+make e2e            Playwright UI test on a seeded native stack (opt-in, ADR-0046)
 make dev            ozyd + agent natively, plus Vite on :9401
 make sdk-release    (M1) build SDK artifacts into the apps' vendor/ dirs
 ```

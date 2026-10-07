@@ -40,7 +40,7 @@ export function TraceList({ traces, onNearEnd, height = 360, empty = "No traces 
       <div style={{ height: traces.length * TRACE_ROW_HEIGHT, position: "relative" }}>
         {traces.slice(start, end).map((t, i) => (
           <div
-            key={`${t.trace_id}/${t.span_id}`}
+            key={`${t.trace_id}/${t.span_id}/${t.start}`}
             role="listitem"
             className="absolute inset-x-0 border-b border-zinc-100 hover:bg-zinc-50 dark:border-zinc-900 dark:hover:bg-zinc-900"
             style={{ top: (start + i) * TRACE_ROW_HEIGHT, height: TRACE_ROW_HEIGHT }}

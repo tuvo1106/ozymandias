@@ -240,7 +240,8 @@ Per `docs/private/integrations.md` (M5 parts) for both apps.
   service map has the edge.
 - **L11** flame-graph layout (pure function: spans → rects; overlapping
   siblings, orphan spans, clock-skewed children clamp) unit tests; Playwright:
-  search → open trace → span detail → logs tab.
+  search → open trace → span detail → logs tab
+  (`make e2e`, ADR-0046: done, 2 passing; opt-in, not a CI gate).
 - **L12** tracer overhead per span (time + allocations) in both SDKs, measured
   with tracing disabled / enabled-unsampled / enabled-sampled; no budget is
   set in advance — measure, report, and record the number in the notes so
