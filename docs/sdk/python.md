@@ -476,8 +476,8 @@ choice.
 
 `tests/test_trace_arq_e2e.py` runs the whole chain (`http.request` -> `arq.enqueue` -> `arq.job` ->
 `sqlite.query`, one trace id, the parent chain asserted) through a real arq worker against a real
-Redis; it is skipped unless `OZY_TEST_REDIS_URL` points at a dedicated non-zero database, because CI
-has no Redis container yet.
+Redis; it is skipped unless `OZY_TEST_REDIS_URL` points at a dedicated non-zero database. CI runs it
+against a Redis service container (database 15); a laptop run skips it unless you set the variable.
 
 **Logging.** The `logging` integration installs a record factory, so *every* record in the process
 carries `trace_id` and `span_id` whichever logger or handler produced it (a filter on a logger would

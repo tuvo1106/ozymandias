@@ -9,6 +9,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- CI runs the Python SDK's real-arq trace test against a Redis service container.
 - `make e2e`: a Playwright test of the APM pages against a seeded native stack (`scripts/seed-traces.py`); opt-in, not in CI (ADR-0046). Fixed a trace list that showed a re-posted trace twice and waterfall bars that did not line up.
 - **Tracing** (M5). Span payloads and head-sampling vectors (`pkg/wire`); the agent's trace intake
   (`POST :8126/v1/traces`) computes request/error/latency statistics from every span *before*
