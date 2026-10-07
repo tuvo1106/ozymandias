@@ -133,6 +133,10 @@ down-v: ## Stop the compose stack and delete its data volume
 dev: build ## Run ozyd + agent natively and the Vite dev server
 	scripts/dev.sh
 
+.PHONY: e2e
+e2e: build ## Browser e2e (Playwright) against a native ozyd + agent + Vite, seeded with synthetic traces
+	scripts/e2e.sh
+
 .PHONY: smoke
 smoke: ## End-to-end checks against the running compose stack
 	scripts/smoke.sh
