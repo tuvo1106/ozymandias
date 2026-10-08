@@ -23,7 +23,7 @@ is free there and will be claimed at the first publish
 |---|---|
 | PyPI (future) | `pip install ozy` / `uv add ozy` |
 | git | `pip install "git+https://github.com/tuvo1106/ozymandias#subdirectory=sdk/python"` |
-| a built wheel | `cd sdk/python && uv build`, then `pip install dist/ozy-0.1.0-py3-none-any.whl` |
+| a built wheel | `cd sdk/python && uv build`, then `pip install dist/ozy-0.2.0-py3-none-any.whl` |
 
 For the git URL, you need read access to the repository. For vendoring into an app, copy the
 wheel into the app and install it from a path. `make sdk-release` automates this (M1).

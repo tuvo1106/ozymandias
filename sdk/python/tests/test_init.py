@@ -76,4 +76,4 @@ def test_hooks_registered_once_and_only_when_enabled(monkeypatch: pytest.MonkeyP
 
 
 def test_version_is_exposed() -> None:
-    assert ozy.__version__ == "0.1.0"
+    assert ozy.__version__ == "0.2.0"

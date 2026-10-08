@@ -9,6 +9,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Python SDK 0.2.0: the first version with tracing (0.1.0 is metrics and logs only), so an app that vendors the wheel gets a new hash and `uv lock` takes it.
 - CI runs the Python SDK's real-arq trace test against a Redis service container.
 - `make e2e`: a Playwright test of the APM pages against a seeded native stack (`scripts/seed-traces.py`); opt-in, not in CI (ADR-0046). Fixed a trace list that showed a re-posted trace twice and waterfall bars that did not line up.
 - **Tracing** (M5). Span payloads and head-sampling vectors (`pkg/wire`); the agent's trace intake

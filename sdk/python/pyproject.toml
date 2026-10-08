@@ -1,6 +1,6 @@
 [project]
 name = "ozy"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python SDK for ozymandias: extended-StatsD-compatible metrics over UDP, zero dependencies."
 readme = "README.md"
 license = "MIT"
