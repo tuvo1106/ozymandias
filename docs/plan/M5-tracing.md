@@ -260,11 +260,11 @@ trace-context hop; `docs/notes/M5.md` incl. the Next.js bundling write-up.
 
 ## 10. Acceptance criteria
 
-- [ ] Submitting a solution in app-python yields **one** trace spanning api and worker: `http.request POST /api/v1/submissions` → `postgres.query`s → `arq.enqueue` → (queue wait gap) → `arq.job judge_submission` → `judge.container.run` → `postgres.query` (verdict write).
+- [x] Submitting a solution in app-python yields **one** trace spanning api and worker: `http.request POST /api/v1/submissions` → `postgres.query`s → `arq.enqueue` → (queue wait gap) → `arq.job judge_submission` → `judge.container.run` → `postgres.query` (verdict write). *Evidence: docs/notes/M5.md, "app-python integration": one real submission through the compose stack, 17 spans, two services, no orphans, `queue.wait_ms` recorded.*
 - [ ] app-node traces show `http.request` → `sqlite.query` children, plus `http.client` to Metron and image-processing spans on the relevant routes, with `:id`-normalized resources.
-- [ ] From a log line → its trace → back to that trace's logs, in both apps.
+- [ ] From a log line → its trace → back to that trace's logs, in both apps. *app-python: done (docs/notes/M5.md); app-node: open.*
 - [x] Service page RED numbers match the M3 request metrics within 1% over the same window, with sampling forced to 10% (proves stats-before-sampling). *Evidence: `TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices` (200 sent, 10% kept, table says 200 and 20 errors, exactly). Compared with the trace metrics themselves, not yet with an app's M3 request metrics.*
 - [x] With `OZY_TRACE_SAMPLE_RATE=0.1`, error traces and first-seen resources are still kept. *Evidence: the same test (error and rare samplers keep traces the head rate dropped); sampler unit tests with a fake clock.*
 - [x] No SQL parameter values, Redis keys, cookies or Authorization headers appear in any stored span (explicit scan test). *Evidence: SDK scan tests with a sentinel (sqlalchemy, sqlite); redis resource is the command name only. Against the owner's apps: open.*
-- [ ] Measured tracer overhead reported (done: docs/notes/M5.md); both apps' test suites green with ozymandias absent (open: the apps are not integrated yet).
+- [ ] Measured tracer overhead reported (done: docs/notes/M5.md); both apps' test suites green with ozymandias absent (app-python: 570 passed, 94% coverage, `OZY_AGENT_HOST` unset; app-node: open, not integrated yet).
 - [ ] Tests and docs deliverables complete; `docs/notes/M5.md` has evidence.
