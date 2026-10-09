@@ -54,7 +54,7 @@ from ._tracing import Context, normalize_path
 if TYPE_CHECKING:
     from .integrations import Integration
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Config",
