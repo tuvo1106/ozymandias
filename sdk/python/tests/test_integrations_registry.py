@@ -143,7 +143,7 @@ def test_importing_the_package_imports_no_target_library() -> None:
 
     code = (
         "import sys, ozy, ozy.integrations;"
-        "libs=('sqlalchemy','redis','httpx','arq','starlette','fastapi');"
+        "libs=('sqlalchemy','redis','httpx','arq','starlette','fastapi','flask','werkzeug');"
         "bad=[m for m in libs if m in sys.modules];"
         "print(bad)"
     )
@@ -159,10 +159,11 @@ def test_importing_an_integration_module_without_its_library_is_safe() -> None:
         "import sys\n"
         "sys.modules['sqlalchemy'] = None; sys.modules['redis'] = None\n"
         "sys.modules['httpx'] = None; sys.modules['arq'] = None; sys.modules['starlette'] = None\n"
+        "sys.modules['flask'] = None\n"
         "import ozy\n"
         "from ozy.integrations import patch_all\n"
         "import ozy.integrations.sqlalchemy, ozy.integrations.redis, ozy.integrations.httpx\n"
-        "import ozy.integrations.arq, ozy.integrations.asgi\n"
+        "import ozy.integrations.arq, ozy.integrations.asgi, ozy.integrations.wsgi\n"
         "print(patch_all())\n"
     )
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
