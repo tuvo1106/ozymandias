@@ -2,7 +2,8 @@
 
 The Node SDK is a small convenience layer over ozymandias's public wire protocol. In M1 it is
 a extended-StatsD-compatible metrics client; M5 adds a tracer and explicit-wrapping
-integrations for Next.js route handlers, better-sqlite3, `fetch` and winston
+integrations for Next.js route handlers, Express (or any Connect-style / `node:http` server),
+better-sqlite3, `fetch` and winston
 ([section 10](#10-tracing)).
 Anything that can send a UDP datagram can emit metrics to the agent without this SDK (see
 [wire-protocol.md §A](../wire-protocol.md#a-statsd-datagram-sdk--agent-udp-8125)). The SDK
@@ -286,12 +287,13 @@ has the same power as the built-in ones. `init({ integrations: ["fetch"] })` pat
 | Integration | Use | Span |
 |---|---|---|
 | `next` | `withTelemetry(handler, { route? })` wraps an App Router route handler; `traceRoute(req, routeHint, fn)` is the primitive it is built on, for an app that already has a single door for its handlers. | `http.request`, type `web`, resource `"GET /api/comics/:id"` from the path normalizer (or `routeHint`), `http.method`, `http.route`, `http.url` (no query), `http.status_code`. 5xx marks it failed; a throw is recorded as 500 and re-thrown. Continues a trace from `x-ozy-*` headers. |
+| `http` | `app.use(traceRequests({ excludePaths?, route?, maxRoutes? }))` first, `app.use(traceErrors())` after the routes. Connect-style, so Express, Connect, or `(req, res) => mw(req, res, () => handler(req, res))` on a plain `node:http` server. | `http.request`, type `web`, resource `"GET /orgs/:org/users/:id"`, the same tags as `next`, **plus** the `http.request.count` / `http.request.duration` metrics with the Python middlewares' names and tags. Ends on the response's `finish` or `close`; a client gone before any header is `499`, not an error. See [below](#express-and-nodehttp). |
 | `sqlite` | `instrumentSqlite(db)` wraps `prepare` on the better-sqlite3 `Database` prototype so each statement's `run/get/all/iterate` is timed. | `sqlite.query`, type `db`, resource = statement source, `db.rowcount` for `run`. **Only inside an active trace** (no orphan roots from boot-time work). Parameters are never read, so they cannot be recorded; a test plants a sentinel value and scans every payload. A throwing statement marks the span and re-throws unchanged. `iterate()` ends its span when the iterator finishes or is abandoned. |
 | `fetch` | `instrumentFetch({ propagateTo: ["api.internal", "*.corp.test"] })` wraps `globalThis.fetch` once. | `http.client`, type `http`, resource `"GET host"`, `http.url` without query or credentials. Only inside an active trace. Propagation headers go **only** to allow-listed hosts (host, host:port or `*.suffix`; default none, so a third party never sees your trace ids). It wraps whatever `fetch` is at that moment, so Next's own patch chain stays intact; a second call (or copy) only updates the allow-list; `Response` identity, rejections and abort behaviour are untouched. The span ends when headers arrive, not when the body is read. |
 | `winston` | `traceFormat()` in `winston.format.combine(...)` (or `traceFormat(winston.format)`). | none: adds `trace_id` / `span_id` of the active span to each log entry. winston is not a dependency; the format is built structurally. |
 
-For `next`, `fetch` and `winston` the SDK wraps explicitly; `unpatch()` on `next` and `winston`
-only switches them off. `sqlite.unpatch()` restores every prototype it wrapped.
+For `next`, `http`, `fetch` and `winston` the SDK wraps explicitly; `unpatch()` on `next`, `http`
+and `winston` only switches them off. `sqlite.unpatch()` restores every prototype it wrapped.
 
 Next.js sketch:
 
@@ -309,6 +311,29 @@ export const GET = withTelemetry(async (req, ctx) => Response.json(await load(ct
 
 List the package in `serverExternalPackages` so exactly one instance loads (state on
 `globalThis` is the second line of defence).
+
+#### Express and `node:http`
+
+`traceRequests()` makes the request's span the active one for everything `next()` runs, so a query
+or an outgoing `fetch` in a handler is its child across `await`. The route is read when the
+response ends: Express's `req.route.path` behind the `req.baseUrl` of the routers it passed through.
+Express keeps the *matched text* of a mount, not its pattern, so under
+`app.use("/:org/users", users)` the base is `/acme/users`. A parameter value is put back as `:org`
+when it is still in `req.params` (a router created with `mergeParams: true`), and the path normalizer
+turns id-like segments into `:id`; a slug in a mount path can survive both. So each middleware also
+caps the distinct routes it reports (`maxRoutes`, default 200), and past the cap a new route is
+reported as `other`: the `route` tag stays bounded however the app mounts its routers. Use
+`mergeParams` on parameterized mounts, or pass `route: (req) => pattern`, to keep exact patterns.
+A request no route matched is `route:unmatched` and its span resource is the normalized path.
+
+Express answers a thrown handler error with a 500 page the middleware cannot see into;
+`traceErrors()` hands the error to the span (and passes it on with `next(err)`), so a 500's span
+names it. The outermost `traceRequests()` claims a request, so two never count it twice, and an
+excluded path stays excluded for any middleware further in. Runnable: `examples/express-app`.
+
+Rejected: patching Express's router, as dd-trace does, which recovers the mount pattern. It needs
+the require hook this SDK chose not to have ([10.6](#106-why-explicit-wrapping-not-a-require-hook))
+and tracks Express internals across majors.
 
 **Writing your own integration:**
 

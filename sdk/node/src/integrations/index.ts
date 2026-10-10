@@ -9,6 +9,7 @@
  */
 import { globalState } from "../state.js";
 import { fetchIntegration } from "./fetch.js";
+import { httpIntegration } from "./http.js";
 import { nextIntegration } from "./next.js";
 import { sqliteIntegration } from "./sqlite.js";
 import type { Integration } from "./types.js";
@@ -16,7 +17,7 @@ import { winstonIntegration } from "./winston.js";
 
 export type { Integration } from "./types.js";
 
-const BUILTIN: Integration[] = [fetchIntegration, sqliteIntegration, nextIntegration, winstonIntegration];
+const BUILTIN: Integration[] = [fetchIntegration, sqliteIntegration, nextIntegration, httpIntegration, winstonIntegration];
 
 /**
  * Registers an integration under its `name`, replacing a registered one of the

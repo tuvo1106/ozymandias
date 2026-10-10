@@ -8,6 +8,13 @@ All notable changes to the `ozy` Node.js SDK are documented here. The format is 
 
 ### Added
 
+- **Express and `node:http` servers.** `traceRequests()` is Connect-style middleware that records
+  an `http.request` span per request (active for the handlers, so their spans are children) and the
+  `http.request.count` / `http.request.duration` metrics with the Python middlewares' names and tags.
+  The route is Express's matched pattern behind its routers' base, with a per-middleware cap
+  (`maxRoutes`, default 200) that keeps the `route` tag bounded when a mount path holds a parameter.
+  A client gone before any header is `499`. `traceErrors()` hands Express's swallowed handler error
+  to the span. New `http` integration name; `expressRoute()` is exported for reuse.
 - **Tracing (M5).** `tracer.trace / wrap / startSpan / scope / inject / extract / stats / flush`
   on an `AsyncLocalStorage` context; head sampling with the shared BigInt algorithm; a bounded
   (1000 chunks, drop-oldest) writer to `POST /v1/traces` that reads `rate_by_service`, never
