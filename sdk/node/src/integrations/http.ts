@@ -49,7 +49,7 @@
  * @module
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { globalState } from "../state.js";
+import { globalState, integrationOff, setIntegrationOn } from "../state.js";
 import { NOOP_SPAN, type Span, tracer } from "../trace/tracer.js";
 import { normalizePath } from "../trace/wire.js";
 import type { Integration } from "./types.js";
@@ -60,7 +60,15 @@ export const UNMATCHED = "unmatched";
 export const OVERFLOW = "other";
 const CLIENT_CLOSED = 499;
 const SERVER_ERROR = 500;
-const METHODS: ReadonlySet<string> = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
+const METHODS: ReadonlySet<string> = new Set([
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "HEAD",
+  "OPTIONS",
+]);
 /** Marks a request the outermost middleware has claimed, so a second one passes it through. */
 const CLAIMED = Symbol.for("ozy.http.claimed");
 /** Where {@link traceErrors} leaves the error for the span. */
@@ -86,17 +94,15 @@ export interface TraceRequestsOptions {
   durationName?: string;
 }
 
-let enabled = true;
-
 /** The `http` integration: the middleware is explicit, so patch/unpatch switch it on and off. */
 export const httpIntegration: Integration = {
   name: "http",
   isAvailable: () => true,
   patch() {
-    enabled = true;
+    setIntegrationOn("http", true);
   },
   unpatch() {
-    enabled = false;
+    setIntegrationOn("http", false);
   },
 };
 
@@ -127,10 +133,14 @@ export function expressRoute(req: IncomingMessage): string | undefined {
   if (typeof pattern !== "string") return undefined;
   const base = typeof r.baseUrl === "string" ? r.baseUrl : "";
   if (base === "") return pattern;
-  const params = r.params && typeof r.params === "object" ? (r.params as Record<string, unknown>) : {};
+  const params =
+    r.params && typeof r.params === "object"
+      ? (r.params as Record<string, unknown>)
+      : {};
   const byValue = new Map<string, string>();
   for (const [name, value] of Object.entries(params)) {
-    if (typeof value === "string" && value !== "" && !byValue.has(value)) byValue.set(value, name);
+    if (typeof value === "string" && value !== "" && !byValue.has(value))
+      byValue.set(value, name);
   }
   const segs = base.split("/").map((seg) => {
     const name = byValue.get(seg);
@@ -143,7 +153,9 @@ export function expressRoute(req: IncomingMessage): string | undefined {
 
 function statusOf(res: ServerResponse): number {
   const code = res.statusCode;
-  return Number.isInteger(code) && code >= 100 && code <= 599 ? code : SERVER_ERROR;
+  return Number.isInteger(code) && code >= 100 && code <= 599
+    ? code
+    : SERVER_ERROR;
 }
 
 /**
@@ -183,53 +195,61 @@ export function traceRequests(
     return route;
   };
 
-  return function ozyTraceRequests(req: IncomingMessage, res: ServerResponse, next: Next): void {
+  return function ozyTraceRequests(
+    req: IncomingMessage,
+    res: ServerResponse,
+    next: Next,
+  ): void {
     let span: Span = NOOP_SPAN;
     let path = "/";
     let method = "OTHER";
     let started = 0;
+    // `next()` is called only after the setup below, never inside it: a plain handler that
+    // throws synchronously would otherwise land in the `catch` and be run a second time.
+    let passThrough = false;
     try {
       const r = req as IncomingMessage & ExpressFields;
       const statsd = globalState().statsd;
-      path = pathOnly(typeof r.originalUrl === "string" ? r.originalUrl : req.url);
-      if (!enabled || r[CLAIMED]) {
-        next();
-        return;
-      }
-      if (exclude.has(path)) {
+      path = pathOnly(
+        typeof r.originalUrl === "string" ? r.originalUrl : req.url,
+      );
+      if (integrationOff("http") || r[CLAIMED]) {
+        passThrough = true;
+      } else if (exclude.has(path)) {
         r[CLAIMED] = true; // excluded here is excluded for any middleware further in
-        next();
-        return;
+        passThrough = true;
+      } else {
+        span = tracer.startSpan("http.request", {
+          type: "web",
+          childOf: tracer.extract(req.headers as Record<string, unknown>),
+          tags: { "span.kind": "server" },
+        });
+        if (span === NOOP_SPAN && !statsd) passThrough = true;
       }
-      span = tracer.startSpan("http.request", {
-        type: "web",
-        childOf: tracer.extract(req.headers as Record<string, unknown>),
-        tags: { "span.kind": "server" },
-      });
-      if (span === NOOP_SPAN && !statsd) {
-        next();
-        return;
+      if (!passThrough) {
+        r[CLAIMED] = true;
+        method =
+          typeof req.method === "string" && METHODS.has(req.method)
+            ? req.method
+            : "OTHER";
+        started = performance.now();
+        let done = false;
+        const finish = (): void => {
+          if (done) return;
+          done = true;
+          try {
+            end(r, res, span, path, method, performance.now() - started);
+          } catch {
+            // Recording is best-effort.
+          }
+        };
+        res.once("finish", finish);
+        res.once("close", finish);
       }
-      r[CLAIMED] = true;
-      method = typeof req.method === "string" && METHODS.has(req.method) ? req.method : "OTHER";
-      started = performance.now();
-      let done = false;
-      const finish = (): void => {
-        if (done) return;
-        done = true;
-        try {
-          end(r, res, span, path, method, performance.now() - started);
-        } catch {
-          // Recording is best-effort.
-        }
-      };
-      res.once("finish", finish);
-      res.once("close", finish);
     } catch {
-      next();
-      return;
+      passThrough = true;
     }
-    if (span === NOOP_SPAN) {
+    if (passThrough || span === NOOP_SPAN) {
       next();
       return;
     }
@@ -254,7 +274,8 @@ export function traceRequests(
   ): void {
     // The connection closing before any header went out is the client
     // leaving; after the headers, the status sent stands.
-    const status = !res.writableFinished && !res.headersSent ? CLIENT_CLOSED : statusOf(res);
+    const status =
+      !res.writableFinished && !res.headersSent ? CLIENT_CLOSED : statusOf(res);
     let route: string;
     try {
       route = bounded(routeOf(r));
@@ -271,7 +292,11 @@ export function traceRequests(
         span.setTag("http.status_code", status);
         const swallowed = r[ERROR];
         if (status >= SERVER_ERROR) {
-          span.setError(swallowed instanceof Error ? swallowed : new Error(`HTTP ${status}`));
+          span.setError(
+            swallowed instanceof Error
+              ? swallowed
+              : new Error(`HTTP ${status}`),
+          );
         }
       } catch {
         // Tagging is best-effort; the span is still finished below.
@@ -281,7 +306,12 @@ export function traceRequests(
     const statsd = globalState().statsd;
     if (!statsd) return;
     try {
-      const tags = [`route:${route}`, `method:${method}`, `status:${status}`, `status_class:${Math.floor(status / 100)}xx`];
+      const tags = [
+        `route:${route}`,
+        `method:${method}`,
+        `status:${status}`,
+        `status_class:${Math.floor(status / 100)}xx`,
+      ];
       statsd.metric("c", countName, 1, { tags });
       statsd.metric("d", durationName, elapsedMs, { tags });
     } catch (err) {
@@ -298,8 +328,18 @@ export function traceRequests(
  *
  * @returns `(err, req, res, next) => void`.
  */
-export function traceErrors(): (err: unknown, req: IncomingMessage, res: ServerResponse, next: Next) => void {
-  return function ozyTraceErrors(err: unknown, req: IncomingMessage, _res: ServerResponse, next: Next): void {
+export function traceErrors(): (
+  err: unknown,
+  req: IncomingMessage,
+  res: ServerResponse,
+  next: Next,
+) => void {
+  return function ozyTraceErrors(
+    err: unknown,
+    req: IncomingMessage,
+    _res: ServerResponse,
+    next: Next,
+  ): void {
     try {
       (req as IncomingMessage & ExpressFields)[ERROR] = err;
     } catch {

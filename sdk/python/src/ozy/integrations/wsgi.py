@@ -163,7 +163,13 @@ class MetricsMiddleware:
             nonlocal status
             # Only after the server accepted it: a second call after the headers were sent
             # re-raises ``exc_info`` and changes nothing the client sees.
-            write = start_response(status_line, headers, exc_info)
+            # ``exc_info`` is forwarded only when there is one: a server's two-argument
+            # ``start_response`` must not see a third.
+            write = (
+                start_response(status_line, headers)
+                if exc_info is None
+                else start_response(status_line, headers, exc_info)
+            )
             status = status_line
 
             def write_wrapper(data: bytes) -> object:
@@ -411,6 +417,11 @@ class FlaskIntegration:
 
     An app that wraps itself in :class:`MetricsMiddleware` or :class:`TraceMiddleware`
     by hand is counted once: the outermost middleware claims the request.
+
+    Attributes:
+        exclude_paths: request paths left unrecorded, e.g. ``{"/healthz"}``; empty by
+            default. Set it before the first request (``INTEGRATION.exclude_paths = ...``),
+            as a load balancer's probes would otherwise be most of ``http.request.count``.
     """
 
     name = "flask"
@@ -418,6 +429,7 @@ class FlaskIntegration:
     def __init__(self) -> None:
         """Create an unpatched integration."""
         self._patches = PatchSet()
+        self.exclude_paths: Iterable[str] = ()
 
     def is_available(self) -> bool:
         """Flask is importable."""
@@ -448,7 +460,9 @@ def _wrap_wsgi_app(original: Callable[..., Iterable[bytes]]) -> Callable[..., It
         try:
             # Built per request because the app is ``self``; construction is a few
             # attribute assignments, cheap next to a request.
-            middleware = TraceMiddleware(functools.partial(original, self))
+            middleware = TraceMiddleware(
+                functools.partial(original, self), exclude_paths=INTEGRATION.exclude_paths
+            )
         except Exception:
             _log.debug("ozy: wrapping a flask request failed", exc_info=True)
             return original(self, environ, start_response)

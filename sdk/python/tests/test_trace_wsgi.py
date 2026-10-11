@@ -338,6 +338,41 @@ def test_excluded_paths_are_neither_traced_nor_counted(
     assert spans_of(traced) == []
 
 
+def test_the_flask_integration_can_leave_health_checks_out(
+    traced: FakeTraceAgent, flask_patched: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ozy.integrations import wsgi
+
+    monkeypatch.setattr(wsgi.INTEGRATION, "exclude_paths", {"/health"})
+    app = build()
+    assert app.test_client().get("/health").status_code == 200
+    assert app.test_client().get("/api/v1/items/3").status_code == 200
+    ozy.tracer.flush()
+    requests = [s["resource"] for s in spans_of(traced) if s["name"] == "http.request"]
+    assert requests == ["GET /api/v1/items/<int:item_id>"]
+
+
+def test_a_two_argument_start_response_never_sees_a_third(
+    make_client: ClientFactory, agent: FakeAgent
+) -> None:
+    client = make_client()
+
+    def app(environ: Any, start_response: Any) -> list[bytes]:
+        start_response("200 OK", [])
+        return [b"ok"]
+
+    seen: list[tuple[Any, ...]] = []
+
+    def strict_start_response(status: str, headers: list[tuple[str, str]]) -> Any:
+        seen.append((status, headers))  # a third positional argument would be a TypeError
+        return lambda data: None
+
+    middleware = MetricsMiddleware(app, client=client)
+    body = b"".join(middleware({"PATH_INFO": "/"}, strict_start_response))
+    assert body == b"ok"
+    assert seen == [("200 OK", [])]
+
+
 def test_metrics_still_flow_when_tracing_is_off(
     make_client: ClientFactory, agent: FakeAgent
 ) -> None:

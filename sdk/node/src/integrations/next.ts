@@ -16,6 +16,7 @@
  * @module
  */
 import { NOOP_SPAN, type Span, type SpanContext, tracer } from "../trace/tracer.js";
+import { integrationOff, setIntegrationOn } from "../state.js";
 import { normalizePath } from "../trace/wire.js";
 import type { Integration } from "./types.js";
 
@@ -26,17 +27,15 @@ export interface RequestLike {
   headers: { get(name: string): string | null | undefined };
 }
 
-let enabled = true;
-
 /** The `next` integration: wrapping is explicit, so patch/unpatch just switch tracing on and off. */
 export const nextIntegration: Integration = {
   name: "next",
   isAvailable: () => true,
   patch() {
-    enabled = true;
+    setIntegrationOn("next", true);
   },
   unpatch() {
-    enabled = false;
+    setIntegrationOn("next", false);
   },
 };
 
@@ -77,7 +76,7 @@ export function traceRoute<T>(req: RequestLike, routeHint: string | undefined, f
   let parent: SpanContext | null = null;
   let ok = false;
   try {
-    if (enabled) {
+    if (!integrationOff("next")) {
       method = String(req.method ?? "GET").toUpperCase();
       const p = pathOf(req.url);
       route = routeHint || normalizePath(p.path);

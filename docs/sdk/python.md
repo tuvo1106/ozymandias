@@ -432,7 +432,12 @@ by hand *and* patched is counted once. The body is wrapped, so a server's `wsgi.
 ends the span.** PEP 3333 obliges the server to, and werkzeug's development server skips it when the client
 hangs up before the response is read (its `finally` block touches the dead socket first and raises). The
 request then stays out of the trace and the counts; a production server (gunicorn, waitress, uWSGI) does
-not do this. Found by `examples/flask-app`, whose driver read no body, and fixed there by reading it.
+not do this. Found by `examples/flask-app`, whose driver read no body, and fixed there by reading it. The request
+span is also the active span of the worker thread until `close()`, so on such a server that reuses its
+threads the next request on that thread would be parented to the leaked span; there is no "force a new
+root" option in the Python tracer (Node has `childOf: null`), so this is a known limit, not a guard.
+Keep health checks out of the numbers with `ozy.integrations.wsgi.INTEGRATION.exclude_paths = {"/healthz"}`
+(set before the first request), or pass `exclude_paths=` to `TraceMiddleware` when wrapping by hand.
 Runnable: `examples/flask-app`.
 
 **SQLAlchemy.** The statement text is the resource; **parameters are never read**, so no bound value

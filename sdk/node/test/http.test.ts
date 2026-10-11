@@ -383,6 +383,35 @@ describe("traceRequests with Express", () => {
     expect(counts()).toEqual([]);
   });
 
+  it("runs a throwing plain handler once, on every pass-through path", async () => {
+    // `next()` used to be called inside the setup `try`, so a handler that threw synchronously
+    // landed in the `catch` and was run a second time (on a Connect-style chain that does not
+    // catch its own errors, which a bare node:http handler is).
+    const cases: Array<[string, () => void, TraceRequestsOptions, string]> = [
+      ["integration unpatched", () => unpatchIntegrations(["http"]), {}, "/a"],
+      ["excluded path", () => initBoth(), { excludePaths: ["/a"] }, "/a"],
+      ["nothing to record", () => {}, {}, "/a"], // the SDK was never initialized
+    ];
+    for (const [label, setup, opts, path] of cases) {
+      setup();
+      const mw = traceRequests(opts);
+      let calls = 0;
+      const req = { url: path, method: "GET", headers: {} } as unknown as http.IncomingMessage;
+      const res = { once: () => res } as unknown as http.ServerResponse;
+      expect(
+        () =>
+          mw(req, res, () => {
+            calls++;
+            throw new Error("handler failed");
+          }),
+        label,
+      ).toThrow("handler failed");
+      expect(calls, label).toBe(1);
+      initBoth();
+      patchIntegrations(["http"]);
+    }
+  });
+
   it("accepts a route function for other frameworks, and survives one that throws", async () => {
     initBoth();
     const named = traceRequests({ route: (req) => (req.url?.startsWith("/w/") ? "/w/{name}" : undefined) });
