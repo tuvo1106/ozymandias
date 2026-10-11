@@ -428,7 +428,12 @@ adapter (it stamps `request.url_rule.rule`, blueprint prefix included) and also 
 Django or Bottle is the same few lines; with none, every request is `route:unmatched` and the span
 falls back to the normalized path. The outermost middleware claims a request, so a Flask app wrapped
 by hand *and* patched is counted once. The body is wrapped, so a server's `wsgi.file_wrapper`
-(`sendfile`) fast path is not taken; exclude big static paths. Runnable: `examples/flask-app`.
+(`sendfile`) fast path is not taken; exclude big static paths. **A server that never calls `close()` never
+ends the span.** PEP 3333 obliges the server to, and werkzeug's development server skips it when the client
+hangs up before the response is read (its `finally` block touches the dead socket first and raises). The
+request then stays out of the trace and the counts; a production server (gunicorn, waitress, uWSGI) does
+not do this. Found by `examples/flask-app`, whose driver read no body, and fixed there by reading it.
+Runnable: `examples/flask-app`.
 
 **SQLAlchemy.** The statement text is the resource; **parameters are never read**, so no bound value
 (an email, a token) can reach a span. A driver's error message can quote a value (PostgreSQL's

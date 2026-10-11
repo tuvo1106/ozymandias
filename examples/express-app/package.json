@@ -1,0 +1,19 @@
+{
+  "name": "express-example",
+  "private": true,
+  "version": "0.0.0",
+  "description": "An Express app traced by ozymandias (examples/express-app/server.mjs).",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "preinstall": "cd ../../sdk/node && npm ci --silent && npm run --silent build",
+    "start": "node server.mjs",
+    "drive": "node server.mjs --drive"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "ozy": "file:../../sdk/node"
+  }
+}

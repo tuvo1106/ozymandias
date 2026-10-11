@@ -1,0 +1,13 @@
+[project]
+name = "flask-example"
+version = "0.0.0"
+description = "A Flask app traced by ozymandias (examples/flask-app/app.py)."
+requires-python = ">=3.12"
+dependencies = ["flask>=3.1", "ozy"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+# The SDK from this checkout, so the example always runs against the code next to it.
+ozy = { path = "../../sdk/python", editable = true }
