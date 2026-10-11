@@ -59,6 +59,9 @@ dev = [
     # Dev only: starlette's TestClient (used by the FastAPI tests) warns, and the suite treats
     # warnings as errors, unless httpx2 is installed.
     "httpx2>=2.13.1",
+    # Dev only: the WSGI middleware and the flask integration are tested against real Flask,
+    # because the route pattern comes from its url_rule. 3.1 is the oldest release run.
+    "flask>=3.1",
 ]
 
 # --- tests ---------------------------------------------------------------------

@@ -46,6 +46,13 @@ export interface GlobalState {
   integrations: Map<string, Integration>;
   /** Hosts the fetch integration injects propagation headers for (default none). */
   fetchAllow: string[];
+  /**
+   * Names of explicit-wrapping integrations (`next`, `http`) switched off with `unpatch()`. Here, not in
+   * the integration's module, so an `unpatch()` through one copy of the package reaches the middleware a
+   * second copy created. May be missing on a state made by an older copy: read it through
+   * {@link integrationOff}.
+   */
+  off?: Set<string>;
 }
 
 const KEY = Symbol.for("ozy");
@@ -127,4 +134,27 @@ export function installExitHooks(state: GlobalState): void {
     flushTraces();
   });
   process.on("exit", flush);
+}
+
+/**
+ * Whether an explicit-wrapping integration was switched off (`unpatch()`), process-wide.
+ *
+ * @param name - the integration name, e.g. `"http"`.
+ * @returns true when off.
+ */
+export function integrationOff(name: string): boolean {
+  return globalState().off?.has(name) ?? false;
+}
+
+/**
+ * Switches an explicit-wrapping integration on or off for every copy of the package.
+ *
+ * @param name - the integration name.
+ * @param on - true to patch, false to unpatch.
+ */
+export function setIntegrationOn(name: string, on: boolean): void {
+  const state = globalState();
+  const off = (state.off ??= new Set<string>());
+  if (on) off.delete(name);
+  else off.add(name);
 }

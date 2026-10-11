@@ -16,6 +16,12 @@ package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **WSGI and Flask.** `ozy.integrations.wsgi.MetricsMiddleware` / `TraceMiddleware` record the same
+  `http.request.*` metrics and `http.request` span as the ASGI middleware for any WSGI app, timing a
+  request until the server closes its body (so streamed responses are timed to the end). The route comes
+  from `environ["ozy.route"]`, set by a framework adapter; the new `flask` integration
+  (`init(integrations=["flask"])`) is one: it wraps `Flask.wsgi_app`, stamps the matched `url_rule`, and
+  names the exception behind a 500 page. A request is counted once even when wrapped twice.
 - **Tracing (M5).** `from ozy import tracer`: `trace()` (a `with` / `async with` context manager),
   `wrap()` (sync and async decorator), `start_span()`, `current_span()`, `current_trace_context()`,
   `inject()` / `extract()` for the `x-ozy-*` propagation headers, `wrap_executor()` and `stats()`.

@@ -3,7 +3,7 @@
 Each integration is built **only** on what ``ozy.tracer`` (and ``ozy.statsd``) expose,
 so a third party can write one with exactly the same power; see "Writing your own
 integration" in ``docs/sdk/python.md``. Importing this package imports nothing it
-targets: the ASGI middleware speaks the ASGI spec rather than Starlette's classes, and
+targets: the ASGI and WSGI middlewares speak their specs rather than a framework's classes, and
 every other integration imports its library lazily inside ``is_available()``/``patch()``
 and does nothing when it is absent. That is how the SDK keeps zero dependencies.
 
@@ -58,6 +58,7 @@ class Integration(Protocol):
 
 _BUILTIN = {
     "asgi": ("ozy.integrations.asgi", "INTEGRATION"),
+    "flask": ("ozy.integrations.wsgi", "INTEGRATION"),
     "sqlalchemy": ("ozy.integrations.sqlalchemy", "INTEGRATION"),
     "redis": ("ozy.integrations.redis", "INTEGRATION"),
     "httpx": ("ozy.integrations.httpx", "INTEGRATION"),

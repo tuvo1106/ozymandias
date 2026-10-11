@@ -15,7 +15,7 @@ from arq.cron import CronJob
 from arq.worker import Function, Retry
 
 import ozy
-from ozy import Context
+from ozy import Context, Tracer
 from ozy.integrations.arq import (
     CARRIER_KWARG,
     INTEGRATION,
@@ -466,7 +466,9 @@ def test_patched_enqueue_with_a_broken_tracer_still_enqueues(
     async def run() -> None:
         async with ozy.tracer.trace("request"):
             # From here on every span the integration starts is broken.
-            monkeypatch.setattr(ozy.tracer, "start_span", lambda *a, **k: Broken())
+            # On the class: pytest undoes an instance setattr by leaving the bound method in the
+            # instance dict, which would shadow class-level patches in every later test.
+            monkeypatch.setattr(Tracer, "start_span", lambda *a, **k: Broken())
             await pool.enqueue_job("judge", x=1)
 
     asyncio.run(run())

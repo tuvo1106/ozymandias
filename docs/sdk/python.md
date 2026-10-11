@@ -5,7 +5,8 @@ runtime dependencies, it never raises into your code, and it does nothing at all
 point it at an agent.
 
 The SDK ships the statsd client, an ASGI metrics middleware ([below](#asgi-middleware)) and,
-from M5, a tracer with integrations for ASGI, SQLAlchemy, Redis, httpx, arq and `logging`
+from M5, a tracer with integrations for ASGI, WSGI/Flask, SQLAlchemy, Redis, httpx, arq and
+`logging`
 ([Tracing](#tracing)).
 
 The SDK is a convenience layer. The public interface is the wire protocol
@@ -65,7 +66,7 @@ still pins the values it owns, such as its service name.
 | `trace_enabled` | `OZY_TRACE_ENABLED` | on | Whether spans are recorded **when an agent host is set**. `0`/`false`/`no`/`off` switches tracing off and leaves metrics on |
 | `trace_port` | `OZY_TRACE_PORT` | `8126` | Agent TCP port for `POST /v1/traces`. An invalid value falls back to 8126 |
 | `trace_sample_rate` | `OZY_TRACE_SAMPLE_RATE` | `1.0` | Head-sampling rate, clamped to [0, 1]; the agent's `rate_by_service` answer overrides it per service ([Sampling](#sampling)) |
-| `integrations` | none | none | Names or [`Integration`](#writing-your-own-integration) objects to patch (`"sqlalchemy"`, `"redis"`, `"httpx"`, `"arq"`, `"logging"`, `"asgi"`). Applied only when tracing is enabled |
+| `integrations` | none | none | Names or [`Integration`](#writing-your-own-integration) objects to patch (`"sqlalchemy"`, `"redis"`, `"httpx"`, `"arq"`, `"logging"`, `"asgi"`, `"flask"`). Applied only when tracing is enabled |
 
 Calling `init()` again flushes and closes the previous configuration, then applies the new
 one. `init()` never raises. If configuration fails, it logs a warning and leaves the SDK
@@ -395,6 +396,7 @@ become a root span, and a root span counts as a service entry in the agent's req
 | Integration | Mechanism | Span |
 |---|---|---|
 | `asgi` | `TraceMiddleware(app)`, pure ASGI; or `patch()` to wrap `build_middleware_stack` of Starlette/FastAPI apps built afterwards | `http.request`, type `web`, resource `"<METHOD> <route pattern>"`, `http.method`, `http.url` (path only), `http.route`, `http.status_code`, `span.kind=server` |
+| `flask` | `ozy.integrations.wsgi.TraceMiddleware(app)` for any WSGI app; `patch()` wraps `Flask.wsgi_app` (every app, built before or after) and stamps the matched `url_rule` | as `asgi`; the route is Flask's rule, `/items/<int:item_id>` |
 | `sqlalchemy` | event listeners (`before_cursor_execute`, `after_cursor_execute`, `handle_error`) on the `Engine` class (`patch()`) or one engine (`instrument(engine)`, also `AsyncEngine`) | `<dialect>.query` (`postgres.query`, `sqlite.query`), type `db`, resource = statement text cut to 2000 chars, `db.rowcount` |
 | `redis` | wraps `execute_command` and pipeline `execute` on `redis` and `redis.asyncio` | `redis.command`, type `cache`, resource = command **name** only; a pipeline is one span, resource `PIPELINE`, metric `redis.pipeline.commands` |
 | `httpx` | wraps `Client.send` / `AsyncClient.send`, injects the headers | `http.client`, type `http`, resource `"<METHOD> <host>"`, `http.status_code`; a 5xx marks it as an error |
@@ -412,6 +414,31 @@ not. WebSockets and lifespan pass through unrecorded. With FastAPI 0.142 / Starl
 [ASGI middleware](#asgi-middleware) still applies, and the span falls back to the normalized path.
 `patch()` leaves an app alone that already added `MetricsMiddleware` or `TraceMiddleware`, so a
 request is never counted twice.
+
+**WSGI and Flask.** `ozy.integrations.wsgi.TraceMiddleware` (and its metrics-only base
+`MetricsMiddleware`) is the WSGI twin of the ASGI middleware: the same span, the same
+`http.request.count` / `http.request.duration` with the same bounded tags. Two things differ because
+WSGI differs. The request ends when the server **closes the body**, not when the app returns, so a
+streamed response is timed to its last chunk and spans made while it streams are children of the
+request (checked against Flask's `stream_with_context` in `tests/test_trace_wsgi.py`). And there is no
+`499`: WSGI has no disconnect event. Routing happens inside the app, so the middleware reads the matched
+pattern from `environ["ozy.route"]`, which a framework adapter sets; the `flask` integration is that
+adapter (it stamps `request.url_rule.rule`, blueprint prefix included) and also records, in
+`environ["ozy.error"]`, the exception Flask turns into a 500 page, so the span names it. An adapter for
+Django or Bottle is the same few lines; with none, every request is `route:unmatched` and the span
+falls back to the normalized path. The outermost middleware claims a request, so a Flask app wrapped
+by hand *and* patched is counted once. The body is wrapped, so a server's `wsgi.file_wrapper`
+(`sendfile`) fast path is not taken; exclude big static paths. **A server that never calls `close()` never
+ends the span.** PEP 3333 obliges the server to, and werkzeug's development server skips it when the client
+hangs up before the response is read (its `finally` block touches the dead socket first and raises). The
+request then stays out of the trace and the counts; a production server (gunicorn, waitress, uWSGI) does
+not do this. Found by `examples/flask-app`, whose driver read no body, and fixed there by reading it. The request
+span is also the active span of the worker thread until `close()`, so on such a server that reuses its
+threads the next request on that thread would be parented to the leaked span; there is no "force a new
+root" option in the Python tracer (Node has `childOf: null`), so this is a known limit, not a guard.
+Keep health checks out of the numbers with `ozy.integrations.wsgi.INTEGRATION.exclude_paths = {"/healthz"}`
+(read on every request), or pass `exclude_paths=` to `TraceMiddleware` when wrapping by hand.
+Runnable: `examples/flask-app`.
 
 **SQLAlchemy.** The statement text is the resource; **parameters are never read**, so no bound value
 (an email, a token) can reach a span. A driver's error message can quote a value (PostgreSQL's

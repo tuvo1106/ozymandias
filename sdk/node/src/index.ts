@@ -60,6 +60,13 @@ export {
 } from "./integrations/index.js";
 export { type RequestLike, type WithTelemetryOptions, traceRoute, withTelemetry } from "./integrations/next.js";
 export { instrumentSqlite } from "./integrations/sqlite.js";
+export {
+  type Next,
+  type TraceRequestsOptions,
+  expressRoute,
+  traceErrors,
+  traceRequests,
+} from "./integrations/http.js";
 export { type InstrumentFetchOptions, instrumentFetch, uninstrumentFetch } from "./integrations/fetch.js";
 export { type FormatFactory, type LogFormat, traceFormat } from "./integrations/winston.js";
 
