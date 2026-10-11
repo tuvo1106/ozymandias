@@ -116,6 +116,11 @@ interface ExpressFields {
   [ERROR]?: unknown;
 }
 
+function excludeKey(path: string): string {
+  const lower = path.toLowerCase();
+  return lower.length > 1 && lower.endsWith("/") ? lower.slice(0, -1) : lower;
+}
+
 function pathOnly(url: unknown): string {
   if (typeof url !== "string" || url === "") return "/";
   const cut = url.search(/[?#]/);
@@ -126,6 +131,10 @@ function pathOnly(url: unknown): string {
  * Express's route for a finished request: the routers' base, with known
  * parameter values put back as `:name` and the remaining ids normalized,
  * followed by the matched route's own pattern. Undefined when nothing matched.
+ *
+ * Known limit: parameter values are put back by value, not position, so a literal base segment equal
+ * to a parameter's value (a router at `/users/:user` hit as `/users/users/42`) is labelled `:user`
+ * too. The label stays bounded; it is only a wrong name for that one request shape.
  */
 export function expressRoute(req: IncomingMessage): string | undefined {
   const r = req as IncomingMessage & ExpressFields;
@@ -180,7 +189,11 @@ export function traceRequests(
 ): (req: IncomingMessage, res: ServerResponse, next: Next) => void {
   const excluded = opts.excludePaths ?? [];
   // A bare string is one path, not its characters.
-  const exclude = new Set(typeof excluded === "string" ? [excluded] : excluded);
+  // Compared the way Express routes: case-insensitively and without a trailing slash, so a probe of
+  // `/Healthz/` is excluded when `/healthz` is.
+  const exclude = new Set(
+    [...(typeof excluded === "string" ? [excluded] : excluded)].map(excludeKey),
+  );
   const routeOf = opts.route ?? expressRoute;
   const maxRoutes = opts.maxRoutes ?? 200;
   const countName = opts.countName ?? "http.request.count";
@@ -215,7 +228,7 @@ export function traceRequests(
       );
       if (integrationOff("http") || r[CLAIMED]) {
         passThrough = true;
-      } else if (exclude.has(path)) {
+      } else if (exclude.has(excludeKey(path))) {
         r[CLAIMED] = true; // excluded here is excluded for any middleware further in
         passThrough = true;
       } else {

@@ -437,7 +437,7 @@ span is also the active span of the worker thread until `close()`, so on such a 
 threads the next request on that thread would be parented to the leaked span; there is no "force a new
 root" option in the Python tracer (Node has `childOf: null`), so this is a known limit, not a guard.
 Keep health checks out of the numbers with `ozy.integrations.wsgi.INTEGRATION.exclude_paths = {"/healthz"}`
-(set before the first request), or pass `exclude_paths=` to `TraceMiddleware` when wrapping by hand.
+(read on every request), or pass `exclude_paths=` to `TraceMiddleware` when wrapping by hand.
 Runnable: `examples/flask-app`.
 
 **SQLAlchemy.** The statement text is the resource; **parameters are never read**, so no bound value

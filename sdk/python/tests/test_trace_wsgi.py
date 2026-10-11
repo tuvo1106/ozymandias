@@ -352,6 +352,33 @@ def test_the_flask_integration_can_leave_health_checks_out(
     assert requests == ["GET /api/v1/items/<int:item_id>"]
 
 
+def test_an_empty_answer_stays_recorded_when_closing_the_body_raises(
+    make_client: ClientFactory, agent: FakeAgent
+) -> None:
+    client = make_client()
+
+    class Body:
+        def __iter__(self) -> Body:
+            return self
+
+        def __next__(self) -> bytes:
+            raise StopIteration
+
+        def close(self) -> None:
+            raise RuntimeError("teardown failed")
+
+    def app(environ: Any, start_response: Any) -> Body:
+        start_response("204 No Content", [])
+        return Body()
+
+    middleware = MetricsMiddleware(app, client=client)
+    result = middleware({"PATH_INFO": "/", "REQUEST_METHOD": "DELETE"}, lambda *a: lambda d: None)
+    assert list(result) == []
+    with pytest.raises(RuntimeError):
+        result.close()  # type: ignore[attr-defined]
+    assert count_tags(agent, client)[0]["status"] == "204"
+
+
 def test_a_two_argument_start_response_never_sees_a_third(
     make_client: ClientFactory, agent: FakeAgent
 ) -> None:

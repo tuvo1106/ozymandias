@@ -250,6 +250,10 @@ class _Body:
                 self._it = iter(self._result)
             chunk = next(self._it)
         except StopIteration:
+            # The server has the whole body, empty or not, and sends the headers it was holding
+            # back before it calls ``close()``: a 204 or a redirect has answered by now, so a
+            # teardown that raises in ``close()`` must not turn it into a recorded 500.
+            self._sent()
             raise
         except BaseException as exc:
             self._finish(exc)
@@ -420,8 +424,9 @@ class FlaskIntegration:
 
     Attributes:
         exclude_paths: request paths left unrecorded, e.g. ``{"/healthz"}``; empty by
-            default. Set it before the first request (``INTEGRATION.exclude_paths = ...``),
-            as a load balancer's probes would otherwise be most of ``http.request.count``.
+            default. Read on every request, so it can be set at any time
+            (``INTEGRATION.exclude_paths = ...``); a load balancer's probes would otherwise
+            be most of ``http.request.count``.
     """
 
     name = "flask"
