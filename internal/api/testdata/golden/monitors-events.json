@@ -1,0 +1,15 @@
+OK
+{
+  "events": [
+    {
+      "from": "OK",
+      "group": "queue:a",
+      "id": 1,
+      "kind": "transition",
+      "monitor_id": 1,
+      "to": "ALERT",
+      "ts": "2026-09-21T14:13:20Z",
+      "value": 25
+    }
+  ]
+}

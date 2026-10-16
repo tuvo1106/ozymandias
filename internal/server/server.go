@@ -22,6 +22,10 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/loghub"
 	"github.com/tuvo1106/ozymandias/internal/logstore"
 	"github.com/tuvo1106/ozymandias/internal/meta"
+	"github.com/tuvo1106/ozymandias/internal/monitor"
+	monitoreval "github.com/tuvo1106/ozymandias/internal/monitor/eval"
+	"github.com/tuvo1106/ozymandias/internal/monitor/notify"
+	qeval "github.com/tuvo1106/ozymandias/internal/query/metricql/eval"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/internal/sketchstore"
 	"github.com/tuvo1106/ozymandias/internal/tracestore"
@@ -76,6 +80,9 @@ type Options struct {
 	// Hostname tags ozyd's own metrics when the config's hostname is
 	// empty. Default: os.Hostname, falling back to "ozyd".
 	Hostname func() (string, error)
+	// Getenv resolves notifier secrets (the *_env config fields). Default
+	// os.Getenv.
+	Getenv func(string) string
 }
 
 // Server is a configured ozyd, ready to Run.
@@ -95,6 +102,9 @@ type Server struct {
 	meta     *meta.DB
 	intake   *intake.Intake
 	self     *selfmetrics.Reporter
+	// monitors and dispatch are nil when monitors.enabled is off.
+	monitors *monitor.Scheduler
+	dispatch *notify.Dispatcher
 }
 
 // New opens the stores under data_dir and builds the HTTP routes. It does
@@ -112,6 +122,9 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	}
 	if opts.Hostname == nil {
 		opts.Hostname = os.Hostname
+	}
+	if opts.Getenv == nil {
+		opts.Getenv = os.Getenv
 	}
 	// Before anything is opened, so a refusal has nothing to close.
 	//
@@ -253,11 +266,44 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	// mounted directory must not be an outage for everybody's monitoring.
 	dashboard.Provision(context.Background(), api.ProvisionStore{DB: md},
 		cfg.Provisioning.Paths, s.clock.Now(), s.log.With("component", "dashboards"))
+	s.registerMonitors(mux, opts)
 	if opts.UI != nil {
 		mux.Handle("GET /", opts.UI)
 	}
 	s.handler = httpserve.Instrument(s.reg, Component, mux)
 	return s, nil
+}
+
+// registerMonitors provisions monitors, builds the notifiers and, when
+// monitors are enabled, the scheduler and its delivery dispatcher. The API is
+// mounted either way: definitions can be edited on a server that does not
+// run them.
+func (s *Server) registerMonitors(mux *http.ServeMux, opts Options) {
+	log := s.log.With("component", "monitors")
+	notifiers, infos := notify.Build(s.cfg.Notifiers, opts.Getenv, log)
+	names := make([]string, len(infos))
+	for i, n := range infos {
+		names[i] = n.Name
+	}
+	monitor.Provision(context.Background(), api.MonitorProvisionStore{DB: s.meta},
+		s.cfg.Provisioning.MonitorPaths, names, s.clock.Now(), log)
+	handler := &api.Monitors{Store: s.meta, Notifiers: infos, Clock: s.clock, Logger: log}
+	if s.cfg.Monitors.Enabled {
+		s.dispatch = &notify.Dispatcher{Notifiers: notifiers, Store: s.meta, Clock: s.clock,
+			Logger: log.With("part", "notify")}
+		s.monitors = monitor.New(monitor.Options{
+			Store: s.meta,
+			Evaluator: &monitoreval.Evaluator{
+				Metrics: &qeval.Evaluator{Store: s.store, Sketches: s.sketches, Types: s.meta},
+				Logs:    s.logs, LogScanBudget: s.cfg.Logs.ScanBudget,
+			},
+			Outbox: s.dispatch, Notifiers: notifiers, Clock: s.clock, Logger: log, Registry: s.reg,
+			Workers: s.cfg.Monitors.Workers, BaseURL: s.cfg.Monitors.BaseURL,
+			EventRetention: s.cfg.Monitors.EventRetention,
+		})
+		handler.Engine = s.monitors
+	}
+	handler.Register(mux)
 }
 
 // openStore builds the metric store the config asks for.
@@ -364,16 +410,30 @@ func (s *Server) Run(ctx context.Context, ln net.Listener) error {
 	// they must outlive the cancellation that begins the shutdown, so an
 	// in-flight request is not racing a store that is already closing.
 	bgCtx, stopBG := context.WithCancel(context.Background())
-	bgDone := make(chan struct{}, 3)
+	bgDone := make(chan struct{}, 5)
+	loops := 3
 	go func() { s.reportSelf(bgCtx); bgDone <- struct{}{} }()
 	go func() { s.sweepSketches(bgCtx); bgDone <- struct{}{} }()
 	go func() { s.traces.Run(bgCtx, traceSweepInterval); bgDone <- struct{}{} }()
+	if s.monitors != nil {
+		// The dispatcher and the scheduler are two loops with one lifetime:
+		// both stop with the background context, after the HTTP server, so
+		// no API write races a scheduler that has gone.
+		loops += 2
+		go func() { s.dispatch.Run(bgCtx); bgDone <- struct{}{} }()
+		go func() {
+			if err := s.monitors.Run(bgCtx); err != nil {
+				s.log.Error("monitors: the scheduler could not start; monitors are not being evaluated", "err", err)
+			}
+			bgDone <- struct{}{}
+		}()
+	}
 
 	err := httpserve.Serve(ctx, srv, ln, s.cfg.HTTP.ShutdownTimeout)
 	stopBG()
-	<-bgDone
-	<-bgDone
-	<-bgDone
+	for range loops {
+		<-bgDone
+	}
 	err = errors.Join(err, s.Close())
 	s.log.Info("stopped", "component", Component, "err", err)
 	return err

@@ -1,0 +1,29 @@
+OK
+{
+  "created_at": "2026-09-21T14:13:20Z",
+  "enabled": true,
+  "groups": {
+    "ALERT": 1
+  },
+  "id": 1,
+  "message": "Queue depth is {{.Value}} on {{.Group}} @hook",
+  "muted_until": null,
+  "name": "Job queue is backing up",
+  "options": {
+    "notify_no_data": true,
+    "renotify_interval_m": 60,
+    "thresholds": {
+      "critical_recovery": 15,
+      "warning": 10
+    }
+  },
+  "provisioned": false,
+  "query": "avg(last_5m):avg:jobs.queue.depth{service:shop-api} by {queue} \u003e 20",
+  "status": "ALERT",
+  "tags": [
+    "team:shop"
+  ],
+  "type": "metric",
+  "uid": "jobs-backlog",
+  "updated_at": "2026-09-21T14:13:20Z"
+}

@@ -179,9 +179,25 @@ func nextAfter(t time.Time, interval, offset time.Duration) time.Time {
 // Run loads the monitors and their states, then schedules until ctx ends. It
 // returns once every worker has stopped.
 func (s *Scheduler) Run(ctx context.Context) error {
+	s.mu.Lock()
 	s.started = s.opt.Clock.Now()
-	if err := s.load(ctx, true); err != nil {
-		return err
+	s.mu.Unlock()
+	// The first load is retried rather than fatal: a database that is busy for
+	// a moment at startup must not leave a server up with no monitors running
+	// and nothing saying so. While it fails, Health reports a stall.
+	for {
+		err := s.load(ctx, true)
+		if err == nil {
+			break
+		}
+		s.log.Error("monitors: loading; retrying in 10s", "err", err)
+		t := s.opt.Clock.NewTimer(10 * time.Second)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil
+		case <-t.C():
+		}
 	}
 	var wg sync.WaitGroup
 	for range s.opt.Workers {
