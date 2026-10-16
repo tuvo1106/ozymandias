@@ -1,0 +1,20 @@
+{
+  "monitor_id": 7,
+  "monitor_uid": "jobs-backlog",
+  "monitor_name": "Job queue is backing up",
+  "tags": [
+    "team:me"
+  ],
+  "group_key": "queue:default",
+  "group": {
+    "queue": "default"
+  },
+  "status": "NO_DATA",
+  "prev_status": "ALERT",
+  "value": null,
+  "threshold": 20,
+  "reason": "transition",
+  "message": "Queue depth is 25.5 for queue:default. Check worker health. @hook",
+  "link": "http://localhost:9400/monitors/7?from=1",
+  "ts": "2026-10-16T12:00:00Z"
+}

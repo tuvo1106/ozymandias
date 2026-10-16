@@ -113,7 +113,12 @@ provisioning:
   # paths:
   #   - ./deploy/dashboards
   #   - /etc/ozy/dashboards.d   # an app's own, mounted
-  #   - ./deploy/monitors
+  #
+  # Monitor definitions (M6), upserted by `uid` the same way. A list of its own
+  # because each provisioner reads every *.json in its directories as its own
+  # kind. The container uses /etc/ozy/monitors.
+  monitor_paths:
+    - ./deploy/monitors
 
 logs:
   # How long a day of logs is kept, counted from the END of that day, so a log
@@ -142,3 +147,47 @@ traces:
   # Skip fsync: a crash can lose spans ozyd already acknowledged. For
   # benchmarks and throwaway dev stacks, never for data you want back.
   # no_sync: false
+
+monitors:
+  # Run the monitor scheduler. Off, monitors can still be defined and edited
+  # through the API and the UI; nothing evaluates them.
+  # enabled: true
+  # Most evaluations running at once. An evaluation is a query; this bounds
+  # what the monitors can take from the query path together.
+  # workers: 4
+  # How long monitor events (transitions, deliveries, evaluation errors) are
+  # kept. Negative keeps everything; zero is rejected.
+  # event_retention: 720h
+  # The UI's address as somebody receiving a notification would open it.
+  # Notification links point here.
+  # base_url: http://localhost:9400
+
+# Where notifications go. Each key is a name a monitor's message mentions as
+# @name ("... @discord-ops"). A message with no mention notifies nobody; its
+# transitions still show in the UI.
+#
+# Secrets are never written here: every *_env field names an environment
+# variable that holds the value, and a notifier whose variable is unset stays
+# configured but fails each delivery with a notify_failed event naming the
+# variable. See docs/operations.md#notifiers.
+notifiers:
+  log: {type: log}
+  # discord-ops:
+  #   type: discord
+  #   webhook_url_env: DISCORD_WEBHOOK_URL
+  # hook:
+  #   type: webhook
+  #   url: http://host.docker.internal:9999/alert
+  #   url_env: HOOK_URL   (instead of url, when the URL carries a token)
+  #   headers: {X-Source: ozymandias}
+  #   headers_env: {Authorization: HOOK_AUTH}        # header -> variable
+  # me:
+  #   type: email
+  #   to: [you@example.com]
+  #   smtp:
+  #     host_env: SMTP_HOST
+  #     host: smtp.example.com   (instead of host_env)
+  #     port: 587
+  #     user_env: SMTP_USER
+  #     password_env: SMTP_PASSWORD
+  #     from: ozymandias@localhost
