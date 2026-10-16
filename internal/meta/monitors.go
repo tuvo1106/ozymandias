@@ -363,6 +363,8 @@ func (d *DB) DeleteMonitor(ctx context.Context, id int64) error {
 }
 
 func (d *DB) tx(ctx context.Context, fn func(*sql.Tx) error) error {
+	d.txMu.Lock()
+	defer d.txMu.Unlock()
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("meta: begin: %w", err)
