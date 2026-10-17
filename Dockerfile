@@ -47,9 +47,11 @@ COPY deploy/agent.d/ /etc/ozy/agent.d/
 # their own by mounting a directory and listing it in OZY_PROVISIONING_PATHS,
 # which is comma-separated.
 COPY deploy/dashboards/ /etc/ozy/dashboards/
+COPY deploy/monitors/ /etc/ozy/monitors/
 ENV OZY_DATA_DIR=/data \
     OZY_AGENT_CONFD_PATH=/etc/ozy/agent.d \
-    OZY_PROVISIONING_PATHS=/etc/ozy/dashboards
+    OZY_PROVISIONING_PATHS=/etc/ozy/dashboards \
+    OZY_PROVISIONING_MONITOR_PATHS=/etc/ozy/monitors
 USER nonroot:nonroot
 EXPOSE 9400 8126 8125/udp
 ENTRYPOINT ["/usr/local/bin/ozyd"]

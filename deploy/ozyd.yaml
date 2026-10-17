@@ -171,14 +171,17 @@ monitors:
 # configured but fails each delivery with a notify_failed event naming the
 # variable. See docs/operations.md#notifiers.
 notifiers:
+  # ozyd's own log. Cannot fail; the shipped ozymandias monitors use it.
   log: {type: log}
+  # A generic webhook. The compose file points MONITOR_HOOK_URL at a listener on
+  # the host (the smoke test's); unset, @hook deliveries fail saying so.
+  hook:
+    type: webhook
+    url_env: MONITOR_HOOK_URL
+  # url: http://host.docker.internal:9999/alert   (instead of url_env, for a URL with no token in it)
   # discord-ops:
   #   type: discord
   #   webhook_url_env: DISCORD_WEBHOOK_URL
-  # hook:
-  #   type: webhook
-  #   url: http://host.docker.internal:9999/alert
-  #   url_env: HOOK_URL   (instead of url, when the URL carries a token)
   #   headers: {X-Source: ozymandias}
   #   headers_env: {Authorization: HOOK_AUTH}        # header -> variable
   # me:

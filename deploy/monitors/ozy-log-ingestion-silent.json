@@ -1,0 +1,9 @@
+{
+  "uid": "ozy-log-ingestion-silent",
+  "name": "ozymandias: no logs ingested for ten minutes",
+  "type": "metric",
+  "query": "sum(last_10m):sum:ozy.intake.logs_accepted{*} < 1",
+  "options": {"evaluation_interval_s": 60, "notify_no_data": true, "no_data_timeframe_m": 10},
+  "message": "ozyd stored no logs in ten minutes{{if .IsNoData}} (the intake counter itself is missing){{end}}. Check the agent's log pipeline and its forwarder. @log",
+  "tags": ["app:ozymandias", "component:ozyd"]
+}

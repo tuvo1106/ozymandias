@@ -35,6 +35,17 @@ services:
       # The host tag on ozyd's own metrics. Unset, it would be the container
       # id, new on every recreate. The same name the agent uses.
       OZY_HOSTNAME: ${OZY_HOSTNAME:-ozymandias-host}
+      # Where the `hook` notifier POSTs (deploy/ozyd.yaml). The default is a
+      # listener on the host, which is what scripts/smoke.sh runs. Not OZY_*:
+      # that prefix is reserved for config overrides, and ozyd warns about
+      # any OZY_ variable that matches no setting.
+      MONITOR_HOOK_URL: ${MONITOR_HOOK_URL:-http://host.docker.internal:9999/alert}
+      # Discord, if you set it (docs/operations.md#notifiers); unset, the
+      # discord-ops notifier fails each delivery saying so.
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+    extra_hosts:
+      # Docker Desktop defines host.docker.internal; Linux and Colima need it.
+      - "host.docker.internal:host-gateway"
     ports:
       - "9400:9400"
     volumes:
