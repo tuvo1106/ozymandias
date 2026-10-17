@@ -77,6 +77,29 @@ func runScheduler(t *testing.T, s *Scheduler, clk *testutil.FakeClock) func() {
 	}
 }
 
+// stepUntil advances clk a second at a time (only while gate allows, if
+// given) until cond holds, failing after a minute of real time.
+//
+// Never one big jump: the scheduler reads Now, computes its next due time and
+// then re-arms its timer relative to the clock *at that moment*. An Advance
+// landing between the two pushes the deadline out by the whole jump, so a
+// single 10s Advance could miss every tick (it did, in CI). One-second steps
+// bound that overshoot to a second and keep going until the work happens.
+func stepUntil(t *testing.T, clk *testutil.FakeClock, gate, cond func() bool, what string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Minute)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		if gate == nil || gate() {
+			clk.Advance(time.Second)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("condition not met: %s", what)
+}
+
 func createN(t *testing.T, db *meta.DB, n int, interval int) {
 	t.Helper()
 	for k := range n {
@@ -102,9 +125,11 @@ func TestManyMonitorsManyGroups(t *testing.T) {
 	h.s = New(Options{Store: h.db, Evaluator: syn, Outbox: h.out, Clock: h.clk, Workers: 4})
 	stop := runScheduler(t, h.s, h.clk)
 	for k := 1; k <= 3; k++ {
-		h.clk.Advance(30 * time.Second)
 		want := int64(200 * k)
-		testutil.Eventually(t, 60*time.Second, func() bool { return h.s.evaluations.Value() >= want && idle(h.s) }, "round %d", k)
+		// Advancing only while the pool is idle keeps "skipped == 0" a
+		// statement about the scheduler, not about the test outrunning it.
+		stepUntil(t, h.clk, func() bool { return idle(h.s) },
+			func() bool { return h.s.evaluations.Value() >= want && idle(h.s) }, fmt.Sprint("round ", k))
 	}
 	stop()
 	if n := h.s.commitErrors.Value(); n != 0 {
@@ -132,12 +157,13 @@ func TestPoolBoundAndOverrunSkip(t *testing.T) {
 	syn := &synthetic{groups: 1, gate: make(chan struct{})}
 	h.s = New(Options{Store: h.db, Evaluator: syn, Clock: h.clk, Workers: 2})
 	stop := runScheduler(t, h.s, h.clk)
-	h.clk.Advance(10 * time.Second)
-	testutil.Eventually(t, 5*time.Second, func() bool { return syn.calls.Load() == 2 }, "two running")
-	h.clk.Advance(10 * time.Second)
+	stepUntil(t, h.clk, nil, func() bool { return syn.calls.Load() == 2 }, "two running")
 	// The two running monitors are due again: skipped, not queued behind
 	// themselves. The four waiting in the queue are not re-queued either.
-	testutil.Eventually(t, 5*time.Second, func() bool { return h.s.skipped.Value() >= 6 }, "skips counted (%d)", h.s.skipped.Value())
+	stepUntil(t, h.clk, nil, func() bool { return h.s.skipped.Value() >= 6 }, "skips counted")
+	if c := syn.calls.Load(); c != 2 {
+		t.Fatalf("%d evaluations started with 2 workers blocked", c)
+	}
 	syn.mu.Lock()
 	if syn.maxSeen != 2 {
 		t.Errorf("max concurrent %d, want 2", syn.maxSeen)
@@ -159,8 +185,7 @@ func TestReloadPicksUpNewMonitors(t *testing.T) {
 	h.s.Reload()
 	h.s.Reload() // coalesced, never blocks
 	testutil.Eventually(t, 5*time.Second, func() bool { return h.s.Health().Monitors == 1 }, "reloaded")
-	h.clk.Advance(10 * time.Second)
-	testutil.Eventually(t, 5*time.Second, func() bool { return syn.calls.Load() >= 1 }, "evaluated")
+	stepUntil(t, h.clk, nil, func() bool { return syn.calls.Load() >= 1 }, "evaluated")
 }
 
 func TestWatchdog(t *testing.T) {
