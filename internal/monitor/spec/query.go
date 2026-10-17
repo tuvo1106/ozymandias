@@ -172,8 +172,41 @@ func ParseQuery(q string) (Query, error) {
 	if err != nil {
 		return Query{}, fmt.Errorf("metric query: %w", err)
 	}
+	if err := checkRollups(expr, window); err != nil {
+		return Query{}, err
+	}
 	out.Metric, out.Window = &MetricQuery{Agg: agg, Expr: expr}, window
 	return out, nil
+}
+
+// checkRollups requires an explicit `.rollup(_, seconds)` to be a step the
+// evaluation grid can use: one that divides the window (or the window would
+// hold a partial bucket, or none: a 3600 s step over a 5m window reads
+// nothing and never alerts) and divides a day (the store floors buckets to
+// multiples of the step since the epoch, and the window is aligned the same
+// way only when the step divides a day). Every rollup in an arithmetic
+// expression must agree, since the evaluation has one grid.
+func checkRollups(expr metricql.Node, window time.Duration) error {
+	var steps []int64
+	metricql.Walk(expr, func(n metricql.Node) {
+		if q, ok := n.(*metricql.Query); ok {
+			for _, m := range q.Modifiers {
+				if m.Kind == metricql.ModRollup && m.Seconds > 0 {
+					steps = append(steps, m.Seconds)
+				}
+			}
+		}
+	})
+	for _, st := range steps {
+		if st != steps[0] {
+			return fmt.Errorf("rollup intervals %ds and %ds differ; a monitor evaluates on one grid", steps[0], st)
+		}
+		w := int64(window / time.Second)
+		if st > w || w%st != 0 || 86400%st != 0 {
+			return fmt.Errorf("rollup interval %ds must divide both the %v window and a day (86400s)", st, window)
+		}
+	}
+	return nil
 }
 
 func validAgg(a TimeAgg) bool {

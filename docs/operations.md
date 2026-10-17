@@ -571,10 +571,23 @@ itself, which notify `@log`). The query grammar is in
 [query-language.md#monitors](query-language.md#monitors); the evaluation model
 in [DESIGN.md §16](../DESIGN.md#16-monitors).
 
+A provisioned monitor is read-only through the API; edit its file and restart.
+Changing its query resets its groups (a `reset` event), as an API edit does.
+**Removing its file** does not delete it, since the file may just be on a
+directory that was not mounted this time. The monitor keeps running, is
+*released* to the API (a `released` event and a warning in the log), and can
+then be edited or deleted there. If the file comes back with the same uid,
+provisioning refuses it as belonging to an API-managed monitor until that one
+is deleted. A file that is present but broken keeps its monitor provisioned
+and unchanged.
+
 ### Notifiers
 
-A message's `@name` mentions select notifiers, configured under `notifiers:` in
-`ozyd.yaml`:
+A message's `@name` mentions select notifiers: a handle at the start, after
+whitespace, or right after a template action's `}`. Only handles written in the
+template itself count. A tag value or log attribute that renders as
+`x @pager` is data and routes nothing. Notifiers are configured under
+`notifiers:` in `ozyd.yaml`:
 
 ```yaml
 notifiers:

@@ -132,6 +132,13 @@ func toMonitorJSON(r meta.MonitorRow, states []meta.StateRow, now time.Time) mon
 		u := r.MutedUntil.Unix()
 		out.MutedUntil = &u
 	}
+	// A disabled monitor's stored states describe the last time it ran, not
+	// now: it has no status, so an ALERT it was disabled in does not stay red
+	// in the list forever. (The states are kept, so re-enabling resumes
+	// rather than re-announcing; /states still shows them.)
+	if !r.Enabled {
+		return out
+	}
 	for _, s := range states {
 		out.Groups[s.Status]++
 		if out.Status == nil || severity[s.Status] > severity[*out.Status] {
@@ -502,6 +509,9 @@ func nonNil(s []string) []string {
 	return s
 }
 
+// backtestTimeout bounds one backtest request.
+const backtestTimeout = 30 * time.Second
+
 func (m *Monitors) backtest(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Monitor monitorDef `json:"monitor"`
@@ -530,7 +540,11 @@ func (m *Monitors) backtest(w http.ResponseWriter, r *http.Request) {
 	if body.From == 0 {
 		from = to.Add(-24 * time.Hour)
 	}
-	res, err := m.Engine.Backtest(r.Context(), c, body.ID, from, to)
+	// Its own deadline: a backtest reads up to a week, and the server has no
+	// write timeout to stop it.
+	ctx, cancel := context.WithTimeout(r.Context(), backtestTimeout)
+	defer cancel()
+	res, err := m.Engine.Backtest(ctx, c, body.ID, from, to)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -589,8 +603,20 @@ func (m *Monitors) status(w http.ResponseWriter, r *http.Request) {
 		m.fail(w, r, "reading monitor states", err)
 		return
 	}
+	rows, err := m.Store.Monitors(r.Context())
+	if err != nil {
+		m.fail(w, r, "listing monitors", err)
+		return
+	}
+	enabled := map[int64]bool{}
+	for _, row := range rows {
+		enabled[row.ID] = row.Enabled
+	}
 	worst := map[int64]string{}
 	for _, s := range all {
+		if !enabled[s.MonitorID] {
+			continue // disabled, or deleted mid-read: not part of "what is alerting"
+		}
 		if cur, ok := worst[s.MonitorID]; !ok || severity[s.Status] > severity[cur] {
 			worst[s.MonitorID] = s.Status
 		}
@@ -604,6 +630,7 @@ func (m *Monitors) status(w http.ResponseWriter, r *http.Request) {
 		h := m.Engine.Health()
 		resp["monitors"] = h.Monitors
 		resp["stalled"] = h.Stalled
+		resp["loading"] = h.Loading
 		resp["last_eval_age_seconds"] = math.Round(h.LastEvalAge.Seconds())
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -639,6 +666,11 @@ func (m *Monitors) fail(w http.ResponseWriter, r *http.Request, what string, err
 
 // MonitorProvisionStore adapts *meta.DB for monitor.Provision.
 type MonitorProvisionStore struct{ DB *meta.DB }
+
+// ReleaseOrphanedMonitors implements monitor.ProvisionStore.
+func (p MonitorProvisionStore) ReleaseOrphanedMonitors(ctx context.Context, keep []string, now time.Time) ([]string, error) {
+	return p.DB.ReleaseOrphanedMonitors(ctx, keep, now)
+}
 
 // UpsertProvisionedMonitor implements monitor.ProvisionStore.
 func (p MonitorProvisionStore) UpsertProvisionedMonitor(ctx context.Context, row meta.MonitorRow, now time.Time) (bool, error) {

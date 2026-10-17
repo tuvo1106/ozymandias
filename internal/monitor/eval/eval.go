@@ -22,6 +22,13 @@ const NativeStep = 10 * time.Second
 // evaluator's bucket limit, with room for its inclusive end bucket.
 const maxBucketsPerFetch = qeval.MaxBuckets - 10
 
+// MaxCells bounds one Fetch's series × buckets: 4M float64s, 32 MB. A live
+// evaluation of a day at its step is under 1,500 buckets, so it reaches this
+// only with thousands of groups. A backtest of a week at ten seconds is
+// 60,000 buckets a series, so the bound is what stops one request from
+// holding gigabytes; checked before each series is allocated, not after.
+const MaxCells = 4_000_000
+
 // NoneGroup is the value a grouped log monitor gives logs that lack the
 // group-by field. Spelled out rather than empty, because `service:` is not a
 // tag a reader can make sense of.
@@ -94,7 +101,8 @@ func Window(c *spec.Compiled, now time.Time) (from, to time.Time) {
 // Step is the bucket width a monitor is evaluated on: the agent's flush
 // interval, an explicit `.rollup(_, seconds)` written in the query, or — for a
 // window long enough that ten-second buckets would exceed the evaluator's
-// limit — the smallest multiple of ten seconds that fits.
+// limit — the smallest multiple of ten seconds that fits and divides both the
+// window and a day.
 func Step(c *spec.Compiled) time.Duration {
 	if c.Parsed.Metric != nil {
 		var s int64
@@ -111,8 +119,11 @@ func Step(c *spec.Compiled) time.Duration {
 			return time.Duration(s) * time.Second
 		}
 	}
+	// A step must divide the window and a day, or the aligned window holds a
+	// partial bucket the store's epoch-floored buckets do not line up with.
+	// A window is whole minutes, so 60 s always qualifies and the loop ends.
 	step := NativeStep
-	for c.Parsed.Window/step > maxBucketsPerFetch {
+	for c.Parsed.Window/step > maxBucketsPerFetch || c.Parsed.Window%step != 0 || (24*time.Hour)%step != 0 {
 		step += NativeStep
 	}
 	return step
@@ -162,7 +173,10 @@ func (e *Evaluator) Fetch(ctx context.Context, c *spec.Compiled, from, to time.T
 		for _, s := range res.Series {
 			g := spec.Group(s.Tags)
 			key := g.String()
-			ser := d.series(key, g, n)
+			ser, err := d.series(key, g, n)
+			if err != nil {
+				return d, err
+			}
 			for _, p := range s.Points {
 				i := int(time.UnixMilli(p.T).Sub(from) / step)
 				if i < lo || i >= hi || math.IsNaN(p.V) {
@@ -180,9 +194,13 @@ func (e *Evaluator) Fetch(ctx context.Context, c *spec.Compiled, from, to time.T
 	return d, nil
 }
 
-func (d *Data) series(key string, g spec.Group, n int) *Series {
+func (d *Data) series(key string, g spec.Group, n int) (*Series, error) {
 	s := d.Series[key]
 	if s == nil {
+		if (len(d.Series)+1)*n > MaxCells {
+			return nil, fmt.Errorf("monitor eval: more than %d groups of %d buckets; use a shorter range or fewer groups",
+				len(d.Series), n)
+		}
 		if g == nil {
 			g = spec.Group{}
 		}
@@ -192,7 +210,7 @@ func (d *Data) series(key string, g spec.Group, n int) *Series {
 		}
 		d.Series[key] = s
 	}
-	return s
+	return s, nil
 }
 
 func (e *Evaluator) fetchLogs(ctx context.Context, c *spec.Compiled, d *Data) error {
@@ -214,7 +232,10 @@ func (e *Evaluator) fetchLogs(ctx context.Context, c *spec.Compiled, d *Data) er
 	}
 	if lq.By == "" {
 		// One series, present even when nothing matched: zero lines is a count.
-		ser := d.series("*", spec.Group{}, n)
+		ser, err := d.series("*", spec.Group{}, n)
+		if err != nil {
+			return err
+		}
 		for i := range ser.Values {
 			ser.Values[i] = 0
 		}
@@ -224,6 +245,14 @@ func (e *Evaluator) fetchLogs(ctx context.Context, c *spec.Compiled, d *Data) er
 		if i < 0 || i >= n {
 			continue
 		}
+		if _, over := b.Counts[logstore.OtherGroup]; over && lq.By != "" {
+			// Past the store's group cap, which values get their own group
+			// depends on scan order. A group that lands in "(other)" one
+			// evaluation is absent, so zero, so recovered, and alerts again
+			// the next: flapping, plus a group named "(other)". Refuse.
+			return fmt.Errorf("monitor eval: %q has more than %d distinct values in the window; group by a field with fewer",
+				lq.By, logstore.MaxGroups)
+		}
 		for gv, cnt := range b.Counts {
 			g := spec.Group{}
 			if lq.By != "" {
@@ -232,7 +261,10 @@ func (e *Evaluator) fetchLogs(ctx context.Context, c *spec.Compiled, d *Data) er
 				}
 				g[lq.By] = gv
 			}
-			ser := d.series(g.String(), g, n)
+			ser, err := d.series(g.String(), g, n)
+			if err != nil {
+				return err
+			}
 			if math.IsNaN(ser.Values[i]) {
 				ser.Values[i] = 0
 			}

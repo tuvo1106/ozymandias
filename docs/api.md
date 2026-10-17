@@ -851,8 +851,9 @@ Every monitor, by name: `{"monitors": [...]}`. Each has the definition's fields,
 plus `id`, `enabled`, `provisioned`, `created_at`, `updated_at` (RFC 3339, UTC),
 `muted_until` (unix seconds, or `null`), `groups` (how many groups are in each
 status) and `status` — the worst status among its groups, or **`null` when the
-monitor has no groups yet**. A monitor that has never seen data is not OK; it is
-unknown.
+monitor has no groups yet** or is disabled (with empty `groups`). A monitor
+that has never seen data is not OK; it is unknown, and a disabled one's stored
+states describe when it last ran, not now (`/states` still returns them).
 
 Filters: `?tag=team:shop` (exact tag), `?status=ALERT` (has a group in that
 status), `?q=` (name substring, case-insensitive).
@@ -900,7 +901,8 @@ and `to` (unix seconds), `kind` (comma-separated), `limit` (default 500, at most
 | `notify_ok` / `notify_failed` | A delivery's outcome; `text` names the notifier and, on failure, why |
 | `eval_error` / `eval_recovered` | The query failed (recorded once per distinct error; the state is left alone) and later worked again |
 | `group_expired` | A group with no data for 24 hours was forgotten |
-| `reset` | The query changed, so group states were cleared |
+| `reset` | The query changed (an edit or a provisioning file), so group states were cleared in the same transaction |
+| `released` | The monitor's provisioning file is gone; it keeps running and is now edited through the API |
 | `muted` / `unmuted` | Someone muted or unmuted the monitor |
 | `test_notification` | Someone sent a test |
 
@@ -935,10 +937,13 @@ mentions nobody.
 ### `GET /api/v1/monitors/status`
 
 The nav badge and the stall banner in one cheap call: `{"running": bool,
-"monitors": n, "stalled": bool, "last_eval_age_seconds": n,
-"monitors_by_status": {"ALERT": 1, ...}}`. `stalled` is the self-watchdog: there
-are monitors and none has completed an evaluation for a while, so alerting is
-down.
+"monitors": n, "stalled": bool, "loading": bool, "last_eval_age_seconds": n,
+"monitors_by_status": {"ALERT": 1, ...}}`. `monitors` counts the ones that can
+run (enabled, and a definition this build compiles); `monitors_by_status` counts
+enabled monitors by their worst group. `stalled` is the self-watchdog: there are
+monitors and none has completed an evaluation for a while, so alerting is down.
+`loading` means the scheduler cannot read its monitors and is retrying; that
+too becomes `stalled` after the same threshold.
 
 ### `GET /api/v1/notifiers`
 

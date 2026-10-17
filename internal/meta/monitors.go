@@ -268,15 +268,21 @@ func (d *DB) UpdateMonitor(ctx context.Context, id int64, r MonitorRow, now time
 		return MonitorRow{}, fmt.Errorf("%w: monitor %d (%s)", ErrProvisioned, id, existing.Name)
 	}
 	updated := time.Unix(now.Unix(), 0)
-	if _, err := d.db.ExecContext(ctx,
-		`UPDATE monitors SET uid = ?, name = ?, type = ?, query = ?, options_json = ?, message = ?, tags_json = ?,
-		 enabled = ?, updated_at = ? WHERE id = ?`,
-		nullIfEmpty(r.UID), r.Name, r.Type, r.Query, optionsText(r.Options), r.Message, tagsJSON(r.Tags),
-		r.Enabled, updated.Unix(), id); err != nil {
-		if isUniqueViolation(err) {
-			return MonitorRow{}, fmt.Errorf("%w: %q", ErrDuplicateUID, r.UID)
+	err = d.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE monitors SET uid = ?, name = ?, type = ?, query = ?, options_json = ?, message = ?, tags_json = ?,
+			 enabled = ?, updated_at = ? WHERE id = ?`,
+			nullIfEmpty(r.UID), r.Name, r.Type, r.Query, optionsText(r.Options), r.Message, tagsJSON(r.Tags),
+			r.Enabled, updated.Unix(), id); err != nil {
+			if isUniqueViolation(err) {
+				return fmt.Errorf("%w: %q", ErrDuplicateUID, r.UID)
+			}
+			return fmt.Errorf("meta: updating monitor %d: %w", id, err)
 		}
-		return MonitorRow{}, fmt.Errorf("meta: updating monitor %d: %w", id, err)
+		return resetIfQueryChanged(ctx, tx, id, existing.Query, r.Query, now)
+	})
+	if err != nil {
+		return MonitorRow{}, err
 	}
 	r.ID, r.Provisioned, r.MutedUntil = id, false, existing.MutedUntil
 	r.CreatedAt, r.UpdatedAt = existing.CreatedAt, updated
@@ -311,17 +317,86 @@ func (d *DB) UpsertProvisionedMonitor(ctx context.Context, r MonitorRow, now tim
 		return existing, false, nil
 	}
 	updated := time.Unix(now.Unix(), 0)
-	if _, err := d.db.ExecContext(ctx,
-		`UPDATE monitors SET name = ?, type = ?, query = ?, options_json = ?, message = ?, tags_json = ?,
-		 enabled = ?, provisioned = 1, updated_at = ? WHERE uid = ?`,
-		r.Name, r.Type, r.Query, optionsText(r.Options), r.Message, tagsJSON(r.Tags), r.Enabled,
-		updated.Unix(), r.UID); err != nil {
-		return MonitorRow{}, false, fmt.Errorf("meta: provisioning monitor %q: %w", r.UID, err)
+	err = d.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE monitors SET name = ?, type = ?, query = ?, options_json = ?, message = ?, tags_json = ?,
+			 enabled = ?, provisioned = 1, updated_at = ? WHERE uid = ?`,
+			r.Name, r.Type, r.Query, optionsText(r.Options), r.Message, tagsJSON(r.Tags), r.Enabled,
+			updated.Unix(), r.UID); err != nil {
+			return fmt.Errorf("meta: provisioning monitor %q: %w", r.UID, err)
+		}
+		return resetIfQueryChanged(ctx, tx, existing.ID, existing.Query, r.Query, now)
+	})
+	if err != nil {
+		return MonitorRow{}, false, err
 	}
 	r.ID, r.Provisioned, r.MutedUntil = existing.ID, true, existing.MutedUntil
 	r.CreatedAt, r.UpdatedAt = existing.CreatedAt, updated
 	return r, true, nil
 }
+
+// resetIfQueryChanged deletes a monitor's group states when its query changed,
+// in the writer's transaction, and records why.
+//
+// Here and not only in the scheduler, because the scheduler can only notice a
+// change it witnesses: a monitor edited while disabled, or just before a
+// restart, comes back as a fresh entry whose persisted groups belong to the old
+// query. Stepped as absent they would go NO_DATA and notify for groups that no
+// longer exist.
+func resetIfQueryChanged(ctx context.Context, tx *sql.Tx, id int64, before, after string, now time.Time) error {
+	if before == after {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM monitor_states WHERE monitor_id = ?`, id); err != nil {
+		return fmt.Errorf("meta: resetting states of monitor %d: %w", id, err)
+	}
+	return insertEvent(ctx, tx, EventRow{Ts: now, Kind: "reset", MonitorID: id, Value: math.NaN(),
+		Text: "query changed; group states reset"})
+}
+
+// ReleaseOrphanedMonitors turns provisioned monitors whose uid is not in keep
+// into ordinary, API-managed ones, and returns their names.
+//
+// Released, not deleted. A file that disappeared may be a directory that is not
+// mounted this time, and deleting would lose the monitor's history to a
+// configuration hiccup. But left provisioned, a monitor whose file is gone
+// would keep running while the API refused every edit with "edit the file it
+// is provisioned from" — a file that no longer exists. Released, it keeps
+// running and can be edited or deleted; if the file comes back, provisioning
+// refuses it as a uid collision and says so.
+func (d *DB) ReleaseOrphanedMonitors(ctx context.Context, keep []string, now time.Time) ([]string, error) {
+	rows, err := d.Monitors(ctx)
+	if err != nil {
+		return nil, err
+	}
+	kept := map[string]bool{}
+	for _, k := range keep {
+		kept[k] = true
+	}
+	var released []string
+	err = d.tx(ctx, func(tx *sql.Tx) error {
+		for _, r := range rows {
+			if !r.Provisioned || kept[r.UID] {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE monitors SET provisioned = 0, updated_at = ? WHERE id = ?`,
+				now.Unix(), r.ID); err != nil {
+				return fmt.Errorf("meta: releasing monitor %d: %w", r.ID, err)
+			}
+			if err := insertEvent(ctx, tx, EventRow{Ts: now, Kind: "released", MonitorID: r.ID, Value: math.NaN(),
+				Text: "its provisioning file is gone; it is now managed through the API"}); err != nil {
+				return err
+			}
+			released = append(released, r.Name)
+		}
+		return nil
+	})
+	return released, err
+}
+
+// ErrNotRunnable is returned by Commit for a monitor that was deleted or
+// disabled while its evaluation was in flight.
+var ErrNotRunnable = errors.New("monitor was deleted or disabled during its evaluation")
 
 // SetMute mutes a monitor until the given time (zero: unmute). Allowed on a
 // provisioned monitor: muting is what an operator does during an incident,
@@ -444,6 +519,16 @@ func (d *DB) Commit(ctx context.Context, c Commit) ([]OutboxRow, error) {
 	out := make([]OutboxRow, len(c.Outbox))
 	copy(out, c.Outbox)
 	err := d.tx(ctx, func(tx *sql.Tx) error {
+		// Inside the transaction, so a delete or disable either happened
+		// before this check (nothing is written) or waits for this commit
+		// and then removes what it wrote.
+		var enabled bool
+		switch err := tx.QueryRowContext(ctx, `SELECT enabled FROM monitors WHERE id = ?`, c.MonitorID).Scan(&enabled); {
+		case errors.Is(err, sql.ErrNoRows) || (err == nil && !enabled):
+			return ErrNotRunnable
+		case err != nil:
+			return fmt.Errorf("meta: checking monitor %d: %w", c.MonitorID, err)
+		}
 		for _, s := range c.Upsert {
 			g := s.Group
 			if g == nil {

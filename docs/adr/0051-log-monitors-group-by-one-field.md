@@ -12,7 +12,10 @@ The M6 grammar writes `.by(" keys ")`. The log store's histogram
 ## Decision
 
 `.by("field")` takes exactly one field; a second is a parse error naming the
-limit. Logs without the field are grouped as `(none)`.
+limit. Logs without the field are grouped as `(none)`. More than 100 distinct
+values in one evaluation is an evaluation error rather than a `(other)` group,
+because which values land in `(other)` depends on scan order, and a group that
+moves in and out of it would alert and recover on alternate evaluations.
 
 ## Alternatives considered
 

@@ -63,6 +63,13 @@ type Dispatcher struct {
 	mu      sync.Mutex
 	queues  map[string]chan meta.OutboxRow
 	pending map[int64]bool // queued or in flight
+	// done records when each row was completed, as a count of completions.
+	// The outbox is read without the lock, so a row can be delivered and
+	// deleted between a rescan's read and its enqueue; pending alone would
+	// then let the stale copy through and deliver it twice. Outbox ids are
+	// AUTOINCREMENT, never reused, so a completed id never names a new row.
+	done    map[int64]uint64
+	seq     uint64
 	wg      sync.WaitGroup
 	started bool
 }
@@ -90,6 +97,7 @@ func (d *Dispatcher) Run(ctx context.Context) {
 	d.mu.Lock()
 	d.queues = map[string]chan meta.OutboxRow{}
 	d.pending = map[int64]bool{}
+	d.done = map[int64]uint64{}
 	for name, n := range d.Notifiers {
 		q := make(chan meta.OutboxRow, queueLen)
 		d.queues[name] = q
@@ -117,6 +125,9 @@ func (d *Dispatcher) Run(ctx context.Context) {
 }
 
 func (d *Dispatcher) rescan(ctx context.Context) {
+	d.mu.Lock()
+	start := d.seq
+	d.mu.Unlock()
 	rows, err := d.Store.Outbox(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -124,7 +135,18 @@ func (d *Dispatcher) rescan(ctx context.Context) {
 		}
 		return
 	}
-	d.Enqueue(ctx, rows)
+	d.enqueue(ctx, rows)
+	// Rows completed before this read began are gone from the table, so no
+	// later read can return them; their marks have done their job. The
+	// scheduler's own Enqueue follows its commit by microseconds, well inside
+	// the next rescan's minute.
+	d.mu.Lock()
+	for id, at := range d.done {
+		if at <= start {
+			delete(d.done, id)
+		}
+	}
+	d.mu.Unlock()
 }
 
 // Enqueue hands committed outbox rows to their notifiers' queues. It never
@@ -132,6 +154,13 @@ func (d *Dispatcher) rescan(ctx context.Context) {
 // notifier that is not configured (the config changed since it was written)
 // is completed at once as failed, with that reason.
 func (d *Dispatcher) Enqueue(ctx context.Context, rows []meta.OutboxRow) {
+	d.enqueue(ctx, rows)
+}
+
+// enqueue skips a row that is queued, in flight, or already completed: the
+// caller's copy may predate the completion (a rescan's read, or a commit that
+// a rescan picked up and delivered before the committer got here).
+func (d *Dispatcher) enqueue(ctx context.Context, rows []meta.OutboxRow) {
 	var orphans []meta.OutboxRow
 	d.mu.Lock()
 	if !d.started {
@@ -139,7 +168,7 @@ func (d *Dispatcher) Enqueue(ctx context.Context, rows []meta.OutboxRow) {
 		return // Run's first rescan will find them.
 	}
 	for _, r := range rows {
-		if d.pending[r.ID] {
+		if _, completed := d.done[r.ID]; d.pending[r.ID] || completed {
 			continue
 		}
 		q, ok := d.queues[r.Notifier]
@@ -234,15 +263,22 @@ func (d *Dispatcher) complete(ctx context.Context, r meta.OutboxRow, err error, 
 	// recording even as shutdown begins.
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	if cerr := d.Store.CompleteOutbox(cctx, r.ID, ev); cerr != nil {
+	cerr := d.Store.CompleteOutbox(cctx, r.ID, ev)
+	if cerr != nil {
 		// The row stays, so it is delivered again: at least once.
 		d.Logger.Error("notify: recording delivery", "notifier", r.Notifier, "err", cerr)
 	}
-	d.release(r.ID)
+	d.release(r.ID, cerr == nil)
 }
 
-func (d *Dispatcher) release(id int64) {
+// release ends a row's flight; a row whose completion committed is marked
+// done, so a stale copy of it is not delivered again.
+func (d *Dispatcher) release(id int64, completed bool) {
 	d.mu.Lock()
 	delete(d.pending, id)
+	if completed {
+		d.seq++
+		d.done[id] = d.seq
+	}
 	d.mu.Unlock()
 }

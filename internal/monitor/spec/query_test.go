@@ -132,3 +132,21 @@ func TestOpCompare(t *testing.T) {
 		}
 	}
 }
+
+// TestRollupMustTileTheGrid: an explicit rollup step is one the window and
+// the store's epoch-aligned buckets can share.
+func TestRollupMustTileTheGrid(t *testing.T) {
+	for q, ok := range map[string]bool{
+		"avg(last_5m):avg:x{*}.rollup(avg, 60) > 1":                            true,
+		"avg(last_1h):sum:x{*}.rollup(sum, 3600) > 1":                          true,
+		"avg(last_5m):avg:x{*}.rollup(avg, 3600) > 1":                          false, // no bucket at all
+		"avg(last_5m):avg:x{*}.rollup(avg, 7) > 1":                             false, // does not divide a day
+		"avg(last_5m):avg:x{*}.rollup(avg, 120) > 1":                           false, // 2.5 buckets
+		"avg(last_5m):avg:x{*}.rollup(avg, 60) + avg:y{*}.rollup(avg, 30) > 1": false, // two grids
+	} {
+		_, err := ParseQuery(q)
+		if (err == nil) != ok {
+			t.Errorf("%s: err %v", q, err)
+		}
+	}
+}

@@ -1,6 +1,7 @@
 OK
 {
   "last_eval_age_seconds": 0,
+  "loading": false,
   "monitors": 1,
   "monitors_by_status": {
     "ALERT": 1

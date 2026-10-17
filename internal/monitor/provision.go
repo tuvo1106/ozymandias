@@ -21,11 +21,14 @@ import (
 // ProvisionStore is what provisioning needs from a database.
 type ProvisionStore interface {
 	UpsertProvisionedMonitor(ctx context.Context, row meta.MonitorRow, now time.Time) (changed bool, err error)
+	ReleaseOrphanedMonitors(ctx context.Context, keep []string, now time.Time) ([]string, error)
 }
 
 // ProvisionResult reports a provisioning pass.
 type ProvisionResult struct {
 	Loaded, Changed, Failed int
+	// Released names provisioned monitors whose file is gone.
+	Released []string
 }
 
 // File is a provisioned monitor: a definition plus whether it runs.
@@ -49,6 +52,7 @@ func Provision(ctx context.Context, store ProvisionStore, paths []string, known 
 		log = slog.New(slog.DiscardHandler)
 	}
 	var res ProvisionResult
+	var seen []string
 	for _, dir := range paths {
 		files, err := jsonFiles(dir)
 		switch {
@@ -61,12 +65,21 @@ func Provision(ctx context.Context, store ProvisionStore, paths []string, known 
 			continue
 		}
 		for _, file := range files {
-			if err := provisionFile(ctx, store, file, known, now, log, &res); err != nil {
+			if err := provisionFile(ctx, store, file, known, now, log, &res, &seen); err != nil {
 				log.Error("provisioning: skipping a monitor", "file", file, "err", err)
 				res.Failed++
 			}
 		}
 	}
+	released, err := store.ReleaseOrphanedMonitors(ctx, seen, now)
+	if err != nil {
+		log.Error("provisioning monitors: releasing monitors whose file is gone", "err", err)
+	}
+	for _, name := range released {
+		log.Warn("provisioning: a provisioned monitor's file is gone; it keeps running and is now managed through the API",
+			"monitor", name)
+	}
+	res.Released = released
 	if res.Loaded > 0 || res.Failed > 0 {
 		log.Info("provisioned monitors", "loaded", res.Loaded, "changed", res.Changed, "failed", res.Failed)
 	}
@@ -74,7 +87,7 @@ func Provision(ctx context.Context, store ProvisionStore, paths []string, known 
 }
 
 func provisionFile(ctx context.Context, store ProvisionStore, file string, known []string, now time.Time,
-	log *slog.Logger, res *ProvisionResult) error {
+	log *slog.Logger, res *ProvisionResult, seen *[]string) error {
 	data, err := os.ReadFile(file)
 	if err != nil {
 		return err
@@ -88,6 +101,9 @@ func provisionFile(ctx context.Context, store ProvisionStore, file string, known
 	if f.UID == "" {
 		return errors.New(`a provisioned monitor needs a "uid": it is what the upsert is keyed on`)
 	}
+	// Seen even if it then fails to compile: a broken file is a monitor
+	// somebody is fixing, not one that was removed.
+	*seen = append(*seen, f.UID)
 	if _, err := spec.Compile(f.Monitor); err != nil {
 		return err
 	}

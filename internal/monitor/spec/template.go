@@ -166,9 +166,11 @@ func (t *Template) Render(d Data) (string, error) {
 	return w.b.String(), nil
 }
 
-// mention is `@handle` at the start of the text or after whitespace, so an
-// email address in a message is not read as one.
-var mention = regexp.MustCompile(`(?:^|\s)@([A-Za-z0-9_-]+)`)
+// mention is `@handle` at the start of the text, after whitespace, or after
+// the `}` that closes a template action: an email address in a message is not
+// read as one, and `{{if .IsAlert}}@pager{{end}}` is, in the template source
+// as well as in what it renders.
+var mention = regexp.MustCompile(`(?:^|[\s}])@([A-Za-z0-9_-]+)`)
 
 // Mentions returns the distinct handles in text, in order of appearance.
 //

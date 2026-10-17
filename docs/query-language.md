@@ -440,7 +440,9 @@ duration       = int ( "m" | "h" ) ;          (* 1m to 24h *)
   number of matching lines in the window, and **no line is a count of zero, not
   missing data** — so `notify_no_data` is refused on a log monitor. `.by("service")`
   or `.by("@http.status")` groups by one field ([ADR-0051](adr/0051-log-monitors-group-by-one-field.md));
-  lines without it count under `(none)`.
+  lines without it count under `(none)`. A field with more than 100 distinct
+  values in the window is an evaluation error, since past the log store's group
+  cap which values get a group would change from one evaluation to the next.
 - The threshold written in the query **is** `thresholds.critical`; the
   definition may repeat it but may not disagree.
 
@@ -460,7 +462,10 @@ Every `evaluation_interval_s` (default 30) the window
 `[tick − delay − N, tick − delay]` is read on ten-second buckets
 ([ADR-0047](adr/0047-monitors-evaluate-behind-now.md)); a window over about four
 hours uses the smallest multiple of ten seconds that keeps it under the
-evaluator's bucket limit, and an explicit `.rollup(_, seconds)` sets it.
+evaluator's bucket limit and divides both the window and a day. An explicit
+`.rollup(_, seconds)` sets it, and must divide both too (a 3600 s rollup over a
+5-minute window would read no bucket at all and never fire); every rollup in an
+arithmetic query must use the same interval.
 
 ## Examples
 

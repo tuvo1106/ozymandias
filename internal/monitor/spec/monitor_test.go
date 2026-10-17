@@ -212,7 +212,8 @@ func TestMentions(t *testing.T) {
 		"hey @a and @b, then @a again": "a b",
 		"mail ops@example.com please":  "",
 		"line\n@hook\t@me_2":           "hook me_2",
-		"{{if .IsAlert}}@pager{{end}}": "",
+		"{{if .IsAlert}}@pager{{end}}": "pager",
+		"a}@b c@d":                     "b",
 	} {
 		if got := strings.Join(Mentions(in), " "); got != want {
 			t.Errorf("Mentions(%q) = %q, want %q", in, got, want)

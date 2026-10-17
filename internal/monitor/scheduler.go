@@ -31,7 +31,10 @@ const (
 	EventEvalError    = "eval_error"
 	EventEvalOK       = "eval_recovered"
 	EventGroupExpired = "group_expired"
-	EventReset        = "reset"
+	// EventReset and EventReleased are written by internal/meta, in the
+	// transaction that changes the query or releases a provisioned monitor.
+	EventReset    = "reset"
+	EventReleased = "released"
 )
 
 // Store is the part of internal/meta the scheduler needs.
@@ -108,6 +111,7 @@ type Scheduler struct {
 	wake    chan struct{}
 	lastOK  time.Time // completion of the last successful evaluation
 	started time.Time
+	loading bool // the startup load is failing and being retried
 
 	evaluations, errorsTotal, skipped, commitErrors *selfmetrics.Counter
 }
@@ -185,12 +189,17 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	// The first load is retried rather than fatal: a database that is busy for
 	// a moment at startup must not leave a server up with no monitors running
 	// and nothing saying so. While it fails, Health reports a stall.
+	stalled := false
 	for {
 		err := s.load(ctx, true)
+		s.mu.Lock()
+		s.loading = err != nil
+		s.mu.Unlock()
 		if err == nil {
 			break
 		}
 		s.log.Error("monitors: loading; retrying in 10s", "err", err)
+		stalled = s.watchdog(s.opt.Clock.Now(), stalled)
 		t := s.opt.Clock.NewTimer(10 * time.Second)
 		select {
 		case <-ctx.Done():
@@ -213,7 +222,6 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	defer timer.Stop()
 	prune := s.opt.Clock.NewTicker(time.Hour)
 	defer prune.Stop()
-	stalled := false
 	for {
 		now := s.opt.Clock.Now()
 		next := s.dispatchDue(now)
@@ -423,9 +431,9 @@ func (s *Scheduler) evaluate(ctx context.Context, e *entry, c *spec.Compiled, ro
 		for k := range states {
 			commit.Delete = append(commit.Delete, k)
 		}
+		// (The database already deleted them, and recorded the reset, in the
+		// transaction that changed the query; these deletes are no-ops there.)
 		states = map[string]tracked{}
-		commit.Events = append(commit.Events, meta.EventRow{Ts: now, Kind: EventReset, MonitorID: row.ID,
-			Value: math.NaN(), Text: "query changed; group states reset"})
 	}
 	if e.lastErr != "" {
 		commit.Events = append(commit.Events, meta.EventRow{Ts: now, Kind: EventEvalOK, MonitorID: row.ID,
@@ -460,6 +468,11 @@ func (s *Scheduler) evaluate(ctx context.Context, e *entry, c *spec.Compiled, ro
 		}
 	}
 	out, err := s.opt.Store.Commit(ctx, commit)
+	if errors.Is(err, meta.ErrNotRunnable) {
+		// Deleted or disabled while this evaluation ran: nothing to record,
+		// and the next reload drops the entry.
+		return
+	}
 	if err != nil {
 		s.commitErrors.Inc()
 		s.log.Error("monitors: committing an evaluation; it will be recomputed next time", "id", row.ID, "err", err)
@@ -502,8 +515,29 @@ func (s *Scheduler) notifications(c *spec.Compiled, row meta.MonitorRow, st grou
 	n.Reason = string(st.Res.Notify)
 	payload, _ := json.Marshal(n)
 	var out []meta.OutboxRow
-	for _, name := range spec.Mentions(n.Message) {
+	for _, name := range routes(c.Message, n.Message) {
 		out = append(out, meta.OutboxRow{Created: now, MonitorID: row.ID, GroupKey: st.Key, Notifier: name, Payload: payload})
+	}
+	return out
+}
+
+// routes is who a rendered message notifies: the handles in the rendered text
+// that the template's own text also names.
+//
+// Rendered, so that `{{if .IsAlert}}@pager{{end}}` pages only for alerts. And
+// also named by the template, because the rendered text contains data: a tag
+// value or a log attribute of "x @discord-ops" would otherwise route a page to
+// a notifier the author never mentioned, chosen by whoever can set a tag.
+func routes(template, rendered string) []string {
+	allowed := map[string]bool{}
+	for _, m := range spec.Mentions(template) {
+		allowed[m] = true
+	}
+	var out []string
+	for _, m := range spec.Mentions(rendered) {
+		if allowed[m] {
+			out = append(out, m)
+		}
 	}
 	return out
 }
@@ -558,10 +592,13 @@ func (s *Scheduler) link(id int64, from, to time.Time) string {
 type Health struct {
 	Monitors    int           `json:"monitors"`
 	LastEvalAge time.Duration `json:"-"`
-	// Stalled means there are monitors to run and none has completed an
-	// evaluation for longer than StallAfter: the alerting is down, and every
-	// monitor's silence is now meaningless.
+	// Stalled means there are monitors to run (or the scheduler cannot even
+	// load them) and none has completed an evaluation for longer than
+	// stallAfter: the alerting is down, and every monitor's silence is now
+	// meaningless.
 	Stalled bool `json:"stalled"`
+	// Loading means the startup load is failing and being retried.
+	Loading bool `json:"loading"`
 }
 
 // StallAfter is how long without a successful evaluation counts as stalled,
@@ -578,19 +615,31 @@ func (s *Scheduler) stallAfter() time.Duration {
 }
 
 // Health reports whether evaluations are happening.
+//
+// Monitors counts the runnable ones: an entry whose stored definition no
+// longer compiles is never evaluated, and counting it would make an idle
+// scheduler look stalled forever. While the startup load keeps failing there
+// are no entries at all, so that case is reported separately: Loading, and
+// stalled once it has failed for as long as a stall takes.
 func (s *Scheduler) Health() Health {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.opt.Clock.Now()
+	h := Health{Loading: s.loading}
+	for _, e := range s.entries {
+		if e.compiled != nil {
+			h.Monitors++
+		}
+	}
 	ref := s.lastOK
 	if ref.IsZero() {
 		ref = s.started
 	}
-	h := Health{Monitors: len(s.entries)}
 	if !ref.IsZero() {
 		h.LastEvalAge = max(now.Sub(ref), 0)
 	}
-	h.Stalled = h.Monitors > 0 && !ref.IsZero() && h.LastEvalAge > s.stallAfter()
+	after := s.stallAfter()
+	h.Stalled = !ref.IsZero() && h.LastEvalAge > after && (h.Monitors > 0 || s.loading)
 	return h
 }
 

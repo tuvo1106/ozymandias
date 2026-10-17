@@ -27,3 +27,9 @@ reads only its own. The image bakes `deploy/monitors/` into `/etc/ozy/monitors`.
 
 An app that ships monitors mounts a directory and adds it to `monitor_paths`.
 One more config key. The M6 spec is amended to name it.
+
+A provisioned monitor whose file disappears is **released** (made API-managed,
+with an event) rather than deleted or left provisioned. Deleting would lose
+history to a directory that simply was not mounted; leaving it provisioned would
+keep it running while the API refused every edit, pointing at a file that no
+longer exists.
