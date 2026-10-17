@@ -121,9 +121,12 @@ func Step(c *spec.Compiled) time.Duration {
 	}
 	// A step must divide the window and a day, or the aligned window holds a
 	// partial bucket the store's epoch-floored buckets do not line up with.
-	// A window is whole minutes, so 60 s always qualifies and the loop ends.
+	// A window is whole minutes, so 60 s qualifies whenever the window is at
+	// most 1490 minutes — which spec.MaxWindow (24h) guarantees, and
+	// TestAutoStepDividesWindowAndDay checks up to it. The bound is there so
+	// a larger MaxWindow fails that test instead of hanging a worker.
 	step := NativeStep
-	for c.Parsed.Window/step > maxBucketsPerFetch || c.Parsed.Window%step != 0 || (24*time.Hour)%step != 0 {
+	for step < time.Hour && (c.Parsed.Window/step > maxBucketsPerFetch || c.Parsed.Window%step != 0 || (24*time.Hour)%step != 0) {
 		step += NativeStep
 	}
 	return step
@@ -230,6 +233,14 @@ func (e *Evaluator) fetchLogs(ctx context.Context, c *spec.Compiled, d *Data) er
 		// there are the most logs. Say so instead.
 		return fmt.Errorf("monitor eval: the log query read past its scan budget; narrow the filter")
 	}
+	if res.Overflowed {
+		// Past the store's group cap, which values get their own group
+		// depends on scan order. A group that lands in "(other)" one
+		// evaluation is absent, so zero, so recovered, and alerts again
+		// the next: flapping, plus a group named "(other)". Refuse.
+		return fmt.Errorf("monitor eval: %q has more than %d distinct values in the window; group by a field with fewer",
+			lq.By, logstore.MaxGroups)
+	}
 	if lq.By == "" {
 		// One series, present even when nothing matched: zero lines is a count.
 		ser, err := d.series("*", spec.Group{}, n)
@@ -244,14 +255,6 @@ func (e *Evaluator) fetchLogs(ctx context.Context, c *spec.Compiled, d *Data) er
 		i := int(time.UnixMilli(b.Ts).Sub(d.From) / d.Step)
 		if i < 0 || i >= n {
 			continue
-		}
-		if _, over := b.Counts[logstore.OtherGroup]; over && lq.By != "" {
-			// Past the store's group cap, which values get their own group
-			// depends on scan order. A group that lands in "(other)" one
-			// evaluation is absent, so zero, so recovered, and alerts again
-			// the next: flapping, plus a group named "(other)". Refuse.
-			return fmt.Errorf("monitor eval: %q has more than %d distinct values in the window; group by a field with fewer",
-				lq.By, logstore.MaxGroups)
 		}
 		for gv, cnt := range b.Counts {
 			g := spec.Group{}

@@ -142,10 +142,14 @@ type OutboxRow struct {
 // Commit is one evaluation's writes for one monitor, applied atomically.
 type Commit struct {
 	MonitorID int64
-	Upsert    []StateRow
-	Delete    []string // group keys
-	Events    []EventRow
-	Outbox    []OutboxRow
+	// Query is the query the evaluation ran. If set and the stored query
+	// differs, the commit is refused: the change already reset the groups, and
+	// this evaluation's would bring the old query's back.
+	Query  string
+	Upsert []StateRow
+	Delete []string // group keys
+	Events []EventRow
+	Outbox []OutboxRow
 }
 
 const monitorColumns = `SELECT id, COALESCE(uid, ''), name, type, query, options_json, message, tags_json,
@@ -394,9 +398,9 @@ func (d *DB) ReleaseOrphanedMonitors(ctx context.Context, keep []string, now tim
 	return released, err
 }
 
-// ErrNotRunnable is returned by Commit for a monitor that was deleted or
-// disabled while its evaluation was in flight.
-var ErrNotRunnable = errors.New("monitor was deleted or disabled during its evaluation")
+// ErrNotRunnable is returned by Commit for a monitor that was deleted,
+// disabled or given a new query while its evaluation was in flight.
+var ErrNotRunnable = errors.New("monitor was deleted, disabled or changed during its evaluation")
 
 // SetMute mutes a monitor until the given time (zero: unmute). Allowed on a
 // provisioned monitor: muting is what an operator does during an incident,
@@ -475,6 +479,28 @@ func nullFloat(v float64) any {
 	return v
 }
 
+// EnabledStatuses returns each enabled monitor's group statuses, by monitor
+// id: the nav badge's question, in one consistent read. A disabled monitor's
+// stored states describe when it last ran, not now.
+func (d *DB) EnabledStatuses(ctx context.Context) (map[int64][]string, error) {
+	rows, err := d.db.QueryContext(ctx, `SELECT s.monitor_id, s.status FROM monitor_states s
+		JOIN monitors m ON m.id = s.monitor_id WHERE m.enabled = 1`)
+	if err != nil {
+		return nil, fmt.Errorf("meta: reading monitor statuses: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64][]string{}
+	for rows.Next() {
+		var id int64
+		var st string
+		if err := rows.Scan(&id, &st); err != nil {
+			return nil, fmt.Errorf("meta: reading monitor statuses: %w", err)
+		}
+		out[id] = append(out[id], st)
+	}
+	return out, rows.Err()
+}
+
 // States returns a monitor's states, or every monitor's when monitorID is 0.
 func (d *DB) States(ctx context.Context, monitorID int64) ([]StateRow, error) {
 	q := `SELECT monitor_id, group_key, group_json, status, since_ts, breaches, last_value, last_eval_ts,
@@ -523,8 +549,9 @@ func (d *DB) Commit(ctx context.Context, c Commit) ([]OutboxRow, error) {
 		// before this check (nothing is written) or waits for this commit
 		// and then removes what it wrote.
 		var enabled bool
-		switch err := tx.QueryRowContext(ctx, `SELECT enabled FROM monitors WHERE id = ?`, c.MonitorID).Scan(&enabled); {
-		case errors.Is(err, sql.ErrNoRows) || (err == nil && !enabled):
+		var query string
+		switch err := tx.QueryRowContext(ctx, `SELECT enabled, query FROM monitors WHERE id = ?`, c.MonitorID).Scan(&enabled, &query); {
+		case errors.Is(err, sql.ErrNoRows) || (err == nil && (!enabled || (c.Query != "" && c.Query != query))):
 			return ErrNotRunnable
 		case err != nil:
 			return fmt.Errorf("meta: checking monitor %d: %w", c.MonitorID, err)

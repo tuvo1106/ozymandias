@@ -38,6 +38,7 @@ type MonitorStore interface {
 	DeleteMonitor(ctx context.Context, id int64) error
 	SetMute(ctx context.Context, id int64, until time.Time) (meta.MonitorRow, error)
 	States(ctx context.Context, monitorID int64) ([]meta.StateRow, error)
+	EnabledStatuses(ctx context.Context) (map[int64][]string, error)
 	Events(ctx context.Context, q meta.EventQuery) ([]meta.EventRow, error)
 	AddEvent(ctx context.Context, e meta.EventRow) error
 }
@@ -598,27 +599,17 @@ func (m *Monitors) notifiers(w http.ResponseWriter, _ *http.Request) {
 
 // status is the nav badge and the stall banner in one cheap call.
 func (m *Monitors) status(w http.ResponseWriter, r *http.Request) {
-	all, err := m.Store.States(r.Context(), 0)
+	byMonitor, err := m.Store.EnabledStatuses(r.Context())
 	if err != nil {
 		m.fail(w, r, "reading monitor states", err)
 		return
 	}
-	rows, err := m.Store.Monitors(r.Context())
-	if err != nil {
-		m.fail(w, r, "listing monitors", err)
-		return
-	}
-	enabled := map[int64]bool{}
-	for _, row := range rows {
-		enabled[row.ID] = row.Enabled
-	}
 	worst := map[int64]string{}
-	for _, s := range all {
-		if !enabled[s.MonitorID] {
-			continue // disabled, or deleted mid-read: not part of "what is alerting"
-		}
-		if cur, ok := worst[s.MonitorID]; !ok || severity[s.Status] > severity[cur] {
-			worst[s.MonitorID] = s.Status
+	for id, sts := range byMonitor {
+		for _, st := range sts {
+			if cur, ok := worst[id]; !ok || severity[st] > severity[cur] {
+				worst[id] = st
+			}
 		}
 	}
 	counts := map[string]int{}

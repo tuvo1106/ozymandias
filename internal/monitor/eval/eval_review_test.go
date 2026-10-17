@@ -16,19 +16,31 @@ import (
 type countsLogs map[string]int64
 
 func (c countsLogs) Aggregate(_ context.Context, _ logql.Node, from, _ int64, _ logstore.AggSpec) (*logstore.AggResult, error) {
-	return &logstore.AggResult{Buckets: []logstore.Bucket{{Ts: from, Counts: c}}}, nil
+	_, over := c[overflowMark]
+	counts := map[string]int64{}
+	for k, v := range c {
+		if k != overflowMark {
+			counts[k] = v
+		}
+	}
+	return &logstore.AggResult{Buckets: []logstore.Bucket{{Ts: from, Counts: counts}}, Overflowed: over}, nil
 }
+
+// overflowMark in a countsLogs makes its answer report an overflow.
+const overflowMark = "\x00overflow"
 
 // TestLogGroupCapIsAnError: past the store's group cap, which values get a
 // group depends on scan order, so the evaluation refuses to answer.
 func TestLogGroupCapIsAnError(t *testing.T) {
 	c := compile(t, spec.TypeLog, `logs("x").rollup("count").by("@user").last("5m") > 1`)
-	_, _, err := (&Evaluator{Logs: countsLogs{"u1": 3, logstore.OtherGroup: 9}}).Evaluate(context.Background(), c, t0)
+	_, _, err := (&Evaluator{Logs: countsLogs{"u1": 3, logstore.OtherGroup: 9, overflowMark: 0}}).Evaluate(context.Background(), c, t0)
 	if err == nil || !strings.Contains(err.Error(), "distinct values") {
 		t.Fatalf("err %v", err)
 	}
-	if _, _, err := (&Evaluator{Logs: countsLogs{"u1": 3}}).Evaluate(context.Background(), c, t0); err != nil {
-		t.Fatal(err)
+	// A log whose value really is "(other)" is a group like any other.
+	vals, _, err := (&Evaluator{Logs: countsLogs{"u1": 3, logstore.OtherGroup: 2}}).Evaluate(context.Background(), c, t0)
+	if err != nil || len(vals) != 2 {
+		t.Fatal(vals, err)
 	}
 }
 
@@ -52,8 +64,7 @@ func TestFetchBoundsCells(t *testing.T) {
 // TestAutoStepDividesWindowAndDay: for every window the grammar allows, the
 // chosen step tiles both the window and a day, within the bucket limit.
 func TestAutoStepDividesWindowAndDay(t *testing.T) {
-	for m := 1; m <= 24*60; m++ {
-		w := time.Duration(m) * time.Minute
+	for w := time.Minute; w <= spec.MaxWindow; w += time.Minute {
 		c := &spec.Compiled{Parsed: spec.Query{Window: w}}
 		st := Step(c)
 		if w%st != 0 || (24*time.Hour)%st != 0 || w/st > maxBucketsPerFetch {

@@ -100,7 +100,11 @@ type Bucket struct {
 type AggResult struct {
 	Buckets   []Bucket
 	Truncated bool
-	Stats     Stats
+	// Overflowed is set when a group-by met more than MaxGroups distinct
+	// values and counted the rest under OtherGroup. Said explicitly because
+	// "(other)" is also a value a log can carry.
+	Overflowed bool
+	Stats      Stats
 }
 
 // groupValue is a log's value for an AggSpec.By.
@@ -128,11 +132,12 @@ func (s *Store) Aggregate(ctx context.Context, q logql.Node, from, to int64, a A
 	}
 	buckets := map[int64]map[string]int64{}
 	seen := map[string]bool{}
+	overflowed := false
 	trunc, st, err := s.scan(ctx, q, from, to, a.ScanBudget, func(l *wire.Log) {
 		g := groupValue(l, a.By)
 		if !seen[g] {
 			if len(seen) >= MaxGroups {
-				g = OtherGroup
+				g, overflowed = OtherGroup, true
 			} else {
 				seen[g] = true
 			}
@@ -148,7 +153,7 @@ func (s *Store) Aggregate(ctx context.Context, q logql.Node, from, to int64, a A
 	if err != nil {
 		return nil, err
 	}
-	res := &AggResult{Truncated: trunc, Stats: st}
+	res := &AggResult{Truncated: trunc, Overflowed: overflowed, Stats: st}
 	for ts, c := range buckets {
 		res.Buckets = append(res.Buckets, Bucket{Ts: ts, Counts: c})
 	}

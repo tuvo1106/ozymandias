@@ -790,7 +790,8 @@ uid, so monitors spread across the interval. A pool (4) runs evaluations. A moni
 when it is due skips the tick (`ozy.monitor.eval_skipped`) rather than queueing behind itself.
 An evaluation is stamped with its scheduled tick, not the moment a worker reached it, so a busy pool
 does not change any answer. A commit re-checks, inside its transaction, that the monitor still
-exists and is enabled, so an evaluation in flight when its monitor is deleted writes nothing.
+exists, is enabled and has the query that was evaluated, so an evaluation in flight when its
+monitor is deleted or edited writes nothing (its state, events and `eval_error` alike).
 A query change clears the groups in the transaction that makes it, so a restart cannot resurrect
 the old query's groups as NO_DATA. A failed query is an `eval_error` event, recorded once per distinct
 error, and leaves the state alone.
@@ -799,8 +800,8 @@ error, and leaves the state alone.
 executed at save against sample data for every status, so a misspelt field is a 400 and not a page
 that fails to render. `range` and `define` are refused and output is capped. `@name` in the rendered
 message selects notifiers, so `{{if .IsAlert}}@pager{{end}}` pages only for alerts, but only
-among the handles the template itself names: a tag value that renders as `x @pager` is data and
-must not choose who is paged. Secrets are
+among the handles the template's source names, found in a render whose data has had every `@`
+removed: a tag value of `x @pager` is data and must not choose who is paged. Secrets are
 environment variables named in config, never stored or returned.
 
 **Watching the watcher.** If monitors exist and none has completed an evaluation for three intervals

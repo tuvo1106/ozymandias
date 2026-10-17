@@ -88,8 +88,24 @@ func TestMonitors_CommitRefusesDeletedOrDisabled(t *testing.T) {
 	if _, err := d.Commit(ctx, c(off.ID)); !errors.Is(err, ErrNotRunnable) {
 		t.Fatalf("disabled: %v", err)
 	}
+	// Changed under it: the evaluation of the old query is refused, one of
+	// the current query is not.
+	ch, _ := d.CreateMonitor(ctx, mon("changed"), t0)
+	stale := c(ch.ID)
+	stale.Query = "avg(last_5m):avg:old{*} > 1"
+	if _, err := d.Commit(ctx, stale); !errors.Is(err, ErrNotRunnable) {
+		t.Fatalf("stale query: %v", err)
+	}
 	if st, _ := d.States(ctx, 0); len(st) != 0 {
 		t.Fatalf("states written: %v", st)
+	}
+	current := c(ch.ID)
+	current.Query = ch.Query
+	if _, err := d.Commit(ctx, current); err != nil {
+		t.Fatalf("current query: %v", err)
+	}
+	if err := d.DeleteMonitor(ctx, ch.ID); err != nil {
+		t.Fatal(err)
 	}
 	if ob, _ := d.Outbox(ctx); len(ob) != 0 {
 		t.Fatalf("outbox written: %v", ob)

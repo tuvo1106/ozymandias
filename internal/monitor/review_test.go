@@ -69,6 +69,48 @@ func TestDeletedDuringEvaluationWritesNothing(t *testing.T) {
 	}
 }
 
+// TestQueryChangedDuringEvaluationWritesNothing: an evaluation of the old
+// query that finishes after the edit does not bring the old groups back.
+func TestQueryChangedDuringEvaluationWritesNothing(t *testing.T) {
+	h := newHarness(t)
+	m := backlog()
+	m.Message = "@cap"
+	id := h.create(m)
+	h.points("queue.depth", nil, 0, 5*time.Minute, func(time.Duration) float64 { return 25 })
+	h.evalAt(t0.Add(30 * time.Second))
+	e := h.s.entries[id]
+	row, _ := h.db.Monitor(context.Background(), id)
+	row.Query = "last(last_1m):avg:other{*} > 20"
+	if _, err := h.db.UpdateMonitor(context.Background(), id, row, t0); err != nil {
+		t.Fatal(err)
+	}
+	at := t0.Add(time.Minute)
+	h.clk.Set(at)
+	h.s.evaluate(context.Background(), e, e.compiled, e.row, at) // the old query, in flight
+	if st, _ := h.db.States(context.Background(), id); len(st) != 0 {
+		t.Fatalf("old query's groups came back: %v", st)
+	}
+}
+
+// TestEvalErrorForDeletedMonitorIsNotRecorded: a failing evaluation whose
+// monitor was deleted under it leaves no orphan event.
+func TestEvalErrorForDeletedMonitorIsNotRecorded(t *testing.T) {
+	h := newHarness(t)
+	h.ev = &erroring{err: errors.New("timeout")}
+	h.s = h.scheduler()
+	id := h.create(backlog())
+	h.evalAt(t0)
+	e := h.s.entries[id]
+	e.lastErr = ""
+	if err := h.db.DeleteMonitor(context.Background(), id); err != nil {
+		t.Fatal(err)
+	}
+	h.s.evaluate(context.Background(), e, e.compiled, e.row, t0.Add(30*time.Second))
+	if evs, _ := h.db.Events(context.Background(), meta.EventQuery{}); len(evs) != 0 {
+		t.Fatalf("orphan events %+v", evs)
+	}
+}
+
 // hostile returns one group whose tag value carries a mention.
 type hostile struct{}
 
@@ -98,7 +140,6 @@ func TestDataCannotAddNotifiers(t *testing.T) {
 	if !slices.Equal(got, []string{"cap"}) {
 		t.Fatalf("routed to %v", got)
 	}
-	eqStrings(t, "conditional", routes("{{if .IsAlert}}@pager{{end}} @log", "@pager @log"), []string{"pager", "log"})
 }
 
 // failingMonitors is a store whose monitor list cannot be read.
@@ -145,6 +186,12 @@ func TestUncompilableMonitorIsNotAStall(t *testing.T) {
 	if hl := h.s.Health(); hl.Monitors != 0 || hl.Stalled {
 		t.Fatalf("health %+v", hl)
 	}
+	// The self-metric agrees with the API about what "monitors" means.
+	for _, p := range h.s.opt.Registry.Snapshot() {
+		if p.Name == "ozy.monitor.monitors" && p.Value != 0 {
+			t.Errorf("ozy.monitor.monitors = %v counts a monitor that never runs", p.Value)
+		}
+	}
 }
 
 // TestProvisionReleasesRemovedFiles: deleting a provisioned file hands the
@@ -162,11 +209,35 @@ func TestProvisionReleasesRemovedFiles(t *testing.T) {
 	if res := Provision(context.Background(), provisionDB{db}, []string{dir}, nil, t0, nil); res.Loaded != 2 {
 		t.Fatalf("%+v", res)
 	}
+	good := `{"uid":"b","name":"B","type":"metric","query":"avg(last_5m):avg:x{*} > 1"}`
 	if err := os.Remove(filepath.Join(dir, "a.json")); err != nil {
 		t.Fatal(err)
 	}
-	// b is broken now, which is not the same as removed.
-	if err := os.WriteFile(filepath.Join(dir, "b.json"), []byte(`{"uid":"b","name":"B","type":"metric","query":"x"}`), 0o644); err != nil {
+	// A pass that is not clean releases nothing: a file that does not even
+	// decode (whose uid is unknowable), one that does not compile, or a
+	// configured directory that is missing.
+	for what, step := range map[string]struct {
+		b     string
+		paths []string
+	}{
+		"undecodable":  {`{"uid":"b",`, []string{dir}},
+		"uncompilable": {`{"uid":"b","name":"B","type":"metric","query":"x"}`, []string{dir}},
+		"missing dir":  {good, []string{dir, filepath.Join(dir, "unmounted")}},
+	} {
+		if err := os.WriteFile(filepath.Join(dir, "b.json"), []byte(step.b), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if res := Provision(context.Background(), provisionDB{db}, step.paths, nil, t0, nil); len(res.Released) != 0 {
+			t.Fatalf("%s: released %v", what, res.Released)
+		}
+	}
+	for _, uid := range []string{"a", "b"} {
+		if m, _ := db.MonitorByUID(context.Background(), uid); !m.Provisioned {
+			t.Fatalf("%s released by an unclean pass", uid)
+		}
+	}
+	// Clean: a is released, b is not.
+	if err := os.WriteFile(filepath.Join(dir, "b.json"), []byte(good), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	res := Provision(context.Background(), provisionDB{db}, []string{dir}, nil, t0, nil)

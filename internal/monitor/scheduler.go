@@ -150,11 +150,7 @@ func New(opt Options) *Scheduler {
 	s.skipped = r.Counter("ozy.monitor.eval_skipped")
 	s.commitErrors = r.Counter("ozy.monitor.commit_errors")
 	r.GaugeFunc("ozy.monitor.last_eval_age_seconds", func() float64 { return s.Health().LastEvalAge.Seconds() })
-	r.GaugeFunc("ozy.monitor.monitors", func() float64 {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		return float64(len(s.entries))
-	})
+	r.GaugeFunc("ozy.monitor.monitors", func() float64 { return float64(s.Health().Monitors) })
 	return s
 }
 
@@ -422,7 +418,7 @@ func (s *Scheduler) evaluate(ctx context.Context, e *entry, c *spec.Compiled, ro
 	_, windowEnd := eval.Window(c, now)
 	muted := !row.MutedUntil.IsZero() && row.MutedUntil.After(now)
 
-	commit := meta.Commit{MonitorID: row.ID}
+	commit := meta.Commit{MonitorID: row.ID, Query: row.Query}
 	states := e.states
 	if e.statesFor != row.Query {
 		// The query changed: the old groups are answers to a different
@@ -500,8 +496,14 @@ func (s *Scheduler) evalError(ctx context.Context, e *entry, row meta.MonitorRow
 		return
 	}
 	s.log.Warn("monitors: evaluation failed", "id", row.ID, "name", row.Name, "err", err)
-	if aerr := s.opt.Store.AddEvent(ctx, meta.EventRow{Ts: now, Kind: EventEvalError, MonitorID: row.ID,
-		Value: math.NaN(), Text: msg}); aerr != nil {
+	// Through Commit, so an error from an evaluation whose monitor was
+	// deleted or changed under it is not recorded against it.
+	_, aerr := s.opt.Store.Commit(ctx, meta.Commit{MonitorID: row.ID, Query: row.Query, Events: []meta.EventRow{{
+		Ts: now, Kind: EventEvalError, MonitorID: row.ID, Value: math.NaN(), Text: msg}}})
+	if errors.Is(aerr, meta.ErrNotRunnable) {
+		return
+	}
+	if aerr != nil {
 		s.log.Error("monitors: recording an evaluation error", "id", row.ID, "err", aerr)
 		return
 	}
@@ -511,43 +513,23 @@ func (s *Scheduler) evalError(ctx context.Context, e *entry, row meta.MonitorRow
 // notifications renders the message for one step and makes one outbox row per
 // notifier it mentions.
 func (s *Scheduler) notifications(c *spec.Compiled, row meta.MonitorRow, st groupStep, now, windowEnd time.Time) []meta.OutboxRow {
-	n := s.render(c, row, st.Group, st.Key, st.Res.From, st.Res.To, st.Value, st.Next.Since, now, windowEnd)
+	n, to := s.render(c, row, st.Group, st.Key, st.Res.From, st.Res.To, st.Value, st.Next.Since, now, windowEnd)
 	n.Reason = string(st.Res.Notify)
 	payload, _ := json.Marshal(n)
 	var out []meta.OutboxRow
-	for _, name := range routes(c.Message, n.Message) {
+	for _, name := range to {
 		out = append(out, meta.OutboxRow{Created: now, MonitorID: row.ID, GroupKey: st.Key, Notifier: name, Payload: payload})
 	}
 	return out
 }
 
-// routes is who a rendered message notifies: the handles in the rendered text
-// that the template's own text also names.
-//
-// Rendered, so that `{{if .IsAlert}}@pager{{end}}` pages only for alerts. And
-// also named by the template, because the rendered text contains data: a tag
-// value or a log attribute of "x @discord-ops" would otherwise route a page to
-// a notifier the author never mentioned, chosen by whoever can set a tag.
-func routes(template, rendered string) []string {
-	allowed := map[string]bool{}
-	for _, m := range spec.Mentions(template) {
-		allowed[m] = true
-	}
-	var out []string
-	for _, m := range spec.Mentions(rendered) {
-		if allowed[m] {
-			out = append(out, m)
-		}
-	}
-	return out
-}
-
-// render builds a notification. A template that fails at runtime (it compiled
+// render builds a notification and says who it goes to
+// (spec.Template.Recipients). A template that fails at runtime (it compiled
 // at save, so this is rare: a value that prints past the size bound) still
 // produces a notification, with the failure in it — a page that says "your
 // template broke" beats no page.
 func (s *Scheduler) render(c *spec.Compiled, row meta.MonitorRow, g spec.Group, key string, from, to state.Status,
-	value float64, since, now, windowEnd time.Time) notify.Notification {
+	value float64, since, now, windowEnd time.Time) (notify.Notification, []string) {
 	if g == nil {
 		g = spec.Group{}
 	}
@@ -575,7 +557,7 @@ func (s *Scheduler) render(c *spec.Compiled, row meta.MonitorRow, g spec.Group, 
 		MonitorID: row.ID, MonitorUID: row.UID, MonitorName: row.Name, Tags: row.Tags,
 		GroupKey: key, Group: g, Status: string(to), PrevStatus: string(from),
 		Value: notify.ValuePtr(value), Threshold: threshold, Message: text, Link: link, Ts: now,
-	}
+	}, c.Template.Recipients(d)
 }
 
 func (s *Scheduler) link(id int64, from, to time.Time) string {

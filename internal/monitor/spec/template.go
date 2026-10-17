@@ -65,6 +65,9 @@ func (g Group) String() string {
 // Template is a compiled message.
 type Template struct {
 	t *template.Template
+	// named is every handle the source mentions: the only notifiers a
+	// message from it can ever reach.
+	named []string
 }
 
 // CompileTemplate parses a message and proves it renders.
@@ -93,7 +96,7 @@ func CompileTemplate(text string) (*Template, error) {
 			return nil, err
 		}
 	}
-	out := &Template{t: t}
+	out := &Template{t: t, named: Mentions(text)}
 	for _, sample := range samples() {
 		if _, err := out.Render(sample); err != nil {
 			return nil, err
@@ -166,17 +169,52 @@ func (t *Template) Render(d Data) (string, error) {
 	return w.b.String(), nil
 }
 
+// Recipients is who the message for d notifies: each handle the template's
+// source names that appears as `@handle` in the message rendered from d with
+// every `@` removed from d's text.
+//
+// Rendered, so `{{if .IsAlert}}@pager{{end}}` pages only for alerts. Named in
+// the source, and rendered from data without `@`, because a tag value, a log
+// attribute or a monitor name is data, and "x @discord-ops" in one must not
+// choose who is paged. No boundary is required before the handle in the
+// render: the source already decided it is a mention, and `CPU:{{if
+// .IsAlert}}@pager{{end}}` renders `CPU:@pager`. A template that fails to
+// render reaches everyone it names, so the failure is still seen.
+func (t *Template) Recipients(d Data) []string {
+	d.Monitor.Name = strings.ReplaceAll(d.Monitor.Name, "@", "")
+	d.Monitor.UID = strings.ReplaceAll(d.Monitor.UID, "@", "")
+	d.Link = strings.ReplaceAll(d.Link, "@", "")
+	if d.Group != nil {
+		g := make(Group, len(d.Group))
+		for k, v := range d.Group {
+			g[strings.ReplaceAll(k, "@", "")] = strings.ReplaceAll(v, "@", "")
+		}
+		d.Group = g
+	}
+	text, err := t.Render(d)
+	if err != nil {
+		return slices.Clone(t.named)
+	}
+	var out []string
+	for _, h := range t.named {
+		re := regexp.MustCompile(`@` + regexp.QuoteMeta(h) + `(?:[^A-Za-z0-9_-]|$)`)
+		if re.MatchString(text) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
 // mention is `@handle` at the start of the text, after whitespace, or after
 // the `}` that closes a template action: an email address in a message is not
-// read as one, and `{{if .IsAlert}}@pager{{end}}` is, in the template source
-// as well as in what it renders.
+// read as one, and `{{if .IsAlert}}@pager{{end}}` is.
 var mention = regexp.MustCompile(`(?:^|[\s}])@([A-Za-z0-9_-]+)`)
 
 // Mentions returns the distinct handles in text, in order of appearance.
 //
-// It is run on the *rendered* message, so `{{if .IsAlert}}@pager{{end}}` pages
-// only for alerts — and on the raw template at save, to check that every handle
-// that could ever be mentioned names a configured notifier.
+// It is run on the template source: at save, to check that every handle that
+// could ever be mentioned names a configured notifier, and by Recipients to
+// bound who a message can reach.
 func Mentions(text string) []string {
 	var out []string
 	for _, m := range mention.FindAllStringSubmatch(text, -1) {
