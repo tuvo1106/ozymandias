@@ -224,7 +224,10 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		stalled = s.watchdog(now, stalled)
 		wait := time.Hour
 		if !next.IsZero() {
-			wait = max(next.Sub(now), 0)
+			// From the clock now, not from the now read before dispatching:
+			// time spent in dispatchDue and the watchdog would otherwise
+			// make every tick late by that much.
+			wait = max(next.Sub(s.opt.Clock.Now()), 0)
 		}
 		// The watchdog needs a look at least every minute even when nothing
 		// is due — which is exactly when evaluations have stopped.
@@ -545,19 +548,21 @@ func (s *Scheduler) render(c *spec.Compiled, row meta.MonitorRow, g spec.Group, 
 		IsRecovery: to == state.OK && from != state.OK, Since: since, Link: link,
 	}
 	text, err := c.Template.Render(d)
+	recipients := c.Template.Recipients(text)
 	if err != nil {
 		// The mentions are kept, so the failure still reaches whoever the
-		// message was for.
+		// message was for: everyone the template names.
 		text = fmt.Sprintf("(the message template failed: %v)", err)
-		for _, m := range spec.Mentions(c.Message) {
+		for _, m := range c.Template.Named() {
 			text += " @" + m
 		}
+		recipients = c.Template.Named()
 	}
 	return notify.Notification{
 		MonitorID: row.ID, MonitorUID: row.UID, MonitorName: row.Name, Tags: row.Tags,
 		GroupKey: key, Group: g, Status: string(to), PrevStatus: string(from),
 		Value: notify.ValuePtr(value), Threshold: threshold, Message: text, Link: link, Ts: now,
-	}, c.Template.Recipients(d)
+	}, recipients
 }
 
 func (s *Scheduler) link(id int64, from, to time.Time) string {

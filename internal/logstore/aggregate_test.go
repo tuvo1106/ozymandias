@@ -153,10 +153,12 @@ func TestAggregate_GroupsPastTheCapFoldIntoOther(t *testing.T) {
 	// Under the cap, a value that happens to be "(other)" is not an overflow.
 	l := mkLog(base+10, "api", "info", "m", 0)
 	l.Attrs["user"] = OtherGroup
-	_ = s.Append(context.Background(), []wire.Log{l})
+	if err := s.Append(context.Background(), []wire.Log{l}); err != nil {
+		t.Fatal(err)
+	}
 	res, err = s.Aggregate(context.Background(), nil, base+5, base+20, AggSpec{Interval: time.Hour, By: "@user"})
-	if err != nil || res.Overflowed {
-		t.Fatalf("overflowed=%v err=%v", res.Overflowed, err)
+	if err != nil || res.Overflowed || len(res.Buckets) != 1 || res.Buckets[0].Counts[OtherGroup] != 1 {
+		t.Fatalf("overflowed=%v err=%v buckets=%+v", res.Overflowed, err, res.Buckets)
 	}
 }
 

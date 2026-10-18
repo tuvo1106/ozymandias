@@ -577,19 +577,26 @@ Changing its query resets its groups (a `reset` event), as an API edit does.
 *released* to the API (a `released` event and a warning in the log), and can
 then be edited or deleted there. If the file comes back with the same uid,
 provisioning refuses it as belonging to an API-managed monitor until that one
-is deleted. Releasing happens only after a clean pass, where every configured
-directory exists and every file in it loads. A broken file, an unreadable
-directory or one that is not mounted this time therefore releases nothing,
-and its monitors stay provisioned and unchanged.
+is deleted. Nothing is released in a pass where some file's uid could not be read: a
+configured directory that is missing (not mounted this time) or unreadable,
+or a file that is not JSON at all. The missing file might be one of those,
+so ozyd logs which monitors it is holding back and why. A file that is
+broken in any other way (a bad query, an unknown field, a uid the API now
+owns) still has a readable uid. It keeps its monitor provisioned and does
+not hold up releasing the others.
 
 ### Notifiers
 
-A message's `@name` mentions select notifiers. A handle is written in the
-template at the start, after whitespace, or right after a template action's
-`}`; an email address is not one. A message reaches each such handle that
-appears in what it renders, so `CPU:{{if .IsAlert}}@pager{{end}}` pages only
-for alerts. Data never adds a recipient: routing renders the message with
-every `@` removed from tag values, log attributes and the monitor's name. Notifiers are configured under
+A message's `@name` mentions select notifiers. The template names a handle
+at the start, after whitespace, or right after a template action's `}`. A
+message reaches each named handle that its sent text shows as a mention, not
+inside a word, an address or a path. So `CPU:{{if .IsAlert}}@pager{{end}}`
+pages only for alerts, and `oncall@pager.example.com` never pages `@pager`.
+Data never adds a recipient: an `@` in a group value (a tag or log attribute
+someone sent) is rendered as the fullwidth `＠`, which reads the same and
+mentions nobody. Group keys come from the query and are left alone. If a
+template fails to render, the message says so and goes to every handle the
+template names. Notifiers are configured under
 `notifiers:` in `ozyd.yaml`:
 
 ```yaml

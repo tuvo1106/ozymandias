@@ -800,8 +800,8 @@ error, and leaves the state alone.
 executed at save against sample data for every status, so a misspelt field is a 400 and not a page
 that fails to render. `range` and `define` are refused and output is capped. `@name` in the rendered
 message selects notifiers, so `{{if .IsAlert}}@pager{{end}}` pages only for alerts, but only
-among the handles the template's source names, found in a render whose data has had every `@`
-removed: a tag value of `x @pager` is data and must not choose who is paged. Secrets are
+among the handles the template's source names, as mentions in the sent text. An `@` in a group
+value renders as `＠`: a tag value of `x @pager` is data, and must not choose who is paged. Secrets are
 environment variables named in config, never stored or returned.
 
 **Watching the watcher.** If monitors exist and none has completed an evaluation for three intervals

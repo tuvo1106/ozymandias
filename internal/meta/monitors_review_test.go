@@ -112,9 +112,9 @@ func TestMonitors_CommitRefusesDeletedOrDisabled(t *testing.T) {
 	}
 }
 
-// TestMonitors_ReleaseOrphans: a provisioned monitor whose uid is not kept
-// becomes API-managed, with an event; kept and API-made ones are untouched.
-func TestMonitors_ReleaseOrphans(t *testing.T) {
+// TestMonitors_Release: releasing makes a provisioned monitor API-managed,
+// with an event; other monitors and unknown uids are untouched.
+func TestMonitors_Release(t *testing.T) {
 	ctx := context.Background()
 	d := dashDB(t)
 	for _, uid := range []string{"kept", "orphan"} {
@@ -125,29 +125,29 @@ func TestMonitors_ReleaseOrphans(t *testing.T) {
 		}
 	}
 	api, _ := d.CreateMonitor(ctx, mon("api"), t0)
-	got, err := d.ReleaseOrphanedMonitors(ctx, []string{"kept"}, t0)
-	if err != nil || len(got) != 1 || got[0] != "orphan" {
-		t.Fatalf("released %v %v", got, err)
+	if got, err := d.ProvisionedMonitors(ctx); err != nil || len(got) != 2 || got["orphan"] != "orphan" {
+		t.Fatalf("provisioned %v %v", got, err)
 	}
-	rows, _ := d.Monitors(ctx)
-	var orphan MonitorRow
-	for _, r := range rows {
-		if want := r.UID == "kept"; r.Provisioned != want {
-			t.Errorf("%s provisioned=%v", r.Name, r.Provisioned)
-		}
-		if r.UID == "orphan" {
-			orphan = r
-		}
+	if err := d.ReleaseMonitors(ctx, []string{"orphan", "no-such-uid"}, t0); err != nil {
+		t.Fatal(err)
+	}
+	orphan, _ := d.MonitorByUID(ctx, "orphan")
+	kept, _ := d.MonitorByUID(ctx, "kept")
+	if orphan.Provisioned || !kept.Provisioned {
+		t.Fatalf("orphan %v kept %v", orphan.Provisioned, kept.Provisioned)
 	}
 	if _, err := d.UpdateMonitor(ctx, orphan.ID, orphan, t0); err != nil {
 		t.Errorf("released monitor still refuses edits: %v", err)
 	}
 	evs, _ := d.Events(ctx, EventQuery{Kinds: []string{"released"}})
-	if len(evs) != 1 || evs[0].MonitorID == api.ID {
+	if len(evs) != 1 || evs[0].MonitorID != orphan.ID || evs[0].MonitorID == api.ID {
 		t.Fatalf("events %+v", evs)
 	}
-	// Idempotent.
-	if got, _ := d.ReleaseOrphanedMonitors(ctx, []string{"kept"}, t0); len(got) != 0 {
-		t.Fatalf("released twice: %v", got)
+	// Idempotent: an already released monitor gets no second event.
+	if err := d.ReleaseMonitors(ctx, []string{"orphan"}, t0); err != nil {
+		t.Fatal(err)
+	}
+	if evs, _ := d.Events(ctx, EventQuery{Kinds: []string{"released"}}); len(evs) != 1 {
+		t.Fatalf("released twice: %d events", len(evs))
 	}
 }

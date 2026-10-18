@@ -61,6 +61,17 @@ func TestFetchBoundsCells(t *testing.T) {
 	}
 }
 
+// TestFetchRefusesAStepThatDoesNotTile: past spec's validation (a hand-built
+// window over 24h), Fetch errors rather than reading a misaligned grid.
+func TestFetchRefusesAStepThatDoesNotTile(t *testing.T) {
+	c := compile(t, spec.TypeLog, `logs("x").rollup("count").last("5m") > 1`)
+	c.Parsed.Window = 1493 * time.Minute // coprime to 1440 minutes: only steps of at most 60s tile it, and 1493 of those exceed the limit
+	if _, err := (&Evaluator{Logs: countsLogs{}}).Fetch(context.Background(), c, t0.Add(-time.Hour), t0); err == nil ||
+		!strings.Contains(err.Error(), "no step fits") {
+		t.Fatalf("err %v", err)
+	}
+}
+
 // TestAutoStepDividesWindowAndDay: for every window the grammar allows, the
 // chosen step tiles both the window and a day, within the bucket limit.
 func TestAutoStepDividesWindowAndDay(t *testing.T) {

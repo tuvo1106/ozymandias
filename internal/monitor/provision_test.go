@@ -16,8 +16,12 @@ import (
 
 type provisionDB struct{ *meta.DB }
 
-func (p provisionDB) ReleaseOrphanedMonitors(ctx context.Context, keep []string, now time.Time) ([]string, error) {
-	return p.DB.ReleaseOrphanedMonitors(ctx, keep, now)
+func (p provisionDB) ProvisionedMonitors(ctx context.Context) (map[string]string, error) {
+	return p.DB.ProvisionedMonitors(ctx)
+}
+
+func (p provisionDB) ReleaseMonitors(ctx context.Context, uids []string, now time.Time) error {
+	return p.DB.ReleaseMonitors(ctx, uids, now)
 }
 
 func (p provisionDB) UpsertProvisionedMonitor(ctx context.Context, r meta.MonitorRow, now time.Time) (bool, error) {

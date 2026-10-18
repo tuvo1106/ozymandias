@@ -151,6 +151,13 @@ func (e *Evaluator) Fetch(ctx context.Context, c *spec.Compiled, from, to time.T
 	if !to.After(from) {
 		return d, fmt.Errorf("monitor eval: empty range %v..%v", from, to)
 	}
+	if w := c.Parsed.Window; w%step != 0 || (24*time.Hour)%step != 0 {
+		// Only reachable past spec's validation (a window over 24h): a step
+		// that does not tile the window and a day reads buckets that do not
+		// line up with the store's, which is a wrong answer, not an error
+		// anyone would see. Say it instead.
+		return d, fmt.Errorf("monitor eval: no step fits a %v window", w)
+	}
 	if c.Parsed.Log != nil {
 		d.AbsentIsZero = true
 		return d, e.fetchLogs(ctx, c, &d)

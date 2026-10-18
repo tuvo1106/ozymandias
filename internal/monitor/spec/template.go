@@ -66,8 +66,10 @@ func (g Group) String() string {
 type Template struct {
 	t *template.Template
 	// named is every handle the source mentions: the only notifiers a
-	// message from it can ever reach.
-	named []string
+	// message from it can ever reach. routes[i] finds named[i] as a mention
+	// in rendered text.
+	named  []string
+	routes []*regexp.Regexp
 }
 
 // CompileTemplate parses a message and proves it renders.
@@ -97,6 +99,10 @@ func CompileTemplate(text string) (*Template, error) {
 		}
 	}
 	out := &Template{t: t, named: Mentions(text)}
+	for _, h := range out.named {
+		out.routes = append(out.routes,
+			regexp.MustCompile(`(?:^|[^A-Za-z0-9._%+/-])@`+regexp.QuoteMeta(h)+`(?:[^A-Za-z0-9_-]|$)`))
+	}
 	for _, sample := range samples() {
 		if _, err := out.Render(sample); err != nil {
 			return nil, err
@@ -161,7 +167,19 @@ func (w *limitWriter) Write(p []byte) (int, error) {
 }
 
 // Render executes the template.
+//
+// A group value is data — a tag or a log attribute whoever sends it chose —
+// so its `@` is rendered as the fullwidth `＠`: it reads the same, and it is
+// not a mention. Keys come from the query, which the author wrote, and are
+// left alone, so `index .Group "@env"` still finds a log monitor's group.
 func (t *Template) Render(d Data) (string, error) {
+	if d.Group != nil {
+		g := make(Group, len(d.Group))
+		for k, v := range d.Group {
+			g[k] = strings.ReplaceAll(v, "@", "＠")
+		}
+		d.Group = g
+	}
 	w := &limitWriter{max: MaxRenderedBytes}
 	if err := t.t.Execute(w, d); err != nil {
 		return "", err
@@ -169,41 +187,24 @@ func (t *Template) Render(d Data) (string, error) {
 	return w.b.String(), nil
 }
 
-// Recipients is who the message for d notifies: each handle the template's
-// source names that appears as `@handle` in the message rendered from d with
-// every `@` removed from d's text.
-//
-// Rendered, so `{{if .IsAlert}}@pager{{end}}` pages only for alerts. Named in
-// the source, and rendered from data without `@`, because a tag value, a log
-// attribute or a monitor name is data, and "x @discord-ops" in one must not
-// choose who is paged. No boundary is required before the handle in the
-// render: the source already decided it is a mention, and `CPU:{{if
-// .IsAlert}}@pager{{end}}` renders `CPU:@pager`. A template that fails to
-// render reaches everyone it names, so the failure is still seen.
-func (t *Template) Recipients(d Data) []string {
-	d.Monitor.Name = strings.ReplaceAll(d.Monitor.Name, "@", "")
-	d.Monitor.UID = strings.ReplaceAll(d.Monitor.UID, "@", "")
-	d.Link = strings.ReplaceAll(d.Link, "@", "")
-	if d.Group != nil {
-		g := make(Group, len(d.Group))
-		for k, v := range d.Group {
-			g[strings.ReplaceAll(k, "@", "")] = strings.ReplaceAll(v, "@", "")
-		}
-		d.Group = g
-	}
-	text, err := t.Render(d)
-	if err != nil {
-		return slices.Clone(t.named)
-	}
+// Recipients is who a rendered message notifies: each handle the source
+// names that the text shows as a mention, i.e. not inside a word, an address
+// or a path (`oncall@pager.example.com` is not @pager). The text is the one
+// that is sent, so what a message says is who it pages, and since Render
+// escapes `@` in group values, data cannot add or repeat a handle.
+func (t *Template) Recipients(text string) []string {
 	var out []string
-	for _, h := range t.named {
-		re := regexp.MustCompile(`@` + regexp.QuoteMeta(h) + `(?:[^A-Za-z0-9_-]|$)`)
+	for i, re := range t.routes {
 		if re.MatchString(text) {
-			out = append(out, h)
+			out = append(out, t.named[i])
 		}
 	}
 	return out
 }
+
+// Named is every handle the source mentions: who a message that failed to
+// render is sent to, so the failure is still seen.
+func (t *Template) Named() []string { return slices.Clone(t.named) }
 
 // mention is `@handle` at the start of the text, after whitespace, or after
 // the `}` that closes a template action: an email address in a message is not

@@ -227,42 +227,44 @@ func ExampleParseQuery() {
 	// Output: avg 5m0s > 20 true
 }
 
-// TestRecipients: who a message reaches is decided by the template's source
-// and its conditions, never by the data rendered into it.
+// TestRecipients: a message reaches the handles its source names that the
+// sent text shows as mentions — never one that data put there.
 func TestRecipients(t *testing.T) {
-	alert := Data{Monitor: Ref{Name: "db @evil"}, Group: Group{"q": "x @evil", "@k": "v"}, Status: "ALERT", IsAlert: true}
+	alert := Data{Group: Group{"q": "x @evil @pager"}, Status: "ALERT", IsAlert: true}
 	ok := alert
 	ok.Status, ok.IsAlert, ok.IsRecovery = "OK", false, true
+	logGroup := Data{Group: Group{"@env": "prod"}, Status: "ALERT", IsAlert: true}
 	for _, c := range []struct {
 		tmpl string
 		d    Data
 		want string
+		text string // the sent text, when it matters
 	}{
-		{"{{.Group}} {{.Monitor}} @log", alert, "log"},                           // data cannot add
-		{"{{if .IsAlert}}@pager{{end}} @log", alert, "pager log"},                // conditional, on
-		{"{{if .IsAlert}}@pager{{end}} @log", ok, "log"},                         // conditional, off
-		{"CPU:{{if .IsAlert}}@pager{{end}}", alert, "pager"},                     // no space before @ in the render
-		{"{{.Group.q}}{{if .IsAlert}} @pager{{end}}", ok, ""},                    // data cannot re-add a hidden one
-		{"{{.Group}}{{if .IsAlert}} @pager{{end}}", withGroup(ok, "@pager"), ""}, // a tag value repeating a hidden handle
-		{"{{.Monitor}}{{if .IsAlert}} @pager{{end}}", withName(ok, "db @pager"), ""},
-		{"{{.Monitor.UID}}{{if .IsAlert}} @pager{{end}}", withUID(ok, "@pager"), ""},
-		{"{{.Link}}{{if .IsAlert}} @pager{{end}}", withLink(ok, "http://x/@pager"), ""},
-		{"mail ops@example.com", alert, ""},
-		{"{{if .IsAlert}}@pager{{end}} @pager-2", ok, "pager-2"}, // a longer handle does not contain the shorter // an address is not a mention
-		{"@pager-2 only", alert, "pager-2"},
-		{"{{if .IsAlert}}@pager-2{{end}}@pager", ok, "pager"}, // a prefix is not the handle
+		{"{{.Group}} @log", alert, "log", "q:x ＠evil ＠pager @log"}, // data cannot add
+		{"{{if .IsAlert}}@pager{{end}} @log", alert, "pager log", ""},
+		{"{{if .IsAlert}}@pager{{end}} @log", ok, "log", ""},
+		{"CPU:{{if .IsAlert}}@pager{{end}}", alert, "pager", ""},                             // punctuation before @ is fine
+		{"{{.Group.q}}{{if .IsAlert}} @pager{{end}}", ok, "", ""},                            // data cannot repeat a hidden one
+		{"{{if .IsAlert}}@pager{{end}} oncall@pager.example.com", ok, "", ""},                // an address naming the handle
+		{"{{if .IsAlert}}@pager{{end}} see https://x/@pager", ok, "", ""},                    // a path
+		{"{{if .IsAlert}}@pager{{end}} @pager-2", ok, "pager-2", ""},                         // a longer handle
+		{"page @pager.", alert, "pager", ""},                                                 // end of a sentence
+		{`{{if eq (index .Group "@env") "prod"}}@pager{{end}}`, logGroup, "pager", "@pager"}, // keys are not escaped
+		{"mail ops@example.com", alert, "", ""},
 	} {
 		tm, err := CompileTemplate(c.tmpl)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := strings.Join(tm.Recipients(c.d), " "); got != c.want {
+		text, err := tm.Render(c.d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.text != "" && text != c.text {
+			t.Errorf("%q rendered %q, want %q", c.tmpl, text, c.text)
+		}
+		if got := strings.Join(tm.Recipients(text), " "); got != c.want {
 			t.Errorf("%q: %q, want %q", c.tmpl, got, c.want)
 		}
 	}
 }
-
-func withGroup(d Data, v string) Data { d.Group = Group{"@q": v}; return d }
-func withName(d Data, v string) Data  { d.Monitor.Name = v; return d }
-func withUID(d Data, v string) Data   { d.Monitor.UID = v; return d }
-func withLink(d Data, v string) Data  { d.Link = v; return d }

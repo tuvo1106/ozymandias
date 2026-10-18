@@ -1,17 +1,21 @@
 package monitor
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/meta"
 	"github.com/tuvo1106/ozymandias/internal/monitor/eval"
 	"github.com/tuvo1106/ozymandias/internal/monitor/spec"
+	"github.com/tuvo1106/ozymandias/internal/monitor/state"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 )
 
@@ -195,58 +199,81 @@ func TestUncompilableMonitorIsNotAStall(t *testing.T) {
 }
 
 // TestProvisionReleasesRemovedFiles: deleting a provisioned file hands the
-// monitor to the API rather than leaving it running and uneditable.
+// monitor to the API — unless some file's uid could not be read this pass, in
+// which case nothing is released and the log says why.
 func TestProvisionReleasesRemovedFiles(t *testing.T) {
 	db, err := meta.Open(filepath.Join(t.TempDir(), "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	dir := testutil.TempDirWith(t, map[string]string{
-		"a.json": `{"uid":"a","name":"A","type":"metric","query":"avg(last_5m):avg:x{*} > 1"}`,
-		"b.json": `{"uid":"b","name":"B","type":"metric","query":"avg(last_5m):avg:x{*} > 1"}`,
-	})
-	if res := Provision(context.Background(), provisionDB{db}, []string{dir}, nil, t0, nil); res.Loaded != 2 {
+	def := func(uid string) string {
+		return `{"uid":"` + uid + `","name":"` + strings.ToUpper(uid) + `","type":"metric","query":"avg(last_5m):avg:x{*} > 1"}`
+	}
+	dir := testutil.TempDirWith(t, map[string]string{"a.json": def("a"), "b.json": def("b"), "c.json": def("c")})
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var logs bytes.Buffer
+	pass := func(paths ...string) ProvisionResult {
+		logs.Reset()
+		return Provision(context.Background(), provisionDB{db}, paths, nil, t0, slog.New(slog.NewTextHandler(&logs, nil)))
+	}
+	if res := pass(dir); res.Loaded != 3 {
 		t.Fatalf("%+v", res)
 	}
-	good := `{"uid":"b","name":"B","type":"metric","query":"avg(last_5m):avg:x{*} > 1"}`
 	if err := os.Remove(filepath.Join(dir, "a.json")); err != nil {
 		t.Fatal(err)
 	}
-	// A pass that is not clean releases nothing: a file that does not even
-	// decode (whose uid is unknowable), one that does not compile, or a
-	// configured directory that is missing.
-	for what, step := range map[string]struct {
-		b     string
-		paths []string
-	}{
-		"undecodable":  {`{"uid":"b",`, []string{dir}},
-		"uncompilable": {`{"uid":"b","name":"B","type":"metric","query":"x"}`, []string{dir}},
-		"missing dir":  {good, []string{dir, filepath.Join(dir, "unmounted")}},
-	} {
-		if err := os.WriteFile(filepath.Join(dir, "b.json"), []byte(step.b), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if res := Provision(context.Background(), provisionDB{db}, step.paths, nil, t0, nil); len(res.Released) != 0 {
-			t.Fatalf("%s: released %v", what, res.Released)
-		}
+	// A uid that cannot be read, or a directory that is missing: a's file may
+	// be there, so nothing is released, and the log says which and why.
+	write("b.json", `{"uid":`)
+	if res := pass(dir); len(res.Released) != 0 || !strings.Contains(logs.String(), "not released") ||
+		!strings.Contains(logs.String(), "b.json") {
+		t.Fatalf("undecodable: %v\n%s", res.Released, logs.String())
 	}
-	for _, uid := range []string{"a", "b"} {
-		if m, _ := db.MonitorByUID(context.Background(), uid); !m.Provisioned {
-			t.Fatalf("%s released by an unclean pass", uid)
-		}
+	write("b.json", def("b"))
+	if res := pass(dir, filepath.Join(dir, "unmounted")); len(res.Released) != 0 || !strings.Contains(logs.String(), "unmounted") {
+		t.Fatalf("missing dir: %v\n%s", res.Released, logs.String())
 	}
-	// Clean: a is released, b is not.
-	if err := os.WriteFile(filepath.Join(dir, "b.json"), []byte(good), 0o644); err != nil {
+	// A file whose uid is readable but which fails (unknown field, bad query)
+	// is present, so it blocks nothing and is not itself released.
+	write("b.json", `{"uid":"b","name":"B","type":"metric","query":"x","optoins":{}}`)
+	if res := pass(dir); !slices.Equal(res.Released, []string{"A"}) {
+		t.Fatalf("released %v\n%s", res.Released, logs.String())
+	}
+	if b, _ := db.MonitorByUID(context.Background(), "b"); !b.Provisioned {
+		t.Fatal("a broken file's monitor was released")
+	}
+	// a's file comes back and is refused (its uid is now the API's) on every
+	// pass; that failure does not stop c being released when c's file goes.
+	write("a.json", def("a"))
+	write("b.json", def("b"))
+	if err := os.Remove(filepath.Join(dir, "c.json")); err != nil {
 		t.Fatal(err)
 	}
-	res := Provision(context.Background(), provisionDB{db}, []string{dir}, nil, t0, nil)
-	if !slices.Equal(res.Released, []string{"A"}) {
-		t.Fatalf("released %v", res.Released)
+	if res := pass(dir); res.Failed != 1 || !slices.Equal(res.Released, []string{"C"}) {
+		t.Fatalf("%+v\n%s", res, logs.String())
 	}
-	a, _ := db.MonitorByUID(context.Background(), "a")
-	b, _ := db.MonitorByUID(context.Background(), "b")
-	if a.Provisioned || !b.Provisioned {
-		t.Fatalf("a %v b %v", a.Provisioned, b.Provisioned)
+}
+
+// TestFailedRenderReachesEveryoneNamed: a message that cannot render still
+// reaches every handle its template names, including conditional ones.
+func TestFailedRenderReachesEveryoneNamed(t *testing.T) {
+	h := newHarness(t)
+	m := backlog()
+	m.Query = "last(last_1m):avg:queue.depth{*} by {q} > 20"
+	m.Message = "{{.Group.q}}{{if .IsAlert}} @pager{{end}} @log"
+	c, err := spec.Compile(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	huge := spec.Group{"q": strings.Repeat("x", spec.MaxRenderedBytes+1)}
+	n, to := h.s.render(c, meta.MonitorRow{ID: 1, Name: "m"}, huge, "q:x", state.Alert, state.OK, 0, t0, t0, t0)
+	if !slices.Equal(to, []string{"pager", "log"}) || !strings.Contains(n.Message, "template failed") {
+		t.Fatalf("to %v, message %q", to, n.Message)
 	}
 }

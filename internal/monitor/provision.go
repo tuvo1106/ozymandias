@@ -21,7 +21,8 @@ import (
 // ProvisionStore is what provisioning needs from a database.
 type ProvisionStore interface {
 	UpsertProvisionedMonitor(ctx context.Context, row meta.MonitorRow, now time.Time) (changed bool, err error)
-	ReleaseOrphanedMonitors(ctx context.Context, keep []string, now time.Time) ([]string, error)
+	ProvisionedMonitors(ctx context.Context) (map[string]string, error)
+	ReleaseMonitors(ctx context.Context, uids []string, now time.Time) error
 }
 
 // ProvisionResult reports a provisioning pass.
@@ -53,44 +54,37 @@ func Provision(ctx context.Context, store ProvisionStore, paths []string, known 
 	}
 	var res ProvisionResult
 	var seen []string
-	// clean: every directory was read and every file loaded. Only then is a
-	// monitor missing from the files known to be removed. A missing directory
-	// may be a mount that did not happen this boot, and a broken file is a
-	// monitor someone is fixing; releasing either would detach the monitor
-	// from its file for good (the file, fixed, is then refused as a uid the
-	// API owns).
-	clean := true
+	// unknown says why some file's uid could not be read this pass: a
+	// directory that is missing (a mount that did not happen this boot) or
+	// unreadable, or a file that does not decode. Then a monitor absent from
+	// seen may still have its file, and releasing it would detach it for good
+	// (the file, fixed, is refused as a uid the API owns). A file that
+	// decoded but failed later still had its uid seen, so it blocks nothing.
+	var unknown []string
 	for _, dir := range paths {
 		files, err := jsonFiles(dir)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			log.Info("provisioning monitors: no such directory, skipping", "path", dir)
-			clean = false
+			unknown = append(unknown, "directory "+dir+" does not exist")
 			continue
 		case err != nil:
 			log.Error("provisioning monitors: cannot read directory", "path", dir, "err", err)
 			res.Failed++
-			clean = false
+			unknown = append(unknown, "directory "+dir+" cannot be read")
 			continue
 		}
 		for _, file := range files {
 			if err := provisionFile(ctx, store, file, known, now, log, &res, &seen); err != nil {
 				log.Error("provisioning: skipping a monitor", "file", file, "err", err)
 				res.Failed++
+				if errors.Is(err, errNoUID) {
+					unknown = append(unknown, file+" has no readable uid")
+				}
 			}
 		}
 	}
-	if clean && res.Failed == 0 {
-		released, err := store.ReleaseOrphanedMonitors(ctx, seen, now)
-		if err != nil {
-			log.Error("provisioning monitors: releasing monitors whose file is gone", "err", err)
-		}
-		for _, name := range released {
-			log.Warn("provisioning: a provisioned monitor's file is gone; it keeps running and is now managed through the API",
-				"monitor", name)
-		}
-		res.Released = released
-	}
+	res.Released = releaseOrphans(ctx, store, seen, unknown, now, log)
 	if res.Loaded > 0 || res.Failed > 0 {
 		log.Info("provisioned monitors", "loaded", res.Loaded, "changed", res.Changed, "failed", res.Failed)
 	}
@@ -107,10 +101,17 @@ func provisionFile(ctx context.Context, store ProvisionStore, file string, known
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
-		return fmt.Errorf("monitor definition: %w", err)
+		// An unknown field still leaves the uid readable leniently, and a
+		// file whose uid is known is not one that was removed.
+		var probe struct{ UID string }
+		if json.Unmarshal(data, &probe) == nil && probe.UID != "" {
+			*seen = append(*seen, probe.UID)
+			return fmt.Errorf("monitor definition: %w", err)
+		}
+		return fmt.Errorf("monitor definition: %w (%w)", err, errNoUID)
 	}
 	if f.UID == "" {
-		return errors.New(`a provisioned monitor needs a "uid": it is what the upsert is keyed on`)
+		return fmt.Errorf(`a provisioned monitor needs a "uid": it is what the upsert is keyed on (%w)`, errNoUID)
 	}
 	*seen = append(*seen, f.UID)
 	if _, err := spec.Compile(f.Monitor); err != nil {
@@ -133,6 +134,45 @@ func provisionFile(ctx context.Context, store ProvisionStore, file string, known
 		res.Changed++
 	}
 	return nil
+}
+
+// errNoUID marks a file whose uid could not be read.
+var errNoUID = errors.New("uid unknown")
+
+// releaseOrphans releases provisioned monitors that have no file, or, when
+// some file's uid was unreadable this pass, says why it is not doing so.
+func releaseOrphans(ctx context.Context, store ProvisionStore, seen, unknown []string, now time.Time, log *slog.Logger) []string {
+	provisioned, err := store.ProvisionedMonitors(ctx)
+	if err != nil {
+		log.Error("provisioning monitors: listing provisioned monitors", "err", err)
+		return nil
+	}
+	var uids, names []string
+	for uid, name := range provisioned {
+		if !contains(seen, uid) {
+			uids = append(uids, uid)
+			names = append(names, name)
+		}
+	}
+	sort.Strings(uids)
+	sort.Strings(names)
+	if len(uids) == 0 {
+		return nil
+	}
+	if len(unknown) > 0 {
+		log.Warn("provisioning: provisioned monitors have no file, but are not released this time because a uid could not be read",
+			"monitors", names, "because", unknown)
+		return nil
+	}
+	if err := store.ReleaseMonitors(ctx, uids, now); err != nil {
+		log.Error("provisioning monitors: releasing monitors whose file is gone", "err", err)
+		return nil
+	}
+	for _, name := range names {
+		log.Warn("provisioning: a provisioned monitor's file is gone; it keeps running and is now managed through the API",
+			"monitor", name)
+	}
+	return names
 }
 
 func contains(s []string, v string) bool {

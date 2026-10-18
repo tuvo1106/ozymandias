@@ -358,44 +358,48 @@ func resetIfQueryChanged(ctx context.Context, tx *sql.Tx, id int64, before, afte
 		Text: "query changed; group states reset"})
 }
 
-// ReleaseOrphanedMonitors turns provisioned monitors whose uid is not in keep
-// into ordinary, API-managed ones, and returns their names.
-//
-// Released, not deleted. A file that disappeared may be a directory that is not
-// mounted this time, and deleting would lose the monitor's history to a
-// configuration hiccup. But left provisioned, a monitor whose file is gone
-// would keep running while the API refused every edit with "edit the file it
-// is provisioned from" — a file that no longer exists. Released, it keeps
-// running and can be edited or deleted; if the file comes back, provisioning
-// refuses it as a uid collision and says so.
-func (d *DB) ReleaseOrphanedMonitors(ctx context.Context, keep []string, now time.Time) ([]string, error) {
+// ProvisionedMonitors returns the uid and name of every provisioned monitor.
+func (d *DB) ProvisionedMonitors(ctx context.Context) (map[string]string, error) {
 	rows, err := d.Monitors(ctx)
 	if err != nil {
 		return nil, err
 	}
-	kept := map[string]bool{}
-	for _, k := range keep {
-		kept[k] = true
+	out := map[string]string{}
+	for _, r := range rows {
+		if r.Provisioned {
+			out[r.UID] = r.Name
+		}
 	}
-	var released []string
-	err = d.tx(ctx, func(tx *sql.Tx) error {
-		for _, r := range rows {
-			if !r.Provisioned || kept[r.UID] {
+	return out, nil
+}
+
+// ReleaseMonitors turns the provisioned monitors with these uids into
+// ordinary, API-managed ones, each with a `released` event.
+//
+// Released, not deleted: deleting would lose a monitor's history to a file
+// that was removed by mistake. But left provisioned, a monitor whose file is
+// gone keeps running while the API refuses every edit with "edit the file it
+// is provisioned from". Released, it keeps running and can be edited or
+// deleted. Deciding *when* a file is gone is the provisioner's job.
+func (d *DB) ReleaseMonitors(ctx context.Context, uids []string, now time.Time) error {
+	return d.tx(ctx, func(tx *sql.Tx) error {
+		for _, uid := range uids {
+			var id int64
+			err := tx.QueryRowContext(ctx, `UPDATE monitors SET provisioned = 0, updated_at = ?
+				WHERE uid = ? AND provisioned = 1 RETURNING id`, now.Unix(), uid).Scan(&id)
+			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE monitors SET provisioned = 0, updated_at = ? WHERE id = ?`,
-				now.Unix(), r.ID); err != nil {
-				return fmt.Errorf("meta: releasing monitor %d: %w", r.ID, err)
+			if err != nil {
+				return fmt.Errorf("meta: releasing monitor %q: %w", uid, err)
 			}
-			if err := insertEvent(ctx, tx, EventRow{Ts: now, Kind: "released", MonitorID: r.ID, Value: math.NaN(),
+			if err := insertEvent(ctx, tx, EventRow{Ts: now, Kind: "released", MonitorID: id, Value: math.NaN(),
 				Text: "its provisioning file is gone; it is now managed through the API"}); err != nil {
 				return err
 			}
-			released = append(released, r.Name)
 		}
 		return nil
 	})
-	return released, err
 }
 
 // ErrNotRunnable is returned by Commit for a monitor that was deleted,

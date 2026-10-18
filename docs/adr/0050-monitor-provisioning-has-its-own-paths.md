@@ -32,6 +32,7 @@ A provisioned monitor whose file disappears is **released** (made API-managed,
 with an event) rather than deleted or left provisioned. Deleting would lose
 history to a directory that simply was not mounted; leaving it provisioned would
 keep it running while the API refused every edit, pointing at a file that no
-longer exists. Release happens only after a clean pass (every directory present,
-every file loaded), so a typo or a missing mount cannot detach a monitor from
-its file.
+longer exists. Nothing is released in a pass where some uid could not be read
+(a missing or unreadable directory, a file that is not JSON), and the log says
+which monitors are held back and why, so a typo or a missing mount cannot
+detach a monitor from its file.

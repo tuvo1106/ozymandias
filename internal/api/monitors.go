@@ -658,9 +658,14 @@ func (m *Monitors) fail(w http.ResponseWriter, r *http.Request, what string, err
 // MonitorProvisionStore adapts *meta.DB for monitor.Provision.
 type MonitorProvisionStore struct{ DB *meta.DB }
 
-// ReleaseOrphanedMonitors implements monitor.ProvisionStore.
-func (p MonitorProvisionStore) ReleaseOrphanedMonitors(ctx context.Context, keep []string, now time.Time) ([]string, error) {
-	return p.DB.ReleaseOrphanedMonitors(ctx, keep, now)
+// ProvisionedMonitors implements monitor.ProvisionStore.
+func (p MonitorProvisionStore) ProvisionedMonitors(ctx context.Context) (map[string]string, error) {
+	return p.DB.ProvisionedMonitors(ctx)
+}
+
+// ReleaseMonitors implements monitor.ProvisionStore.
+func (p MonitorProvisionStore) ReleaseMonitors(ctx context.Context, uids []string, now time.Time) error {
+	return p.DB.ReleaseMonitors(ctx, uids, now)
 }
 
 // UpsertProvisionedMonitor implements monitor.ProvisionStore.
