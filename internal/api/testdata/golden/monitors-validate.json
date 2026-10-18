@@ -1,0 +1,26 @@
+OK
+{
+  "grouped": true,
+  "groups": [
+    {
+      "group": "queue:a",
+      "status": "WARN",
+      "tags": {
+        "queue": "a"
+      },
+      "value": 12.5
+    }
+  ],
+  "levels": {
+    "critical": 20,
+    "critical_recovery": 15,
+    "op": "\u003e",
+    "warning": 10,
+    "warning_recovery": 10
+  },
+  "mentions": [
+    "hook"
+  ],
+  "query": "avg(last_5m):avg:jobs.queue.depth{service:shop-api} by {queue} \u003e 20",
+  "valid": true
+}

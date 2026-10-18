@@ -9,6 +9,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Monitors** (M6, backend). Metric and log monitors (`avg(last_5m):<metricql> > 20`,
+  `logs("…").rollup("count").last("5m") > 5`) with warning and critical levels,
+  recovery thresholds (hysteresis), multi-alert groups, no-data detection,
+  min-consecutive-failures, renotify and muting; evaluated behind now (ADR-0047) on a
+  jittered, bounded scheduler; state, events and an at-least-once notification outbox in
+  `meta.db` (ADR-0048); messages in Go templates proved at save (ADR-0049); webhook,
+  Discord, email and log notifiers with secrets only from the environment. API:
+  `/api/v1/monitors` (CRUD, mute, states, validate with a dry run, backtest, test
+  notification, status), `/api/v1/events`, `/api/v1/notifiers`. Provisioning from
+  `provisioning.monitor_paths` (ADR-0050); three ozymandias self-monitors ship in
+  `deploy/monitors/`. `ozy.monitor.*` self-metrics including the
+  `last_eval_age_seconds` watchdog. Smoke v6 drives a webhook through ALERT and recovery.
+
 - `examples/flask-app` and `examples/express-app`, runnable against the agent, and `examples/README.md`; a WSGI/Flask integration for the Python SDK and a `traceRequests` middleware for Express and `node:http` in the Node SDK.
 - Python SDK 0.2.0: the first version with tracing (0.1.0 is metrics and logs only), so an app that vendors the wheel gets a new hash and `uv lock` takes it.
 - CI runs the Python SDK's real-arq trace test against a Redis service container.

@@ -1,0 +1,9 @@
+{
+  "uid": "ozy-tsdb-rejections",
+  "name": "ozymandias: the metric store is refusing samples",
+  "type": "metric",
+  "query": "sum(last_15m):diff(max:ozy.tsdb.ooo_rejected{*}) + diff(max:ozy.tsdb.series_limit_rejected{*}) > 0",
+  "options": {"evaluation_interval_s": 60, "renotify_interval_m": 240},
+  "message": "The TSDB refused {{.Value}} samples or series in fifteen minutes (out of order, too old, or a metric at max_series_per_metric). See docs/operations.md. @log",
+  "tags": ["app:ozymandias", "component:ozyd"]
+}

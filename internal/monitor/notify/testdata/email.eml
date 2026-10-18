@@ -1,0 +1,14 @@
+From: ozymandias@localhost
+To: you@example.com
+Subject: [ALERT] Job queue is backing up on queue:default
+Date: Fri, 16 Oct 2026 12:00:00 +0000
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Queue depth is 25.5 for queue:default. Check worker health. @hook
+
+Status: WARN -> ALERT
+Value: 25.5 (threshold 20)
+Group: queue:default
+Link: http://localhost:9400/monitors/7?from=3D1

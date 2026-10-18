@@ -1,0 +1,16 @@
+OK
+{
+  "notifiers": [
+    {
+      "name": "hook",
+      "ready": true,
+      "type": "webhook"
+    },
+    {
+      "name": "ops",
+      "problem": "environment variable DISCORD_WEBHOOK_URL is not set",
+      "ready": false,
+      "type": "discord"
+    }
+  ]
+}

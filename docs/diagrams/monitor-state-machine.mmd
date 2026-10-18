@@ -1,0 +1,19 @@
+%% One (monitor, group)'s state machine. Kept identical to the copy in DESIGN.md §16.
+%% "past X" is direction-aware: for a `<` monitor every comparison flips.
+stateDiagram-v2
+    [*] --> OK: first value seen
+    OK --> WARN: breaches warning
+    OK --> ALERT: breaches critical,<br/>min_consecutive_failures in a row
+    WARN --> ALERT: breaches critical,<br/>min_consecutive_failures in a row
+    ALERT --> ALERT: still past critical_recovery<br/>(the hysteresis band)
+    ALERT --> WARN: past critical_recovery,<br/>not past warning_recovery
+    ALERT --> OK: past both recovery levels
+    WARN --> WARN: still past warning_recovery
+    WARN --> OK: past warning_recovery
+    OK --> NO_DATA: had data, none for no_data_timeframe
+    WARN --> NO_DATA: had data, none for no_data_timeframe
+    ALERT --> NO_DATA: had data, none for no_data_timeframe
+    NO_DATA --> OK: data returns (evaluated from OK)
+    NO_DATA --> WARN: data returns (evaluated from OK)
+    NO_DATA --> ALERT: data returns (evaluated from OK)
+    OK --> [*]: no data for 24h (forgotten)

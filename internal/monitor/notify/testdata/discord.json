@@ -1,0 +1,32 @@
+{
+  "username": "ozymandias",
+  "embeds": [
+    {
+      "title": "[ALERT] Job queue is backing up on queue:default",
+      "description": "Queue depth is 25.5 for queue:default. Check worker health. @hook",
+      "url": "http://localhost:9400/monitors/7?from=1",
+      "color": 13840175,
+      "timestamp": "2026-10-16T12:00:00Z",
+      "fields": [
+        {
+          "name": "Status",
+          "value": "WARN → ALERT",
+          "inline": true
+        },
+        {
+          "name": "Value",
+          "value": "25.5",
+          "inline": true
+        },
+        {
+          "name": "Threshold",
+          "value": "20",
+          "inline": true
+        }
+      ]
+    }
+  ],
+  "allowed_mentions": {
+    "parse": []
+  }
+}

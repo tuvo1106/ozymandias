@@ -1,0 +1,17 @@
+OK
+{
+  "states": [
+    {
+      "group": "queue:a",
+      "last_data": "2026-09-21T14:12:40Z",
+      "last_eval": "2026-09-21T14:13:20Z",
+      "last_notified": "2026-09-21T14:13:20Z",
+      "since": "2026-09-21T14:13:20Z",
+      "status": "ALERT",
+      "tags": {
+        "queue": "a"
+      },
+      "value": 25
+    }
+  ]
+}
