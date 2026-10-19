@@ -413,14 +413,16 @@ func (e *eventsAPI) Events(ctx context.Context, _ time.Time, fn func(dockerapi.E
 	return ctx.Err()
 }
 
-// A container exit from the event stream reaches the intake as a count,
-// through the aggregator, tagged like a statsd series and renamed by the
-// configured rewrite.
-func TestRun_DockerEventsToIntake(t *testing.T) {
-	testutil.CheckGoroutines(t)
-	var mu sync.Mutex
-	var got []wire.Series
-	intake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// exitIntake is a fake intake that records what the agent forwards.
+type exitIntake struct {
+	*httptest.Server
+	mu  sync.Mutex
+	got []wire.Series
+}
+
+func newExitIntake(t *testing.T) *exitIntake {
+	in := &exitIntake{}
+	in.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		zr, err := gzip.NewReader(r.Body)
 		if err != nil {
 			t.Error(err)
@@ -428,11 +430,43 @@ func TestRun_DockerEventsToIntake(t *testing.T) {
 		}
 		var p wire.SeriesPayload
 		_ = json.NewDecoder(zr).Decode(&p)
-		mu.Lock()
-		got = append(got, p.Series...)
-		mu.Unlock()
+		in.mu.Lock()
+		in.got = append(in.got, p.Series...)
+		in.mu.Unlock()
 		w.WriteHeader(http.StatusAccepted)
 	}))
+	return in
+}
+
+// exits returns the container.exits series that counted an exit, one per
+// tag set, in arrival order. Not every container.exits series: within
+// ContextExpiry of its last data a counter is zero-filled, so each later
+// flush carries the same series with 0, and a poll that first looks late
+// sees those too. One per tag set: a retried POST can deliver the same
+// series twice.
+func (in *exitIntake) exits() []wire.Series {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	var out []wire.Series
+	seen := map[string]bool{}
+	for _, s := range in.got {
+		key := strings.Join(s.Tags, ",")
+		if s.Metric != "container.exits" || seen[key] ||
+			!slices.ContainsFunc(s.Points, func(p wire.Point) bool { return p.Value != 0 }) {
+			continue
+		}
+		seen[key] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+// A container exit from the event stream reaches the intake as a count,
+// through the aggregator, tagged like a statsd series and renamed by the
+// configured rewrite.
+func TestRun_DockerEventsToIntake(t *testing.T) {
+	testutil.CheckGoroutines(t)
+	intake := newExitIntake(t)
 	defer intake.Close()
 
 	at := time.Unix(1790000000, 0)
@@ -472,19 +506,18 @@ func TestRun_DockerEventsToIntake(t *testing.T) {
 	// The aggregator's ticker and the docker collector's start-up timer.
 	testutil.Eventually(t, 2*time.Second, func() bool { return clk.Waiters() >= 2 }, "not armed")
 	// One Advance can fire the aggregator's flush before the forwarder has armed the
-	// timer it sends on, and on a loaded machine nothing then ticks again: advance each
-	// attempt (only the flush that carries the exits has anything in it).
+	// timer it sends on, and on a loaded machine nothing then ticks again: advance
+	// each attempt (see exitIntake for what later flushes carry).
 	testutil.Eventually(t, 5*time.Second, func() bool {
 		clk.Advance(10 * time.Second)
-		mu.Lock()
-		defer mu.Unlock()
-		return slices.ContainsFunc(got, func(s wire.Series) bool { return s.Metric == "container.exits" })
+		return len(intake.exits()) >= 1
 	}, "container.exits not forwarded")
-	mu.Lock()
-	i := slices.IndexFunc(got, func(s wire.Series) bool { return s.Metric == "container.exits" })
-	s := got[i]
-	mu.Unlock()
-	if s.Type != wire.KindCount || s.Points[0].Value != 1 ||
+	exits := intake.exits()
+	if len(exits) != 1 {
+		t.Fatalf("exits %+v", exits)
+	}
+	s := exits[0]
+	if s.Type != wire.KindCount || len(s.Points) != 1 || s.Points[0].Value != 1 ||
 		strings.Join(s.Tags, ",") != "container_name:judge,env:test,exit_code:3,host:box,image_name:sandbox,image_tag:1,oom_killed:false" {
 		t.Fatalf("container.exits = %+v", s)
 	}
@@ -500,21 +533,7 @@ func TestRun_DockerEventsToIntake(t *testing.T) {
 // asserted here; namecap_test pins the callback.)
 func TestRun_DockerEventsFoldNamesOverTheCap(t *testing.T) {
 	testutil.CheckGoroutines(t)
-	var mu sync.Mutex
-	var got []wire.Series
-	intake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		zr, err := gzip.NewReader(r.Body)
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		var p wire.SeriesPayload
-		_ = json.NewDecoder(zr).Decode(&p)
-		mu.Lock()
-		got = append(got, p.Series...)
-		mu.Unlock()
-		w.WriteHeader(http.StatusAccepted)
-	}))
+	intake := newExitIntake(t)
 	defer intake.Close()
 
 	at := time.Unix(1790000000, 0)
@@ -552,36 +571,23 @@ func TestRun_DockerEventsFoldNamesOverTheCap(t *testing.T) {
 	// The aggregator's ticker and the docker collector's start-up timer.
 	testutil.Eventually(t, 2*time.Second, func() bool { return clk.Waiters() >= 2 }, "not armed")
 	// One Advance can fire the aggregator's flush before the forwarder has armed the
-	// timer it sends on, and on a loaded machine nothing then ticks again: advance each
-	// attempt. Every later flush also carries both series, zero-filled (a counter
-	// reports 0 until its context expires), so count the exits, not the series: a
-	// poll that first looks after a zero-filled flush has arrived sees four or more
-	// series and must still pass.
-	exits := func() []wire.Series {
-		var out []wire.Series
-		for _, s := range got {
-			if s.Metric == "container.exits" && slices.ContainsFunc(s.Points, func(p wire.Point) bool { return p.Value != 0 }) {
-				out = append(out, s)
-			}
-		}
-		return out
-	}
+	// timer it sends on, and on a loaded machine nothing then ticks again: advance
+	// each attempt (see exitIntake for what later flushes carry).
 	testutil.Eventually(t, 5*time.Second, func() bool {
 		clk.Advance(10 * time.Second)
-		mu.Lock()
-		defer mu.Unlock()
-		return len(exits()) == 2
+		return len(intake.exits()) >= 2
 	}, "both exits not forwarded")
-	mu.Lock()
 	var names []string
-	for _, s := range exits() {
+	for _, s := range intake.exits() {
+		if len(s.Points) != 1 || s.Points[0].Value != 1 {
+			t.Errorf("one exit counted as %+v", s.Points)
+		}
 		for _, tg := range s.Tags {
 			if strings.HasPrefix(tg, "container_name:") {
 				names = append(names, tg)
 			}
 		}
 	}
-	mu.Unlock()
 	slices.Sort(names)
 	if want := []string{"container_name:admiring_allen", "container_name:other"}; !slices.Equal(names, want) {
 		t.Fatalf("container_name tags = %v, want %v", names, want)
