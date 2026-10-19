@@ -30,9 +30,9 @@ data's within rendered text, and each round's rule had a hole:
 A message goes to every handle its template mentions, whatever the status
 and whatever the data. Mentions are read once, when the template compiles,
 from its literal text only, by walking the parse tree: `@handle` at the start
-of the message or after whitespace. An `@handle` that starts a text node
-straight after an action is refused, since what it reads as depends on what
-the action prints. A comment
+of the message or after whitespace, in runs of adjacent text (a comment
+prints nothing). Text straight after an action that prints is part of what
+it printed, so `{{.Group.owner}}@example.com` is an address, not a mention. A comment
 (`{{/* @pager */}}`) or a string literal mentions nobody. Save-time
 validation uses the same function. A mention inside `{{if}}` or `{{with}}`
 is refused at save, because it would be sent for every status while reading

@@ -42,7 +42,7 @@ func TestParseSpecExample(t *testing.T) {
 		c.Renotify != time.Hour || c.MinFailures != 1 {
 		t.Errorf("options %v %v %v %v %d", c.Interval, c.Delay, c.NoDataTimeframe, c.Renotify, c.MinFailures)
 	}
-	if got := Mentions(c.Message); len(got) != 1 || got[0] != "discord-ops" {
+	if got := mentions(c.Message); len(got) != 1 || got[0] != "discord-ops" {
 		t.Errorf("mentions %v", got)
 	}
 }
@@ -216,8 +216,8 @@ func TestMentions(t *testing.T) {
 		"{{.Value}} @b c@d":            "b", // whitespace before @ inside a text node
 		"{{/* @c */}} {{\" @d\"}}":     "",  // comments and literals are not text
 	} {
-		if got := strings.Join(Mentions(in), " "); got != want {
-			t.Errorf("Mentions(%q) = %q, want %q", in, got, want)
+		if got := strings.Join(mentions(in), " "); got != want {
+			t.Errorf("mentions(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -263,13 +263,23 @@ func TestConditionalMentionsAreRefused(t *testing.T) {
 	}
 }
 
-// TestMentionAfterAnActionIsRefused: `{{.Value}}@cap` and
-// `ops{{/* x */}}@example.com` read as addresses or mentions depending on what
-// the action prints, so they are refused rather than guessed at — once each.
-func TestMentionAfterAnActionIsRefused(t *testing.T) {
-	for _, tmpl := range []string{"{{.Value}}@cap", "mail ops{{/* x */}}@example.com", `x{{""}}@pager`} {
-		if _, err := CompileTemplate(tmpl); err == nil || !strings.Contains(err.Error(), "directly follows a template action") {
-			t.Errorf("%q: %v", tmpl, err)
+// TestMentionAfterAnAction: text straight after an action that prints is
+// part of what it printed, so it builds an address rather than a mention; a
+// comment prints nothing, so the text around it reads as one.
+func TestMentionAfterAnAction(t *testing.T) {
+	for tmpl, want := range map[string]string{
+		"owner {{.Group.owner}}@example.com @log": "log",
+		"{{.Value}}@cap":            "",
+		"page {{/* note */}}@pager": "pager",
+		"{{/* c */}}@pager hi":      "pager",
+		`x{{""}}@pager`:             "",
+	} {
+		tm, err := CompileTemplate(tmpl)
+		if err != nil {
+			t.Fatalf("%q: %v", tmpl, err)
+		}
+		if got := strings.Join(tm.Recipients(), " "); got != want {
+			t.Errorf("%q: %q, want %q", tmpl, got, want)
 		}
 	}
 	for _, tmpl := range []string{
@@ -281,4 +291,17 @@ func TestMentionAfterAnActionIsRefused(t *testing.T) {
 			t.Errorf("%q: %v", tmpl, err)
 		}
 	}
+	// In a condition, an address built after an action is still fine.
+	if _, err := CompileTemplate("{{if .IsAlert}}mail {{.Group.owner}}@example.com{{end}} @log"); err != nil {
+		t.Errorf("address in a condition: %v", err)
+	}
+}
+
+// mentions is who a template's messages go to, or nil if it is refused.
+func mentions(text string) []string {
+	tm, err := CompileTemplate(text)
+	if err != nil {
+		return nil
+	}
+	return tm.Recipients()
 }

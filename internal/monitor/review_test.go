@@ -190,6 +190,14 @@ func TestUncompilableMonitorIsNotAStall(t *testing.T) {
 	if hl := h.s.Health(); hl.Monitors != 0 || hl.Stalled {
 		t.Fatalf("health %+v", hl)
 	}
+	for id, p := range h.s.Problems() {
+		if id != 1 || !strings.Contains(p, "query") {
+			t.Fatalf("problems %d: %q", id, p)
+		}
+	}
+	if len(h.s.Problems()) != 1 {
+		t.Fatalf("problems %v", h.s.Problems())
+	}
 	// The self-metric agrees with the API about what "monitors" means.
 	for _, p := range h.s.opt.Registry.Snapshot() {
 		if p.Name == "ozy.monitor.monitors" && p.Value != 0 {
@@ -247,11 +255,16 @@ func TestProvisionReleasesRemovedFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A dangling symlink and a directory named *.json are not files, so
-	// they hold nothing back.
+	// A dangling symlink may be a target mid-replacement: held back, and the
+	// warning names it. A symlink to a directory is not a monitor file, so
+	// it holds nothing back.
 	if err := os.Symlink(filepath.Join(dir, "gone"), filepath.Join(dir, "dangling.json")); err != nil {
 		t.Fatal(err)
 	}
+	if res := pass(dir); len(res.Released) != 0 || !strings.Contains(logs.String(), "dangling.json") {
+		t.Fatalf("dangling: %v\n%s", res.Released, logs.String())
+	}
+	_ = os.Remove(filepath.Join(dir, "dangling.json"))
 	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +272,7 @@ func TestProvisionReleasesRemovedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	if res := pass(dir); !slices.Equal(res.Released, []string{"A"}) {
-		t.Fatalf("not-a-file held back the release: %v\n%s", res.Released, logs.String())
+		t.Fatalf("a link to a directory held back the release: %v\n%s", res.Released, logs.String())
 	}
 	if err := db.DeleteMonitor(context.Background(), mustUID(t, db, "a")); err != nil {
 		t.Fatal(err)
@@ -267,7 +280,6 @@ func TestProvisionReleasesRemovedFiles(t *testing.T) {
 	if res := pass(dir); len(res.Released) != 0 {
 		t.Fatalf("re-released: %v", res.Released)
 	}
-	_ = os.Remove(filepath.Join(dir, "dangling.json"))
 	_ = os.Remove(filepath.Join(dir, "dir.json"))
 	_ = os.Remove(filepath.Join(dir, "sub"))
 	// Put a back as a provisioned monitor with no file, for the cases below.
@@ -308,24 +320,37 @@ func mustUID(t *testing.T, db *meta.DB, uid string) int64 {
 	return m.ID
 }
 
-// TestFileVanishingMidPassHoldsBackReleases: a plain file listed and then
-// missing (a checkout replacing it) is an unknown uid, not a removal.
+// TestFileVanishingMidPassHoldsBackReleases: a file listed and then gone at
+// read (a checkout replacing it) is an unknown uid: not a failure, and no
+// release that pass.
 func TestFileVanishingMidPassHoldsBackReleases(t *testing.T) {
 	db, err := meta.Open(filepath.Join(t.TempDir(), "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = db.Close() }()
-	dir := t.TempDir()
 	if _, _, err := db.UpsertProvisionedMonitor(context.Background(), meta.MonitorRow{UID: "x", Name: "X", Type: "metric",
 		Query: "avg(last_5m):avg:x{*} > 1", Enabled: true}, t0); err != nil {
 		t.Fatal(err)
 	}
 	var seen []string
 	var res ProvisionResult
-	err = provisionFile(context.Background(), provisionDB{db}, filepath.Join(dir, "x.json"), nil, t0, slog.New(slog.DiscardHandler), &res, &seen)
-	if !errors.Is(err, errNoUID) {
+	err = provisionFile(context.Background(), provisionDB{db}, filepath.Join(t.TempDir(), "x.json"), nil, t0,
+		slog.New(slog.DiscardHandler), &res, &seen)
+	if !errors.Is(err, errVanished) || !errors.Is(err, errNoUID) {
 		t.Fatalf("a listed file gone at read: %v", err)
+	}
+	// Which Provision records as unknown, and not as a failure.
+	if why := outcome("x.json", err, &res, slog.New(slog.DiscardHandler)); len(why) != 1 || res.Failed != 0 {
+		t.Fatalf("outcome %v, failed %d", why, res.Failed)
+	}
+	// And an unknown uid holds back releasing what is missing.
+	if got := releaseOrphans(context.Background(), provisionDB{db}, seen, []string{"x.json disappeared"}, t0,
+		slog.New(slog.DiscardHandler)); len(got) != 0 {
+		t.Fatalf("released %v", got)
+	}
+	if x, _ := db.MonitorByUID(context.Background(), "x"); !x.Provisioned {
+		t.Fatal("released while a uid was unknown")
 	}
 }
 

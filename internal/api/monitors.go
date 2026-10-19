@@ -50,6 +50,7 @@ type MonitorEngine interface {
 	DryRun(ctx context.Context, c *spec.Compiled, now time.Time) ([]monitor.GroupValue, error)
 	Backtest(ctx context.Context, c *spec.Compiled, id int64, from, to time.Time) (monitor.Backtest, error)
 	TestNotification(ctx context.Context, row meta.MonitorRow) (map[string]error, error)
+	Problems() map[int64]string
 }
 
 // Monitors serves monitor CRUD, states, events and the editor's helpers.
@@ -123,7 +124,7 @@ type monitorJSON struct {
 // severity orders statuses for "worst of".
 var severity = map[string]int{string(state.OK): 0, string(state.Warn): 1, string(state.NoData): 2, string(state.Alert): 3}
 
-func toMonitorJSON(r meta.MonitorRow, states []meta.StateRow, now time.Time) monitorJSON {
+func toMonitorJSON(r meta.MonitorRow, states []meta.StateRow, now time.Time, problem string) monitorJSON {
 	out := monitorJSON{ID: r.ID, UID: r.UID, Name: r.Name, Type: r.Type, Query: r.Query, Options: r.Options,
 		Message: r.Message, Tags: r.Tags, Enabled: r.Enabled, Provisioned: r.Provisioned,
 		CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC(), Groups: map[string]int{}}
@@ -133,9 +134,7 @@ func toMonitorJSON(r meta.MonitorRow, states []meta.StateRow, now time.Time) mon
 	if len(out.Options) == 0 {
 		out.Options = json.RawMessage("{}")
 	}
-	if _, err := monitor.CompileRow(r); err != nil {
-		out.Problem = err.Error()
-	}
+	out.Problem = problem
 	if !r.MutedUntil.IsZero() && r.MutedUntil.After(now) {
 		u := r.MutedUntil.Unix()
 		out.MutedUntil = &u
@@ -144,7 +143,8 @@ func toMonitorJSON(r meta.MonitorRow, states []meta.StateRow, now time.Time) mon
 	// now: it has no status, so an ALERT it was disabled in does not stay red
 	// in the list forever. (The states are kept, so re-enabling resumes
 	// rather than re-announcing; /states still shows them.)
-	if !r.Enabled {
+	// A skipped monitor's states are equally stale: it is not running.
+	if !r.Enabled || problem != "" {
 		return out
 	}
 	for _, s := range states {
@@ -174,10 +174,11 @@ func (m *Monitors) list(w http.ResponseWriter, r *http.Request) {
 		byMonitor[s.MonitorID] = append(byMonitor[s.MonitorID], s)
 	}
 	now := m.Clock.Now()
+	problems := m.problems()
 	tag, status, name := q.Get("tag"), q.Get("status"), strings.ToLower(q.Get("q"))
 	out := []monitorJSON{}
 	for _, row := range rows {
-		j := toMonitorJSON(row, byMonitor[row.ID], now)
+		j := toMonitorJSON(row, byMonitor[row.ID], now, problems[row.ID])
 		switch {
 		case tag != "" && !slices.Contains(j.Tags, tag):
 			continue
@@ -206,7 +207,7 @@ func (m *Monitors) get(w http.ResponseWriter, r *http.Request) {
 		m.fail(w, r, "reading monitor states", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now()))
+	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now(), m.problems()[row.ID]))
 }
 
 // readDefinition decodes and compiles a body, and checks that every mention
@@ -275,7 +276,7 @@ func (m *Monitors) create(w http.ResponseWriter, r *http.Request) {
 	}
 	m.reload()
 	w.Header().Set("Location", "/api/v1/monitors/"+strconv.FormatInt(row.ID, 10))
-	writeJSON(w, http.StatusCreated, toMonitorJSON(row, nil, m.Clock.Now()))
+	writeJSON(w, http.StatusCreated, toMonitorJSON(row, nil, m.Clock.Now(), ""))
 }
 
 func (m *Monitors) update(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +295,7 @@ func (m *Monitors) update(w http.ResponseWriter, r *http.Request) {
 	}
 	m.reload()
 	states, _ := m.Store.States(r.Context(), id)
-	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now()))
+	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now(), m.problems()[row.ID]))
 }
 
 func (m *Monitors) delete(w http.ResponseWriter, r *http.Request) {
@@ -363,7 +364,7 @@ func (m *Monitors) setMute(w http.ResponseWriter, r *http.Request, id int64, unt
 	_ = m.Store.AddEvent(r.Context(), meta.EventRow{Ts: m.Clock.Now(), Kind: kind, MonitorID: id, Value: math.NaN(), Text: text})
 	m.reload()
 	states, _ := m.Store.States(r.Context(), id)
-	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now()))
+	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now(), m.problems()[row.ID]))
 }
 
 // stateJSON is one group's state.
@@ -611,8 +612,12 @@ func (m *Monitors) status(w http.ResponseWriter, r *http.Request) {
 		m.fail(w, r, "reading monitor states", err)
 		return
 	}
+	skipped := m.problems()
 	worst := map[int64]string{}
 	for id, sts := range byMonitor {
+		if _, ok := skipped[id]; ok {
+			continue // not running: its stored states are stale
+		}
 		for _, st := range sts {
 			if cur, ok := worst[id]; !ok || severity[st] > severity[cur] {
 				worst[id] = st
@@ -632,6 +637,15 @@ func (m *Monitors) status(w http.ResponseWriter, r *http.Request) {
 		resp["last_eval_age_seconds"] = math.Round(h.LastEvalAge.Seconds())
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// problems is the scheduler's list of monitors it skips, or none when
+// monitors are not running here.
+func (m *Monitors) problems() map[int64]string {
+	if m.Engine == nil {
+		return nil
+	}
+	return m.Engine.Problems()
 }
 
 func monitorID(w http.ResponseWriter, r *http.Request) (int64, bool) {

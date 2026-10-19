@@ -35,20 +35,29 @@ func TestMonitors_DisabledHasNoStatus(t *testing.T) {
 	}
 }
 
-// TestMonitors_UncompilableRowSaysSo: a stored definition this build cannot
-// compile is shown with the reason, since the scheduler skips it.
-func TestMonitors_UncompilableRowSaysSo(t *testing.T) {
-	h, db, _, _ := monitorsAPI(t)
-	if _, err := db.CreateMonitor(context.Background(), meta.MonitorRow{Name: "old", Type: "metric",
-		Query: "avg(last_5m):avg:x{*} > 1", Message: "{{if .IsAlert}}@hook{{end}}", Enabled: true}, now); err != nil {
+// TestMonitors_SkippedMonitorSaysSo: a monitor the scheduler skips (its
+// stored definition no longer compiles) shows the reason and no status, since
+// its stored states are as stale as a disabled one's.
+func TestMonitors_SkippedMonitorSaysSo(t *testing.T) {
+	h, db, eng, _ := monitorsAPI(t)
+	send(t, h, "POST", "/api/v1/monitors", monitorBody)
+	if _, err := db.Commit(context.Background(), meta.Commit{MonitorID: 1, Upsert: []meta.StateRow{
+		{GroupKey: "queue:a", Group: map[string]string{"queue": "a"}, Status: "OK", Since: now, LastValue: math.NaN()}}}); err != nil {
 		t.Fatal(err)
 	}
-	_, body := get(t, h, "/api/v1/monitors/1")
-	if p, _ := body["problem"].(string); !strings.Contains(p, "inside {{if}}") {
-		t.Fatalf("problem %q", body["problem"])
+	if _, body := get(t, h, "/api/v1/monitors/1"); body["problem"] != nil || body["status"] != "OK" {
+		t.Fatalf("running monitor: %v", body)
 	}
-	send(t, h, "POST", "/api/v1/monitors", monitorBody)
-	if _, body := get(t, h, "/api/v1/monitors/2"); body["problem"] != nil {
-		t.Fatalf("a good monitor has a problem: %v", body["problem"])
+	eng.problems = map[int64]string{1: "message: @x is inside {{if}}"}
+	_, body := get(t, h, "/api/v1/monitors/1")
+	if body["problem"] != "message: @x is inside {{if}}" || body["status"] != nil {
+		t.Fatalf("skipped monitor: %v", body)
+	}
+	_, list := get(t, h, "/api/v1/monitors?status=OK")
+	if n := len(list["monitors"].([]any)); n != 0 {
+		t.Fatalf("a skipped monitor listed as OK: %v", list)
+	}
+	if _, st := get(t, h, "/api/v1/monitors/status"); len(st["monitors_by_status"].(map[string]any)) != 0 {
+		t.Fatalf("the badge counts a skipped monitor: %v", st)
 	}
 }

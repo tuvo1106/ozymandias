@@ -112,18 +112,18 @@ func CompileTemplate(text string) (*Template, error) {
 //
 // `range`, `template`, `define` and `block` are refused (see CompileTemplate).
 //
-// A mention is `@handle` in the template's own literal text, at the very
-// start of the message or after whitespace, so an address is not one.
-// Comments, string literals and field names are never text, so
-// `{{/* @pager */}}` mentions nobody. Two forms are refused rather than
-// guessed at:
+// A mention is `@handle` in the template's own literal text, read in runs of
+// adjacent text (the parser drops comments, so `page {{/* x */}}@pager` is
+// the run "page @pager", as it renders). It counts at the start of a run that
+// starts the message, or after whitespace: an address is not one, and nor is
+// text straight after an action that prints (`{{.Group.owner}}@example.com`
+// builds an address). Comments, string literals and field names are never
+// text.
 //
-//   - a mention inside `{{if}}` or `{{with}}`: every message goes to every
-//     handle (ADR-0052), so it would be sent for every status while reading
-//     as if it were not;
-//   - `@handle` straight after an action (`{{.Value}}@cap`, `ops{{/*x*/}}@ex.com`):
-//     what it reads as depends on what the action prints, so it is neither
-//     clearly a mention nor clearly not one. A space before it settles it.
+// A mention inside `{{if}}` or `{{with}}` is refused: every message goes to
+// every handle (ADR-0052), so it would be sent for every status while reading
+// as if it were not. There the start of a branch counts as a boundary too, so
+// `{{if .IsAlert}}@pager{{end}}` is refused, not quietly ignored.
 type scanner struct {
 	named []string
 	errs  []string
@@ -139,12 +139,24 @@ func (s *scanner) list(l *parse.ListNode, inCond bool) {
 	if l == nil {
 		return
 	}
+	var run strings.Builder
+	runStart := 0 // index of the node the current run began at
+	flush := func() {
+		if run.Len() > 0 {
+			s.text(run.String(), inCond, runStart == 0)
+			run.Reset()
+		}
+	}
 	for i, n := range l.Nodes {
+		if t, ok := n.(*parse.TextNode); ok {
+			if run.Len() == 0 {
+				runStart = i
+			}
+			run.Write(t.Text)
+			continue
+		}
+		flush()
 		switch n := n.(type) {
-		case *parse.TextNode:
-			// The start of a text node is the start of the message only for
-			// the first node of the top level.
-			s.text(string(n.Text), inCond, !inCond && i == 0)
 		case *parse.RangeNode:
 			s.fail("{{range}} is not supported in a message: nothing in it is a list")
 		case *parse.TemplateNode:
@@ -157,18 +169,21 @@ func (s *scanner) list(l *parse.ListNode, inCond bool) {
 			s.list(n.ElseList, true)
 		}
 	}
+	flush()
 }
 
-func (s *scanner) text(text string, inCond, atMessageStart bool) {
+// text reads one run. atStart: the run begins its list (the message, or a
+// conditional branch).
+func (s *scanner) text(text string, inCond, atStart bool) {
 	for _, m := range mention.FindAllStringSubmatchIndex(text, -1) {
 		h := text[m[2]:m[3]]
+		if m[0] == 0 && text[0] == '@' && !atStart {
+			continue // straight after an action: part of what it printed
+		}
 		switch {
 		case inCond:
 			s.fail(fmt.Sprintf("@%s is inside {{if}} or {{with}}; a message goes to every notifier it mentions, "+
 				"whatever the status, so write mentions outside conditions (use one monitor per audience)", h))
-		case m[0] == 0 && text[0] == '@' && !atMessageStart:
-			s.fail(fmt.Sprintf("@%s directly follows a template action, so whether it is a mention depends on what "+
-				"the action prints; put a space before it", h))
 		case !slices.Contains(s.named, h):
 			s.named = append(s.named, h)
 		}
@@ -226,13 +241,3 @@ func (t *Template) Recipients() []string { return slices.Clone(t.named) }
 // mention matches `@handle` at the start of a piece of text or after
 // whitespace; scanner decides what each match means.
 var mention = regexp.MustCompile(`(?:^|\s)@([A-Za-z0-9_-]+)`)
-
-// Mentions returns the handles a message template mentions, in order, or nil
-// for a template that does not compile (which is refused at save anyway).
-func Mentions(text string) []string {
-	t, err := CompileTemplate(text)
-	if err != nil {
-		return nil
-	}
-	return t.Recipients()
-}

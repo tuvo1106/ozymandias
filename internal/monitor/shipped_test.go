@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/tuvo1106/ozymandias/internal/meta"
-	"github.com/tuvo1106/ozymandias/internal/monitor/spec"
 )
 
 // TestShippedMonitorsLoad: every file in deploy/monitors/ provisions, and
@@ -26,7 +25,11 @@ func TestShippedMonitorsLoad(t *testing.T) {
 	}
 	rows, _ := db.Monitors(context.Background())
 	for _, r := range rows {
-		for _, m := range spec.Mentions(r.Message) {
+		c, err := CompileRow(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range c.Template.Recipients() {
 			if m != "log" && m != "hook" {
 				t.Errorf("%s mentions @%s, which deploy/ozyd.yaml does not configure", r.UID, m)
 			}

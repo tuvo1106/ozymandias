@@ -76,13 +76,8 @@ func Provision(ctx context.Context, store ProvisionStore, paths []string, known 
 			continue
 		}
 		for _, file := range files {
-			if err := provisionFile(ctx, store, file, known, now, log, &res, &seen); err != nil {
-				log.Error("provisioning: skipping a monitor", "file", file, "err", err)
-				res.Failed++
-				if errors.Is(err, errNoUID) {
-					unknown = append(unknown, file+" has no readable uid")
-				}
-			}
+			err := provisionFile(ctx, store, file, known, now, log, &res, &seen)
+			unknown = append(unknown, outcome(file, err, &res, log)...)
 		}
 	}
 	res.Released = releaseOrphans(ctx, store, seen, unknown, now, log)
@@ -94,18 +89,28 @@ func Provision(ctx context.Context, store ProvisionStore, paths []string, known 
 
 func provisionFile(ctx context.Context, store ProvisionStore, file string, known []string, now time.Time,
 	log *slog.Logger, res *ProvisionResult, seen *[]string) error {
+	// Lstat once, before reading, so a failed read is classified by what
+	// the path was when it was read.
+	fi, err := os.Lstat(file)
+	if errors.Is(err, fs.ErrNotExist) {
+		return errVanished
+	}
+	if err != nil {
+		return fmt.Errorf("%w (%w)", err, errNoUID)
+	}
+	link := fi.Mode()&fs.ModeSymlink != 0
 	data, err := os.ReadFile(file)
 	switch {
-	case err != nil && isLink(file) && (errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.EISDIR)):
-		// A dangling symlink, or one to a directory: a lasting fact that
-		// there is no monitor file here, so it holds nothing back. (A plain
-		// file missing since the listing is different: a checkout or an
-		// editor's rename-and-write is replacing it, and its uid is unknown
-		// until the next pass.)
+	case err != nil && link && errors.Is(err, syscall.EISDIR):
+		// A symlink to a directory: not a monitor file, now or later.
 		return err
+	case err != nil && link && errors.Is(err, fs.ErrNotExist):
+		// A dangling symlink: its target may be mid-replacement (a checkout
+		// of the directory it points into), so its uid is unknown. If it is
+		// dangling for good, the warning names it every pass.
+		return fmt.Errorf("dangling symlink: %w (%w)", err, errNoUID)
 	case err != nil:
-		// Unreadable for now (permissions mid-edit, a flaky mount): its uid
-		// is unknown, so this pass must not conclude its monitor is gone.
+		// Unreadable for now (permissions mid-edit, a flaky mount).
 		return fmt.Errorf("%w (%w)", err, errNoUID)
 	}
 	var f File
@@ -148,14 +153,31 @@ func provisionFile(ctx context.Context, store ProvisionStore, file string, known
 	return nil
 }
 
-// isLink reports whether path is itself a symbolic link.
-func isLink(path string) bool {
-	fi, err := os.Lstat(path)
-	return err == nil && fi.Mode()&fs.ModeSymlink != 0
+// outcome records how one file went, and returns why its uid is unknown, if
+// it is.
+func outcome(file string, err error, res *ProvisionResult, log *slog.Logger) []string {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, errVanished):
+		log.Info("provisioning: a monitor file disappeared during the pass", "file", file)
+		return []string{file + " disappeared during the pass"}
+	}
+	log.Error("provisioning: skipping a monitor", "file", file, "err", err)
+	res.Failed++
+	if errors.Is(err, errNoUID) {
+		return []string{file + " has no readable uid"}
+	}
+	return nil
 }
 
 // errNoUID marks a file whose uid could not be read.
 var errNoUID = errors.New("uid unknown")
+
+// errVanished is a file listed and then gone before it was read: removed, or
+// being replaced (a checkout, an editor's rename-and-write). Its uid is
+// unknown until the next pass, which is not an error worth logging as one.
+var errVanished = fmt.Errorf("removed while provisioning ran; decided next pass (%w)", errNoUID)
 
 // releaseOrphans releases provisioned monitors that have no file, or, when
 // some file's uid was unreadable this pass, says why it is not doing so.
