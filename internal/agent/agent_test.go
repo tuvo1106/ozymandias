@@ -553,25 +553,28 @@ func TestRun_DockerEventsFoldNamesOverTheCap(t *testing.T) {
 	testutil.Eventually(t, 2*time.Second, func() bool { return clk.Waiters() >= 2 }, "not armed")
 	// One Advance can fire the aggregator's flush before the forwarder has armed the
 	// timer it sends on, and on a loaded machine nothing then ticks again: advance each
-	// attempt (only the flush that carries the exits has anything in it).
+	// attempt. Every later flush also carries both series, zero-filled (a counter
+	// reports 0 until its context expires), so count the exits, not the series: a
+	// poll that first looks after a zero-filled flush has arrived sees four or more
+	// series and must still pass.
+	exits := func() []wire.Series {
+		var out []wire.Series
+		for _, s := range got {
+			if s.Metric == "container.exits" && slices.ContainsFunc(s.Points, func(p wire.Point) bool { return p.Value != 0 }) {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
 	testutil.Eventually(t, 5*time.Second, func() bool {
 		clk.Advance(10 * time.Second)
 		mu.Lock()
 		defer mu.Unlock()
-		n := 0
-		for _, s := range got {
-			if s.Metric == "container.exits" {
-				n++
-			}
-		}
-		return n == 2
+		return len(exits()) == 2
 	}, "both exits not forwarded")
 	mu.Lock()
 	var names []string
-	for _, s := range got {
-		if s.Metric != "container.exits" {
-			continue
-		}
+	for _, s := range exits() {
 		for _, tg := range s.Tags {
 			if strings.HasPrefix(tg, "container_name:") {
 				names = append(names, tg)
