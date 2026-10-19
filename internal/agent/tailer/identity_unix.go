@@ -13,8 +13,7 @@ import (
 // of a rotated log is soon a different file.
 type fileID struct{ dev, ino uint64 }
 
-func (i fileID) String() string     { return fmt.Sprintf("%d:%d", i.dev, i.ino) }
-func (i fileID) less(o fileID) bool { return i.dev < o.dev || (i.dev == o.dev && i.ino < o.ino) }
+func (i fileID) String() string { return fmt.Sprintf("%d:%d", i.dev, i.ino) }
 
 func idOf(fi os.FileInfo) (fileID, bool) {
 	st, ok := fi.Sys().(*syscall.Stat_t)

@@ -75,6 +75,7 @@ type Files struct {
 	stats   Stats
 	started bool
 	scanned time.Time
+	opened  uint64 // files ever opened; each tracked file's seq
 }
 
 type fileSource struct {
@@ -84,7 +85,12 @@ type fileSource struct {
 }
 
 type tracked struct {
-	id        fileID
+	id fileID
+	// seq orders reads within a poll: files are read in the order they were
+	// first opened, so a rotated file's last lines go out before the lines of
+	// the file that replaced it. Not by inode: a filesystem may give the new
+	// file a lower number than the old one (CI's did).
+	seq       uint64
 	path      string
 	r         lineReader
 	st        *stream
@@ -202,19 +208,24 @@ func (f *Files) Poll(ctx context.Context) {
 		f.scanned = now
 	}
 	for _, src := range f.sources {
-		ids := make([]fileID, 0, len(src.tail))
-		for id := range src.tail {
-			ids = append(ids, id)
-		}
-		sort.Slice(ids, func(i, j int) bool { return ids[i].less(ids[j]) })
-		for _, id := range ids {
-			f.pollOne(ctx, src, src.tail[id], now)
+		for _, t := range readOrder(src.tail) {
+			f.pollOne(ctx, src, t, now)
 		}
 	}
 	f.started = true
 	if err := f.opts.Registry.Flush(); err != nil {
 		f.opts.Logger.Warn("tailer: writing registry", "err", err)
 	}
+}
+
+// readOrder is the order a poll reads a source's files: oldest opened first.
+func readOrder(tail map[fileID]*tracked) []*tracked {
+	out := make([]*tracked, 0, len(tail))
+	for _, t := range tail {
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].seq < out[j].seq })
+	return out
 }
 
 // scan matches the globs, starts tailing files it has not seen, and notes
@@ -280,7 +291,8 @@ func (f *Files) open(src *fileSource, id fileID, path string, size int64, now ti
 		return
 	}
 	meta := logpipeline.Meta{Service: src.cfg.Service, Source: src.cfg.Source, Host: f.opts.Host, Tags: src.cfg.Tags}
-	t := &tracked{id: id, path: path, committed: off, idle: now,
+	f.opened++
+	t := &tracked{id: id, seq: f.opened, path: path, committed: off, idle: now,
 		st: newStream(pl, meta, src.start, f.opts.Sink, f.opts.BatchLogs)}
 	t.r = lineReader{f: fh}
 	t.r.seek(off)

@@ -583,3 +583,16 @@ func TestDeliver_BatchesAreBoundedByBytesNotOnlyCount(t *testing.T) {
 		t.Fatalf("8 MiB went out in %d batches", len(sink.sizes))
 	}
 }
+
+// TestReadOrderIsOpenOrderNotInode: a rotated file's last lines go out before
+// the replacement's even when the filesystem gave the replacement the lower
+// inode, which is what made TestFiles_RotationByRename... flake on CI.
+func TestReadOrderIsOpenOrderNotInode(t *testing.T) {
+	old := &tracked{id: fileID{dev: 1, ino: 900}, seq: 1, path: "app.log.1"}
+	repl := &tracked{id: fileID{dev: 1, ino: 12}, seq: 2, path: "app.log"}
+	other := &tracked{id: fileID{dev: 2, ino: 1}, seq: 3, path: "b.log"}
+	got := readOrder(map[fileID]*tracked{repl.id: repl, other.id: other, old.id: old})
+	if got[0] != old || got[1] != repl || got[2] != other {
+		t.Fatalf("order %s, %s, %s", got[0].path, got[1].path, got[2].path)
+	}
+}
