@@ -190,14 +190,6 @@ func TestUncompilableMonitorIsNotAStall(t *testing.T) {
 	if hl := h.s.Health(); hl.Monitors != 0 || hl.Stalled {
 		t.Fatalf("health %+v", hl)
 	}
-	for id, p := range h.s.Problems() {
-		if id != 1 || !strings.Contains(p, "query") {
-			t.Fatalf("problems %d: %q", id, p)
-		}
-	}
-	if len(h.s.Problems()) != 1 {
-		t.Fatalf("problems %v", h.s.Problems())
-	}
 	// The self-metric agrees with the API about what "monitors" means.
 	for _, p := range h.s.opt.Registry.Snapshot() {
 		if p.Name == "ozy.monitor.monitors" && p.Value != 0 {
@@ -261,8 +253,8 @@ func TestProvisionReleasesRemovedFiles(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "gone"), filepath.Join(dir, "dangling.json")); err != nil {
 		t.Fatal(err)
 	}
-	if res := pass(dir); len(res.Released) != 0 || !strings.Contains(logs.String(), "dangling.json") {
-		t.Fatalf("dangling: %v\n%s", res.Released, logs.String())
+	if res := pass(dir); len(res.Released) != 0 || res.Failed != 0 || !strings.Contains(logs.String(), "dangling.json") {
+		t.Fatalf("dangling: %+v\n%s", res, logs.String())
 	}
 	_ = os.Remove(filepath.Join(dir, "dangling.json"))
 	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {

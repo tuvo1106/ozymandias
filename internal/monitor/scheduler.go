@@ -82,7 +82,6 @@ const evalTimeout = 30 * time.Second
 type entry struct {
 	row      meta.MonitorRow
 	compiled *spec.Compiled // nil when the stored definition no longer compiles
-	problem  string         // why it does not, when compiled is nil
 	offset   time.Duration
 	next     time.Time
 
@@ -319,10 +318,7 @@ func (s *Scheduler) load(ctx context.Context, withStates bool) error {
 		}
 		// Swapping the definition under a running evaluation is safe: the
 		// worker took its own pointer to the compiled monitor when it started.
-		e.row, e.compiled, e.problem = r, c, ""
-		if cerr != nil {
-			e.problem = cerr.Error()
-		}
+		e.row, e.compiled = r, c
 		if c != nil {
 			off := Offset(r.UID, r.ID, c.Interval)
 			if e.next.IsZero() || off != e.offset || e.next.Sub(now) > c.Interval {
@@ -576,21 +572,6 @@ func (s *Scheduler) link(id int64, from, to time.Time) string {
 	q.Set("from", strconv.FormatInt(from.Unix(), 10))
 	q.Set("to", strconv.FormatInt(to.Unix(), 10))
 	return fmt.Sprintf("%s/monitors/%d?%s", s.opt.BaseURL, id, q.Encode())
-}
-
-// Problems maps each enabled monitor the scheduler is skipping, because its
-// stored definition no longer compiles, to the reason. The API reads it
-// rather than compiling every row on every list.
-func (s *Scheduler) Problems() map[int64]string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := map[int64]string{}
-	for id, e := range s.entries {
-		if e.compiled == nil {
-			out[id] = e.problem
-		}
-	}
-	return out
 }
 
 // Health is the self-watchdog's view.

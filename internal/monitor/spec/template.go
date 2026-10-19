@@ -114,11 +114,15 @@ func CompileTemplate(text string) (*Template, error) {
 //
 // A mention is `@handle` in the template's own literal text, read in runs of
 // adjacent text (the parser drops comments, so `page {{/* x */}}@pager` is
-// the run "page @pager", as it renders). It counts at the start of a run that
-// starts the message, or after whitespace: an address is not one, and nor is
-// text straight after an action that prints (`{{.Group.owner}}@example.com`
-// builds an address). Comments, string literals and field names are never
-// text.
+// the run "page @pager", as it renders). It counts at the start of the
+// message or after whitespace, so an address is not one. Comments, string
+// literals and field names are never text.
+//
+// `@handle` at the start of a run straight after an action is refused: what
+// it reads as depends on what the action prints (an `{{if}}` may print
+// nothing, a `-}}` trims the space before it), so it is neither clearly a
+// mention nor clearly not. The error gives both ways out: a space before it
+// for a mention, `{{"@"}}` for a literal `@` in an address.
 //
 // A mention inside `{{if}}` or `{{with}}` is refused: every message goes to
 // every handle (ADR-0052), so it would be sent for every status while reading
@@ -177,10 +181,10 @@ func (s *scanner) list(l *parse.ListNode, inCond bool) {
 func (s *scanner) text(text string, inCond, atStart bool) {
 	for _, m := range mention.FindAllStringSubmatchIndex(text, -1) {
 		h := text[m[2]:m[3]]
-		if m[0] == 0 && text[0] == '@' && !atStart {
-			continue // straight after an action: part of what it printed
-		}
 		switch {
+		case m[0] == 0 && text[0] == '@' && !atStart:
+			s.fail(fmt.Sprintf("@%s directly follows a template action, so it may or may not read as a mention; "+
+				"put a space before it to mention @%s, or write {{\"@\"}}%s for a literal @", h, h, h))
 		case inCond:
 			s.fail(fmt.Sprintf("@%s is inside {{if}} or {{with}}; a message goes to every notifier it mentions, "+
 				"whatever the status, so write mentions outside conditions (use one monitor per audience)", h))

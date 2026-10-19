@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/clock"
@@ -38,7 +39,7 @@ type MonitorStore interface {
 	DeleteMonitor(ctx context.Context, id int64) error
 	SetMute(ctx context.Context, id int64, until time.Time) (meta.MonitorRow, error)
 	States(ctx context.Context, monitorID int64) ([]meta.StateRow, error)
-	EnabledStatuses(ctx context.Context) (map[int64][]string, error)
+	EnabledStatuses(ctx context.Context) ([]meta.MonitorStatuses, error)
 	Events(ctx context.Context, q meta.EventQuery) ([]meta.EventRow, error)
 	AddEvent(ctx context.Context, e meta.EventRow) error
 }
@@ -50,7 +51,6 @@ type MonitorEngine interface {
 	DryRun(ctx context.Context, c *spec.Compiled, now time.Time) ([]monitor.GroupValue, error)
 	Backtest(ctx context.Context, c *spec.Compiled, id int64, from, to time.Time) (monitor.Backtest, error)
 	TestNotification(ctx context.Context, row meta.MonitorRow) (map[string]error, error)
-	Problems() map[int64]string
 }
 
 // Monitors serves monitor CRUD, states, events and the editor's helpers.
@@ -62,6 +62,41 @@ type Monitors struct {
 	Notifiers []notify.Info
 	Clock     clock.Clock
 	Logger    *slog.Logger
+
+	problemMu sync.Mutex
+	problems  map[int64]cachedProblem
+}
+
+// cachedProblem is one row's compile result, keyed by its definition.
+type cachedProblem struct {
+	def, problem string
+}
+
+// problemOf says why a stored definition no longer compiles, or "" if it
+// does. It compiles here, not by asking the scheduler: the answer must hold
+// for a disabled monitor, before the scheduler's first load, on a server not
+// running monitors, and right after an edit the scheduler has not reloaded.
+// The result is cached by the definition text, so a list or a badge poll
+// compiles only what changed.
+func (m *Monitors) problemOf(r meta.MonitorRow) string {
+	def := r.Type + "\x00" + r.Query + "\x00" + string(r.Options) + "\x00" + r.Message
+	m.problemMu.Lock()
+	c, ok := m.problems[r.ID]
+	m.problemMu.Unlock()
+	if ok && c.def == def {
+		return c.problem
+	}
+	problem := ""
+	if _, err := monitor.CompileRow(r); err != nil {
+		problem = err.Error()
+	}
+	m.problemMu.Lock()
+	if m.problems == nil {
+		m.problems = map[int64]cachedProblem{}
+	}
+	m.problems[r.ID] = cachedProblem{def: def, problem: problem}
+	m.problemMu.Unlock()
+	return problem
 }
 
 // Register mounts the endpoints on mux.
@@ -174,11 +209,16 @@ func (m *Monitors) list(w http.ResponseWriter, r *http.Request) {
 		byMonitor[s.MonitorID] = append(byMonitor[s.MonitorID], s)
 	}
 	now := m.Clock.Now()
-	problems := m.problems()
 	tag, status, name := q.Get("tag"), q.Get("status"), strings.ToLower(q.Get("q"))
 	out := []monitorJSON{}
 	for _, row := range rows {
-		j := toMonitorJSON(row, byMonitor[row.ID], now, problems[row.ID])
+		// The cheap filters first, so a filtered list compiles only what it
+		// returns.
+		if (tag != "" && !slices.Contains(row.Tags, tag)) ||
+			(name != "" && !strings.Contains(strings.ToLower(row.Name), name)) {
+			continue
+		}
+		j := toMonitorJSON(row, byMonitor[row.ID], now, m.problemOf(row))
 		switch {
 		case tag != "" && !slices.Contains(j.Tags, tag):
 			continue
@@ -207,7 +247,7 @@ func (m *Monitors) get(w http.ResponseWriter, r *http.Request) {
 		m.fail(w, r, "reading monitor states", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now(), m.problems()[row.ID]))
+	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now(), m.problemOf(row)))
 }
 
 // readDefinition decodes and compiles a body, and checks that every mention
@@ -295,7 +335,7 @@ func (m *Monitors) update(w http.ResponseWriter, r *http.Request) {
 	}
 	m.reload()
 	states, _ := m.Store.States(r.Context(), id)
-	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now(), m.problems()[row.ID]))
+	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now(), m.problemOf(row)))
 }
 
 func (m *Monitors) delete(w http.ResponseWriter, r *http.Request) {
@@ -364,7 +404,7 @@ func (m *Monitors) setMute(w http.ResponseWriter, r *http.Request, id int64, unt
 	_ = m.Store.AddEvent(r.Context(), meta.EventRow{Ts: m.Clock.Now(), Kind: kind, MonitorID: id, Value: math.NaN(), Text: text})
 	m.reload()
 	states, _ := m.Store.States(r.Context(), id)
-	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now(), m.problems()[row.ID]))
+	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now(), m.problemOf(row)))
 }
 
 // stateJSON is one group's state.
@@ -607,20 +647,19 @@ func (m *Monitors) notifiers(w http.ResponseWriter, _ *http.Request) {
 
 // status is the nav badge and the stall banner in one cheap call.
 func (m *Monitors) status(w http.ResponseWriter, r *http.Request) {
-	byMonitor, err := m.Store.EnabledStatuses(r.Context())
+	enabled, err := m.Store.EnabledStatuses(r.Context())
 	if err != nil {
 		m.fail(w, r, "reading monitor states", err)
 		return
 	}
-	skipped := m.problems()
 	worst := map[int64]string{}
-	for id, sts := range byMonitor {
-		if _, ok := skipped[id]; ok {
+	for _, ms := range enabled {
+		if m.problemOf(ms.Row) != "" {
 			continue // not running: its stored states are stale
 		}
-		for _, st := range sts {
-			if cur, ok := worst[id]; !ok || severity[st] > severity[cur] {
-				worst[id] = st
+		for _, st := range ms.Statuses {
+			if cur, ok := worst[ms.Row.ID]; !ok || severity[st] > severity[cur] {
+				worst[ms.Row.ID] = st
 			}
 		}
 	}
@@ -637,15 +676,6 @@ func (m *Monitors) status(w http.ResponseWriter, r *http.Request) {
 		resp["last_eval_age_seconds"] = math.Round(h.LastEvalAge.Seconds())
 	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// problems is the scheduler's list of monitors it skips, or none when
-// monitors are not running here.
-func (m *Monitors) problems() map[int64]string {
-	if m.Engine == nil {
-		return nil
-	}
-	return m.Engine.Problems()
 }
 
 func monitorID(w http.ResponseWriter, r *http.Request) (int64, bool) {

@@ -263,16 +263,15 @@ func TestConditionalMentionsAreRefused(t *testing.T) {
 	}
 }
 
-// TestMentionAfterAnAction: text straight after an action that prints is
-// part of what it printed, so it builds an address rather than a mention; a
-// comment prints nothing, so the text around it reads as one.
+// TestMentionAfterAnAction: `@handle` straight after an action is ambiguous
+// (the action may print anything, or nothing), so it is refused with both
+// ways out; a comment prints nothing, so the text around it reads as one.
 func TestMentionAfterAnAction(t *testing.T) {
 	for tmpl, want := range map[string]string{
-		"owner {{.Group.owner}}@example.com @log": "log",
-		"{{.Value}}@cap":            "",
-		"page {{/* note */}}@pager": "pager",
-		"{{/* c */}}@pager hi":      "pager",
-		`x{{""}}@pager`:             "",
+		`owner {{.Group.owner}}{{"@"}}example.com @log`: "log", // the literal-@ escape
+		"page {{/* note */}}@pager":                     "pager",
+		"{{/* c */}}@pager hi":                          "pager",
+		"{{.Value}} @cap":                               "cap",
 	} {
 		tm, err := CompileTemplate(tmpl)
 		if err != nil {
@@ -280,6 +279,21 @@ func TestMentionAfterAnAction(t *testing.T) {
 		}
 		if got := strings.Join(tm.Recipients(), " "); got != want {
 			t.Errorf("%q: %q, want %q", tmpl, got, want)
+		}
+	}
+	for _, tmpl := range []string{
+		"owner {{.Group.owner}}@example.com",
+		"{{.Value}}@cap",
+		`x{{""}}@pager`,
+		"{{if .IsWarning}}WARN {{end}}@pager", // the if may print nothing
+		"{{$v := .Value}}@pager value {{$v}}", // a declaration prints nothing
+		"{{.Monitor -}} @pager",               // the trim removes the space
+		"{{if .IsAlert}}mail {{.Group.owner}}@example.com{{end}}",
+	} {
+		_, err := CompileTemplate(tmpl)
+		if err == nil || !strings.Contains(err.Error(), "directly follows a template action") ||
+			!strings.Contains(err.Error(), `{{"@"}}`) {
+			t.Errorf("%q: %v", tmpl, err)
 		}
 	}
 	for _, tmpl := range []string{
@@ -291,8 +305,8 @@ func TestMentionAfterAnAction(t *testing.T) {
 			t.Errorf("%q: %v", tmpl, err)
 		}
 	}
-	// In a condition, an address built after an action is still fine.
-	if _, err := CompileTemplate("{{if .IsAlert}}mail {{.Group.owner}}@example.com{{end}} @log"); err != nil {
+	// In a condition, an address written with the escape is fine.
+	if _, err := CompileTemplate(`{{if .IsAlert}}mail {{.Group.owner}}{{"@"}}example.com{{end}} @log`); err != nil {
 		t.Errorf("address in a condition: %v", err)
 	}
 }

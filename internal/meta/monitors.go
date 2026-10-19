@@ -486,27 +486,46 @@ func nullFloat(v float64) any {
 	return v
 }
 
-// EnabledStatuses returns each enabled monitor's group statuses, by monitor
-// id: the nav badge's question, in one consistent read. A disabled monitor's
-// stored states describe when it last ran, not now.
-func (d *DB) EnabledStatuses(ctx context.Context) (map[int64][]string, error) {
-	rows, err := d.db.QueryContext(ctx, `SELECT s.monitor_id, s.status FROM monitor_states s
-		JOIN monitors m ON m.id = s.monitor_id WHERE m.enabled = 1`)
+// MonitorStatuses is an enabled monitor with its groups' statuses.
+type MonitorStatuses struct {
+	Row      MonitorRow
+	Statuses []string
+}
+
+// EnabledStatuses returns each enabled monitor that has states, with their
+// statuses: the nav badge's question, in one consistent read. A disabled
+// monitor's stored states describe when it last ran, not now. The row comes
+// along so the caller can tell whether its definition still compiles.
+func (d *DB) EnabledStatuses(ctx context.Context) ([]MonitorStatuses, error) {
+	rows, err := d.db.QueryContext(ctx, strings.Replace(monitorColumns, "SELECT ", "SELECT s.status, ", 1)+
+		` m JOIN monitor_states s ON s.monitor_id = m.id WHERE m.enabled = 1 ORDER BY m.id`)
 	if err != nil {
 		return nil, fmt.Errorf("meta: reading monitor statuses: %w", err)
 	}
 	defer rows.Close()
-	out := map[int64][]string{}
+	var out []MonitorStatuses
 	for rows.Next() {
-		var id int64
 		var st string
-		if err := rows.Scan(&id, &st); err != nil {
+		r, err := scanMonitor(prefixed{rows, &st})
+		if err != nil {
 			return nil, fmt.Errorf("meta: reading monitor statuses: %w", err)
 		}
-		out[id] = append(out[id], st)
+		if n := len(out); n > 0 && out[n-1].Row.ID == r.ID {
+			out[n-1].Statuses = append(out[n-1].Statuses, st)
+			continue
+		}
+		out = append(out, MonitorStatuses{Row: r, Statuses: []string{st}})
 	}
 	return out, rows.Err()
 }
+
+// prefixed scans one leading column into first, then the rest as usual.
+type prefixed struct {
+	s     scanner
+	first any
+}
+
+func (p prefixed) Scan(dest ...any) error { return p.s.Scan(append([]any{p.first}, dest...)...) }
 
 // States returns a monitor's states, or every monitor's when monitorID is 0.
 func (d *DB) States(ctx context.Context, monitorID int64) ([]StateRow, error) {

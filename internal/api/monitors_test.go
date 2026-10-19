@@ -24,16 +24,14 @@ import (
 
 // fakeEngine stands in for the scheduler.
 type fakeEngine struct {
-	reloads  int
-	health   monitor.Health
-	dryErr   error
-	tested   []int64
-	problems map[int64]string
+	reloads int
+	health  monitor.Health
+	dryErr  error
+	tested  []int64
 }
 
-func (f *fakeEngine) Reload()                    { f.reloads++ }
-func (f *fakeEngine) Problems() map[int64]string { return f.problems }
-func (f *fakeEngine) Health() monitor.Health     { return f.health }
+func (f *fakeEngine) Reload()                { f.reloads++ }
+func (f *fakeEngine) Health() monitor.Health { return f.health }
 func (f *fakeEngine) DryRun(_ context.Context, c *spec.Compiled, _ time.Time) ([]monitor.GroupValue, error) {
 	if f.dryErr != nil {
 		return nil, f.dryErr

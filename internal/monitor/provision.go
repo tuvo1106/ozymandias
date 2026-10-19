@@ -108,7 +108,10 @@ func provisionFile(ctx context.Context, store ProvisionStore, file string, known
 		// A dangling symlink: its target may be mid-replacement (a checkout
 		// of the directory it points into), so its uid is unknown. If it is
 		// dangling for good, the warning names it every pass.
-		return fmt.Errorf("dangling symlink: %w (%w)", err, errNoUID)
+		return errDangling
+	case errors.Is(err, fs.ErrNotExist):
+		// Removed between the Lstat and the read.
+		return errVanished
 	case err != nil:
 		// Unreadable for now (permissions mid-edit, a flaky mount).
 		return fmt.Errorf("%w (%w)", err, errNoUID)
@@ -162,6 +165,10 @@ func outcome(file string, err error, res *ProvisionResult, log *slog.Logger) []s
 	case errors.Is(err, errVanished):
 		log.Info("provisioning: a monitor file disappeared during the pass", "file", file)
 		return []string{file + " disappeared during the pass"}
+	case errors.Is(err, errDangling):
+		log.Warn("provisioning: a monitor file is a symlink to nothing; until it is removed or its target returns, "+
+			"monitors whose file is gone are not released", "file", file)
+		return []string{file + " is a dangling symlink"}
 	}
 	log.Error("provisioning: skipping a monitor", "file", file, "err", err)
 	res.Failed++
@@ -178,6 +185,9 @@ var errNoUID = errors.New("uid unknown")
 // being replaced (a checkout, an editor's rename-and-write). Its uid is
 // unknown until the next pass, which is not an error worth logging as one.
 var errVanished = fmt.Errorf("removed while provisioning ran; decided next pass (%w)", errNoUID)
+
+// errDangling is a *.json symlink whose target does not exist.
+var errDangling = fmt.Errorf("dangling symlink (%w)", errNoUID)
 
 // releaseOrphans releases provisioned monitors that have no file, or, when
 // some file's uid was unreadable this pass, says why it is not doing so.
