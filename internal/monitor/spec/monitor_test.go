@@ -213,7 +213,7 @@ func TestMentions(t *testing.T) {
 		"mail ops@example.com please":  "",
 		"line\n@hook\t@me_2":           "hook me_2",
 		"{{if .IsAlert}}@pager{{end}}": "",  // in a condition: refused at compile, never a recipient
-		"{{.Value}}@b c@d":             "b", // a text node starts a mention
+		"{{.Value}} @b c@d":            "b", // whitespace before @ inside a text node
 		"{{/* @c */}} {{\" @d\"}}":     "",  // comments and literals are not text
 	} {
 		if got := strings.Join(Mentions(in), " "); got != want {
@@ -231,16 +231,16 @@ func ExampleParseQuery() {
 // TestRecipients: a message goes to every handle in its literal text, and
 // to nothing a comment, a string literal or data mentions.
 func TestRecipients(t *testing.T) {
-	tm, err := CompileTemplate(`{{.Group.user}}{{/* @pager is off */}}{{if eq .Group.user " @x"}}admin{{end}} oncall@example.com @log {{.Value}}@cap`)
+	tm, err := CompileTemplate(`@ops {{.Group.user}}{{/* @pager is off */}}{{if eq .Group.user " @x"}}admin{{end}} oncall@example.com @log {{.Value}} @cap`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(tm.Recipients(), " "); got != "log cap" {
+	if got := strings.Join(tm.Recipients(), " "); got != "ops log cap" {
 		t.Fatalf("recipients %q", got)
 	}
 	// Data is not escaped: it renders, and compares, as it is.
 	text, err := tm.Render(Data{Group: Group{"user": "a@b @pager"}, Value: 1, Status: "OK"})
-	if err != nil || text != "a@b @pager oncall@example.com @log 1@cap" {
+	if err != nil || text != "@ops a@b @pager oncall@example.com @log 1 @cap" {
 		t.Fatalf("%q %v", text, err)
 	}
 }
@@ -252,6 +252,7 @@ func TestConditionalMentionsAreRefused(t *testing.T) {
 		"{{if .IsAlert}}@pager{{end}}",
 		"{{if .IsAlert}}x{{else}}page @pager{{end}}",
 		"{{with .Group.q}}{{if .}} @pager{{end}}{{end}}",
+		"{{with .Group.q}} @pager{{end}}",
 	} {
 		if _, err := CompileTemplate(tmpl); err == nil || !strings.Contains(err.Error(), "@pager is inside") {
 			t.Errorf("%q: %v", tmpl, err)
@@ -259,5 +260,25 @@ func TestConditionalMentionsAreRefused(t *testing.T) {
 	}
 	if _, err := CompileTemplate("{{if .IsAlert}}mail ops@example.com{{end}} @log"); err != nil {
 		t.Errorf("an address in a condition: %v", err)
+	}
+}
+
+// TestMentionAfterAnActionIsRefused: `{{.Value}}@cap` and
+// `ops{{/* x */}}@example.com` read as addresses or mentions depending on what
+// the action prints, so they are refused rather than guessed at — once each.
+func TestMentionAfterAnActionIsRefused(t *testing.T) {
+	for _, tmpl := range []string{"{{.Value}}@cap", "mail ops{{/* x */}}@example.com", `x{{""}}@pager`} {
+		if _, err := CompileTemplate(tmpl); err == nil || !strings.Contains(err.Error(), "directly follows a template action") {
+			t.Errorf("%q: %v", tmpl, err)
+		}
+	}
+	for _, tmpl := range []string{
+		"{{if .IsAlert}}{{if .IsAlert}} @pager{{end}}{{end}}",
+		"{{if .IsAlert}} @pager{{end}}{{if .IsWarning}} @pager{{end}}",
+	} {
+		_, err := CompileTemplate(tmpl)
+		if err == nil || strings.Count(err.Error(), "@pager is inside") != 1 {
+			t.Errorf("%q: %v", tmpl, err)
+		}
 	}
 }

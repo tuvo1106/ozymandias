@@ -34,3 +34,21 @@ func TestMonitors_DisabledHasNoStatus(t *testing.T) {
 		t.Fatalf("states %v", st)
 	}
 }
+
+// TestMonitors_UncompilableRowSaysSo: a stored definition this build cannot
+// compile is shown with the reason, since the scheduler skips it.
+func TestMonitors_UncompilableRowSaysSo(t *testing.T) {
+	h, db, _, _ := monitorsAPI(t)
+	if _, err := db.CreateMonitor(context.Background(), meta.MonitorRow{Name: "old", Type: "metric",
+		Query: "avg(last_5m):avg:x{*} > 1", Message: "{{if .IsAlert}}@hook{{end}}", Enabled: true}, now); err != nil {
+		t.Fatal(err)
+	}
+	_, body := get(t, h, "/api/v1/monitors/1")
+	if p, _ := body["problem"].(string); !strings.Contains(p, "inside {{if}}") {
+		t.Fatalf("problem %q", body["problem"])
+	}
+	send(t, h, "POST", "/api/v1/monitors", monitorBody)
+	if _, body := get(t, h, "/api/v1/monitors/2"); body["problem"] != nil {
+		t.Fatalf("a good monitor has a problem: %v", body["problem"])
+	}
+}

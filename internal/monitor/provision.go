@@ -96,9 +96,12 @@ func provisionFile(ctx context.Context, store ProvisionStore, file string, known
 	log *slog.Logger, res *ProvisionResult, seen *[]string) error {
 	data, err := os.ReadFile(file)
 	switch {
-	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.EISDIR):
-		// Gone since the listing, a dangling symlink, or a directory named
-		// *.json: there is no file here, which is an answer, not an unknown.
+	case err != nil && isLink(file) && (errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.EISDIR)):
+		// A dangling symlink, or one to a directory: a lasting fact that
+		// there is no monitor file here, so it holds nothing back. (A plain
+		// file missing since the listing is different: a checkout or an
+		// editor's rename-and-write is replacing it, and its uid is unknown
+		// until the next pass.)
 		return err
 	case err != nil:
 		// Unreadable for now (permissions mid-edit, a flaky mount): its uid
@@ -122,10 +125,11 @@ func provisionFile(ctx context.Context, store ProvisionStore, file string, known
 		return fmt.Errorf(`a provisioned monitor needs a "uid": it is what the upsert is keyed on (%w)`, errNoUID)
 	}
 	*seen = append(*seen, f.UID)
-	if _, err := spec.Compile(f.Monitor); err != nil {
+	c, err := spec.Compile(f.Monitor)
+	if err != nil {
 		return err
 	}
-	for _, m := range spec.Mentions(f.Message) {
+	for _, m := range c.Template.Recipients() {
 		if !contains(known, m) {
 			log.Warn("provisioning: monitor mentions a notifier this server does not have; those notifications will fail",
 				"file", file, "notifier", m)
@@ -142,6 +146,12 @@ func provisionFile(ctx context.Context, store ProvisionStore, file string, known
 		res.Changed++
 	}
 	return nil
+}
+
+// isLink reports whether path is itself a symbolic link.
+func isLink(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode()&fs.ModeSymlink != 0
 }
 
 // errNoUID marks a file whose uid could not be read.

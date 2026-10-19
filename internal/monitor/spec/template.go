@@ -65,8 +65,8 @@ func (g Group) String() string {
 // Template is a compiled message.
 type Template struct {
 	t *template.Template
-	// named is every handle the source mentions: who every message from it
-	// goes to.
+	// named is every handle the template's literal text mentions (see
+	// scanner): who every message from it goes to.
 	named []string
 }
 
@@ -92,11 +92,13 @@ func CompileTemplate(text string) (*Template, error) {
 		if tt.Name() != "message" {
 			return nil, errors.New("{{define}} and {{block}} are not supported in a message")
 		}
-		if err := refuse(tt.Root); err != nil {
-			return nil, err
-		}
 	}
-	out := &Template{t: t, named: Mentions(text)}
+	sc := &scanner{}
+	sc.list(t.Root, false)
+	if len(sc.errs) > 0 {
+		return nil, errors.New(strings.Join(sc.errs, "\n"))
+	}
+	out := &Template{t: t, named: sc.named}
 	for _, sample := range samples() {
 		if _, err := out.Render(sample); err != nil {
 			return nil, err
@@ -105,74 +107,72 @@ func CompileTemplate(text string) (*Template, error) {
 	return out, nil
 }
 
-func refuse(n parse.Node) error {
-	switch n := n.(type) {
-	case *parse.ListNode:
-		if n == nil {
-			return nil
-		}
-		for _, c := range n.Nodes {
-			if err := refuse(c); err != nil {
-				return err
-			}
-		}
-	case *parse.RangeNode:
-		return errors.New("{{range}} is not supported in a message: nothing in it is a list")
-	case *parse.TemplateNode:
-		return errors.New("{{template}} is not supported in a message")
-	case *parse.IfNode:
-		return errors.Join(refuse(n.List), refuse(n.ElseList), refuseMentions(n.List), refuseMentions(n.ElseList))
-	case *parse.WithNode:
-		return errors.Join(refuse(n.List), refuse(n.ElseList), refuseMentions(n.List), refuseMentions(n.ElseList))
-	}
-	return nil
+// scanner walks a template once. It refuses what a message may not contain
+// and collects who it mentions.
+//
+// `range`, `template`, `define` and `block` are refused (see CompileTemplate).
+//
+// A mention is `@handle` in the template's own literal text, at the very
+// start of the message or after whitespace, so an address is not one.
+// Comments, string literals and field names are never text, so
+// `{{/* @pager */}}` mentions nobody. Two forms are refused rather than
+// guessed at:
+//
+//   - a mention inside `{{if}}` or `{{with}}`: every message goes to every
+//     handle (ADR-0052), so it would be sent for every status while reading
+//     as if it were not;
+//   - `@handle` straight after an action (`{{.Value}}@cap`, `ops{{/*x*/}}@ex.com`):
+//     what it reads as depends on what the action prints, so it is neither
+//     clearly a mention nor clearly not one. A space before it settles it.
+type scanner struct {
+	named []string
+	errs  []string
 }
 
-// refuseMentions rejects a mention inside a conditional branch. Every message
-// goes to every handle the template names (ADR-0052), so `{{if
-// .IsAlert}}@pager{{end}}` would page @pager for recoveries too while reading
-// as if it did not. Refused where it is written, not discovered at page time.
-func refuseMentions(l *parse.ListNode) error {
-	var bad []string
-	walkText(l, true, func(text string) { bad = append(bad, textMentions(text)...) })
-	if len(bad) > 0 {
-		return fmt.Errorf("@%s is inside {{if}} or {{with}}; a message goes to every notifier it mentions, whatever the status, "+
-			"so write mentions outside conditions (use one monitor per audience)", bad[0])
+func (s *scanner) fail(msg string) {
+	if !slices.Contains(s.errs, msg) {
+		s.errs = append(s.errs, msg)
 	}
-	return nil
 }
 
-// walkText calls fn with the literal text of l's nodes: only the top level,
-// or, with deep, inside conditional branches too. Comments, string literals
-// and field names are never text, so `{{/* @pager */}}` mentions nobody.
-func walkText(l *parse.ListNode, deep bool, fn func(string)) {
+func (s *scanner) list(l *parse.ListNode, inCond bool) {
 	if l == nil {
 		return
 	}
-	for _, n := range l.Nodes {
+	for i, n := range l.Nodes {
 		switch n := n.(type) {
 		case *parse.TextNode:
-			fn(string(n.Text))
+			// The start of a text node is the start of the message only for
+			// the first node of the top level.
+			s.text(string(n.Text), inCond, !inCond && i == 0)
+		case *parse.RangeNode:
+			s.fail("{{range}} is not supported in a message: nothing in it is a list")
+		case *parse.TemplateNode:
+			s.fail("{{template}} is not supported in a message")
 		case *parse.IfNode:
-			if deep {
-				walkText(n.List, true, fn)
-				walkText(n.ElseList, true, fn)
-			}
+			s.list(n.List, true)
+			s.list(n.ElseList, true)
 		case *parse.WithNode:
-			if deep {
-				walkText(n.List, true, fn)
-				walkText(n.ElseList, true, fn)
-			}
+			s.list(n.List, true)
+			s.list(n.ElseList, true)
 		}
 	}
 }
 
-func textMentions(text string) []string {
-	var out []string
-	for _, m := range mention.FindAllStringSubmatch(text, -1) {
-		out = append(out, m[1])
+func (s *scanner) text(text string, inCond, atMessageStart bool) {
+	for _, m := range mention.FindAllStringSubmatchIndex(text, -1) {
+		h := text[m[2]:m[3]]
+		switch {
+		case inCond:
+			s.fail(fmt.Sprintf("@%s is inside {{if}} or {{with}}; a message goes to every notifier it mentions, "+
+				"whatever the status, so write mentions outside conditions (use one monitor per audience)", h))
+		case m[0] == 0 && text[0] == '@' && !atMessageStart:
+			s.fail(fmt.Sprintf("@%s directly follows a template action, so whether it is a mention depends on what "+
+				"the action prints; put a space before it", h))
+		case !slices.Contains(s.named, h):
+			s.named = append(s.named, h)
+		}
 	}
-	return out
 }
 
 // samples are the data a template is proved against: one per status, so that
@@ -217,35 +217,22 @@ func (t *Template) Render(d Data) (string, error) {
 }
 
 // Recipients is who every message from this template goes to: each handle
-// its source mentions, whatever the status and whatever the data
-// (ADR-0052). Not the handles in the rendered text: that would let a tag
-// value or log attribute containing `@x` page x, and every rule tried for
+// its literal text mentions (see scanner), whatever the status and whatever
+// the data (ADR-0052). Not the handles in the rendered text: that would let a
+// tag value or log attribute containing `@x` page x, and every rule tried for
 // telling the author's mentions from the data's in rendered text had a hole.
-// A mention inside `{{if}}` still counts; one audience per status is one
-// monitor per audience.
 func (t *Template) Recipients() []string { return slices.Clone(t.named) }
 
-// mention is `@handle` at the start of a piece of literal text or after
-// whitespace: an email address is not one, and in `{{.Value}} @pager` or
-// `{{end}}@pager` the handle starts a text node.
+// mention matches `@handle` at the start of a piece of text or after
+// whitespace; scanner decides what each match means.
 var mention = regexp.MustCompile(`(?:^|\s)@([A-Za-z0-9_-]+)`)
 
-// Mentions returns the distinct handles a message template mentions, in order:
-// those in its literal text outside conditions. It is what save-time
-// validation checks and who every message goes to. A message that does not
-// parse mentions nobody (it is refused at save anyway).
+// Mentions returns the handles a message template mentions, in order, or nil
+// for a template that does not compile (which is refused at save anyway).
 func Mentions(text string) []string {
-	t, err := template.New("m").Parse(text)
-	if err != nil || t.Tree == nil {
+	t, err := CompileTemplate(text)
+	if err != nil {
 		return nil
 	}
-	var out []string
-	walkText(t.Root, false, func(s string) {
-		for _, m := range textMentions(s) {
-			if !slices.Contains(out, m) {
-				out = append(out, m)
-			}
-		}
-	})
-	return out
+	return t.Recipients()
 }

@@ -851,7 +851,9 @@ Every monitor, by name: `{"monitors": [...]}`. Each has the definition's fields,
 plus `id`, `enabled`, `provisioned`, `created_at`, `updated_at` (RFC 3339, UTC),
 `muted_until` (unix seconds, or `null`), `groups` (how many groups are in each
 status) and `status` — the worst status among its groups, or **`null` when the
-monitor has no groups yet** or is disabled (with empty `groups`). A monitor
+monitor has no groups yet** or is disabled (with empty `groups`). `problem` is present when the stored
+definition no longer compiles (written by another build, or by hand): the
+scheduler skips such a monitor, so it is not running whatever `enabled` says. A monitor
 that has never seen data is not OK; it is unknown, and a disabled one's stored
 states describe when it last ran, not now (`/states` still returns them).
 

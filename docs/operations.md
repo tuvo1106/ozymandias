@@ -589,10 +589,12 @@ not hold up releasing the others.
 
 A message's `@name` mentions select notifiers. **Every message from a monitor
 goes to every handle in its template's literal text**: an `@` at the start of
-a piece of text or after whitespace (an email address is not one; a comment
-or a string literal inside `{{ }}` is not text). The text can vary by status;
-the recipients do not. So a mention inside `{{if}}` or `{{with}}` is refused
-at save. To page `@pager` for alerts and only log recoveries, make two
+the message or after whitespace (an email address is not one; a comment or a
+string literal inside `{{ }}` is not text). The text can vary by status; the
+recipients do not. Two forms are refused at save, with the reason: a mention
+inside `{{if}}` or `{{with}}`, and an `@handle` straight after an action
+(`{{.Value}}@cap`), which reads as an address or a mention depending on what
+the action prints. Put a space before it. To page `@pager` for alerts and only log recoveries, make two
 monitors. Data never changes who is notified; a tag value
 that reads `@pager` is just text
 ([ADR-0052](adr/0052-notifiers-come-from-the-template-source.md)).

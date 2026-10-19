@@ -114,6 +114,10 @@ type monitorJSON struct {
 	// unknown, and saying OK would be the UI concluding a fact from nothing.
 	Status *string        `json:"status"`
 	Groups map[string]int `json:"groups"` // count by status
+	// Problem is why a stored definition no longer compiles (written by an
+	// older or newer build, or by hand). The scheduler skips such a monitor,
+	// so "enabled" alone would claim it runs.
+	Problem string `json:"problem,omitempty"`
 }
 
 // severity orders statuses for "worst of".
@@ -128,6 +132,9 @@ func toMonitorJSON(r meta.MonitorRow, states []meta.StateRow, now time.Time) mon
 	}
 	if len(out.Options) == 0 {
 		out.Options = json.RawMessage("{}")
+	}
+	if _, err := monitor.CompileRow(r); err != nil {
+		out.Problem = err.Error()
 	}
 	if !r.MutedUntil.IsZero() && r.MutedUntil.After(now) {
 		u := r.MutedUntil.Unix()
@@ -221,16 +228,16 @@ func (m *Monitors) readDefinition(w http.ResponseWriter, r *http.Request) (monit
 		writeError(w, http.StatusBadRequest, err)
 		return d, nil, false
 	}
-	if err := m.checkMentions(d.Message); err != nil {
+	if err := m.checkMentions(c.Template.Recipients()); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return d, nil, false
 	}
 	return d, c, true
 }
 
-func (m *Monitors) checkMentions(message string) error {
+func (m *Monitors) checkMentions(names []string) error {
 	var unknown []string
-	for _, name := range spec.Mentions(message) {
+	for _, name := range names {
 		if !slices.ContainsFunc(m.Notifiers, func(i notify.Info) bool { return i.Name == name }) {
 			unknown = append(unknown, "@"+name)
 		}
@@ -472,7 +479,7 @@ func (m *Monitors) validate(w http.ResponseWriter, r *http.Request) {
 	}
 	c, err := spec.Compile(d.Monitor)
 	if err == nil {
-		err = m.checkMentions(d.Message)
+		err = m.checkMentions(c.Template.Recipients())
 	}
 	if err != nil {
 		// 200 with valid:false, not 400: validating is this endpoint's job,
@@ -481,7 +488,7 @@ func (m *Monitors) validate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"valid": true, "query": c.Parsed.String(), "grouped": c.Parsed.Grouped(),
-		"levels": levelsJSON(c.Levels), "mentions": nonNil(spec.Mentions(c.Message))}
+		"levels": levelsJSON(c.Levels), "mentions": nonNil(c.Template.Recipients())}
 	if m.Engine != nil {
 		groups, err := m.Engine.DryRun(r.Context(), c, m.Clock.Now())
 		if err != nil {

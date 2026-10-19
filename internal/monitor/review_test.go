@@ -252,7 +252,10 @@ func TestProvisionReleasesRemovedFiles(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "gone"), filepath.Join(dir, "dangling.json")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(dir, "dir.json"), 0o755); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "sub"), filepath.Join(dir, "dir.json")); err != nil {
 		t.Fatal(err)
 	}
 	if res := pass(dir); !slices.Equal(res.Released, []string{"A"}) {
@@ -266,6 +269,7 @@ func TestProvisionReleasesRemovedFiles(t *testing.T) {
 	}
 	_ = os.Remove(filepath.Join(dir, "dangling.json"))
 	_ = os.Remove(filepath.Join(dir, "dir.json"))
+	_ = os.Remove(filepath.Join(dir, "sub"))
 	// Put a back as a provisioned monitor with no file, for the cases below.
 	if _, _, err := db.UpsertProvisionedMonitor(context.Background(), meta.MonitorRow{UID: "a", Name: "A", Type: "metric",
 		Query: "avg(last_5m):avg:x{*} > 1", Enabled: true}, t0); err != nil {
@@ -302,6 +306,27 @@ func mustUID(t *testing.T, db *meta.DB, uid string) int64 {
 		t.Fatal(err)
 	}
 	return m.ID
+}
+
+// TestFileVanishingMidPassHoldsBackReleases: a plain file listed and then
+// missing (a checkout replacing it) is an unknown uid, not a removal.
+func TestFileVanishingMidPassHoldsBackReleases(t *testing.T) {
+	db, err := meta.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	dir := t.TempDir()
+	if _, _, err := db.UpsertProvisionedMonitor(context.Background(), meta.MonitorRow{UID: "x", Name: "X", Type: "metric",
+		Query: "avg(last_5m):avg:x{*} > 1", Enabled: true}, t0); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	var res ProvisionResult
+	err = provisionFile(context.Background(), provisionDB{db}, filepath.Join(dir, "x.json"), nil, t0, slog.New(slog.DiscardHandler), &res, &seen)
+	if !errors.Is(err, errNoUID) {
+		t.Fatalf("a listed file gone at read: %v", err)
+	}
 }
 
 // TestFailedRenderKeepsMentions: a message that cannot render says so and
