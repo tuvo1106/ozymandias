@@ -587,17 +587,15 @@ not hold up releasing the others.
 
 ### Notifiers
 
-A message's `@name` mentions select notifiers. The template names a handle
-at the start, after whitespace, or right after a template action's `}`. A
-message reaches each named handle that its sent text shows as a mention, not
-inside a word, an address or a path. So `CPU:{{if .IsAlert}}@pager{{end}}`
-pages only for alerts, and `oncall@pager.example.com` never pages `@pager`.
-Data never adds a recipient: an `@` in a group value (a tag or log attribute
-someone sent) is rendered as the fullwidth `＠`, which reads the same and
-mentions nobody. Group keys come from the query and are left alone. If a
-template fails to render, the message says so and goes to every handle the
-template names. Notifiers are configured under
-`notifiers:` in `ozyd.yaml`:
+A message's `@name` mentions select notifiers. **Every message from a monitor
+goes to every handle its template mentions**, at the start, after whitespace,
+or right after a template action's `}` (an email address is not one). That
+includes a handle written inside `{{if .IsAlert}}`: the text varies by status,
+but the recipients do not. To page `@pager` for alerts and only log
+recoveries, make two monitors. Data never changes who is notified; a tag value
+that reads `@pager` is just text
+([ADR-0052](adr/0052-notifiers-come-from-the-template-source.md)).
+Notifiers are configured under `notifiers:` in `ozyd.yaml`:
 
 ```yaml
 notifiers:
@@ -652,12 +650,12 @@ level for WARN), `.IsAlert`, `.IsWarning`, `.IsRecovery`, `.IsNoData`, `.Since`,
 
 ```
 Queue depth is {{printf "%.0f" .Value}} on {{.Group}}.
-{{if .IsAlert}}Check the workers. @discord-ops{{else if .IsRecovery}}Recovered.{{end}} @log
+{{if .IsAlert}}Check the workers.{{else if .IsRecovery}}Recovered.{{end}} @discord-ops
 ```
 
 A template is executed against sample data for every status when it is saved,
-so a misspelt field is refused then. Mentions are read from the rendered text,
-so the example pages `@discord-ops` only for alerts.
+so a misspelt field is refused then. The example sends every transition to
+`@discord-ops`, with text that depends on the status.
 
 ### Muting
 

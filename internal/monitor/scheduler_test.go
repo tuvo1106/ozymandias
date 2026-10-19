@@ -242,17 +242,17 @@ func TestScenario(t *testing.T) {
 	for _, n := range h.out.notes(t) {
 		got = append(got, n.PrevStatus+">"+n.Status+" "+n.Message)
 	}
-	// One message per mention: the ALERT also goes to @pager.
+	// One row per notifier the template names: every transition goes to
+	// both, though the text mentions @pager only for the ALERT (ADR-0052).
 	eqStrings(t, "notifications", got, []string{
-		"OK>WARN Backlog is WARN at 12 @cap",
-		"WARN>ALERT Backlog is ALERT at 25 @cap @pager",
-		"WARN>ALERT Backlog is ALERT at 25 @cap @pager",
-		"ALERT>OK Backlog is OK at 5 (recovered) @cap",
-		"OK>NO_DATA Backlog is NO_DATA at NaN @cap",
-		"NO_DATA>OK Backlog is OK at 5 (recovered) @cap",
+		"OK>WARN Backlog is WARN at 12 @cap", "OK>WARN Backlog is WARN at 12 @cap",
+		"WARN>ALERT Backlog is ALERT at 25 @cap @pager", "WARN>ALERT Backlog is ALERT at 25 @cap @pager",
+		"ALERT>OK Backlog is OK at 5 (recovered) @cap", "ALERT>OK Backlog is OK at 5 (recovered) @cap",
+		"OK>NO_DATA Backlog is NO_DATA at NaN @cap", "OK>NO_DATA Backlog is NO_DATA at NaN @cap",
+		"NO_DATA>OK Backlog is OK at 5 (recovered) @cap", "NO_DATA>OK Backlog is OK at 5 (recovered) @cap",
 	})
 	// A WARN reports the warning level it crossed, not the critical one.
-	if ns := h.out.notes(t); ns[0].Threshold != 10 || ns[1].Threshold != 20 {
+	if ns := h.out.notes(t); ns[0].Threshold != 10 || ns[2].Threshold != 20 {
 		t.Errorf("thresholds %g %g", ns[0].Threshold, ns[1].Threshold)
 	}
 	h.out.mu.Lock()
@@ -261,8 +261,8 @@ func TestScenario(t *testing.T) {
 		routed = append(routed, r.Notifier)
 	}
 	h.out.mu.Unlock()
-	eqStrings(t, "routing", routed, []string{"cap", "cap", "pager", "cap", "cap", "cap"})
-	n := h.out.notes(t)[4]
+	eqStrings(t, "routing", routed, []string{"cap", "pager", "cap", "pager", "cap", "pager", "cap", "pager", "cap", "pager"})
+	n := h.out.notes(t)[6]
 	if n.Value != nil || !strings.HasPrefix(n.Link, "http://ozy/monitors/") {
 		t.Errorf("no-data notification %+v", n)
 	}

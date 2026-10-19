@@ -526,8 +526,8 @@ func (s *Scheduler) notifications(c *spec.Compiled, row meta.MonitorRow, st grou
 	return out
 }
 
-// render builds a notification and says who it goes to
-// (spec.Template.Recipients). A template that fails at runtime (it compiled
+// render builds a notification and says who it goes to: everyone the
+// template names (spec.Template.Recipients). A template that fails at runtime (it compiled
 // at save, so this is rare: a value that prints past the size bound) still
 // produces a notification, with the failure in it — a page that says "your
 // template broke" beats no page.
@@ -548,21 +548,19 @@ func (s *Scheduler) render(c *spec.Compiled, row meta.MonitorRow, g spec.Group, 
 		IsRecovery: to == state.OK && from != state.OK, Since: since, Link: link,
 	}
 	text, err := c.Template.Render(d)
-	recipients := c.Template.Recipients(text)
 	if err != nil {
-		// The mentions are kept, so the failure still reaches whoever the
-		// message was for: everyone the template names.
+		// The mentions are kept in the text, so whoever reads it sees who it
+		// was for.
 		text = fmt.Sprintf("(the message template failed: %v)", err)
-		for _, m := range c.Template.Named() {
+		for _, m := range c.Template.Recipients() {
 			text += " @" + m
 		}
-		recipients = c.Template.Named()
 	}
 	return notify.Notification{
 		MonitorID: row.ID, MonitorUID: row.UID, MonitorName: row.Name, Tags: row.Tags,
 		GroupKey: key, Group: g, Status: string(to), PrevStatus: string(from),
 		Value: notify.ValuePtr(value), Threshold: threshold, Message: text, Link: link, Ts: now,
-	}, recipients
+	}, c.Template.Recipients()
 }
 
 func (s *Scheduler) link(id int64, from, to time.Time) string {

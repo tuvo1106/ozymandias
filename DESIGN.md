@@ -798,10 +798,11 @@ error, and leaves the state alone.
 
 **Messages** are Go `text/template` ([ADR-0049](docs/adr/0049-go-templates-for-monitor-messages.md)),
 executed at save against sample data for every status, so a misspelt field is a 400 and not a page
-that fails to render. `range` and `define` are refused and output is capped. `@name` in the rendered
-message selects notifiers, so `{{if .IsAlert}}@pager{{end}}` pages only for alerts, but only
-among the handles the template's source names, as mentions in the sent text. An `@` in a group
-value renders as `＠`: a tag value of `x @pager` is data, and must not choose who is paged. Secrets are
+that fails to render. `range` and `define` are refused and output is capped. Each `@name` in the
+template *source* is a recipient of every message from it, whatever the status
+([ADR-0052](docs/adr/0052-notifiers-come-from-the-template-source.md)): routing read from rendered
+text lets data that contains `@pager` page someone, and every rule tried for separating the
+author's mentions from the data's had a hole. Secrets are
 environment variables named in config, never stored or returned.
 
 **Watching the watcher.** If monitors exist and none has completed an evaluation for three intervals

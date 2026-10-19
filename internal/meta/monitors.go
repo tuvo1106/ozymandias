@@ -360,17 +360,20 @@ func resetIfQueryChanged(ctx context.Context, tx *sql.Tx, id int64, before, afte
 
 // ProvisionedMonitors returns the uid and name of every provisioned monitor.
 func (d *DB) ProvisionedMonitors(ctx context.Context) (map[string]string, error) {
-	rows, err := d.Monitors(ctx)
+	rows, err := d.db.QueryContext(ctx, `SELECT uid, name FROM monitors WHERE provisioned = 1`)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("meta: listing provisioned monitors: %w", err)
 	}
+	defer rows.Close()
 	out := map[string]string{}
-	for _, r := range rows {
-		if r.Provisioned {
-			out[r.UID] = r.Name
+	for rows.Next() {
+		var uid, name string
+		if err := rows.Scan(&uid, &name); err != nil {
+			return nil, fmt.Errorf("meta: listing provisioned monitors: %w", err)
 		}
+		out[uid] = name
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // ReleaseMonitors turns the provisioned monitors with these uids into

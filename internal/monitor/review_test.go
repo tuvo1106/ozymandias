@@ -236,6 +236,17 @@ func TestProvisionReleasesRemovedFiles(t *testing.T) {
 		t.Fatalf("undecodable: %v\n%s", res.Released, logs.String())
 	}
 	write("b.json", def("b"))
+	if os.Geteuid() != 0 { // root reads a 0o000 file anyway
+		if err := os.Chmod(filepath.Join(dir, "b.json"), 0); err != nil {
+			t.Fatal(err)
+		}
+		if res := pass(dir); len(res.Released) != 0 || !strings.Contains(logs.String(), "not released") {
+			t.Fatalf("unreadable: %v\n%s", res.Released, logs.String())
+		}
+		if err := os.Chmod(filepath.Join(dir, "b.json"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if res := pass(dir, filepath.Join(dir, "unmounted")); len(res.Released) != 0 || !strings.Contains(logs.String(), "unmounted") {
 		t.Fatalf("missing dir: %v\n%s", res.Released, logs.String())
 	}

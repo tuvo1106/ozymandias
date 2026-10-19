@@ -95,7 +95,9 @@ func provisionFile(ctx context.Context, store ProvisionStore, file string, known
 	log *slog.Logger, res *ProvisionResult, seen *[]string) error {
 	data, err := os.ReadFile(file)
 	if err != nil {
-		return err
+		// Unreadable for now (permissions mid-edit, a flaky mount): its uid
+		// is unknown, so this pass must not conclude its monitor is gone.
+		return fmt.Errorf("%w (%w)", err, errNoUID)
 	}
 	var f File
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -147,9 +149,13 @@ func releaseOrphans(ctx context.Context, store ProvisionStore, seen, unknown []s
 		log.Error("provisioning monitors: listing provisioned monitors", "err", err)
 		return nil
 	}
+	present := map[string]bool{}
+	for _, uid := range seen {
+		present[uid] = true
+	}
 	var uids, names []string
 	for uid, name := range provisioned {
-		if !contains(seen, uid) {
+		if !present[uid] {
 			uids = append(uids, uid)
 			names = append(names, name)
 		}

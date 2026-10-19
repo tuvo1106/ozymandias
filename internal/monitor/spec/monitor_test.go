@@ -227,44 +227,25 @@ func ExampleParseQuery() {
 	// Output: avg 5m0s > 20 true
 }
 
-// TestRecipients: a message reaches the handles its source names that the
-// sent text shows as mentions — never one that data put there.
+// TestRecipients: a message goes to every handle its source mentions,
+// whatever the status and the data, and data renders as it is.
 func TestRecipients(t *testing.T) {
-	alert := Data{Group: Group{"q": "x @evil @pager"}, Status: "ALERT", IsAlert: true}
-	ok := alert
-	ok.Status, ok.IsAlert, ok.IsRecovery = "OK", false, true
-	logGroup := Data{Group: Group{"@env": "prod"}, Status: "ALERT", IsAlert: true}
-	for _, c := range []struct {
-		tmpl string
-		d    Data
-		want string
-		text string // the sent text, when it matters
-	}{
-		{"{{.Group}} @log", alert, "log", "q:x ＠evil ＠pager @log"}, // data cannot add
-		{"{{if .IsAlert}}@pager{{end}} @log", alert, "pager log", ""},
-		{"{{if .IsAlert}}@pager{{end}} @log", ok, "log", ""},
-		{"CPU:{{if .IsAlert}}@pager{{end}}", alert, "pager", ""},                             // punctuation before @ is fine
-		{"{{.Group.q}}{{if .IsAlert}} @pager{{end}}", ok, "", ""},                            // data cannot repeat a hidden one
-		{"{{if .IsAlert}}@pager{{end}} oncall@pager.example.com", ok, "", ""},                // an address naming the handle
-		{"{{if .IsAlert}}@pager{{end}} see https://x/@pager", ok, "", ""},                    // a path
-		{"{{if .IsAlert}}@pager{{end}} @pager-2", ok, "pager-2", ""},                         // a longer handle
-		{"page @pager.", alert, "pager", ""},                                                 // end of a sentence
-		{`{{if eq (index .Group "@env") "prod"}}@pager{{end}}`, logGroup, "pager", "@pager"}, // keys are not escaped
-		{"mail ops@example.com", alert, "", ""},
+	tm, err := CompileTemplate(`{{.Group.user}}{{if eq .Group.user "admin@corp.com"}} @security{{end}}{{if .IsAlert}}@pager{{end}} oncall@example.com @log`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []Data{
+		{Group: Group{"user": "admin@corp.com"}, Status: "ALERT", IsAlert: true},
+		{Group: Group{"user": "x @evil @other"}, Status: "OK", IsRecovery: true},
+		{Group: Group{"user": strings.Repeat("@", MaxRenderedBytes)}, Status: "OK"}, // fails to render
 	} {
-		tm, err := CompileTemplate(c.tmpl)
-		if err != nil {
-			t.Fatal(err)
+		if got := strings.Join(tm.Recipients(), " "); got != "security pager log" {
+			t.Fatalf("%v: %q", d.Group, got)
 		}
-		text, err := tm.Render(c.d)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if c.text != "" && text != c.text {
-			t.Errorf("%q rendered %q, want %q", c.tmpl, text, c.text)
-		}
-		if got := strings.Join(tm.Recipients(text), " "); got != c.want {
-			t.Errorf("%q: %q, want %q", c.tmpl, got, c.want)
-		}
+	}
+	// Data is not escaped: a comparison against it means what it says.
+	text, err := tm.Render(Data{Group: Group{"user": "admin@corp.com"}, Status: "OK"})
+	if err != nil || text != "admin@corp.com @security oncall@example.com @log" {
+		t.Fatalf("%q %v", text, err)
 	}
 }

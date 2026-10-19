@@ -19,7 +19,7 @@ against sample data for every status**, so a misspelt field is a 400 and not a
 page that fails to render. `range`, `template`, `define` and `block` are
 refused (nothing in the data is a list, and `{{range 1000000000}}` would be a
 loop), output is capped at 8 KiB, and a missing *group* key renders empty. `@name`
-mentions are read from the rendered text, so a template chooses its recipients.
+mentions in the source choose the recipients (ADR-0052).
 
 ## Alternatives considered
 
