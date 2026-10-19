@@ -40,12 +40,13 @@ Metadata tables: `monitors(id, uid, name, type, query, options_json, message, ta
 ```
 metric_monitor = time_agg "(" "last_" duration ")" ":" metricql_query op number ;
 time_agg       = "avg" | "sum" | "min" | "max" | "last" | "pct_nonnull" ;
-log_monitor    = "logs(" quoted_logql ")" ".rollup(\"count\")" [ ".by(" keys ")" ] ".last(" duration ")" op number ;
+log_monitor    = "logs(" quoted_logql ")" ".rollup(\"count\")" [ ".by(" quoted_field ")" ] ".last(" duration ")" op number ;
 op             = ">" | ">=" | "<" | "<=" | "==" | "!=" ;   duration = int ("m"|"h") ;
 ```
 A `by {…}` in the metric query makes it a **multi-alert**: independent state
 per group. The comparison threshold in the query must equal
-`thresholds.critical` (validated).
+`thresholds.critical` (validated). A log monitor's `.by` takes one field
+(ADR-0051).
 
 ## 2. Evaluator — `internal/monitor`
 
@@ -80,7 +81,9 @@ per group. The comparison threshold in the query must equal
   `text/template`; data: `Monitor, Group (map + string), Status, PrevStatus,
   Value, Threshold, IsAlert, IsWarning, IsRecovery, IsNoData, Since, Link`
   (link to the UI monitor page with the time window). `@handle` mentions in
-  the message select notifiers.
+  the message select notifiers: every handle in the template's literal text
+  receives every message from it, whatever the status, and a mention inside
+  `{{if}}`/`{{with}}` is refused at save (ADR-0052).
 - **Notifiers** (`internal/monitor/notify`, interface
   `Notify(ctx, Notification) error`), configured in `ozyd.yaml`:
 
@@ -107,7 +110,8 @@ the evaluation and returns current per-group values),
 `POST /api/v1/monitors/{id}/mute {until}` / `unmute`,
 `GET /api/v1/monitors/{id}/states`, `GET /api/v1/events?monitor_id=&from=&to=`,
 `POST /api/v1/monitors/{id}/test-notification`.
-Provisioning from `deploy/monitors/*.json` (upsert by `uid`), like dashboards.
+Provisioning from `deploy/monitors/*.json` (upsert by `uid`), like dashboards,
+from the directories in `provisioning.monitor_paths` (ADR-0050).
 
 ## 4. UI
 Monitors list (status pills, group counts by state, mute, filter by tag/status);

@@ -147,6 +147,19 @@ func TestAggregate_GroupsPastTheCapFoldIntoOther(t *testing.T) {
 	if len(counts) != MaxGroups+1 || counts[OtherGroup] != 50 {
 		t.Fatalf("%d groups, (other)=%d; want %d groups and 50 folded", len(counts), counts[OtherGroup], MaxGroups+1)
 	}
+	if !res.Overflowed {
+		t.Error("an overflow not reported")
+	}
+	// Under the cap, a value that happens to be "(other)" is not an overflow.
+	l := mkLog(base+10, "api", "info", "m", 0)
+	l.Attrs["user"] = OtherGroup
+	if err := s.Append(context.Background(), []wire.Log{l}); err != nil {
+		t.Fatal(err)
+	}
+	res, err = s.Aggregate(context.Background(), nil, base+5, base+20, AggSpec{Interval: time.Hour, By: "@user"})
+	if err != nil || res.Overflowed || len(res.Buckets) != 1 || res.Buckets[0].Counts[OtherGroup] != 1 {
+		t.Fatalf("overflowed=%v err=%v buckets=%+v", res.Overflowed, err, res.Buckets)
+	}
 }
 
 // Running out of budget stops the search at a correct prefix: nothing out of

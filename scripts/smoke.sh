@@ -800,4 +800,80 @@ check "the service table has the RED row"  wait_hits
 check "the trace view deep link is served" body_has "$OZY_URL/traces/$TRACE_ID" '<div id="root">'
 check "the agent reports its trace metrics" body_has "$AGENT_URL/debug/vars" 'ozy.agent.traces'
 
+# --- M6: monitors --------------------------------------------------------------
+# A monitor on a gauge of this run's own, a webhook listener on the host (the
+# compose file points the `hook` notifier at host.docker.internal:9999), and
+# two deliveries: ALERT when the gauge goes to 10, one recovery when it goes
+# back to 0. The listener has its own deadline, so a failing run cannot leave it
+# behind.
+hookout=$(mktemp)
+python3 -u - "$hookout" <<'PY' &
+import http.server, signal, sys
+signal.alarm(300)
+out = open(sys.argv[1], "a")
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        out.write(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode() + "\n"); out.flush()
+        self.send_response(204); self.end_headers()
+    def log_message(self, *a): pass
+http.server.HTTPServer(("0.0.0.0", 9999), H).serve_forever()
+PY
+hookpid=$!
+MON_METRIC=smoke.monitor.gauge
+push_gauge() { # <value> — straight to ozyd's intake, stamped now
+  curl -fsS --max-time 5 -X POST "$OZY_URL/v1/series" -H 'Content-Type: application/json' \
+    -d "{\"series\":[{\"metric\":\"$MON_METRIC\",\"type\":\"gauge\",\"interval\":0,\"tags\":[\"run:$RUN_ID\"],\"points\":[[$(now_s),$1]]}]}" >/dev/null
+}
+monitor_def="{\"uid\":\"smoke-$RUN_ID\",\"name\":\"smoke gauge $RUN_ID\",\"type\":\"metric\",
+  \"query\":\"last(last_1m):avg:$MON_METRIC{run:$RUN_ID} > 5\",
+  \"options\":{\"evaluation_interval_s\":10,\"evaluation_delay_s\":10},
+  \"message\":\"smoke {{.Status}} {{.Value}} @hook\"}"
+MON_ID=$(curl -fsS --max-time 5 -X POST "$OZY_URL/api/v1/monitors" -d "$monitor_def" |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])') || MON_ID=
+check "the monitor is created"              test -n "$MON_ID"
+hook_has() { # <status> <count> — the listener has at least <count> bodies with that status
+  python3 - "$hookout" "$1" "$2" "smoke-$RUN_ID" <<'PY'
+import json, sys
+path, status, want, uid = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
+n = sum(1 for l in open(path) if l.strip() and json.loads(l).get("monitor_uid") == uid and json.loads(l)["status"] == status)
+sys.exit(0 if n >= want else 1)
+PY
+}
+drive_until() { # <value> <status> — push <value> every 5s until the hook sees <status>, at most 120s
+  local i
+  for ((i = 0; i < 24; i++)); do push_gauge "$1"; hook_has "$2" 1 && return 0; sleep 5; done
+  echo "after 120s the hook has: $(cat "$hookout")" >&2; return 1
+}
+check "the webhook gets the ALERT"          drive_until 10 ALERT
+check "and then the recovery"               drive_until 0 OK
+for _ in 1 2 3 4; do push_gauge 0; sleep 5; done
+only_once() { hook_has ALERT 1 && ! hook_has ALERT 2 && hook_has OK 1 && ! hook_has OK 2; }
+check "each exactly once"                   only_once
+two_deliveries() {
+  curl -fsS --max-time 5 "$OZY_URL/api/v1/events?monitor_id=$MON_ID&kind=notify_ok" |
+    python3 -c 'import json,sys; n=len(json.load(sys.stdin)["events"]); print(n, file=sys.stderr); sys.exit(n != 2)'
+}
+check "the events record both deliveries"   two_deliveries
+check "the monitor reads OK"                body_has "$OZY_URL/api/v1/monitors/$MON_ID" '"status":"OK"'
+check "the scheduler is not stalled"        body_has "$OZY_URL/api/v1/monitors/status" '"stalled":false'
+shipped_has_data() { # every provisioned ozymandias monitor's dry run returns a group
+  curl -fsS --max-time 5 "$OZY_URL/api/v1/monitors?tag=app:ozymandias" | python3 -c '
+import json, sys, urllib.request
+ms = json.load(sys.stdin)["monitors"]
+assert ms, "no shipped monitors provisioned"
+bad = []
+for m in ms:
+    body = json.dumps({k: m[k] for k in ("uid", "name", "type", "query", "options", "message", "tags")}).encode()
+    r = json.load(urllib.request.urlopen(urllib.request.Request(sys.argv[1] + "/api/v1/monitors/validate", body, method="POST"), timeout=10))
+    if not r.get("groups"):
+        bad.append((m["uid"], r.get("eval_error") or "no groups"))
+if bad:
+    print(bad, file=sys.stderr); sys.exit(1)
+' "$OZY_URL"
+}
+check "every shipped monitor sees data"     shipped_has_data
+curl -fsS --max-time 5 -X DELETE "$OZY_URL/api/v1/monitors/$MON_ID" >/dev/null || true
+kill "$hookpid" 2>/dev/null; wait "$hookpid" 2>/dev/null || true
+rm -f "$hookout"
+
 echo "smoke: $pass checks passed"

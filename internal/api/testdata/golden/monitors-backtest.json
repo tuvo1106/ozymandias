@@ -1,0 +1,20 @@
+OK
+{
+  "evaluations": 3,
+  "events": [
+    {
+      "from": "OK",
+      "group": "*",
+      "notify": true,
+      "reason": "transition",
+      "to": "ALERT",
+      "ts": "2026-09-20T14:14:20Z",
+      "value": 25
+    }
+  ],
+  "final": {
+    "*": "ALERT"
+  },
+  "from": "2026-09-20T14:13:20Z",
+  "to": "2026-09-21T14:13:20Z"
+}

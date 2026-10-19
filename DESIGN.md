@@ -705,3 +705,108 @@ bounded 60-second waiting list. Under sampling it shows shape, not rate.
 **What does not hold.** A trace kept by the error or rare sampler may be partial. "Errors only" sees
 a failing span only if it arrived in the same request as its entry span. Edges and the trace list are
 samples; only the service table is exact.
+
+## 16. Monitors
+
+A monitor is a query, a comparison and a message: `avg(last_5m):avg:jobs.queue.depth{*} by {queue} > 20`.
+`internal/monitor` runs them. Four packages, each testable alone: `spec` (definition, grammar,
+template), `eval` (query a window and reduce each group to one number), `state` (one pure function)
+and `notify` (notifiers and delivery). The scheduler in `internal/monitor` joins them.
+
+**The evaluation window ends in the past** ([ADR-0047](docs/adr/0047-monitors-evaluate-behind-now.md)).
+
+```
+   agent buckets ──┬────┬────┬────┬────┬────┬────┬────┬────┬──▶  (10 s each)
+                                           still arriving ─┤▓▓▓│ flush + forward + retry
+   window (last_5m):  ├───────────────────────────────┤
+                      from                            to = now − delay, aligned to 10 s
+                                                      ├─ delay ─┤
+                                                               now (the tick)
+```
+
+An agent aggregates for ten seconds and flushes, and the forwarder may retry, so the newest bucket
+is usually incomplete. Read at `now`, a count monitor sees requests "drop to zero" on every
+evaluation. The window therefore ends `evaluation_delay_s` (default 30 s) before the tick, aligned
+down to the step so consecutive evaluations read whole buckets. Every alert is that much later,
+which is the right trade: a late page is an annoyance, and a false one teaches people to ignore
+pages. The step is the agent's 10 s, an explicit `.rollup(_, s)`, or the smallest multiple of
+10 s that keeps a long window under the evaluator's bucket limit.
+
+**Fetch, then reduce.** `eval.Fetch` reads every group's buckets on one grid, and `eval.Reduce`
+folds a slice of it into one value per group (`avg`, `sum`, `min`, `max`, `last`, `pct_nonnull`;
+a gap is skipped, or, with `require_full_window`, makes the group skip this evaluation). A live
+evaluation fetches its own window. The editor's **backtest** fetches a day once and slides the
+window over it at every tick the scheduler would have run, with the same phase, through the same
+`advance` and `state.Step`. The markers it draws are therefore what the scheduler then does, by
+construction; a test drives the real scheduler loop on a fake clock and compares the two event lists.
+
+**State per group** ([diagram](docs/diagrams/monitor-state-machine.mmd)):
+
+```mermaid
+stateDiagram-v2
+    [*] --> OK: first value seen
+    OK --> WARN: breaches warning
+    OK --> ALERT: breaches critical,<br/>min_consecutive_failures in a row
+    WARN --> ALERT: breaches critical,<br/>min_consecutive_failures in a row
+    ALERT --> ALERT: still past critical_recovery<br/>(the hysteresis band)
+    ALERT --> WARN: past critical_recovery,<br/>not past warning_recovery
+    ALERT --> OK: past both recovery levels
+    WARN --> WARN: still past warning_recovery
+    WARN --> OK: past warning_recovery
+    OK --> NO_DATA: had data, none for no_data_timeframe
+    WARN --> NO_DATA: had data, none for no_data_timeframe
+    ALERT --> NO_DATA: had data, none for no_data_timeframe
+    NO_DATA --> OK: data returns (evaluated from OK)
+    NO_DATA --> WARN: data returns (evaluated from OK)
+    NO_DATA --> ALERT: data returns (evaluated from OK)
+    OK --> [*]: no data for 24h (forgotten)
+```
+
+`state.Step(previous, observation, levels)` is the whole machine. It is pure: replaying a value
+sequence replays the events exactly (a rapid property), and a reloaded state is indistinguishable
+from one produced a second ago, so a restart has no special case. **Hysteresis** is the asymmetry
+between entering ALERT (past `critical`) and leaving it (past `critical_recovery`): a value
+hovering between the two produces no transitions, which a scenario test and the acceptance criterion
+check. **No data is not zero**: a group without a value keeps its status until it has been silent
+for `no_data_timeframe`, measured from its newest point to the window's end, and only then becomes
+NO_DATA if asked to. A group that never had data never does. Log monitors count, so an absent group
+is a count of zero. A group silent for 24 hours is forgotten, so a `by {container}` monitor does
+not grow forever.
+
+**Persistence and delivery** ([ADR-0048](docs/adr/0048-monitor-state-in-sqlite-with-an-outbox.md)).
+One evaluation of one monitor is one SQLite transaction: the new group states, the events, and an
+**outbox** row per notification owed. Nothing is adopted in memory until it commits, so a failed
+write changes nothing and the same transition is recomputed, and announced, next time. A
+notification is never sent for a state the database does not have. The dispatcher delivers from the
+outbox with one queue and worker per notifier, three attempts with backoff and ten seconds each.
+It deletes a row only in the same transaction that records its outcome (`notify_ok` /
+`notify_failed`), so delivery is at least once: a crash between POST and commit sends twice rather
+than never. Write transactions are serialized in-process; SQLite has one writer, and concurrent
+deferred transactions that upgrade lose with `SQLITE_BUSY` without waiting (measured: two to four
+lost evaluations in every six hundred before the lock).
+
+**Scheduling.** Each monitor runs every `evaluation_interval_s` at a phase fixed by a hash of its
+uid, so monitors spread across the interval. A pool (4) runs evaluations. A monitor still running
+when it is due skips the tick (`ozy.monitor.eval_skipped`) rather than queueing behind itself.
+An evaluation is stamped with its scheduled tick, not the moment a worker reached it, so a busy pool
+does not change any answer. A commit re-checks, inside its transaction, that the monitor still
+exists, is enabled and has the query that was evaluated, so an evaluation in flight when its
+monitor is deleted or edited writes nothing (its state, events and `eval_error` alike).
+A query change clears the groups in the transaction that makes it, so a restart cannot resurrect
+the old query's groups as NO_DATA. A failed query is an `eval_error` event, recorded once per distinct
+error, and leaves the state alone.
+
+**Messages** are Go `text/template` ([ADR-0049](docs/adr/0049-go-templates-for-monitor-messages.md)),
+executed at save against sample data for every status, so a misspelt field is a 400 and not a page
+that fails to render. `range` and `define` are refused and output is capped. Each `@name` in the
+template *source* is a recipient of every message from it, whatever the status
+([ADR-0052](docs/adr/0052-notifiers-come-from-the-template-source.md)): routing read from rendered
+text lets data that contains `@pager` page someone, and every rule tried for separating the
+author's mentions from the data's had a hole. Secrets are
+environment variables named in config, never stored or returned.
+
+**Watching the watcher.** If monitors exist and none has completed an evaluation for three intervals
+(at least two minutes), alerting is down. The scheduler logs it loudly once, `/api/v1/monitors/status`
+says `stalled`, the UI shows a banner, and `ozy.monitor.last_eval_age_seconds` is there for something
+outside ozymandias to watch.
+

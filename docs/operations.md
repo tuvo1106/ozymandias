@@ -563,6 +563,148 @@ agent already considered delivered. Leave it off. Chunk layout: [docs/formats/lo
 | `truncated: true` | The scan budget ran out. Narrow the range or query, or raise `logs.scan_budget` |
 | The tail shows "skipped" | The browser could not keep up; narrow the query |
 
+## Monitors
+
+Monitors are defined through the UI or API (docs/api.md#monitors) or as files in
+`provisioning.monitor_paths` (`deploy/monitors/` ships three for ozymandias
+itself, which notify `@log`). The query grammar is in
+[query-language.md#monitors](query-language.md#monitors); the evaluation model
+in [DESIGN.md §16](../DESIGN.md#16-monitors).
+
+A provisioned monitor is read-only through the API; edit its file and restart.
+Changing its query resets its groups (a `reset` event), as an API edit does.
+**Removing its file** does not delete it. The monitor keeps running, is
+*released* to the API (a `released` event and a warning in the log), and can
+then be edited or deleted there. If the file comes back with the same uid,
+provisioning refuses it as belonging to an API-managed monitor until that one
+is deleted. Nothing is released in a pass where some file's uid could not be read: a
+configured directory that is missing (not mounted this time) or unreadable,
+or a file that is not JSON at all. The missing file might be one of those,
+so ozyd logs which monitors it is holding back and why. A file that is
+broken in any other way (a bad query, an unknown field, a uid the API now
+owns) still has a readable uid. It keeps its monitor provisioned and does
+not hold up releasing the others.
+
+### Notifiers
+
+A message's `@name` mentions select notifiers. **Every message from a monitor
+goes to every handle in its template's literal text**: an `@` at the start of
+the message or after whitespace. An email address is not one, and comments
+and string literals inside `{{ }}` are not text. Two forms are refused at
+save, with the reason:
+
+- A mention inside `{{if}}` or `{{with}}`. The text can vary by status; the
+  recipients do not.
+- `@handle` directly after `}}`, as in `{{.Value}}@cap` or
+  `ALERT {{- /* note */ -}} @pager`. What it reads as depends on what came
+  before it (an `{{if}}` may print nothing, a `-}}` trims the space). Put a
+  space before it for a mention, or write `{{"@"}}` for a literal `@`:
+  `{{.Group.owner}}{{"@"}}example.com` builds an address. To page `@pager` for alerts and only log recoveries, make two
+monitors. Data never changes who is notified; a tag value
+that reads `@pager` is just text
+([ADR-0052](adr/0052-notifiers-come-from-the-template-source.md)).
+Notifiers are configured under `notifiers:` in `ozyd.yaml`:
+
+```yaml
+notifiers:
+  log:         {type: log}
+  hook:        {type: webhook, url_env: MONITOR_HOOK_URL, headers_env: {Authorization: HOOK_AUTH}}
+  discord-ops: {type: discord, webhook_url_env: DISCORD_WEBHOOK_URL}
+  me:          {type: email, to: [you@example.com],
+                smtp: {host_env: SMTP_HOST, port: 587, user_env: SMTP_USER, password_env: SMTP_PASSWORD, from: ozymandias@localhost}}
+```
+
+**Secrets are only ever environment variables.** Every `*_env` field names a
+variable; the value is read at startup, held in memory, never written to
+`meta.db`, never returned by the API (`/api/v1/notifiers` lists names and
+types), and scrubbed from delivery errors. Don't use `OZY_`-prefixed names for
+them: that prefix is ozyd's config-override namespace. A notifier whose variable
+is unset stays configured and fails each delivery with a `notify_failed` event
+naming the variable, and ozyd logs a warning at startup, so a missing secret
+shows up in the monitor's history rather than as a page that never came.
+
+Delivery: three attempts, ten seconds each, with backoff; a `4xx` other than
+`429` is not retried. Each outcome is an event on the monitor. A message with no
+mention notifies nobody, though its transitions still show in the UI. To check
+a notifier end to end, use **Test notification** on the monitor (or
+`POST /api/v1/monitors/{id}/test-notification`), which sends now and reports
+each notifier's result.
+
+### Webhook payload
+
+`POST` with `Content-Type: application/json`:
+
+```json
+{"monitor_id": 7, "monitor_uid": "jobs-backlog", "monitor_name": "Job queue is backing up",
+ "tags": ["team:shop"], "group_key": "queue:default", "group": {"queue": "default"},
+ "status": "ALERT", "prev_status": "WARN", "value": 25.5, "threshold": 20,
+ "reason": "transition", "message": "…rendered message…",
+ "link": "http://localhost:9400/monitors/7?from=…&to=…", "ts": "2026-10-16T12:00:00Z"}
+```
+
+`value` is `null` for NO_DATA; `reason` is `transition`, `renotify` or `test`.
+A recovery is `status: "OK"` with the previous status in `prev_status`.
+Delivery is **at least once**, so a receiver that must not act twice should key
+on `(monitor_id, group_key, status, ts)`.
+
+### Notification messages
+
+Go `text/template` ([ADR-0049](adr/0049-go-templates-for-monitor-messages.md)) over
+`.Monitor` (prints the name; `.Monitor.ID`, `.Monitor.UID`), `.Group` (prints
+`queue:default`; `.Group.queue` is one value, empty if absent), `.Status`,
+`.PrevStatus`, `.Value`, `.Threshold` (the level that was crossed: the warning
+level for WARN), `.IsAlert`, `.IsWarning`, `.IsRecovery`, `.IsNoData`, `.Since`,
+`.Link`:
+
+```
+Queue depth is {{printf "%.0f" .Value}} on {{.Group}}.
+{{if .IsAlert}}Check the workers.{{else if .IsRecovery}}Recovered.{{end}} @discord-ops
+```
+
+A template is executed against sample data for every status when it is saved,
+so a misspelt field is refused then. The example sends every transition to
+`@discord-ops`, with text that depends on the status.
+
+### Muting
+
+Muting stops notifications and nothing else: evaluation continues and
+transitions are recorded, so the monitor's page tells the truth during the
+mute. With a renotify interval, the first reminder after unmuting goes out once
+the interval has passed since the last notification.
+
+### Why didn't my monitor fire?
+
+Walk these in order:
+
+1. **Is it running?** `/api/v1/monitors/status` should say `"stalled": false`;
+   the UI shows a banner when it does not. `enabled: false` monitors are not
+   scheduled.
+2. **Did evaluation fail?** The monitor's events show `eval_error` with the
+   reason (a query that times out, a log query past its scan budget, a metric
+   store that is not configured). The state is left alone while it fails.
+3. **Delay and window.** The window ends `evaluation_delay_s` (default 30 s)
+   before each tick, and the tick comes every `evaluation_interval_s`. A spike
+   shows up at most `delay + interval` late, and with `avg` over a long window it
+   may never move the average past the threshold. **Validate** (or
+   `POST /api/v1/monitors/validate`) shows each group's value right now.
+4. **No data is not zero.** A metric group with no points is absent, not 0, so
+   `< 1` never fires for a series that stopped. That needs `notify_no_data`,
+   which fires `no_data_timeframe_m` (default twice the window) after the newest
+   point, and only for a group that has had data. Counters are in between: the
+   agent zero-fills a counter for `aggregator.context_expiry` (5 minutes) after
+   its last event, so `errors > 0` recovers on real zeros, but a counter whose
+   app stopped goes absent after those five minutes. Gauges are never
+   zero-filled. Log monitors are the opposite of gauges: no matching line is a
+   count of 0.
+5. **Hysteresis and consecutive failures.** A group in ALERT stays there until
+   it is past `critical_recovery`, and entering ALERT can need
+   `min_consecutive_failures` breaching evaluations in a row.
+6. **`require_full_window`** skips a group whose window has a gap, which for a
+   sparse metric is every evaluation.
+7. **Delivered?** `notify_ok` / `notify_failed` events say what happened to each
+   notification and why; a message that mentions nobody sends nothing.
+8. **Muted?** The monitor list shows a mute until its end.
+
 ## Troubleshooting
 
 | Symptom | Check |

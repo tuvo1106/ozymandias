@@ -407,3 +407,75 @@ service:worker (status:error OR status:critical) -timeout
 @user.id:42 trace_id:0123abcd*
 service:api OR service:worker status:warn
 ```
+
+# Monitors
+
+A monitor query wraps a metricql or logql query in a time aggregation and a
+comparison. The inner query is parsed by its own parser, so a monitor accepts
+exactly what a chart does and fails with the same messages.
+
+## Grammar
+
+```
+metric_monitor = time_agg "(" "last_" duration ")" ":" metricql_query op number ;
+time_agg       = "avg" | "sum" | "min" | "max" | "last" | "pct_nonnull" ;
+log_monitor    = "logs(" quoted_logql ")" ".rollup(\"count\")" [ ".by(" quoted_field ")" ] ".last(" quoted_duration ")" op number ;
+op             = ">" | ">=" | "<" | "<=" | "==" | "!=" ;
+duration       = int ( "m" | "h" ) ;          (* 1m to 24h *)
+```
+
+- **The comparison is read from the right.** It is the one part that must end
+  the string, so `avg(last_5m):avg:x{route:/a>b} > 1` compares with `> 1`; the
+  `>` in the tag value is part of the tag.
+- **`time_agg`** reduces each group's buckets over the window to one value:
+  `avg`, `sum`, `min`, `max`, `last` (newest non-empty bucket) over the buckets
+  that have a value, and `pct_nonnull`, the percentage of the window's buckets
+  that have one ("how flaky is this heartbeat"). Empty buckets are skipped, not
+  zero; with `require_full_window` a group with any empty bucket is skipped for
+  that evaluation instead.
+- **`by {…}` makes a multi-alert:** each group has its own state, and a
+  notification names its group (`{{.Group}}` prints `queue:default`, or `*` for an
+  ungrouped monitor).
+- **A log monitor counts.** `rollup("count")` is the only rollup; the value is the
+  number of matching lines in the window, and **no line is a count of zero, not
+  missing data** — so `notify_no_data` is refused on a log monitor. `.by("service")`
+  or `.by("@http.status")` groups by one field ([ADR-0051](adr/0051-log-monitors-group-by-one-field.md));
+  lines without it count under `(none)`. A field with more than 100 distinct
+  values in the window is an evaluation error, since past the log store's group
+  cap which values get a group would change from one evaluation to the next.
+- The threshold written in the query **is** `thresholds.critical`; the
+  definition may repeat it but may not disagree.
+
+## Thresholds and direction
+
+For a `>`/`>=` monitor, `warning < critical`, `critical_recovery <= critical`
+and `warning_recovery <= warning`; a `<`/`<=` monitor mirrors every one. A
+recovery level is how far back the value must come to leave a status:
+`critical: 20, critical_recovery: 15` enters ALERT above 20 and leaves it at 15,
+and anything in between keeps the current status. That is the hysteresis that
+stops a value hovering at 20 from paging every thirty seconds. `==` and `!=`
+have no direction, so they take a critical level only.
+
+## Evaluation
+
+Every `evaluation_interval_s` (default 30) the window
+`[tick − delay − N, tick − delay]` is read on ten-second buckets
+([ADR-0047](adr/0047-monitors-evaluate-behind-now.md)); a window over about four
+hours uses the smallest multiple of ten seconds that keeps it under the
+evaluator's bucket limit and divides both the window and a day. An explicit
+`.rollup(_, seconds)` sets it, and must divide both too (a 3600 s rollup over a
+5-minute window would read no bucket at all and never fire); every rollup in an
+arithmetic query must use the same interval.
+
+## Examples
+
+```
+avg(last_5m):avg:jobs.queue.depth{service:shop-api} > 20
+max(last_10m):p95:trace.http.request.duration{service:shop-api} by {resource} > 1
+sum(last_10m):sum:http.request.count{status:5*}.as_count() > 0
+pct_nonnull(last_3m):avg:worker.heartbeat{*} by {host} < 50
+sum(last_15m):diff(max:ozy.tsdb.ooo_rejected{*}) > 0
+logs("service:shop-worker status:error").rollup("count").last("5m") > 5
+logs("status:error").rollup("count").by("service").last("15m") >= 10
+```
+

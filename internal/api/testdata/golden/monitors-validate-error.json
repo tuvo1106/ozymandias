@@ -1,0 +1,7 @@
+OK
+{
+  "errors": [
+    "thresholds.warning (30) must be below critical (20)"
+  ],
+  "valid": false
+}

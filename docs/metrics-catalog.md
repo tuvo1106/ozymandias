@@ -120,6 +120,12 @@ interval's increase.
 | `ozy.tracestore.disk_bytes` | gauge | bytes | — | ozyd | Disk used by the trace store |
 | `ozy.loghub.subscribers` | gauge | tails | — | ozyd | Open live tails |
 | `ozy.loghub.dropped` | counter | logs | — | ozyd | Logs a live tail lost because its reader was too slow |
+| `ozy.monitor.monitors` | gauge | monitors | — | ozyd | Enabled monitors the scheduler is running |
+| `ozy.monitor.evaluations` | counter | evaluations | — | ozyd | Monitor evaluations whose query ran (successfully or not) |
+| `ozy.monitor.eval_errors` | counter | evaluations | — | ozyd | Evaluations whose query failed or timed out; the monitor's state was left as it was |
+| `ozy.monitor.eval_skipped` | counter | evaluations | — | ozyd | Ticks skipped because the monitor's previous evaluation was still running (or the pool's queue was full). Non-zero means queries are slower than intervals |
+| `ozy.monitor.commit_errors` | counter | evaluations | — | ozyd | Evaluations whose state could not be written; nothing was notified, and the next evaluation recomputes the same transition |
+| `ozy.monitor.last_eval_age_seconds` | gauge | seconds | — | ozyd | **The self-watchdog.** Time since any monitor last completed an evaluation. Above a few intervals with monitors defined, alerting is down — watch this from outside ozymandias |
 | `ozy.store.series` | gauge | series | `store` | ozyd | Series in the metric store |
 | `ozy.store.samples` | gauge | samples | `store` | ozyd | Samples in the metric store |
 | `ozy.tsdb.head.series` | gauge | series | `store` | ozyd | Series in the in-memory head (not yet in a block) |

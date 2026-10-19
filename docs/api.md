@@ -807,6 +807,173 @@ Rules worth knowing:
   this dashboard last change" across restarts.
 
 
+## Monitors
+
+A monitor watches a metric or log query and notifies when it crosses a
+threshold. The definition and its query grammar are in
+[query-language.md#monitors](query-language.md#monitors); the evaluation model,
+state machine and delivery guarantees in [DESIGN.md](../DESIGN.md#monitors);
+notifier configuration and troubleshooting in
+[operations.md](operations.md#monitors).
+
+A definition looks like this:
+
+```json
+{
+  "uid": "jobs-backlog",
+  "name": "Job queue is backing up",
+  "type": "metric",
+  "query": "avg(last_5m):avg:jobs.queue.depth{service:shop-api} by {queue} > 20",
+  "options": {
+    "thresholds": {"critical": 20, "warning": 10, "critical_recovery": 15, "warning_recovery": 8},
+    "evaluation_interval_s": 30, "evaluation_delay_s": 30,
+    "require_full_window": false,
+    "notify_no_data": true, "no_data_timeframe_m": 10,
+    "renotify_interval_m": 60, "min_consecutive_failures": 1
+  },
+  "message": "Queue depth is {{.Value}} on {{.Group}}. {{if .IsAlert}}Check the workers.{{end}} @discord-ops",
+  "tags": ["team:shop"],
+  "enabled": true
+}
+```
+
+Validation is strict, and **everything a later evaluation could fail on for
+reasons of the definition alone is refused at save**: unknown fields, a query
+that does not parse, a `thresholds.critical` that differs from the query's own
+threshold, a recovery level on the breaching side of its threshold, a template
+field that does not exist (the message is executed against sample data for
+every status), and a `@mention` naming no configured notifier. The message names
+every problem, not just the first.
+
+### `GET /api/v1/monitors`
+
+Every monitor, by name: `{"monitors": [...]}`. Each has the definition's fields,
+plus `id`, `enabled`, `provisioned`, `created_at`, `updated_at` (RFC 3339, UTC),
+`muted_until` (unix seconds, or `null`), `groups` (how many groups are in each
+status) and `status` — the worst status among its groups, or **`null` when the
+monitor has no groups yet** or is disabled (with empty `groups`). `problem` is present when the stored
+definition no longer compiles (written by another build, or by hand): the
+scheduler skips such a monitor, so it is not running whatever `enabled` says,
+and like a disabled one it has no `status` and is not in the status counts.
+It is worked out from the stored row on each request, so it is current right
+after an edit, for a disabled monitor, and on a server not running monitors. A monitor
+that has never seen data is not OK; it is unknown, and a disabled one's stored
+states describe when it last ran, not now (`/states` still returns them).
+
+Filters: `?tag=team:shop` (exact tag), `?status=ALERT` (has a group in that
+status), `?q=` (name substring, case-insensitive).
+
+### `POST /api/v1/monitors`
+
+Creates one. `201` with the stored monitor and a `Location` header. `enabled`
+defaults to `true`. The scheduler picks it up at once.
+
+### `GET /api/v1/monitors/{id}`, `PUT /api/v1/monitors/{id}`, `DELETE /api/v1/monitors/{id}`
+
+Read, replace (the body is a whole definition) and delete. Deleting removes the
+monitor's states, events and undelivered notifications. Changing the **query**
+resets the monitor's group states (with a `reset` event): old groups are
+answers to a different question, and stepping them as absent would announce
+NO_DATA for groups that simply no longer exist. Changing anything else keeps
+them.
+
+### `POST /api/v1/monitors/{id}/mute`, `POST /api/v1/monitors/{id}/unmute`
+
+`{"until": <unix seconds>}`, or no body to mute until unmuted. Muting
+**suppresses notifications, not evaluation**: states keep advancing and
+transitions are still recorded, so unmuting shows the truth at once. A renotify
+interval, if set, sends the first reminder after an unmute once the interval has
+passed since the last notification. Allowed on provisioned monitors: muting is
+an operator's act during an incident, not part of the file.
+
+### `GET /api/v1/monitors/{id}/states`
+
+`{"states": [...]}`, one per group, **worst first**: `group` (the canonical key,
+`*` for an ungrouped monitor), `tags`, `status`, `since`, `value` (`null` before
+the first, or for NO_DATA), and `last_eval`, `last_data`, `last_notified`
+(`null` when never).
+
+### `GET /api/v1/events`
+
+The history: `{"events": [...]}`, newest first. Filters: `monitor_id`, `from`
+and `to` (unix seconds), `kind` (comma-separated), `limit` (default 500, at most
+5000). Kinds:
+
+| Kind | Means |
+|---|---|
+| `transition` | A group changed status (`from`, `to`, `value`) |
+| `renotify` | A reminder for a group still in ALERT or NO_DATA |
+| `notify_ok` / `notify_failed` | A delivery's outcome; `text` names the notifier and, on failure, why |
+| `eval_error` / `eval_recovered` | The query failed (recorded once per distinct error; the state is left alone) and later worked again |
+| `group_expired` | A group with no data for 24 hours was forgotten |
+| `reset` | The query changed (an edit or a provisioning file), so group states were cleared in the same transaction |
+| `released` | The monitor's provisioning file is gone; it keeps running and is now edited through the API |
+| `muted` / `unmuted` | Someone muted or unmuted the monitor |
+| `test_notification` | Someone sent a test |
+
+### `POST /api/v1/monitors/validate`
+
+Checks a definition without saving it and dry-runs one evaluation at now:
+`{"valid": true, "query": <canonical>, "grouped": bool, "levels": {...},
+"mentions": [...], "groups": [{"group", "tags", "value", "status"}]}`, or
+`{"valid": false, "errors": [...]}` — a `200` either way, because "here is why
+it is invalid" is this endpoint's successful answer. `levels` are the
+thresholds with every default applied, which is what the editor draws as
+bands. If the dry run's query fails, the answer is still `valid: true` with
+`eval_error` saying why.
+
+### `POST /api/v1/monitors/backtest`
+
+`{"monitor": <definition>, "id": <saved id, optional>, "from": <unix s>, "to":
+<unix s>}` (default: the last 24 hours). Replays the monitor over the range on a
+simulated clock — the same ticks, window, reduction and state machine the
+scheduler uses — and returns `{"evaluations", "events": [{"ts", "group",
+"from", "to", "value", "notify", "reason"}], "final": {group: status}}`. Pass the
+saved monitor's `id` and the ticks fall at the same phase as the live ones.
+At most 7 days and 20,000 evaluations.
+
+### `POST /api/v1/monitors/{id}/test-notification`
+
+Renders the message as an ALERT and sends it, now, to every notifier it
+mentions — directly, not through the delivery queue, so the answer is the
+outcome: `{"results": [{"notifier", "ok", "error"}]}`. `400` if the message
+mentions nobody.
+
+### `GET /api/v1/monitors/status`
+
+The nav badge and the stall banner in one cheap call: `{"running": bool,
+"monitors": n, "stalled": bool, "loading": bool, "last_eval_age_seconds": n,
+"monitors_by_status": {"ALERT": 1, ...}}`. `monitors` counts the ones that can
+run (enabled, and a definition this build compiles); `monitors_by_status` counts
+enabled monitors by their worst group. `stalled` is the self-watchdog: there are
+monitors and none has completed an evaluation for a while, so alerting is down.
+`loading` means the scheduler cannot read its monitors and is retrying; that
+too becomes `stalled` after the same threshold.
+
+### `GET /api/v1/notifiers`
+
+`{"notifiers": [{"name", "type", "ready", "problem"}]}` — what a message can
+`@mention`. **Names and types only**: a notifier's URL, address or header
+values are never returned, because a Discord webhook URL is itself a credential.
+`problem` names the environment variable to set, never its value.
+
+### Monitor status codes
+
+As for dashboards: `400` for a definition that does not validate (or a bad id or
+parameter), `404` for no such monitor, `409` for a duplicate `uid` or a write to
+a provisioned monitor, `503` for a backtest or test notification on a server with
+`monitors.enabled: false`.
+
+### Monitor provisioning
+
+Directories in `provisioning.monitor_paths` are read at startup with the
+dashboard rules above (upsert by required `uid`, one bad file skipped and logged,
+sorted order, unchanged file not a write, read-only over HTTP). A file is a
+definition plus optional `"enabled"`. One difference: a `@mention` of a notifier
+this server does not have is a **warning, not a refusal**, because a file shared
+by several environments may name a notifier only some have, and skipping the
+whole monitor would leave this one with no monitor at all.
+
 ### `GET /api/v1/metrics`
 
 Metric names, sorted. `?prefix=` filters by prefix (literal), `?limit=`

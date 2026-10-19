@@ -42,6 +42,14 @@ var ErrTypeConflict = errors.New("metric type conflict")
 type DB struct {
 	db *sql.DB
 
+	// txMu serializes this process's write transactions. SQLite has one
+	// writer; two deferred transactions that both read and then try to
+	// write make one of them fail with SQLITE_BUSY at once, without the
+	// busy timeout ever being consulted (it would deadlock otherwise). With
+	// monitor workers committing concurrently that was a few lost
+	// evaluations in every two hundred, so transactions queue here instead.
+	txMu sync.Mutex
+
 	mu      sync.RWMutex
 	metrics map[string]Metric
 }
@@ -52,7 +60,7 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("meta: %w", err)
 	}
-	if _, err := db.Exec(schema + dashboardSchema); err != nil {
+	if _, err := db.Exec(schema + dashboardSchema + monitorSchema); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("meta %s: %w", path, err)
 	}
