@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"maps"
@@ -438,25 +439,41 @@ func newExitIntake(t *testing.T) *exitIntake {
 	return in
 }
 
-// exits returns the container.exits series that counted an exit, one per
-// tag set, in arrival order. Not every container.exits series: within
-// ContextExpiry of its last data a counter is zero-filled, so each later
-// flush carries the same series with 0, and a poll that first looks late
-// sees those too. One per tag set: a retried POST can deliver the same
-// series twice.
-func (in *exitIntake) exits() []wire.Series {
+// kind is the wire type the first series named metric arrived as.
+func (in *exitIntake) kind(metric string) wire.Kind {
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	var out []wire.Series
+	for _, s := range in.got {
+		if s.Metric == metric {
+			return s.Type
+		}
+	}
+	return ""
+}
+
+// exits returns how many exits were counted per tag set. Zero-filled points
+// add nothing (within ContextExpiry of its last data a counter is resent with
+// 0, sometimes in the same flush as the exit), and a point delivered twice
+// with the same timestamp (a retried POST) counts once. A second real
+// emission has its own timestamp, so it still counts.
+func (in *exitIntake) exits() map[string]float64 {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	out := map[string]float64{}
 	seen := map[string]bool{}
 	for _, s := range in.got {
-		key := strings.Join(s.Tags, ",")
-		if s.Metric != "container.exits" || seen[key] ||
-			!slices.ContainsFunc(s.Points, func(p wire.Point) bool { return p.Value != 0 }) {
+		if s.Metric != "container.exits" {
 			continue
 		}
-		seen[key] = true
-		out = append(out, s)
+		key := strings.Join(s.Tags, ",")
+		for _, p := range s.Points {
+			pk := fmt.Sprint(key, "@", p.Timestamp)
+			if p.Value == 0 || seen[pk] {
+				continue
+			}
+			seen[pk] = true
+			out[key] += p.Value
+		}
 	}
 	return out
 }
@@ -512,14 +529,12 @@ func TestRun_DockerEventsToIntake(t *testing.T) {
 		clk.Advance(10 * time.Second)
 		return len(intake.exits()) >= 1
 	}, "container.exits not forwarded")
-	exits := intake.exits()
-	if len(exits) != 1 {
-		t.Fatalf("exits %+v", exits)
+	want := map[string]float64{"container_name:judge,env:test,exit_code:3,host:box,image_name:sandbox,image_tag:1,oom_killed:false": 1}
+	if got := intake.exits(); !maps.Equal(got, want) {
+		t.Fatalf("container.exits = %v, want %v", got, want)
 	}
-	s := exits[0]
-	if s.Type != wire.KindCount || len(s.Points) != 1 || s.Points[0].Value != 1 ||
-		strings.Join(s.Tags, ",") != "container_name:judge,env:test,exit_code:3,host:box,image_name:sandbox,image_tag:1,oom_killed:false" {
-		t.Fatalf("container.exits = %+v", s)
+	if k := intake.kind("container.exits"); k != wire.KindCount {
+		t.Fatalf("container.exits is a %q", k)
 	}
 	cancel()
 	if err := <-done; err != nil {
@@ -578,11 +593,11 @@ func TestRun_DockerEventsFoldNamesOverTheCap(t *testing.T) {
 		return len(intake.exits()) >= 2
 	}, "both exits not forwarded")
 	var names []string
-	for _, s := range intake.exits() {
-		if len(s.Points) != 1 || s.Points[0].Value != 1 {
-			t.Errorf("one exit counted as %+v", s.Points)
+	for key, n := range intake.exits() {
+		if n != 1 {
+			t.Errorf("%s counted %v exits, want 1", key, n)
 		}
-		for _, tg := range s.Tags {
+		for _, tg := range strings.Split(key, ",") {
 			if strings.HasPrefix(tg, "container_name:") {
 				names = append(names, tg)
 			}

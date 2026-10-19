@@ -584,15 +584,33 @@ func TestDeliver_BatchesAreBoundedByBytesNotOnlyCount(t *testing.T) {
 	}
 }
 
-// TestReadOrderIsOpenOrderNotInode: a rotated file's last lines go out before
-// the replacement's even when the filesystem gave the replacement the lower
+// TestReadOrderIsAgeNotInode: a rotated file's last lines go out before the
+// replacement's even when the filesystem gave the replacement the lower
 // inode, which is what made TestFiles_RotationByRename... flake on CI.
-func TestReadOrderIsOpenOrderNotInode(t *testing.T) {
-	old := &tracked{id: fileID{dev: 1, ino: 900}, seq: 1, path: "app.log.1"}
-	repl := &tracked{id: fileID{dev: 1, ino: 12}, seq: 2, path: "app.log"}
-	other := &tracked{id: fileID{dev: 2, ino: 1}, seq: 3, path: "b.log"}
-	got := readOrder(map[fileID]*tracked{repl.id: repl, other.id: other, old.id: old})
-	if got[0] != old || got[1] != repl || got[2] != other {
+// Equal ages fall back to open order.
+func TestReadOrderIsAgeNotInode(t *testing.T) {
+	old := &tracked{id: fileID{dev: 1, ino: 900}, age: t0, seq: 1, path: "app.log.1"}
+	repl := &tracked{id: fileID{dev: 1, ino: 12}, age: t0.Add(time.Minute), seq: 2, path: "app.log"}
+	tie := &tracked{id: fileID{dev: 2, ino: 1}, age: t0.Add(time.Minute), seq: 3, path: "b.log"}
+	got := readOrder(map[fileID]*tracked{repl.id: repl, tie.id: tie, old.id: old})
+	if got[0] != old || got[1] != repl || got[2] != tie {
 		t.Fatalf("order %s, %s, %s", got[0].path, got[1].path, got[2].path)
 	}
+}
+
+// TestFiles_FilesFoundInOneScanAreReadOldestFirst: two files appearing in the
+// same scan (a restart mid-rotation, two rotations between scans) are read by
+// age, not by path: a.log sorts first but is the newer.
+func TestFiles_FilesFoundInOneScanAreReadOldestFirst(t *testing.T) {
+	r := newRig(t, FileSource{})
+	r.write("seed.log", "")
+	r.poll(time.Second)
+	r.write("a.log", "newer\n")
+	r.write("b.log", "older\n")
+	if err := os.Chtimes(r.path("b.log"), t0.Add(-time.Hour), t0.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	r.poll(DefaultScanInterval)
+	r.poll(time.Second)
+	eq(t, r.sink.messages(), "older", "newer")
 }

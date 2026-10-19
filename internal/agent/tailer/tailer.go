@@ -86,10 +86,14 @@ type fileSource struct {
 
 type tracked struct {
 	id fileID
-	// seq orders reads within a poll: files are read in the order they were
-	// first opened, so a rotated file's last lines go out before the lines of
-	// the file that replaced it. Not by inode: a filesystem may give the new
-	// file a lower number than the old one (CI's did).
+	// age and seq order reads within a poll, so a rotated file's last lines
+	// go out before the lines of the file that replaced it. age is the file's
+	// mtime when it was first opened: a property of the file, so it orders
+	// correctly when both are found in one scan (a restart mid-rotation, two
+	// rotations between scans), where open order is just path order. seq,
+	// the open order, breaks ties. Not by inode: a filesystem may give the
+	// new file a lower number than the old one (CI's did).
+	age       time.Time
 	seq       uint64
 	path      string
 	r         lineReader
@@ -218,13 +222,19 @@ func (f *Files) Poll(ctx context.Context) {
 	}
 }
 
-// readOrder is the order a poll reads a source's files: oldest opened first.
+// readOrder is the order a poll reads a source's files: oldest first (see
+// tracked.age), then first opened.
 func readOrder(tail map[fileID]*tracked) []*tracked {
 	out := make([]*tracked, 0, len(tail))
 	for _, t := range tail {
 		out = append(out, t)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].seq < out[j].seq })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].age.Equal(out[j].age) {
+			return out[i].age.Before(out[j].age)
+		}
+		return out[i].seq < out[j].seq
+	})
 	return out
 }
 
@@ -253,7 +263,7 @@ func (f *Files) scan(now time.Time) {
 				t.gone = time.Time{}
 				continue
 			}
-			f.open(src, id, p, fi.Size(), now)
+			f.open(src, id, p, fi.Size(), fi.ModTime(), now)
 		}
 		for id, t := range src.tail {
 			if _, ok := present[id]; !ok && t.gone.IsZero() {
@@ -263,7 +273,7 @@ func (f *Files) scan(now time.Time) {
 	}
 }
 
-func (f *Files) open(src *fileSource, id fileID, path string, size int64, now time.Time) {
+func (f *Files) open(src *fileSource, id fileID, path string, size int64, mtime, now time.Time) {
 	fh, err := os.Open(path)
 	if err != nil {
 		f.opts.Logger.Warn("tailer: opening", "path", path, "err", err)
@@ -292,7 +302,7 @@ func (f *Files) open(src *fileSource, id fileID, path string, size int64, now ti
 	}
 	meta := logpipeline.Meta{Service: src.cfg.Service, Source: src.cfg.Source, Host: f.opts.Host, Tags: src.cfg.Tags}
 	f.opened++
-	t := &tracked{id: id, seq: f.opened, path: path, committed: off, idle: now,
+	t := &tracked{id: id, age: mtime, seq: f.opened, path: path, committed: off, idle: now,
 		st: newStream(pl, meta, src.start, f.opts.Sink, f.opts.BatchLogs)}
 	t.r = lineReader{f: fh}
 	t.r.seek(off)

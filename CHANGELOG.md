@@ -491,10 +491,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- The agent's file tailer reads files in the order it opened them, not by inode, so a rotated
-  file's last lines are delivered before the lines of the file that replaced it even when the
-  filesystem gives the new file a lower inode.
-
+- **A rotated log file's last lines could be delivered after the new file's.** The agent's
+  tailer read each poll's files in inode order, and a filesystem may give the new file the
+  lower inode. It now reads oldest first (the file's mtime when first opened, then open order),
+  which also holds after a restart mid-rotation or two rotations between scans.
 - **Timeseries charts with many series drew a sliver.** The legend wrapped onto many
   lines and took the whole widget; it now takes at most 40% of the chart and scrolls.
 - **A rejected append no longer leaves an empty series behind.** The head
