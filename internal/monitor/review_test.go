@@ -247,6 +247,30 @@ func TestProvisionReleasesRemovedFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// A dangling symlink and a directory named *.json are not files, so
+	// they hold nothing back.
+	if err := os.Symlink(filepath.Join(dir, "gone"), filepath.Join(dir, "dangling.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "dir.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if res := pass(dir); !slices.Equal(res.Released, []string{"A"}) {
+		t.Fatalf("not-a-file held back the release: %v\n%s", res.Released, logs.String())
+	}
+	if err := db.DeleteMonitor(context.Background(), mustUID(t, db, "a")); err != nil {
+		t.Fatal(err)
+	}
+	if res := pass(dir); len(res.Released) != 0 {
+		t.Fatalf("re-released: %v", res.Released)
+	}
+	_ = os.Remove(filepath.Join(dir, "dangling.json"))
+	_ = os.Remove(filepath.Join(dir, "dir.json"))
+	// Put a back as a provisioned monitor with no file, for the cases below.
+	if _, _, err := db.UpsertProvisionedMonitor(context.Background(), meta.MonitorRow{UID: "a", Name: "A", Type: "metric",
+		Query: "avg(last_5m):avg:x{*} > 1", Enabled: true}, t0); err != nil {
+		t.Fatal(err)
+	}
 	if res := pass(dir, filepath.Join(dir, "unmounted")); len(res.Released) != 0 || !strings.Contains(logs.String(), "unmounted") {
 		t.Fatalf("missing dir: %v\n%s", res.Released, logs.String())
 	}
@@ -271,20 +295,29 @@ func TestProvisionReleasesRemovedFiles(t *testing.T) {
 	}
 }
 
-// TestFailedRenderReachesEveryoneNamed: a message that cannot render still
-// reaches every handle its template names, including conditional ones.
-func TestFailedRenderReachesEveryoneNamed(t *testing.T) {
+func mustUID(t *testing.T, db *meta.DB, uid string) int64 {
+	t.Helper()
+	m, err := db.MonitorByUID(context.Background(), uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m.ID
+}
+
+// TestFailedRenderKeepsMentions: a message that cannot render says so and
+// still names everyone it was for, so the failure is seen.
+func TestFailedRenderKeepsMentions(t *testing.T) {
 	h := newHarness(t)
 	m := backlog()
 	m.Query = "last(last_1m):avg:queue.depth{*} by {q} > 20"
-	m.Message = "{{.Group.q}}{{if .IsAlert}} @pager{{end}} @log"
+	m.Message = "{{.Group.q}} @pager @log"
 	c, err := spec.Compile(m)
 	if err != nil {
 		t.Fatal(err)
 	}
 	huge := spec.Group{"q": strings.Repeat("x", spec.MaxRenderedBytes+1)}
-	n, to := h.s.render(c, meta.MonitorRow{ID: 1, Name: "m"}, huge, "q:x", state.Alert, state.OK, 0, t0, t0, t0)
-	if !slices.Equal(to, []string{"pager", "log"}) || !strings.Contains(n.Message, "template failed") {
-		t.Fatalf("to %v, message %q", to, n.Message)
+	n := h.s.render(c, meta.MonitorRow{ID: 1, Name: "m"}, huge, "q:x", state.Alert, state.OK, 0, t0, t0, t0)
+	if !strings.HasPrefix(n.Message, "(the message template failed") || !strings.HasSuffix(n.Message, " @pager @log") {
+		t.Fatalf("message %q", n.Message)
 	}
 }

@@ -121,11 +121,58 @@ func refuse(n parse.Node) error {
 	case *parse.TemplateNode:
 		return errors.New("{{template}} is not supported in a message")
 	case *parse.IfNode:
-		return errors.Join(refuse(n.List), refuse(n.ElseList))
+		return errors.Join(refuse(n.List), refuse(n.ElseList), refuseMentions(n.List), refuseMentions(n.ElseList))
 	case *parse.WithNode:
-		return errors.Join(refuse(n.List), refuse(n.ElseList))
+		return errors.Join(refuse(n.List), refuse(n.ElseList), refuseMentions(n.List), refuseMentions(n.ElseList))
 	}
 	return nil
+}
+
+// refuseMentions rejects a mention inside a conditional branch. Every message
+// goes to every handle the template names (ADR-0052), so `{{if
+// .IsAlert}}@pager{{end}}` would page @pager for recoveries too while reading
+// as if it did not. Refused where it is written, not discovered at page time.
+func refuseMentions(l *parse.ListNode) error {
+	var bad []string
+	walkText(l, true, func(text string) { bad = append(bad, textMentions(text)...) })
+	if len(bad) > 0 {
+		return fmt.Errorf("@%s is inside {{if}} or {{with}}; a message goes to every notifier it mentions, whatever the status, "+
+			"so write mentions outside conditions (use one monitor per audience)", bad[0])
+	}
+	return nil
+}
+
+// walkText calls fn with the literal text of l's nodes: only the top level,
+// or, with deep, inside conditional branches too. Comments, string literals
+// and field names are never text, so `{{/* @pager */}}` mentions nobody.
+func walkText(l *parse.ListNode, deep bool, fn func(string)) {
+	if l == nil {
+		return
+	}
+	for _, n := range l.Nodes {
+		switch n := n.(type) {
+		case *parse.TextNode:
+			fn(string(n.Text))
+		case *parse.IfNode:
+			if deep {
+				walkText(n.List, true, fn)
+				walkText(n.ElseList, true, fn)
+			}
+		case *parse.WithNode:
+			if deep {
+				walkText(n.List, true, fn)
+				walkText(n.ElseList, true, fn)
+			}
+		}
+	}
+}
+
+func textMentions(text string) []string {
+	var out []string
+	for _, m := range mention.FindAllStringSubmatch(text, -1) {
+		out = append(out, m[1])
+	}
+	return out
 }
 
 // samples are the data a template is proved against: one per status, so that
@@ -178,21 +225,27 @@ func (t *Template) Render(d Data) (string, error) {
 // monitor per audience.
 func (t *Template) Recipients() []string { return slices.Clone(t.named) }
 
-// mention is `@handle` at the start of the source, after whitespace, or after
-// the `}` that closes a template action: an email address in a message is not
-// read as one, and `{{if .IsAlert}}@pager{{end}}` is.
-var mention = regexp.MustCompile(`(?:^|[\s}])@([A-Za-z0-9_-]+)`)
+// mention is `@handle` at the start of a piece of literal text or after
+// whitespace: an email address is not one, and in `{{.Value}} @pager` or
+// `{{end}}@pager` the handle starts a text node.
+var mention = regexp.MustCompile(`(?:^|\s)@([A-Za-z0-9_-]+)`)
 
-// Mentions returns the distinct handles in text, in order of appearance.
-//
-// It is run on the template source: at save, to check that every handle
-// names a configured notifier, and at compile, to fix the recipients.
+// Mentions returns the distinct handles a message template mentions, in order:
+// those in its literal text outside conditions. It is what save-time
+// validation checks and who every message goes to. A message that does not
+// parse mentions nobody (it is refused at save anyway).
 func Mentions(text string) []string {
-	var out []string
-	for _, m := range mention.FindAllStringSubmatch(text, -1) {
-		if !slices.Contains(out, m[1]) {
-			out = append(out, m[1])
-		}
+	t, err := template.New("m").Parse(text)
+	if err != nil || t.Tree == nil {
+		return nil
 	}
+	var out []string
+	walkText(t.Root, false, func(s string) {
+		for _, m := range textMentions(s) {
+			if !slices.Contains(out, m) {
+				out = append(out, m)
+			}
+		}
+	})
 	return out
 }

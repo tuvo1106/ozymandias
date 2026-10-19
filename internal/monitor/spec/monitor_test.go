@@ -212,8 +212,9 @@ func TestMentions(t *testing.T) {
 		"hey @a and @b, then @a again": "a b",
 		"mail ops@example.com please":  "",
 		"line\n@hook\t@me_2":           "hook me_2",
-		"{{if .IsAlert}}@pager{{end}}": "pager",
-		"a}@b c@d":                     "b",
+		"{{if .IsAlert}}@pager{{end}}": "",  // in a condition: refused at compile, never a recipient
+		"{{.Value}}@b c@d":             "b", // a text node starts a mention
+		"{{/* @c */}} {{\" @d\"}}":     "",  // comments and literals are not text
 	} {
 		if got := strings.Join(Mentions(in), " "); got != want {
 			t.Errorf("Mentions(%q) = %q, want %q", in, got, want)
@@ -227,25 +228,36 @@ func ExampleParseQuery() {
 	// Output: avg 5m0s > 20 true
 }
 
-// TestRecipients: a message goes to every handle its source mentions,
-// whatever the status and the data, and data renders as it is.
+// TestRecipients: a message goes to every handle in its literal text, and
+// to nothing a comment, a string literal or data mentions.
 func TestRecipients(t *testing.T) {
-	tm, err := CompileTemplate(`{{.Group.user}}{{if eq .Group.user "admin@corp.com"}} @security{{end}}{{if .IsAlert}}@pager{{end}} oncall@example.com @log`)
+	tm, err := CompileTemplate(`{{.Group.user}}{{/* @pager is off */}}{{if eq .Group.user " @x"}}admin{{end}} oncall@example.com @log {{.Value}}@cap`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, d := range []Data{
-		{Group: Group{"user": "admin@corp.com"}, Status: "ALERT", IsAlert: true},
-		{Group: Group{"user": "x @evil @other"}, Status: "OK", IsRecovery: true},
-		{Group: Group{"user": strings.Repeat("@", MaxRenderedBytes)}, Status: "OK"}, // fails to render
+	if got := strings.Join(tm.Recipients(), " "); got != "log cap" {
+		t.Fatalf("recipients %q", got)
+	}
+	// Data is not escaped: it renders, and compares, as it is.
+	text, err := tm.Render(Data{Group: Group{"user": "a@b @pager"}, Value: 1, Status: "OK"})
+	if err != nil || text != "a@b @pager oncall@example.com @log 1@cap" {
+		t.Fatalf("%q %v", text, err)
+	}
+}
+
+// TestConditionalMentionsAreRefused: a mention inside a condition would be
+// sent for every status while reading as if it were not.
+func TestConditionalMentionsAreRefused(t *testing.T) {
+	for _, tmpl := range []string{
+		"{{if .IsAlert}}@pager{{end}}",
+		"{{if .IsAlert}}x{{else}}page @pager{{end}}",
+		"{{with .Group.q}}{{if .}} @pager{{end}}{{end}}",
 	} {
-		if got := strings.Join(tm.Recipients(), " "); got != "security pager log" {
-			t.Fatalf("%v: %q", d.Group, got)
+		if _, err := CompileTemplate(tmpl); err == nil || !strings.Contains(err.Error(), "@pager is inside") {
+			t.Errorf("%q: %v", tmpl, err)
 		}
 	}
-	// Data is not escaped: a comparison against it means what it says.
-	text, err := tm.Render(Data{Group: Group{"user": "admin@corp.com"}, Status: "OK"})
-	if err != nil || text != "admin@corp.com @security oncall@example.com @log" {
-		t.Fatalf("%q %v", text, err)
+	if _, err := CompileTemplate("{{if .IsAlert}}mail ops@example.com{{end}} @log"); err != nil {
+		t.Errorf("an address in a condition: %v", err)
 	}
 }

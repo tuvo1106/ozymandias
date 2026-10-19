@@ -194,7 +194,7 @@ func backlog() spec.Monitor {
 			EvaluationIntervalS: 30, EvaluationDelayS: i(0),
 			NotifyNoData: true, NoDataTimeframeM: 2,
 		},
-		Message: "{{.Monitor}} is {{.Status}} at {{.Value}}{{if .IsRecovery}} (recovered){{end}} @cap{{if .IsAlert}} @pager{{end}}",
+		Message: "{{.Monitor}} is {{.Status}} at {{.Value}}{{if .IsRecovery}} (recovered){{end}} @cap @pager",
 	}
 }
 
@@ -243,17 +243,17 @@ func TestScenario(t *testing.T) {
 		got = append(got, n.PrevStatus+">"+n.Status+" "+n.Message)
 	}
 	// One row per notifier the template names: every transition goes to
-	// both, though the text mentions @pager only for the ALERT (ADR-0052).
+	// both (ADR-0052).
 	eqStrings(t, "notifications", got, []string{
-		"OK>WARN Backlog is WARN at 12 @cap", "OK>WARN Backlog is WARN at 12 @cap",
+		"OK>WARN Backlog is WARN at 12 @cap @pager", "OK>WARN Backlog is WARN at 12 @cap @pager",
 		"WARN>ALERT Backlog is ALERT at 25 @cap @pager", "WARN>ALERT Backlog is ALERT at 25 @cap @pager",
-		"ALERT>OK Backlog is OK at 5 (recovered) @cap", "ALERT>OK Backlog is OK at 5 (recovered) @cap",
-		"OK>NO_DATA Backlog is NO_DATA at NaN @cap", "OK>NO_DATA Backlog is NO_DATA at NaN @cap",
-		"NO_DATA>OK Backlog is OK at 5 (recovered) @cap", "NO_DATA>OK Backlog is OK at 5 (recovered) @cap",
+		"ALERT>OK Backlog is OK at 5 (recovered) @cap @pager", "ALERT>OK Backlog is OK at 5 (recovered) @cap @pager",
+		"OK>NO_DATA Backlog is NO_DATA at NaN @cap @pager", "OK>NO_DATA Backlog is NO_DATA at NaN @cap @pager",
+		"NO_DATA>OK Backlog is OK at 5 (recovered) @cap @pager", "NO_DATA>OK Backlog is OK at 5 (recovered) @cap @pager",
 	})
 	// A WARN reports the warning level it crossed, not the critical one.
 	if ns := h.out.notes(t); ns[0].Threshold != 10 || ns[2].Threshold != 20 {
-		t.Errorf("thresholds %g %g", ns[0].Threshold, ns[1].Threshold)
+		t.Errorf("thresholds %g %g", ns[0].Threshold, ns[2].Threshold)
 	}
 	h.out.mu.Lock()
 	var routed []string

@@ -154,8 +154,9 @@ func (s *Scheduler) TestNotification(ctx context.Context, row meta.MonitorRow) (
 	now := s.opt.Clock.Now()
 	// The same render and the same routing as a real alert, so the button
 	// tests what will actually happen.
-	n, names := s.render(c, row, spec.Group{}, "*", state.OK, state.Alert, c.Levels.Critical, now, now, now)
+	n := s.render(c, row, spec.Group{}, "*", state.OK, state.Alert, c.Levels.Critical, now, now, now)
 	n.Reason = "test"
+	names := c.Template.Recipients()
 	if len(names) == 0 {
 		return nil, ErrNoMentions
 	}

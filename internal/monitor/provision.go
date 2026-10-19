@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/meta"
@@ -94,7 +95,12 @@ func Provision(ctx context.Context, store ProvisionStore, paths []string, known 
 func provisionFile(ctx context.Context, store ProvisionStore, file string, known []string, now time.Time,
 	log *slog.Logger, res *ProvisionResult, seen *[]string) error {
 	data, err := os.ReadFile(file)
-	if err != nil {
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.EISDIR):
+		// Gone since the listing, a dangling symlink, or a directory named
+		// *.json: there is no file here, which is an answer, not an unknown.
+		return err
+	case err != nil:
 		// Unreadable for now (permissions mid-edit, a flaky mount): its uid
 		// is unknown, so this pass must not conclude its monitor is gone.
 		return fmt.Errorf("%w (%w)", err, errNoUID)

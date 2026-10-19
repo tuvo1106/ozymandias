@@ -588,11 +588,12 @@ not hold up releasing the others.
 ### Notifiers
 
 A message's `@name` mentions select notifiers. **Every message from a monitor
-goes to every handle its template mentions**, at the start, after whitespace,
-or right after a template action's `}` (an email address is not one). That
-includes a handle written inside `{{if .IsAlert}}`: the text varies by status,
-but the recipients do not. To page `@pager` for alerts and only log
-recoveries, make two monitors. Data never changes who is notified; a tag value
+goes to every handle in its template's literal text**: an `@` at the start of
+a piece of text or after whitespace (an email address is not one; a comment
+or a string literal inside `{{ }}` is not text). The text can vary by status;
+the recipients do not. So a mention inside `{{if}}` or `{{with}}` is refused
+at save. To page `@pager` for alerts and only log recoveries, make two
+monitors. Data never changes who is notified; a tag value
 that reads `@pager` is just text
 ([ADR-0052](adr/0052-notifiers-come-from-the-template-source.md)).
 Notifiers are configured under `notifiers:` in `ozyd.yaml`:

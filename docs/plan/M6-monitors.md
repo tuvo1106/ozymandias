@@ -81,7 +81,9 @@ per group. The comparison threshold in the query must equal
   `text/template`; data: `Monitor, Group (map + string), Status, PrevStatus,
   Value, Threshold, IsAlert, IsWarning, IsRecovery, IsNoData, Since, Link`
   (link to the UI monitor page with the time window). `@handle` mentions in
-  the message select notifiers.
+  the message select notifiers: every handle in the template's literal text
+  receives every message from it, whatever the status, and a mention inside
+  `{{if}}`/`{{with}}` is refused at save (ADR-0052).
 - **Notifiers** (`internal/monitor/notify`, interface
   `Notify(ctx, Notification) error`), configured in `ozyd.yaml`:
 

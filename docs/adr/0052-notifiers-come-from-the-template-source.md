@@ -27,10 +27,13 @@ data's within rendered text, and each round's rule had a hole:
 
 ## Decision
 
-A message goes to every handle its template source mentions, whatever the
-status and whatever the data. Mentions are read once, when the template
-compiles, with the same rule save-time validation uses. Data is rendered as
-it is. A mention inside `{{if}}` still counts.
+A message goes to every handle its template mentions, whatever the status
+and whatever the data. Mentions are read once, when the template compiles,
+from its literal text only, by walking the parse tree. A comment
+(`{{/* @pager */}}`) or a string literal mentions nobody. Save-time
+validation uses the same function. A mention inside `{{if}}` or `{{with}}`
+is refused at save, because it would be sent for every status while reading
+as if it were not. Data is rendered as it is.
 
 ## Alternatives considered
 
@@ -42,7 +45,13 @@ it is. A mention inside `{{if}}` still counts.
 ## Consequences
 
 One audience per status is one monitor per audience (or the future option
-above). A template that mentions `@pager` pages it for recoveries and
+above).
+
+Impact on later milestones: the M6 UI's monitor editor can show recipients
+statically from the template (the validate endpoint's `mentions`), with no
+preview per status. The app integration in M6 PR 3 writes one monitor per
+audience where it wants a pager only for alerts. Nothing in M7 or M8 depends
+on routing. A template that mentions `@pager` pages it for recoveries and
 warnings too, which docs/operations.md says plainly. What routes is visible in
 the template source and in `GET /api/v1/monitors` without rendering anything,
 and no value an outsider can send changes it.

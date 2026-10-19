@@ -516,23 +516,24 @@ func (s *Scheduler) evalError(ctx context.Context, e *entry, row meta.MonitorRow
 // notifications renders the message for one step and makes one outbox row per
 // notifier it mentions.
 func (s *Scheduler) notifications(c *spec.Compiled, row meta.MonitorRow, st groupStep, now, windowEnd time.Time) []meta.OutboxRow {
-	n, to := s.render(c, row, st.Group, st.Key, st.Res.From, st.Res.To, st.Value, st.Next.Since, now, windowEnd)
+	n := s.render(c, row, st.Group, st.Key, st.Res.From, st.Res.To, st.Value, st.Next.Since, now, windowEnd)
 	n.Reason = string(st.Res.Notify)
 	payload, _ := json.Marshal(n)
 	var out []meta.OutboxRow
-	for _, name := range to {
+	for _, name := range c.Template.Recipients() {
 		out = append(out, meta.OutboxRow{Created: now, MonitorID: row.ID, GroupKey: st.Key, Notifier: name, Payload: payload})
 	}
 	return out
 }
 
-// render builds a notification and says who it goes to: everyone the
-// template names (spec.Template.Recipients). A template that fails at runtime (it compiled
+// render builds a notification. Who it goes to is not render's business:
+// every message from a template goes to everyone it names
+// (spec.Template.Recipients). A template that fails at runtime (it compiled
 // at save, so this is rare: a value that prints past the size bound) still
 // produces a notification, with the failure in it — a page that says "your
 // template broke" beats no page.
 func (s *Scheduler) render(c *spec.Compiled, row meta.MonitorRow, g spec.Group, key string, from, to state.Status,
-	value float64, since, now, windowEnd time.Time) (notify.Notification, []string) {
+	value float64, since, now, windowEnd time.Time) notify.Notification {
 	if g == nil {
 		g = spec.Group{}
 	}
@@ -560,7 +561,7 @@ func (s *Scheduler) render(c *spec.Compiled, row meta.MonitorRow, g spec.Group, 
 		MonitorID: row.ID, MonitorUID: row.UID, MonitorName: row.Name, Tags: row.Tags,
 		GroupKey: key, Group: g, Status: string(to), PrevStatus: string(from),
 		Value: notify.ValuePtr(value), Threshold: threshold, Message: text, Link: link, Ts: now,
-	}, c.Template.Recipients()
+	}
 }
 
 func (s *Scheduler) link(id int64, from, to time.Time) string {
