@@ -30,9 +30,9 @@ data's within rendered text, and each round's rule had a hole:
 A message goes to every handle its template mentions, whatever the status
 and whatever the data. Mentions are read once, when the template compiles,
 from its literal text only, by walking the parse tree: `@handle` at the start
-of the message or after whitespace, in runs of adjacent text (a comment
-prints nothing). `@handle` straight after an action is refused, because what
-it reads as depends on what the action prints. The error gives both ways out:
+of the message or after whitespace. `@handle` directly after `}}` (an action
+or a comment, which may be trimmed) is refused, because what it reads as
+depends on what came before it. The error gives both ways out:
 a space for a mention, `{{"@"}}` for a literal `@`. A comment
 (`{{/* @pager */}}`) or a string literal mentions nobody. Save-time
 validation uses the same function. A mention inside `{{if}}` or `{{with}}`

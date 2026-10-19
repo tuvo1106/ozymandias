@@ -264,12 +264,12 @@ func TestConditionalMentionsAreRefused(t *testing.T) {
 }
 
 // TestMentionAfterAnAction: `@handle` straight after an action is ambiguous
-// (the action may print anything, or nothing), so it is refused with both
-// ways out; a comment prints nothing, so the text around it reads as one.
+// (the action may print anything, or nothing, and a comment may be trimmed),
+// so it is refused with both ways out.
 func TestMentionAfterAnAction(t *testing.T) {
 	for tmpl, want := range map[string]string{
 		`owner {{.Group.owner}}{{"@"}}example.com @log`: "log", // the literal-@ escape
-		"page {{/* note */}}@pager":                     "pager",
+		"page {{/* note */}} @pager":                    "pager",
 		"{{/* c */}}@pager hi":                          "pager",
 		"{{.Value}} @cap":                               "cap",
 	} {

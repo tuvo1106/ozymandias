@@ -112,17 +112,15 @@ func CompileTemplate(text string) (*Template, error) {
 //
 // `range`, `template`, `define` and `block` are refused (see CompileTemplate).
 //
-// A mention is `@handle` in the template's own literal text, read in runs of
-// adjacent text (the parser drops comments, so `page {{/* x */}}@pager` is
-// the run "page @pager", as it renders). It counts at the start of the
-// message or after whitespace, so an address is not one. Comments, string
+// A mention is `@handle` in the template's own literal text, at the start of
+// the message or after whitespace, so an address is not one. Comments, string
 // literals and field names are never text.
 //
-// `@handle` at the start of a run straight after an action is refused: what
-// it reads as depends on what the action prints (an `{{if}}` may print
-// nothing, a `-}}` trims the space before it), so it is neither clearly a
-// mention nor clearly not. The error gives both ways out: a space before it
-// for a mention, `{{"@"}}` for a literal `@` in an address.
+// `@handle` directly after `}}` (an action or a comment) is refused: what it
+// reads as depends on what came before it (an `{{if}}` may print nothing, a
+// `-}}` trims the space), so it is neither clearly a mention nor clearly not.
+// The error gives both ways out: a space before it for a mention, `{{"@"}}`
+// for a literal `@` in an address.
 //
 // A mention inside `{{if}}` or `{{with}}` is refused: every message goes to
 // every handle (ADR-0052), so it would be sent for every status while reading
@@ -143,24 +141,14 @@ func (s *scanner) list(l *parse.ListNode, inCond bool) {
 	if l == nil {
 		return
 	}
-	var run strings.Builder
-	runStart := 0 // index of the node the current run began at
-	flush := func() {
-		if run.Len() > 0 {
-			s.text(run.String(), inCond, runStart == 0)
-			run.Reset()
-		}
-	}
 	for i, n := range l.Nodes {
-		if t, ok := n.(*parse.TextNode); ok {
-			if run.Len() == 0 {
-				runStart = i
-			}
-			run.Write(t.Text)
-			continue
-		}
-		flush()
 		switch n := n.(type) {
+		case *parse.TextNode:
+			// Each text node stands alone. Two are adjacent only where a
+			// comment sat between them, and a trimmed comment
+			// (`ALERT {{- /* c */ -}} @pager`) joins them with no space,
+			// so a node is never merged with the one before it.
+			s.text(string(n.Text), inCond, i == 0)
 		case *parse.RangeNode:
 			s.fail("{{range}} is not supported in a message: nothing in it is a list")
 		case *parse.TemplateNode:
@@ -173,11 +161,10 @@ func (s *scanner) list(l *parse.ListNode, inCond bool) {
 			s.list(n.ElseList, true)
 		}
 	}
-	flush()
 }
 
-// text reads one run. atStart: the run begins its list (the message, or a
-// conditional branch).
+// text reads one text node. atStart: the node begins its list (the message,
+// or a conditional branch), so nothing printed comes before it.
 func (s *scanner) text(text string, inCond, atStart bool) {
 	for _, m := range mention.FindAllStringSubmatchIndex(text, -1) {
 		h := text[m[2]:m[3]]

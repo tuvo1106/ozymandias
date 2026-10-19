@@ -497,35 +497,36 @@ type MonitorStatuses struct {
 // monitor's stored states describe when it last ran, not now. The row comes
 // along so the caller can tell whether its definition still compiles.
 func (d *DB) EnabledStatuses(ctx context.Context) ([]MonitorStatuses, error) {
-	rows, err := d.db.QueryContext(ctx, strings.Replace(monitorColumns, "SELECT ", "SELECT s.status, ", 1)+
-		` m JOIN monitor_states s ON s.monitor_id = m.id WHERE m.enabled = 1 ORDER BY m.id`)
+	// One row per monitor; statuses are fixed words, so a comma joins them
+	// safely.
+	rows, err := d.db.QueryContext(ctx, `SELECT m.id, COALESCE(m.uid, ''), m.name, m.type, m.query,
+		m.options_json, m.message, m.tags_json, m.enabled, m.muted_until, m.provisioned, m.created_at,
+		m.updated_at, GROUP_CONCAT(s.status)
+		FROM monitors m JOIN monitor_states s ON s.monitor_id = m.id
+		WHERE m.enabled = 1 GROUP BY m.id ORDER BY m.id`)
 	if err != nil {
 		return nil, fmt.Errorf("meta: reading monitor statuses: %w", err)
 	}
 	defer rows.Close()
 	var out []MonitorStatuses
 	for rows.Next() {
-		var st string
-		r, err := scanMonitor(prefixed{rows, &st})
+		var statuses string
+		r, err := scanMonitor(withLast{rows, &statuses})
 		if err != nil {
 			return nil, fmt.Errorf("meta: reading monitor statuses: %w", err)
 		}
-		if n := len(out); n > 0 && out[n-1].Row.ID == r.ID {
-			out[n-1].Statuses = append(out[n-1].Statuses, st)
-			continue
-		}
-		out = append(out, MonitorStatuses{Row: r, Statuses: []string{st}})
+		out = append(out, MonitorStatuses{Row: r, Statuses: strings.Split(statuses, ",")})
 	}
 	return out, rows.Err()
 }
 
-// prefixed scans one leading column into first, then the rest as usual.
-type prefixed struct {
-	s     scanner
-	first any
+// withLast scans one trailing column into last, after the monitor columns.
+type withLast struct {
+	s    scanner
+	last any
 }
 
-func (p prefixed) Scan(dest ...any) error { return p.s.Scan(append([]any{p.first}, dest...)...) }
+func (w withLast) Scan(dest ...any) error { return w.s.Scan(append(dest, w.last)...) }
 
 // States returns a monitor's states, or every monitor's when monitorID is 0.
 func (d *DB) States(ctx context.Context, monitorID int64) ([]StateRow, error) {

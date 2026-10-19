@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -82,5 +83,50 @@ func TestMonitors_SkippedMonitorSaysSo(t *testing.T) {
 	(&Monitors{Store: db}).Register(mux)
 	if _, body := get(t, mux, "/api/v1/monitors/2"); body["problem"] == nil {
 		t.Fatalf("no engine: %v", body)
+	}
+}
+
+// TestMonitors_ProblemCacheCoversEveryCompiledField: a problem caused by the
+// name (not the query or message) clears when only the name is fixed, and a
+// deleted monitor's entry is dropped.
+func TestMonitors_ProblemCacheCoversEveryCompiledField(t *testing.T) {
+	db, err := meta.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	m := &Monitors{Store: db}
+	mux := http.NewServeMux()
+	m.Register(mux)
+	row, err := db.CreateMonitor(context.Background(), meta.MonitorRow{Name: strings.Repeat("n", 300), Type: "metric",
+		Query: "avg(last_5m):avg:x{*} > 1", Enabled: true}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, body := get(t, mux, "/api/v1/monitors/1"); body["problem"] == nil {
+		t.Fatalf("a bad name is not a problem: %v", body)
+	}
+	row.Name = "short"
+	if _, err := db.UpdateMonitor(context.Background(), row.ID, row, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, body := get(t, mux, "/api/v1/monitors/1"); body["problem"] != nil {
+		t.Fatalf("fixed name still a problem: %v", body)
+	}
+	send(t, mux, "DELETE", "/api/v1/monitors/1", "")
+	if len(m.problems) != 0 {
+		t.Fatalf("deleted monitor still cached: %v", m.problems)
+	}
+	// Deleted behind the API's back (provisioning, another process): the
+	// next list drops it.
+	other, _ := db.CreateMonitor(context.Background(), meta.MonitorRow{Name: "x", Type: "metric",
+		Query: "avg(last_5m):avg:x{*} > 1", Enabled: true}, now)
+	get(t, mux, "/api/v1/monitors")
+	if err := db.DeleteMonitor(context.Background(), other.ID); err != nil {
+		t.Fatal(err)
+	}
+	get(t, mux, "/api/v1/monitors")
+	if len(m.problems) != 0 {
+		t.Fatalf("a monitor deleted elsewhere is still cached: %v", m.problems)
 	}
 }

@@ -14,7 +14,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   recovery thresholds (hysteresis), multi-alert groups, no-data detection,
   min-consecutive-failures, renotify and muting; evaluated behind now (ADR-0047) on a
   jittered, bounded scheduler; state, events and an at-least-once notification outbox in
-  `meta.db` (ADR-0048); messages in Go templates proved at save (ADR-0049), each sent to every notifier its template mentions (ADR-0052; a mention inside `{{if}}` is refused at save); webhook,
+  `meta.db` (ADR-0048); messages in Go templates proved at save (ADR-0049), each sent to every notifier its template mentions (ADR-0052; a mention inside `{{if}}`, or `@handle` directly after `}}`, is refused at save, with `{{"@"}}` for a literal `@`); webhook,
   Discord, email and log notifiers with secrets only from the environment. API:
   `/api/v1/monitors` (CRUD, mute, states, validate with a dry run, backtest, test
   notification, status; a `problem` field on a monitor whose stored definition no longer compiles), `/api/v1/events`, `/api/v1/notifiers`. Provisioning from

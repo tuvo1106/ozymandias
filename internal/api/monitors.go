@@ -79,7 +79,7 @@ type cachedProblem struct {
 // The result is cached by the definition text, so a list or a badge poll
 // compiles only what changed.
 func (m *Monitors) problemOf(r meta.MonitorRow) string {
-	def := r.Type + "\x00" + r.Query + "\x00" + string(r.Options) + "\x00" + r.Message
+	def := definitionKey(r)
 	m.problemMu.Lock()
 	c, ok := m.problems[r.ID]
 	m.problemMu.Unlock()
@@ -90,13 +90,40 @@ func (m *Monitors) problemOf(r meta.MonitorRow) string {
 	if _, err := monitor.CompileRow(r); err != nil {
 		problem = err.Error()
 	}
+	m.remember(r, problem)
+	return problem
+}
+
+// remember caches a row's compile result.
+func (m *Monitors) remember(r meta.MonitorRow, problem string) {
 	m.problemMu.Lock()
+	defer m.problemMu.Unlock()
 	if m.problems == nil {
 		m.problems = map[int64]cachedProblem{}
 	}
-	m.problems[r.ID] = cachedProblem{def: def, problem: problem}
-	m.problemMu.Unlock()
-	return problem
+	m.problems[r.ID] = cachedProblem{def: definitionKey(r), problem: problem}
+}
+
+// forget drops cached results for monitors not in keep (nil: only id).
+func (m *Monitors) forget(id int64, keep map[int64]bool) {
+	m.problemMu.Lock()
+	defer m.problemMu.Unlock()
+	if keep == nil {
+		delete(m.problems, id)
+		return
+	}
+	for k := range m.problems {
+		if !keep[k] {
+			delete(m.problems, k)
+		}
+	}
+}
+
+// definitionKey is everything spec.Compile looks at: a change to any of it
+// may change whether the row compiles.
+func definitionKey(r meta.MonitorRow) string {
+	b, _ := json.Marshal([]any{r.UID, r.Name, r.Type, r.Query, string(r.Options), r.Message, r.Tags})
+	return string(b)
 }
 
 // Register mounts the endpoints on mux.
@@ -211,7 +238,9 @@ func (m *Monitors) list(w http.ResponseWriter, r *http.Request) {
 	now := m.Clock.Now()
 	tag, status, name := q.Get("tag"), q.Get("status"), strings.ToLower(q.Get("q"))
 	out := []monitorJSON{}
+	ids := map[int64]bool{}
 	for _, row := range rows {
+		ids[row.ID] = true
 		// The cheap filters first, so a filtered list compiles only what it
 		// returns.
 		if (tag != "" && !slices.Contains(row.Tags, tag)) ||
@@ -219,16 +248,12 @@ func (m *Monitors) list(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		j := toMonitorJSON(row, byMonitor[row.ID], now, m.problemOf(row))
-		switch {
-		case tag != "" && !slices.Contains(j.Tags, tag):
-			continue
-		case status != "" && j.Groups[status] == 0:
-			continue
-		case name != "" && !strings.Contains(strings.ToLower(j.Name), name):
+		if status != "" && j.Groups[status] == 0 {
 			continue
 		}
 		out = append(out, j)
 	}
+	m.forget(0, ids) // monitors deleted by anyone, not only through this API
 	writeJSON(w, http.StatusOK, map[string]any{"monitors": out})
 }
 
@@ -314,6 +339,7 @@ func (m *Monitors) create(w http.ResponseWriter, r *http.Request) {
 		m.fail(w, r, "creating a monitor", err)
 		return
 	}
+	m.remember(row, "") // readDefinition just compiled it
 	m.reload()
 	w.Header().Set("Location", "/api/v1/monitors/"+strconv.FormatInt(row.ID, 10))
 	writeJSON(w, http.StatusCreated, toMonitorJSON(row, nil, m.Clock.Now(), ""))
@@ -333,6 +359,7 @@ func (m *Monitors) update(w http.ResponseWriter, r *http.Request) {
 		m.fail(w, r, "updating a monitor", err)
 		return
 	}
+	m.remember(row, "") // readDefinition just compiled it
 	m.reload()
 	states, _ := m.Store.States(r.Context(), id)
 	writeJSON(w, http.StatusOK, toMonitorJSON(row, states, m.Clock.Now(), m.problemOf(row)))
@@ -347,6 +374,7 @@ func (m *Monitors) delete(w http.ResponseWriter, r *http.Request) {
 		m.fail(w, r, "deleting a monitor", err)
 		return
 	}
+	m.forget(id, nil)
 	m.reload()
 	w.WriteHeader(http.StatusNoContent)
 }
