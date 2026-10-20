@@ -22,8 +22,37 @@ export function muteLabel(mutedUntil: number | null, now: number): string | null
 export interface Segment {
   from: number;
   to: number;
-  /** null: before the first transition we know of, so not known. */
+  /** null: not known (before the group existed, or after it was forgotten). */
   status: Status | null;
+}
+
+interface Transition {
+  ts: number;
+  from: Status;
+  to: Status;
+}
+
+/**
+ * One life of a group over [lo, hi]: read backwards from `end`, the status at
+ * hi, through its transitions (newest first). With no transition to explain
+ * it, a state that began inside the life (`since`) was unknown before then.
+ */
+function life(transitions: Transition[], end: Status | null, lo: number, hi: number, since?: number): Segment[] {
+  const out: Segment[] = [];
+  let at = hi;
+  let status = end;
+  for (const t of [...transitions].sort((x, y) => y.ts - x.ts)) {
+    out.unshift({ from: t.ts, to: at, status });
+    at = t.ts;
+    status = t.from;
+  }
+  if (transitions.length === 0 && since !== undefined && since > lo && since < at) {
+    out.unshift({ from: since, to: at, status });
+    at = since;
+    status = null;
+  }
+  if (at > lo) out.unshift({ from: lo, to: at, status });
+  return out;
 }
 
 /**
@@ -31,16 +60,22 @@ export interface Segment {
  * state.
  *
  * Read backwards from now: a group's status at the end is its current state,
- * and each transition (newest first) says what it was before. Before the
- * oldest transition in range the status is the oldest one's `from`, when we
- * have it. A group whose state began inside the range (`since`) with no
- * transition to explain it is unknown before then: it was created, or reset by
- * a query change, and what came before is not this monitor's answer. The
- * same goes for everything before a `reset` event: the states were cleared
- * because they answered a different query.
+ * and each transition (newest first) says what it was before. Two events end
+ * what is known:
+ *
+ * - `reset` (the query changed): every group's earlier states answered a
+ *   different query, so the timeline is unknown before it.
+ * - `group_expired` (forgotten after a day without data): that group's life
+ *   ends there. Before it, the status is read back from the transitions
+ *   before it; after it, unknown until the group is seen again (a later
+ *   state's `since`, or a later transition).
+ *
+ * A state that began inside the range with no transition to explain it is
+ * unknown before then: the group was created, and what came before is not
+ * this monitor's answer.
  *
  * Groups appear in `states` order (worst first), then any group known only
- * from events (expired since).
+ * from its transitions.
  */
 export function statusTimeline(
   events: readonly MonitorEvent[],
@@ -48,45 +83,42 @@ export function statusTimeline(
   from: number,
   to: number,
 ): { group: string; segments: Segment[] }[] {
+  const ts = (e: MonitorEvent) => Date.parse(e.ts) / 1000;
   let start = from;
+  for (const e of events) if (e.kind === "reset" && ts(e) > start && ts(e) <= to) start = ts(e);
+  const transitions = new Map<string, Transition[]>();
+  const expired = new Map<string, number>();
   for (const e of events) {
-    const ts = Date.parse(e.ts) / 1000;
-    if (e.kind === "reset" && ts > start && ts <= to) start = ts;
-  }
-  const transitions = new Map<string, { ts: number; from: Status; to: Status }[]>();
-  for (const e of events) {
-    if (e.kind !== "transition" || !e.group || !e.from || !e.to) continue;
-    const ts = Date.parse(e.ts) / 1000;
-    if (ts < start || ts > to) continue;
+    const t = ts(e);
+    if (!e.group || t < start || t > to) continue;
+    if (e.kind === "group_expired") expired.set(e.group, Math.max(expired.get(e.group) ?? -Infinity, t));
+    if (e.kind !== "transition" || !e.from || !e.to) continue;
     const list = transitions.get(e.group) ?? [];
-    list.push({ ts, from: e.from, to: e.to });
+    list.push({ ts: t, from: e.from, to: e.to });
     transitions.set(e.group, list);
   }
   const groups = [...states.map((s) => s.group), ...[...transitions.keys()].filter((g) => !states.some((s) => s.group === g)).sort()];
   return groups.map((group) => {
     const state = states.find((s) => s.group === group);
-    const ts = (transitions.get(group) ?? []).sort((a, b) => b.ts - a.ts); // newest first
+    const all = transitions.get(group) ?? [];
+    const since = state ? Date.parse(state.since) / 1000 : undefined;
+    const exp = expired.get(group);
+    const newestTo = (ts: Transition[]) => [...ts].sort((x, y) => y.ts - x.ts)[0]?.to ?? null;
     const segments: Segment[] = [];
-    let end = to;
-    let status: Status | null = state?.status ?? ts[0]?.to ?? null;
-    for (const t of ts) {
-      segments.unshift({ from: t.ts, to: end, status });
-      end = t.ts;
-      status = t.from;
+    if (start > from) segments.push({ from, to: start, status: null });
+    if (exp !== undefined) {
+      const before = all.filter((t) => t.ts <= exp);
+      const after = all.filter((t) => t.ts > exp);
+      // Before expiry: the status it was forgotten in is the last transition's.
+      segments.push(...life(before, newestTo(before), start, exp));
+      const end = state?.status ?? newestTo(after);
+      // After it, unknown until seen again: a transition, or the state's since.
+      const seen = after.length ? Math.min(...after.map((t) => t.ts)) : since !== undefined && since > exp ? since : to;
+      if (seen > exp) segments.push({ from: exp, to: seen, status: null });
+      if (seen < to) segments.push(...life(after, end, seen, to, since));
+    } else {
+      segments.push(...life(all, state?.status ?? newestTo(all), start, to, since));
     }
-    // Before the oldest transition: its `from`, unless the state began after
-    // the range did and nothing explains what came before.
-    const since = state ? Date.parse(state.since) / 1000 : NaN;
-    if (ts.length === 0 && Number.isFinite(since) && since > start) {
-      segments.unshift({ from: since, to: end, status });
-      end = since;
-      status = null;
-    }
-    if (end > start) {
-      segments.unshift({ from: start, to: end, status });
-      end = start;
-    }
-    if (end > from) segments.unshift({ from, to: end, status: null });
     return { group, segments: segments.filter((s) => s.to > s.from) };
   });
 }

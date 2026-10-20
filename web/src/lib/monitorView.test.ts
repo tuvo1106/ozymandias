@@ -75,3 +75,36 @@ describe("describeEvent", () => {
     expect(e("something_new", { text: "x" })).toBe("something_new: x");
   });
 });
+
+describe("statusTimeline and expiry", () => {
+  const expiredAt = (ts: number, group: string) => ({ id: ts + 0.5, ts: iso(ts), kind: "group_expired", monitor_id: 1, group, value: null }) as MonitorEvent;
+
+  // Forgotten at 600: what it was before is read back; after, it is unknown.
+  it("ends a group's life at its expiry", () => {
+    const out = statusTimeline([tr(300, "q:gone", "OK", "NO_DATA"), expiredAt(600, "q:gone")], [], 0, 1000);
+    expect(out[0]!.segments).toEqual([
+      { from: 0, to: 300, status: "OK" },
+      { from: 300, to: 600, status: "NO_DATA" },
+      { from: 600, to: 1000, status: null },
+    ]);
+  });
+
+  it("starts the group's new life where it was seen again", () => {
+    const out = statusTimeline([tr(300, "q:x", "OK", "NO_DATA"), expiredAt(600, "q:x")], [st("q:x", "OK", 800)], 0, 1000);
+    expect(out[0]!.segments).toEqual([
+      { from: 0, to: 300, status: "OK" },
+      { from: 300, to: 600, status: "NO_DATA" },
+      { from: 600, to: 800, status: null },
+      { from: 800, to: 1000, status: "OK" },
+    ]);
+  });
+
+  it("reads transitions after the expiry into the new life", () => {
+    const out = statusTimeline([expiredAt(200, "q:x"), tr(700, "q:x", "OK", "ALERT")], [st("q:x", "ALERT", 700)], 0, 1000);
+    expect(out[0]!.segments).toEqual([
+      { from: 0, to: 200, status: null },
+      { from: 200, to: 700, status: null },
+      { from: 700, to: 1000, status: "ALERT" },
+    ]);
+  });
+});

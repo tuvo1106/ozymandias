@@ -291,10 +291,26 @@ export function TimeseriesChart({ data, labels, xRange, height, syncKey, annotat
     plotRef.current?.setData(data as uPlot.AlignedData, true);
   }, [data, xRange]);
 
-  // New annotations: rescale (yInclude may have changed) and redraw.
+  // New annotations. Only a change to the values the y axis must include
+  // needs a rescale (setData); new markers or bands only need a redraw, and
+  // the first run is the chart just built, which has drawn them already.
+  const yKey = JSON.stringify(annotations?.yInclude ?? []);
+  const drawnY = useRef(yKey);
+  const firstAnnotations = useRef(true);
   useEffect(() => {
-    plotRef.current?.setData(dataRef.current as uPlot.AlignedData, true);
-  }, [annotations]);
+    if (firstAnnotations.current) {
+      firstAnnotations.current = false;
+      return;
+    }
+    const plot = plotRef.current;
+    if (!plot) return;
+    if (drawnY.current !== yKey) {
+      drawnY.current = yKey;
+      plot.setData(dataRef.current as uPlot.AlignedData, true);
+    } else {
+      plot.redraw(false);
+    }
+  }, [annotations, yKey]);
 
   return <div ref={containerRef} className="h-full w-full" data-testid="timeseries-chart" />;
 }

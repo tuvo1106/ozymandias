@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"time"
@@ -137,7 +138,7 @@ func (s *Scheduler) Backtest(ctx context.Context, c *spec.Compiled, id int64, fr
 	}
 	fetchFrom, _ := eval.Window(c, first)
 	_, fetchTo := eval.Window(c, to)
-	res := Backtest{From: from, To: to, Events: []BacktestEvent{}, Final: map[string]string{}}
+	res := Backtest{From: from, To: to, Events: []BacktestEvent{}, Final: map[string]string{}, Series: []BacktestSeries{}}
 	if !fetchTo.After(fetchFrom) {
 		return res, nil
 	}
@@ -145,78 +146,116 @@ func (s *Scheduler) Backtest(ctx context.Context, c *spec.Compiled, id int64, fr
 	if err != nil {
 		return Backtest{}, err
 	}
+	// Two passes over the same replay. The first finds the events and every
+	// group; the second records lines for the MaxBacktestSeries groups shown.
+	// One pass recording every group's line before choosing was groups x
+	// ticks of memory per request (a thousand groups over twenty thousand
+	// ticks is hundreds of megabytes); this is twice the reduce work instead,
+	// bounded by the same tick limit.
+	tags := map[string]spec.Group{}
+	states, ticks, err := replay(ctx, c, data, first, to, func(_ int, now time.Time, st groupStep) {
+		if _, ok := tags[st.Key]; !ok {
+			tags[st.Key] = st.Group
+		}
+		if st.Res.Changed() || st.Res.Notify != state.NotifyNone {
+			res.Events = append(res.Events, BacktestEvent{Ts: now, Group: st.Key, From: string(st.Res.From),
+				To: string(st.Res.To), Value: notify.ValuePtr(st.Value), Notify: st.Res.Notify != state.NotifyNone,
+				Reason: string(st.Res.Notify)})
+		}
+	})
+	if err != nil {
+		return Backtest{}, err
+	}
+	res.Evaluations = ticks
+	for k, t := range states {
+		res.Final[k] = string(t.State.Status)
+	}
+	shown, omitted := pickSeries(slices.Collect(maps.Keys(tags)), res.Events)
+	res.SeriesOmitted = omitted
+	// Every tick a group was not stepped (before its first value, or skipped
+	// by require_full_window) stays NaN: a null, one point per evaluation.
+	values := make(map[string][]float64, len(shown))
+	for _, k := range shown {
+		v := make([]float64, res.Evaluations)
+		for i := range v {
+			v[i] = math.NaN()
+		}
+		values[k] = v
+	}
+	if len(shown) > 0 {
+		if _, _, err := replay(ctx, c, data, first, to, func(i int, _ time.Time, st groupStep) {
+			if v, ok := values[st.Key]; ok {
+				v[i] = st.Value
+			}
+		}); err != nil {
+			return Backtest{}, err
+		}
+	}
+	res.Series = make([]BacktestSeries, 0, len(shown))
+	for _, k := range shown {
+		line := BacktestSeries{Group: k, Tags: tags[k], Points: make([]TickValue, res.Evaluations)}
+		for i, v := range values[k] {
+			line.Points[i] = TickValue{Ts: first.Add(time.Duration(i) * c.Interval), Value: v}
+		}
+		res.Series = append(res.Series, line)
+	}
+	return res, nil
+}
+
+// replay steps c through every tick from first to to, as the scheduler would,
+// calling each with the tick's index and every group step, and returns the
+// final states and how many ticks there were. Deterministic: two replays over the same data step the same
+// groups the same way, which is what lets Backtest run it twice.
+func replay(ctx context.Context, c *spec.Compiled, data eval.Data, first, to time.Time,
+	each func(i int, now time.Time, st groupStep)) (map[string]tracked, int, error) {
 	states := map[string]tracked{}
-	lines := map[string]*BacktestSeries{}
+	i := 0
 	for now := first; !now.After(to); now = now.Add(c.Interval) {
 		if err := ctx.Err(); err != nil {
-			return Backtest{}, err
+			return nil, 0, err
 		}
 		wf, wt := eval.Window(c, now)
 		vals := eval.Reduce(c, data, wf, wt)
 		for _, st := range advance(c, states, vals, data.AbsentIsZero, now, wt, false) {
-			line := lines[st.Key]
-			if line == nil {
-				line = &BacktestSeries{Group: st.Key, Tags: st.Group}
-				// Ticks before the group's first value, as nulls, so every
-				// line has one point per evaluation.
-				for t := first; t.Before(now); t = t.Add(c.Interval) {
-					line.Points = append(line.Points, TickValue{Ts: t, Value: math.NaN()})
-				}
-				lines[st.Key] = line
-			}
-			line.Points = append(line.Points, TickValue{Ts: now, Value: st.Value})
+			each(i, now, st)
 			if st.Deleted {
 				delete(states, st.Key)
 				continue
 			}
 			states[st.Key] = tracked{State: st.Next, Group: st.Group}
-			if st.Res.Changed() || st.Res.Notify != state.NotifyNone {
-				res.Events = append(res.Events, BacktestEvent{Ts: now, Group: st.Key, From: string(st.Res.From),
-					To: string(st.Res.To), Value: notify.ValuePtr(st.Value), Notify: st.Res.Notify != state.NotifyNone,
-					Reason: string(st.Res.Notify)})
-			}
 		}
-		// A known group a tick did not step (skipped by require_full_window)
-		// gets a null, so its points stay one per evaluation.
-		for _, line := range lines {
-			if n := len(line.Points); n == 0 || !line.Points[n-1].Ts.Equal(now) {
-				line.Points = append(line.Points, TickValue{Ts: now, Value: math.NaN()})
-			}
-		}
-		res.Evaluations++
+		i++
 	}
-	for k, t := range states {
-		res.Final[k] = string(t.State.Status)
-	}
-	res.Series, res.SeriesOmitted = pickSeries(lines, res.Events)
-	return res, nil
+	return states, i, nil
 }
 
-// pickSeries keeps MaxBacktestSeries lines: groups with events first (in the
-// order of their first event, which is the order a person reads the markers
-// in), then the rest by key.
-func pickSeries(lines map[string]*BacktestSeries, events []BacktestEvent) ([]BacktestSeries, int) {
-	order := make([]string, 0, len(lines))
+// pickSeries chooses the MaxBacktestSeries groups whose lines are returned:
+// groups with events first (in the order of their first event, which is the
+// order a person reads the markers in), then the rest by key. It returns them
+// and how many were left out.
+func pickSeries(keys []string, events []BacktestEvent) ([]string, int) {
+	known := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		known[k] = true
+	}
+	order := make([]string, 0, len(keys))
 	seen := map[string]bool{}
 	for _, e := range events {
-		if !seen[e.Group] && lines[e.Group] != nil {
+		if !seen[e.Group] && known[e.Group] {
 			seen[e.Group] = true
 			order = append(order, e.Group)
 		}
 	}
-	rest := make([]string, 0, len(lines))
-	for k := range lines {
+	rest := make([]string, 0, len(keys))
+	for _, k := range keys {
 		if !seen[k] {
 			rest = append(rest, k)
 		}
 	}
 	slices.Sort(rest)
 	order = append(order, rest...)
-	out := make([]BacktestSeries, 0, min(len(order), MaxBacktestSeries))
-	for _, k := range order[:min(len(order), MaxBacktestSeries)] {
-		out = append(out, *lines[k])
-	}
-	return out, len(order) - len(out)
+	n := min(len(order), MaxBacktestSeries)
+	return order[:n], len(order) - n
 }
 
 // ErrNoMentions is returned by a test notification for a message that names

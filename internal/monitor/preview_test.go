@@ -14,20 +14,19 @@ import (
 // TestPickSeries: groups with events come first, in the order of their
 // first event, then the rest by key, up to the bound; the rest are counted.
 func TestPickSeries(t *testing.T) {
-	lines := map[string]*BacktestSeries{}
+	var keys []string
 	for i := range MaxBacktestSeries + 5 {
-		k := fmt.Sprintf("g%02d", i)
-		lines[k] = &BacktestSeries{Group: k}
+		keys = append(keys, fmt.Sprintf("g%02d", MaxBacktestSeries+4-i)) // any order in
 	}
 	events := []BacktestEvent{{Group: "g24"}, {Group: "g03"}, {Group: "g24"}, {Group: "gone"}}
-	got, omitted := pickSeries(lines, events)
+	got, omitted := pickSeries(keys, events)
 	if len(got) != MaxBacktestSeries || omitted != 5 {
 		t.Fatalf("%d lines, %d omitted", len(got), omitted)
 	}
-	if got[0].Group != "g24" || got[1].Group != "g03" || got[2].Group != "g00" || got[3].Group != "g01" {
-		t.Fatalf("order %s %s %s %s", got[0].Group, got[1].Group, got[2].Group, got[3].Group)
+	if got[0] != "g24" || got[1] != "g03" || got[2] != "g00" || got[3] != "g01" {
+		t.Fatalf("order %v", got[:4])
 	}
-	if got, omitted := pickSeries(map[string]*BacktestSeries{}, nil); len(got) != 0 || omitted != 0 || got == nil {
+	if got, omitted := pickSeries(nil, nil); len(got) != 0 || omitted != 0 {
 		t.Fatalf("empty: %v %d", got, omitted)
 	}
 }
@@ -113,5 +112,41 @@ func TestBacktestLineHasNullsWhereAWindowWasSkipped(t *testing.T) {
 	}
 	if nulls == 0 {
 		t.Fatal("no null where the window had a gap")
+	}
+}
+
+// TestBacktestKeepsTheGroupsWithEvents: past MaxBacktestSeries groups, the
+// one that alerted is kept (and first) even though it sorts last, and its
+// line is recorded in full.
+func TestBacktestKeepsTheGroupsWithEvents(t *testing.T) {
+	h := newHarness(t)
+	m := backlog()
+	m.Query = "last(last_1m):avg:queue.depth{*} by {q} > 20"
+	for i := range MaxBacktestSeries + 3 {
+		h.points("queue.depth", []string{fmt.Sprintf("q:a%02d", i)}, 0, 10*time.Minute, func(time.Duration) float64 { return 1 })
+	}
+	h.points("queue.depth", []string{"q:zz"}, 0, 10*time.Minute, func(off time.Duration) float64 {
+		if off >= 5*time.Minute {
+			return 50
+		}
+		return 1
+	})
+	c, err := spec.Compile(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bt, err := h.s.Backtest(context.Background(), c, 1, t0, t0.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bt.Series) != MaxBacktestSeries || bt.SeriesOmitted != 4 {
+		t.Fatalf("%d lines, %d omitted", len(bt.Series), bt.SeriesOmitted)
+	}
+	z := bt.Series[0]
+	if z.Group != "q:zz" || len(z.Points) != bt.Evaluations || z.Points[len(z.Points)-1].Value != 50 {
+		t.Fatalf("first line %s, %d points, last %v", z.Group, len(z.Points), z.Points[len(z.Points)-1])
+	}
+	if bt.Series[1].Group != "q:a00" || bt.Series[1].Points[len(z.Points)-1].Value != 1 {
+		t.Fatalf("second line %+v", bt.Series[1].Group)
 	}
 }

@@ -35,9 +35,11 @@ export function NewMonitorPage() {
 /** The page for editing a stored monitor. */
 export function EditMonitorPage() {
   const id = Number(useParams().id);
-  const m = useMonitor(Number.isInteger(id) ? id : undefined);
+  const m = useMonitor(Number.isInteger(id) ? id : undefined, false);
   if (!Number.isInteger(id)) return <ErrorText>Not a monitor id.</ErrorText>;
-  if (m.error) return <ErrorText>{m.error.message}</ErrorText>;
+  // Only with nothing to show: the draft lives in the editor below, and
+  // unmounting it for an error would throw the draft away.
+  if (m.error && !m.data) return <ErrorText>{m.error.message}</ErrorText>;
   if (!m.data) return <p className="text-sm text-zinc-500">Loading…</p>;
   // Keyed by id: opening another monitor starts a fresh draft.
   return <MonitorEditor key={id} initial={formOf(m.data)} id={id} provisioned={m.data.provisioned} />;

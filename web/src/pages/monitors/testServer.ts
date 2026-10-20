@@ -4,6 +4,9 @@
  */
 import { vi } from "vitest";
 
+/** A reply body that never answers: a request still in flight. */
+export const HANG = Symbol("hang");
+
 /** One canned answer. A function gets the request body. */
 export type Reply = { status?: number; body: unknown } | ((body: unknown, url: URL) => { status?: number; body: unknown });
 
@@ -27,6 +30,7 @@ export function fakeServer(replies: Record<string, Reply>): Call[] {
       calls.push({ method, path: url.pathname, search: url.searchParams, body });
       const r = replies[`${method} ${url.pathname}`];
       const reply = typeof r === "function" ? r(body, url) : (r ?? { status: 404, body: { error: `no route for ${method} ${url.pathname}` } });
+      if (reply.body === HANG) return new Promise<Response>(() => {});
       const status = reply.status ?? 200;
       return new Response(status === 204 ? null : JSON.stringify(reply.body), { status });
     }),

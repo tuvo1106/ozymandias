@@ -46,13 +46,16 @@ export function useMonitorList(filter: MonitorFilter): UseQueryResult<StoredMoni
   });
 }
 
-/** One monitor. */
-export function useMonitor(id: number | undefined): UseQueryResult<StoredMonitor> {
+/**
+ * One monitor. `poll` is off for the editor: it reads the monitor once to
+ * start a draft, and a refetch could only replace what is being edited.
+ */
+export function useMonitor(id: number | undefined, poll = true): UseQueryResult<StoredMonitor> {
   return useQuery({
     queryKey: [MONITORS_KEY, "one", id],
     queryFn: ({ signal }) => fetchMonitor(id as number, fetch, signal),
     enabled: id !== undefined,
-    refetchInterval: MONITOR_POLL_MS,
+    refetchInterval: poll ? MONITOR_POLL_MS : false,
   });
 }
 
@@ -72,7 +75,6 @@ export function useMonitorStates(id: number): UseQueryResult<GroupState[]> {
 export function useMonitorEvents(
   filter: Omit<EventFilter, "from" | "to">,
   sinceSeconds: number,
-  enabled = true,
 ): UseQueryResult<MonitorEvent[]> {
   return useQuery({
     queryKey: [MONITORS_KEY, "events", filter, sinceSeconds],
@@ -80,7 +82,6 @@ export function useMonitorEvents(
       const now = Date.now() / 1000;
       return fetchEvents({ ...filter, from: now - sinceSeconds, to: now }, fetch, signal);
     },
-    enabled,
     refetchInterval: MONITOR_POLL_MS,
   });
 }

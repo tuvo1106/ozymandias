@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { routes } from "../../app/routes";
 import type { ChartAnnotations } from "../../lib/annotations";
 import { STATUS_COLOR } from "../../lib/monitorChart";
-import { backtestAnswer, fakeServer, monitor, validAnswer, type Reply } from "./testServer";
+import { backtestAnswer, fakeServer, HANG, monitor, validAnswer, type Reply } from "./testServer";
 
 const drawn: { annotations?: ChartAnnotations }[] = [];
 vi.mock("../../charts/TimeseriesChart", () => ({
@@ -29,7 +29,10 @@ function renderAt(path: string, replies: Record<string, Reply> = {}) {
     "GET /api/v1/monitors/status": { body: status },
     "GET /api/v1/monitors/1": { body: monitor() },
     "GET /api/v1/monitors/1/states": { body: { states: [state] } },
-    "GET /api/v1/events": { body: { events } },
+    "GET /api/v1/events": (_b, url) => {
+      const kinds = url.searchParams.get("kind")?.split(",");
+      return { body: { events: kinds ? events.filter((e) => kinds.includes(e.kind)) : events } };
+    },
     "POST /api/v1/monitors/validate": { body: validAnswer },
     "POST /api/v1/monitors/backtest": { body: backtestAnswer },
     ...replies,
@@ -95,9 +98,14 @@ describe("MonitorPage", () => {
     });
     await user.click(await screen.findByRole("button", { name: "Delete" }));
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    const before = calls.length;
     await user.click(screen.getByRole("button", { name: "Delete, with its history" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/monitors"));
     expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+    // Nothing asks about the deleted monitor again: each would be a 404.
+    await screen.findByRole("heading", { name: "Monitors" });
+    const after = calls.slice(before).filter((c) => c.method === "GET" && /\/monitors\/1(\/|$)/.test(c.path));
+    expect(after).toEqual([]);
   });
 
   it("offers no delete for a provisioned monitor", async () => {
@@ -119,5 +127,70 @@ describe("MonitorPage", () => {
     await user.click(await screen.findByRole("button", { name: "Mute" }));
     expect(await screen.findByText(/muted until unmuted/)).toBeInTheDocument();
     expect(calls.find((c) => c.path.endsWith("/mute"))!.body).toEqual({});
+  });
+
+  // A failed refetch keeps the page: it is read during incidents.
+  it("keeps showing the monitor when a refresh fails", async () => {
+    const user = userEvent.setup();
+    let fail = false;
+    renderAt("/monitors/1", {
+      "GET /api/v1/monitors/1": () => (fail ? { status: 500, body: { error: "database is locked" } } : { body: monitor() }),
+      "POST /api/v1/monitors/1/mute": () => {
+        fail = true;
+        return { body: monitor() };
+      },
+    });
+    await user.click(await screen.findByRole("button", { name: "Mute 1h" }));
+    expect(await screen.findByText(/refreshing failed: database is locked/, {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Job queue is backing up" })).toBeInTheDocument();
+  });
+
+  it("draws no markers, and says so, when the recorded history is not loaded", async () => {
+    renderAt("/monitors/1", { "GET /api/v1/events": { status: 500, body: { error: "boom" } } });
+    expect(await screen.findByText(/the recorded transitions are not loaded/)).toBeInTheDocument();
+    expect(drawn.at(-1)!.annotations!.markers).toEqual([]);
+  });
+
+  it("asks for the notification log on its own", async () => {
+    const { calls } = renderAt("/monitors/1");
+    await screen.findByRole("region", { name: "Notification log" });
+    await waitFor(() => expect(calls.some((c) => c.path === "/api/v1/events" && c.search.get("kind") === "notify_ok,notify_failed,test_notification")).toBe(true));
+  });
+
+  // An edit elsewhere changes the definition under a poll: the previous
+  // definition's levels and line must not be drawn while the new answers are
+  // in flight (the queries keep their previous answer as a placeholder).
+  it("does not draw the previous definition's answers for a new one", async () => {
+    const user = userEvent.setup();
+    let query = monitor().query;
+    renderAt("/monitors/1", {
+      "GET /api/v1/monitors/1": () => ({ body: monitor({ query }) }),
+      "POST /api/v1/monitors/1/mute": () => {
+        query = "avg(last_5m):avg:other{*} > 1";
+        return { body: monitor({ query }) };
+      },
+      "POST /api/v1/monitors/validate": (b) => ((b as { query: string }).query.includes("other") ? { body: HANG } : { body: validAnswer }),
+    });
+    await screen.findByTestId("chart");
+    await user.click(screen.getByRole("button", { name: "Mute 1h" }));
+    await screen.findByText("avg(last_5m):avg:other{*} > 1");
+    await waitFor(() => expect(screen.queryByTestId("chart")).toBeNull());
+  });
+
+  it("does not draw the previous definition's line while the new one is replayed", async () => {
+    const user = userEvent.setup();
+    let query = monitor().query;
+    renderAt("/monitors/1", {
+      "GET /api/v1/monitors/1": () => ({ body: monitor({ query }) }),
+      "POST /api/v1/monitors/1/mute": () => {
+        query = "avg(last_5m):avg:other{*} > 1";
+        return { body: monitor({ query }) };
+      },
+      "POST /api/v1/monitors/backtest": (b) => ((b as { monitor: { query: string } }).monitor.query.includes("other") ? { body: HANG } : { body: backtestAnswer }),
+    });
+    await screen.findByTestId("chart");
+    await user.click(screen.getByRole("button", { name: "Mute 1h" }));
+    await screen.findByText("avg(last_5m):avg:other{*} > 1");
+    await waitFor(() => expect(screen.queryByTestId("chart")).toBeNull());
   });
 });

@@ -39,18 +39,29 @@ const DAY = 86_400;
 /** The detail page for /monitors/:id. */
 export function MonitorPage() {
   const id = Number(useParams().id);
-  const m = useMonitor(Number.isInteger(id) ? id : undefined);
+  // Set by a delete: the page stops asking about a monitor that is gone (each
+  // question would be a 404 flashed on screen while the list route loads).
+  const [deleted, setDeleted] = useState<number | null>(null);
+  const m = useMonitor(Number.isInteger(id) && deleted !== id ? id : undefined);
   if (!Number.isInteger(id)) return <ErrorText>Not a monitor id.</ErrorText>;
-  if (m.error) return <ErrorText>{m.error.message}</ErrorText>;
+  if (deleted === id) return <p className="text-sm text-zinc-500">Deleted.</p>;
+  // A failed refetch keeps the last answer on screen, with a note: this page
+  // is read during incidents, and a blink of 5xx must not blank it.
+  if (m.error && !m.data) return <ErrorText>{m.error.message}</ErrorText>;
   if (!m.data) return <p className="text-sm text-zinc-500">Loading…</p>;
   // "Now" is when the monitor was fetched: render stays a function of the
   // data, and it refetches every 15 seconds.
-  return <MonitorDetail m={m.data} now={m.dataUpdatedAt / 1000} />;
+  return (
+    <>
+      {m.error ? <ErrorText>Showing the last answer; refreshing failed: {m.error.message}</ErrorText> : null}
+      <MonitorDetail m={m.data} now={m.dataUpdatedAt / 1000} onDeleted={() => setDeleted(id)} />
+    </>
+  );
 }
 
 const time = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
 
-function Actions({ m, now }: { m: StoredMonitor; now: number }) {
+function Actions({ m, now, onDeleted }: { m: StoredMonitor; now: number; onDeleted: () => void }) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
@@ -102,10 +113,23 @@ function Actions({ m, now }: { m: StoredMonitor; now: number }) {
         {m.provisioned ? null : confirmDelete ? (
           <>
             <button type="button" className={`${button} text-red-700 dark:text-red-400`} disabled={busy}
-              onClick={() => void run(async () => {
-                await deleteMonitor(m.id);
+              onClick={() => void (async () => {
+                setBusy(true);
+                setError(null);
+                try {
+                  await deleteMonitor(m.id);
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : String(e));
+                  setBusy(false);
+                  return;
+                }
+                // Unmount this monitor's queries first, then drop them: an
+                // invalidation would refetch them, and each is now a 404.
+                onDeleted();
+                client.removeQueries({ predicate: (q) => q.queryKey[0] === MONITORS_KEY && q.queryKey.includes(m.id) });
+                void client.invalidateQueries({ queryKey: [MONITORS_KEY, "list"] });
                 navigate("/monitors");
-              })}>
+              })()}>
               Delete, with its history
             </button>
             <button type="button" className={button} onClick={() => setConfirmDelete(false)}>
@@ -132,9 +156,12 @@ function Actions({ m, now }: { m: StoredMonitor; now: number }) {
   );
 }
 
-function MonitorDetail({ m, now }: { m: StoredMonitor; now: number }) {
+function MonitorDetail({ m, now, onDeleted }: { m: StoredMonitor; now: number; onDeleted: () => void }) {
   const states = useMonitorStates(m.id);
   const events = useMonitorEvents({ monitor_id: m.id, limit: 1000 }, DAY);
+  // Its own question: from the newest thousand events of every kind, a
+  // flapping monitor's transitions would crowd the deliveries out.
+  const deliveries = useMonitorEvents({ monitor_id: m.id, kind: NOTIFICATION_KINDS, limit: 1000 }, DAY);
   const def = useMemo(() => {
     const r = definitionOf(formOf(m));
     return r.ok ? r.definition : undefined;
@@ -143,13 +170,19 @@ function MonitorDetail({ m, now }: { m: StoredMonitor; now: number }) {
   // for the line. Not for a monitor that is not running: its definition is
   // what does not compile.
   const validation = useValidation(m.problem ? undefined : def);
-  const valid = validation.data?.valid === true ? validation.data : undefined;
+  // A placeholder answer is about the previous definition (or the previous
+  // monitor, after back/forward between two): not this one's levels.
+  const valid = validation.data?.valid === true && !validation.isPlaceholderData ? validation.data : undefined;
   const backtest = useBacktest(valid ? def : undefined, m.id);
+  const replayed = backtest.isPlaceholderData ? undefined : backtest.data;
   const timeline = useMemo(
     () => (states.data && events.data ? statusTimeline(events.data, states.data, now - DAY, now) : []),
     [states.data, events.data, now],
   );
-  const markers = useMemo(() => (events.data ? transitionMarkers(events.data) : undefined), [events.data]);
+  // Only what was recorded. Until the history arrives there are no markers,
+  // not the replay's own: those would show the two agreeing when nothing
+  // recorded has been read.
+  const markers = useMemo(() => (events.data ? transitionMarkers(events.data) : []), [events.data]);
   const muted = muteLabel(m.muted_until, now);
 
   return (
@@ -169,7 +202,7 @@ function MonitorDetail({ m, now }: { m: StoredMonitor; now: number }) {
           </div>
           {m.problem ? <ErrorText>Not running: {m.problem}</ErrorText> : null}
         </div>
-        <Actions m={m} now={now} />
+        <Actions m={m} now={now} onDeleted={onDeleted} />
       </header>
 
       <section aria-label="Groups" className="flex flex-col gap-2">
@@ -224,17 +257,18 @@ function MonitorDetail({ m, now }: { m: StoredMonitor; now: number }) {
         ) : null}
         {validation.data?.valid === false ? <ErrorText>{validation.data.errors.join("; ")}</ErrorText> : null}
         {backtest.error ? <ErrorText>{backtest.error.message}</ErrorText> : null}
-        {backtest.data && valid ? (
+        {replayed && valid ? (
           <>
-            <MonitorChart backtest={backtest.data} levels={valid.levels} evalWindow={valid.window} markers={markers} />
+            <MonitorChart backtest={replayed} levels={valid.levels} evalWindow={valid.window} markers={markers} />
             <p className="text-xs text-zinc-500">
-              The line is the last day replayed with today&apos;s data; the markers are the transitions that were recorded.
+              The line is the last day replayed with today&apos;s data;{" "}
+              {events.data ? "the markers are the transitions that were recorded." : "the recorded transitions are not loaded, so there are no markers."}
             </p>
           </>
         ) : null}
       </section>
 
-      <EventTable title="Notification log" events={events.data?.filter((e) => NOTIFICATION_KINDS.includes(e.kind))} error={events.error?.message} />
+      <EventTable title="Notification log" events={deliveries.data} error={deliveries.error?.message} />
       <EventTable title="History" events={events.data} error={events.error?.message} />
     </div>
   );
