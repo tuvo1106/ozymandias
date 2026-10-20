@@ -157,7 +157,8 @@ function drawOver(u: uPlot, a: ChartAnnotations | undefined) {
   ctx.restore();
 }
 
-function buildOptions(
+/** Exported for tests: the options a chart is built with. */
+export function buildOptions(
   labels: string[],
   dark: boolean,
   width: number,

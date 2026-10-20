@@ -91,6 +91,16 @@ export const routes: RouteObject[] = [
           { path: "*", element: <NotFound /> },
         ],
       },
+      {
+        path: "monitors",
+        children: [
+          { index: true, lazy: async () => ({ Component: (await import("../pages/monitors/MonitorsIndex")).MonitorsIndex }) },
+          { path: "new", lazy: async () => ({ Component: (await import("../pages/monitors/MonitorEditor")).NewMonitorPage }) },
+          { path: ":id/edit", lazy: async () => ({ Component: (await import("../pages/monitors/MonitorEditor")).EditMonitorPage }) },
+          { path: ":id", lazy: async () => ({ Component: (await import("../pages/monitors/MonitorPage")).MonitorPage }) },
+          { path: "*", element: <NotFound /> },
+        ],
+      },
       ...NAV_ITEMS.filter((item) => !item.live).map((item) => ({
         path: `${item.path.slice(1)}/*`,
         element: <ComingSoon />,
