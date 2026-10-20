@@ -7,6 +7,9 @@
  * "OK" there is worse than none.
  */
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import { useMemo } from "react";
+import type { Marker } from "./annotations";
+import { transitionMarkers } from "./monitorChart";
 import {
   backtestMonitor,
   fetchEvents,
@@ -80,6 +83,21 @@ export function useMonitorEvents(
     enabled,
     refetchInterval: MONITOR_POLL_MS,
   });
+}
+
+/**
+ * Markers for every monitor transition in a dashboard's window, for the
+ * events overlay. Keyed by the window the server evaluated (stable per
+ * answer), and only fetched while the overlay is on.
+ */
+export function useEventMarkers(xRange: [number, number] | undefined, enabled: boolean): Marker[] | undefined {
+  const q = useQuery({
+    queryKey: [MONITORS_KEY, "overlay", xRange],
+    queryFn: ({ signal }) => fetchEvents({ from: xRange![0], to: xRange![1], kind: ["transition"], limit: 5000 }, fetch, signal),
+    enabled: enabled && xRange !== undefined,
+    placeholderData: (prev) => prev,
+  });
+  return useMemo(() => (enabled && q.data ? transitionMarkers(q.data) : undefined), [enabled, q.data]);
 }
 
 /** The scheduler's health and the badge counts. */

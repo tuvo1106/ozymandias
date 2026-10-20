@@ -14,6 +14,7 @@
  * a constant here that tried to guess clipped the legend off every chart with
  * a warning above it. Each chart measures the box it was given instead.
  */
+import type { Marker } from "../../lib/annotations";
 import { useRef, type KeyboardEvent, type PointerEvent } from "react";
 import {
   gridArea,
@@ -55,6 +56,8 @@ export interface DashboardGridProps {
   hiddenWarnings?: ReadonlySet<string>;
   /** Present in the editor: makes every widget movable and resizable. */
   edit?: GridEditing;
+  /** Monitor transitions for the timeseries widgets, when the overlay is on. */
+  markers?: Marker[];
 }
 
 /** What the editor hands the grid. */
@@ -127,6 +130,7 @@ export function DashboardGrid({
   syncKey,
   hiddenWarnings,
   edit,
+  markers,
 }: DashboardGridProps) {
   const ordered = widgetsInReadingOrder(widgets);
   const gridRef = useRef<HTMLDivElement>(null);
@@ -159,6 +163,7 @@ export function DashboardGrid({
               syncKey={syncKey}
               sketch={widgetSketch(widget, sketches)}
               hiddenWarnings={hiddenWarnings}
+              markers={markers}
             />
           </div>
         );

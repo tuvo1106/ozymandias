@@ -23,6 +23,7 @@ import {
   type DashboardViewState,
 } from "../../lib/dashboardState";
 import { useDashboardData } from "../../lib/useDashboards";
+import { useEventMarkers } from "../../lib/useMonitors";
 import type { TimeRange } from "../../lib/timeRange";
 import { REFRESH_INTERVAL_MS } from "../../lib/useMetricsApi";
 import { TimeRangePicker } from "../metrics/TimeRangePicker";
@@ -80,9 +81,11 @@ export function DashboardView({
   // different number on every re-render and is what `react-hooks/purity`
   // objects to. Until the first answer lands there is no axis and no data to
   // put on one, so undefined is the honest value.
-  const xRange: [number, number] | undefined = data.range
-    ? [data.range.from, data.range.to]
-    : undefined;
+  const xRange: [number, number] | undefined = useMemo(
+    () => (data.range ? [data.range.from, data.range.to] : undefined),
+    [data.range],
+  );
+  const markers = useEventMarkers(xRange, state.events);
 
   return (
     <div className="flex flex-col gap-4">
@@ -102,6 +105,7 @@ export function DashboardView({
         dashboard={dashboard}
         state={state}
         onChange={update}
+        eventsToggle
       />
 
       {/* A failed *request* is the only thing that blanks the page: a failed
@@ -137,6 +141,7 @@ export function DashboardView({
             byWidget={data.byWidget}
             sketches={data.sketches}
             xRange={xRange}
+            markers={markers}
             syncKey={syncKey}
             hiddenWarnings={hidden}
           />
@@ -151,6 +156,8 @@ export interface DashboardControlsProps {
   dashboard: Dashboard;
   state: DashboardViewState;
   onChange: (patch: Partial<DashboardViewState>) => void;
+  /** Offer the monitor-events overlay (the view does; the editor does not draw it). */
+  eventsToggle?: boolean;
 }
 
 /**
@@ -162,6 +169,7 @@ export function DashboardControls({
   dashboard,
   state,
   onChange: update,
+  eventsToggle = false,
 }: DashboardControlsProps) {
   const metric = useMemo(
     () => firstMetric(dashboard.widgets) ?? "",
@@ -199,6 +207,19 @@ export function DashboardControls({
         />
         Auto-refresh every {REFRESH_INTERVAL_MS / 1000}s
       </label>
+      {eventsToggle ? (
+        <label
+          className="flex items-center gap-2 text-sm"
+          title="A vertical line on every timeseries where any monitor changed status in this window, coloured by the status it entered."
+        >
+          <input
+            type="checkbox"
+            checked={state.events}
+            onChange={(e) => update({ events: e.target.checked })}
+          />
+          Monitor events
+        </label>
+      ) : null}
     </div>
   );
 }
