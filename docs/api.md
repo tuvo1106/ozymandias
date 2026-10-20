@@ -915,11 +915,14 @@ and `to` (unix seconds), `kind` (comma-separated), `limit` (default 500, at most
 
 Checks a definition without saving it and dry-runs one evaluation at now:
 `{"valid": true, "query": <canonical>, "grouped": bool, "levels": {...},
-"mentions": [...], "groups": [{"group", "tags", "value", "status"}]}`, or
+"mentions": [...], "window": {"from", "to"}, "interval_s": n,
+"groups": [{"group", "tags", "value", "status"}]}`, or
 `{"valid": false, "errors": [...]}` — a `200` either way, because "here is why
 it is invalid" is this endpoint's successful answer. `levels` are the
 thresholds with every default applied, which is what the editor draws as
-bands. If the dry run's query fails, the answer is still `valid: true` with
+bands. `window` is the range (unix seconds) an evaluation at now reads: it ends
+`evaluation_delay_s` before now, aligned to the step, which is what the editor
+shades. If the dry run's query fails, the answer is still `valid: true` with
 `eval_error` saying why.
 
 ### `POST /api/v1/monitors/backtest`
@@ -928,7 +931,13 @@ bands. If the dry run's query fails, the answer is still `valid: true` with
 <unix s>}` (default: the last 24 hours). Replays the monitor over the range on a
 simulated clock — the same ticks, window, reduction and state machine the
 scheduler uses — and returns `{"evaluations", "events": [{"ts", "group",
-"from", "to", "value", "notify", "reason"}], "final": {group: status}}`. Pass the
+"from", "to", "value", "notify", "reason"}], "final": {group: status},
+"series": [{"group", "tags", "points": [[ts, value|null], ...]}],
+"series_omitted": n}`. `series` is the value each evaluation compared with the
+thresholds, one point per evaluation (null when the group had no value): what
+the evaluator saw after the window's reduction, not the raw query, so the line
+crosses a band exactly where an event is. At most 20 groups, those with events
+first; `series_omitted` counts the rest (the events cover every group). Pass the
 saved monitor's `id` and the ticks fall at the same phase as the live ones.
 At most 7 days and 20,000 evaluations.
 

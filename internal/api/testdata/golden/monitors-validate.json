@@ -11,6 +11,7 @@ OK
       "value": 12.5
     }
   ],
+  "interval_s": 30,
   "levels": {
     "critical": 20,
     "critical_recovery": 15,
@@ -22,5 +23,9 @@ OK
     "hook"
   ],
   "query": "avg(last_5m):avg:jobs.queue.depth{service:shop-api} by {queue} \u003e 20",
-  "valid": true
+  "valid": true,
+  "window": {
+    "from": 1789999730,
+    "to": 1790000030
+  }
 }

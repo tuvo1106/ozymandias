@@ -2,9 +2,11 @@ package monitor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/meta"
@@ -18,6 +20,10 @@ import (
 const (
 	MaxBacktestRange = 7 * 24 * time.Hour
 	MaxBacktestTicks = 20_000
+	// MaxBacktestSeries is how many groups' values a backtest returns. The
+	// events cover every group; the lines are for a person to look at, and
+	// past a few dozen they are not looked at, only downloaded.
+	MaxBacktestSeries = 20
 )
 
 // GroupValue is one group's value in a dry run.
@@ -77,6 +83,34 @@ type Backtest struct {
 	Events      []BacktestEvent `json:"events"`
 	// Final is each group's status at the end of the range.
 	Final map[string]string `json:"final"`
+	// Series is the value each evaluation compared with the thresholds, per
+	// group: the editor's line. Not the raw query: what the evaluator saw
+	// after the window's reduction, so the line crosses a band exactly where
+	// a marker is. At most MaxBacktestSeries groups, those with events first;
+	// SeriesOmitted counts the rest.
+	Series        []BacktestSeries `json:"series"`
+	SeriesOmitted int              `json:"series_omitted"`
+}
+
+// BacktestSeries is one group's evaluated values.
+type BacktestSeries struct {
+	Group  string            `json:"group"`
+	Tags   map[string]string `json:"tags"`
+	Points []TickValue       `json:"points"`
+}
+
+// TickValue is one evaluation's value, encoded as [unix seconds, value],
+// with null for a tick that had no value for the group (absent, skipped by
+// require_full_window, or before the group first had data). The pair is the
+// shape the query API's points already have.
+type TickValue struct {
+	Ts    time.Time
+	Value float64 // NaN: no value
+}
+
+// MarshalJSON encodes the pair.
+func (v TickValue) MarshalJSON() ([]byte, error) {
+	return json.Marshal([2]any{v.Ts.Unix(), notify.ValuePtr(v.Value)})
 }
 
 // Backtest replays c over [from, to] on a simulated clock: every tick the
@@ -112,6 +146,7 @@ func (s *Scheduler) Backtest(ctx context.Context, c *spec.Compiled, id int64, fr
 		return Backtest{}, err
 	}
 	states := map[string]tracked{}
+	lines := map[string]*BacktestSeries{}
 	for now := first; !now.After(to); now = now.Add(c.Interval) {
 		if err := ctx.Err(); err != nil {
 			return Backtest{}, err
@@ -119,6 +154,17 @@ func (s *Scheduler) Backtest(ctx context.Context, c *spec.Compiled, id int64, fr
 		wf, wt := eval.Window(c, now)
 		vals := eval.Reduce(c, data, wf, wt)
 		for _, st := range advance(c, states, vals, data.AbsentIsZero, now, wt, false) {
+			line := lines[st.Key]
+			if line == nil {
+				line = &BacktestSeries{Group: st.Key, Tags: st.Group}
+				// Ticks before the group's first value, as nulls, so every
+				// line has one point per evaluation.
+				for t := first; t.Before(now); t = t.Add(c.Interval) {
+					line.Points = append(line.Points, TickValue{Ts: t, Value: math.NaN()})
+				}
+				lines[st.Key] = line
+			}
+			line.Points = append(line.Points, TickValue{Ts: now, Value: st.Value})
 			if st.Deleted {
 				delete(states, st.Key)
 				continue
@@ -130,12 +176,47 @@ func (s *Scheduler) Backtest(ctx context.Context, c *spec.Compiled, id int64, fr
 					Reason: string(st.Res.Notify)})
 			}
 		}
+		// A known group a tick did not step (skipped by require_full_window)
+		// gets a null, so its points stay one per evaluation.
+		for _, line := range lines {
+			if n := len(line.Points); n == 0 || !line.Points[n-1].Ts.Equal(now) {
+				line.Points = append(line.Points, TickValue{Ts: now, Value: math.NaN()})
+			}
+		}
 		res.Evaluations++
 	}
 	for k, t := range states {
 		res.Final[k] = string(t.State.Status)
 	}
+	res.Series, res.SeriesOmitted = pickSeries(lines, res.Events)
 	return res, nil
+}
+
+// pickSeries keeps MaxBacktestSeries lines: groups with events first (in the
+// order of their first event, which is the order a person reads the markers
+// in), then the rest by key.
+func pickSeries(lines map[string]*BacktestSeries, events []BacktestEvent) ([]BacktestSeries, int) {
+	order := make([]string, 0, len(lines))
+	seen := map[string]bool{}
+	for _, e := range events {
+		if !seen[e.Group] && lines[e.Group] != nil {
+			seen[e.Group] = true
+			order = append(order, e.Group)
+		}
+	}
+	rest := make([]string, 0, len(lines))
+	for k := range lines {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	slices.Sort(rest)
+	order = append(order, rest...)
+	out := make([]BacktestSeries, 0, min(len(order), MaxBacktestSeries))
+	for _, k := range order[:min(len(order), MaxBacktestSeries)] {
+		out = append(out, *lines[k])
+	}
+	return out, len(order) - len(out)
 }
 
 // ErrNoMentions is returned by a test notification for a message that names
