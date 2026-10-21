@@ -18,7 +18,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { definitionOf, emptyForm, formOf, previewDefinitionOf, type MonitorForm } from "../../lib/monitorForm";
-import { createMonitor, updateMonitor, type Backtest, type Validation } from "../../lib/monitorsApi";
+import { createMonitor, updateMonitor, type Backtest, type StoredMonitor, type Validation } from "../../lib/monitorsApi";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { MONITORS_KEY, useBacktest, useMonitor, useNotifiers, useValidation } from "../../lib/useMonitors";
 import { MonitorChart } from "./MonitorChart";
@@ -35,15 +35,28 @@ export function NewMonitorPage() {
 /** The page for editing a stored monitor. */
 export function EditMonitorPage() {
   const id = Number(useParams().id);
-  const m = useMonitor(Number.isInteger(id) ? id : undefined, false);
   if (!Number.isInteger(id)) return <ErrorText>Not a monitor id.</ErrorText>;
-  // The draft starts from a copy fetched now, not a cached one: saving a
-  // stale copy would undo whatever changed on the server since. Nothing
-  // refetches it afterwards (no poll), so the editor below is mounted once.
+  // Keyed by id: another monitor is a fresh mount, so a fresh read.
+  return <EditLoader key={id} id={id} />;
+}
+
+/**
+ * Reads the monitor once, now, and hands that copy to the editor.
+ *
+ * Now, not from the cache: the detail page's copy may predate someone else's
+ * save, and saving a draft of it would undo theirs. Once, and kept: the query
+ * can still refetch (a save's invalidation, a reconnect), and if one of those
+ * failed, an editor mounted on the query's state would be swapped for the
+ * error and the draft lost. The seed is held here instead, so after it is
+ * read nothing the query does reaches the editor.
+ */
+function EditLoader({ id }: { id: number }) {
+  const m = useMonitor(id, false);
+  const [seed, setSeed] = useState<StoredMonitor | null>(null);
+  if (seed === null && m.isFetchedAfterMount && m.data && !m.error) setSeed(m.data);
+  if (seed) return <MonitorEditor initial={formOf(seed)} id={id} provisioned={seed.provisioned} />;
   if (!m.isFetchedAfterMount) return <p className="text-sm text-zinc-500">Loading…</p>;
-  if (m.error || !m.data) return <ErrorText>Could not read the monitor: {m.error?.message ?? "no answer"}</ErrorText>;
-  // Keyed by id: opening another monitor starts a fresh draft.
-  return <MonitorEditor key={id} initial={formOf(m.data)} id={id} provisioned={m.data.provisioned} />;
+  return <ErrorText>Could not read the monitor: {m.error?.message ?? "no answer"}</ErrorText>;
 }
 
 function Field({ label, hint, children }: { label: string; hint?: React.ReactNode; children: React.ReactNode }) {

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { routes } from "../../app/routes";
 import type { ChartAnnotations } from "../../lib/annotations";
 import { STATUS_COLOR } from "../../lib/monitorChart";
+import { TIMELINE_LIMIT } from "./MonitorPage";
 import { backtestAnswer, fakeServer, HANG, monitor, validAnswer, type Reply } from "./testServer";
 
 const drawn: { annotations?: ChartAnnotations }[] = [];
@@ -219,5 +220,24 @@ describe("MonitorPage", () => {
     await user.click(screen.getByRole("button", { name: "Mute 1h" }));
     await screen.findByText("avg(last_5m):avg:other{*} > 1");
     await waitFor(() => expect(screen.queryByTestId("chart")).toBeNull());
+  });
+
+  it("says when the timeline's history was cut short, and starts it there", async () => {
+    const many = Array.from({ length: TIMELINE_LIMIT }, (_, i) => ({
+      id: i + 10, ts: new Date(Date.now() - 1000 * (i + 1)).toISOString(), kind: "transition", monitor_id: 1, group: "queue:a",
+      from: i % 2 ? "ALERT" : "OK", to: i % 2 ? "OK" : "ALERT", value: 1,
+    }));
+    renderAt("/monitors/1", {
+      "GET /api/v1/events": (_b, url) => ({ body: { events: url.searchParams.get("kind")?.includes("reset") ? many : [] } }),
+    });
+    expect(await screen.findByText(/More than 5000 changes in the last day/)).toBeInTheDocument();
+    // One segment per transition kept, and nothing read back before the oldest.
+    const bar = within(screen.getByRole("region", { name: "Timeline" })).getByRole("img");
+    expect(bar.getAttribute("aria-label")!.split(", ")).toHaveLength(TIMELINE_LIMIT);
+  });
+
+  it("says when the definition could not be checked", async () => {
+    renderAt("/monitors/1", { "POST /api/v1/monitors/validate": { status: 500, body: { error: "boom" } } });
+    expect(await screen.findByText("Could not check the definition: boom", {}, { timeout: 8000 })).toBeInTheDocument();
   });
 });

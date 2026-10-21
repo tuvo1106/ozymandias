@@ -98,6 +98,7 @@ export function useMonitorStates(id: number): UseQueryResult<GroupState[]> {
 export function useMonitorEvents(
   filter: Omit<EventFilter, "from" | "to">,
   sinceSeconds: number,
+  pollMs = MONITOR_POLL_MS,
 ): UseQueryResult<MonitorEvent[]> {
   return useQuery({
     queryKey: [MONITORS_KEY, "events", filter, sinceSeconds],
@@ -105,7 +106,7 @@ export function useMonitorEvents(
       const now = Date.now() / 1000;
       return fetchEvents({ ...filter, from: now - sinceSeconds, to: now }, fetch, signal);
     },
-    refetchInterval: MONITOR_POLL_MS,
+    refetchInterval: pollMs,
   });
 }
 

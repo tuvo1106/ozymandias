@@ -51,7 +51,8 @@ export function MonitorChart({
       <TimeseriesChart data={data} labels={labels} xRange={xRange} height={height} annotations={annotations} />
       {backtest.series_omitted > 0 ? (
         <p className="text-xs text-zinc-500">
-          {backtest.series_omitted} more group(s) not drawn; their transitions are in the list.
+          {backtest.series_omitted} more group(s) not drawn
+          {backtest.events_omitted > 0 ? "." : "; their transitions are in the list."}
         </p>
       ) : null}
     </div>

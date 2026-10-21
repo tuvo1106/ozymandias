@@ -16,7 +16,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   transitions, the notification log, history, test notification and mute; a nav badge for
   triggered monitors and a banner on every page when evaluation stops; and a **Monitor
   events** toggle that marks transitions on dashboard timeseries. The backtest now returns
-  the evaluated `series` and validate the `window`.
+  the evaluated `series`, totals (`transitions`, `notifications`) and at most 5,000
+  `events` (the rest counted in `events_omitted`); validate returns the `window`.
 - **Monitors** (M6, backend). Metric and log monitors (`avg(last_5m):<metricql> > 20`,
   `logs("…").rollup("count").last("5m") > 5`) with warning and critical levels,
   recovery thresholds (hysteresis), multi-alert groups, no-data detection,

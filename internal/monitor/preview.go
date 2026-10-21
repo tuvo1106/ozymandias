@@ -161,9 +161,18 @@ func (s *Scheduler) Backtest(ctx context.Context, c *spec.Compiled, id int64, fr
 	// groups x ticks of memory per request (a thousand groups over twenty
 	// thousand ticks is hundreds of megabytes).
 	tags := map[string]spec.Group{}
+	// The order groups first had an event in, from every event, kept or past
+	// the cap: the lines must favour the groups that did something, and a
+	// group whose events all fell past the cap did something too.
+	var eventful []string
+	hadEvent := map[string]bool{}
 	states, ticks, err := replay(ctx, c, data, first, to, func(_ int, now time.Time, st groupStep) {
 		if _, ok := tags[st.Key]; !ok {
 			tags[st.Key] = st.Group
+		}
+		if (st.Res.Changed() || st.Res.Notify != state.NotifyNone) && !hadEvent[st.Key] {
+			hadEvent[st.Key] = true
+			eventful = append(eventful, st.Key)
 		}
 		if st.Res.Changed() {
 			res.Transitions++
@@ -188,7 +197,7 @@ func (s *Scheduler) Backtest(ctx context.Context, c *spec.Compiled, id int64, fr
 	for k, t := range states {
 		res.Final[k] = string(t.State.Status)
 	}
-	shown, omitted := pickSeries(slices.Collect(maps.Keys(tags)), res.Events)
+	shown, omitted := pickSeries(slices.Collect(maps.Keys(tags)), eventful)
 	res.SeriesOmitted = omitted
 	// Every tick a group was not stepped (before its first value, or skipped
 	// by require_full_window) stays NaN: a null, one point per evaluation.
@@ -257,20 +266,20 @@ func replay(ctx context.Context, c *spec.Compiled, data eval.Data, first, to tim
 }
 
 // pickSeries chooses the MaxBacktestSeries groups whose lines are returned:
-// groups with events first (in the order of their first event, which is the
-// order a person reads the markers in), then the rest by key. It returns them
-// and how many were left out.
-func pickSeries(keys []string, events []BacktestEvent) ([]string, int) {
+// the groups with events first, in `eventful` order (the order of their first
+// event, which is the order a person reads the markers in), then the rest by
+// key. It returns them and how many were left out.
+func pickSeries(keys []string, eventful []string) ([]string, int) {
 	known := make(map[string]bool, len(keys))
 	for _, k := range keys {
 		known[k] = true
 	}
 	order := make([]string, 0, len(keys))
 	seen := map[string]bool{}
-	for _, e := range events {
-		if !seen[e.Group] && known[e.Group] {
-			seen[e.Group] = true
-			order = append(order, e.Group)
+	for _, g := range eventful {
+		if !seen[g] && known[g] {
+			seen[g] = true
+			order = append(order, g)
 		}
 	}
 	rest := make([]string, 0, len(keys))

@@ -36,6 +36,9 @@ import { button, ErrorText, GroupCounts, StatusPill, TimelineBar } from "./parts
 
 const DAY = 86_400;
 
+/** How many timeline events one request asks for (the API's most is 5000). */
+export const TIMELINE_LIMIT = 5000;
+
 /** The detail page for /monitors/:id. */
 export function MonitorPage() {
   const id = Number(useParams().id);
@@ -155,7 +158,13 @@ function MonitorDetail({ m, now, onDeleted }: { m: StoredMonitor; now: number; o
   const events = useMonitorEvents({ monitor_id: m.id, limit: 1000 }, DAY);
   // The timeline and markers ask only for what they read, so deliveries and
   // errors cannot crowd an older transition or reset out of the newest 1000.
-  const changes = useMonitorEvents({ monitor_id: m.id, kind: TIMELINE_KINDS, limit: 5000 }, DAY);
+  // Polled less often than the rest: it is the largest answer, and a
+  // timeline over a day does not need fifteen-second freshness.
+  const changes = useMonitorEvents({ monitor_id: m.id, kind: TIMELINE_KINDS, limit: TIMELINE_LIMIT }, DAY, 60_000);
+  // A full answer may be a truncated one (newest first): what is known then
+  // starts at its oldest event, and before that is drawn as unknown rather
+  // than read back from an incomplete history.
+  const knownFrom = changes.data && changes.data.length >= TIMELINE_LIMIT ? Math.min(...changes.data.map((e) => Date.parse(e.ts) / 1000)) : undefined;
   // Its own question: from the newest thousand events of every kind, a
   // flapping monitor's transitions would crowd the deliveries out.
   const deliveries = useMonitorEvents({ monitor_id: m.id, kind: NOTIFICATION_KINDS, limit: 1000 }, DAY);
@@ -173,8 +182,8 @@ function MonitorDetail({ m, now, onDeleted }: { m: StoredMonitor; now: number; o
   const backtest = useBacktest(valid ? def : undefined, m.id);
   const replayed = backtest.isPlaceholderData ? undefined : backtest.data;
   const timeline = useMemo(
-    () => (states.data && changes.data ? statusTimeline(changes.data, states.data, now - DAY, now) : []),
-    [states.data, changes.data, now],
+    () => (states.data && changes.data ? statusTimeline(changes.data, states.data, knownFrom ?? now - DAY, now) : []),
+    [states.data, changes.data, now, knownFrom],
   );
   // Only what was recorded. Until the history arrives there are no markers,
   // not the replay's own: those would show the two agreeing when nothing
@@ -252,7 +261,14 @@ function MonitorDetail({ m, now, onDeleted }: { m: StoredMonitor; now: number; o
             ))}
           </div>
         ) : null}
+        {knownFrom !== undefined ? (
+          <p className="text-xs text-amber-700 dark:text-amber-500">
+            More than {TIMELINE_LIMIT} changes in the last day: the timeline and markers start at{" "}
+            {new Date(knownFrom * 1000).toLocaleString()}.
+          </p>
+        ) : null}
         {validation.data?.valid === false && !validation.isPlaceholderData ? <ErrorText>{validation.data.errors.join("; ")}</ErrorText> : null}
+        {validation.error ? <ErrorText>Could not check the definition: {validation.error.message}</ErrorText> : null}
         {backtest.error ? <ErrorText>{backtest.error.message}</ErrorText> : null}
         {replayed && valid ? (
           <>

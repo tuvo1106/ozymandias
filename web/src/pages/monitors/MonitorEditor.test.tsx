@@ -1,3 +1,4 @@
+import { onlineManager } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router";
@@ -153,5 +154,51 @@ describe("EditMonitorPage", () => {
     await user.click(screen.getByRole("link", { name: "Edit" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/monitors/3/edit"));
     expect(await screen.findByLabelText("Warning")).toHaveValue("12");
+  });
+
+  // A refetch after the draft started (a reconnect, a save's invalidation)
+  // that fails must not swap the editor for the error.
+  it("keeps the draft when a later read of the monitor fails", { timeout: 15_000 }, async () => {
+    const user = userEvent.setup();
+    let fail = false;
+    const { calls } = renderAt("/monitors/3/edit", {
+      "GET /api/v1/monitors/3": () => (fail ? { status: 500, body: { error: "database is locked" } } : { body: monitor({ id: 3 }) }),
+      "POST /api/v1/monitors/validate": { body: validAnswer },
+      "POST /api/v1/monitors/backtest": { body: backtestAnswer },
+    });
+    await user.type(await screen.findByLabelText("Renotify interval"), "45");
+    fail = true;
+    // Stale (staleTime is 5s), so the reconnect refetches it, and it fails.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    try {
+      onlineManager.setOnline(false);
+      onlineManager.setOnline(true); // refetchOnReconnect
+      // The first read, then the refetch and its two retries (a 5xx is retried).
+      await waitFor(() => expect(calls.filter((c) => c.path === "/api/v1/monitors/3").length).toBe(4), { timeout: 8000 });
+      await new Promise((r) => setTimeout(r, 300));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(screen.queryByText(/Could not read the monitor/)).toBeNull();
+    expect(screen.getByLabelText("Renotify interval")).toHaveValue("45");
+  });
+
+  // Same page, another id, with that monitor still fresh in the cache: it
+  // must still be read again, not wait for a fetch that never comes.
+  it("opens another monitor's editor from a fresh cache", async () => {
+    const { router } = renderAt("/monitors/4", {
+      "GET /api/v1/monitors/3": { body: monitor({ id: 3, name: "three" }) },
+      "GET /api/v1/monitors/4": { body: monitor({ id: 4, name: "four" }) },
+      "GET /api/v1/monitors/4/states": { body: { states: [] } },
+      "GET /api/v1/events": { body: { events: [] } },
+      "POST /api/v1/monitors/validate": { body: validAnswer },
+      "POST /api/v1/monitors/backtest": { body: backtestAnswer },
+    });
+    await screen.findByRole("heading", { name: "four" });
+    await router.navigate("/monitors/3/edit");
+    expect(await screen.findByLabelText("Name")).toHaveValue("three");
+    await router.navigate("/monitors/4/edit");
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("four"));
   });
 });
