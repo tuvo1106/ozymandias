@@ -106,6 +106,8 @@ describe("MonitorPage", () => {
     await screen.findByRole("heading", { name: "Monitors" });
     const after = calls.slice(before).filter((c) => c.method === "GET" && /\/monitors\/1(\/|$)/.test(c.path));
     expect(after).toEqual([]);
+    // The badge and the rest of the monitor answers are refreshed.
+    expect(calls.slice(before).some((c) => c.path === "/api/v1/monitors/status")).toBe(true);
   });
 
   it("offers no delete for a provisioned monitor", async () => {
@@ -149,6 +151,31 @@ describe("MonitorPage", () => {
     renderAt("/monitors/1", { "GET /api/v1/events": { status: 500, body: { error: "boom" } } });
     expect(await screen.findByText(/the recorded transitions are not loaded/)).toBeInTheDocument();
     expect(drawn.at(-1)!.annotations!.markers).toEqual([]);
+  });
+
+  // From the newest 1000 of every kind, deliveries could crowd out the
+  // transitions and resets the timeline reads.
+  it("asks for the timeline's events on their own", async () => {
+    const { calls } = renderAt("/monitors/1");
+    await screen.findByRole("region", { name: "Timeline" });
+    await waitFor(() => expect(calls.some((c) => c.path === "/api/v1/events" && c.search.get("kind") === "transition,reset,group_expired")).toBe(true));
+  });
+
+  it("does not show the previous definition's errors for a new one", async () => {
+    const user = userEvent.setup();
+    let query = monitor().query;
+    renderAt("/monitors/1", {
+      "GET /api/v1/monitors/1": () => ({ body: monitor({ query }) }),
+      "POST /api/v1/monitors/1/mute": () => {
+        query = "avg(last_5m):avg:other{*} > 1";
+        return { body: monitor({ query }) };
+      },
+      "POST /api/v1/monitors/validate": (b) => ((b as { query: string }).query.includes("other") ? { body: HANG } : { body: { valid: false, errors: ["@gone names no notifier"] } }),
+    });
+    expect(await screen.findByText("@gone names no notifier")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Mute 1h" }));
+    await screen.findByText("avg(last_5m):avg:other{*} > 1");
+    await waitFor(() => expect(screen.queryByText("@gone names no notifier")).toBeNull());
   });
 
   it("asks for the notification log on its own", async () => {

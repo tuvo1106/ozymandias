@@ -37,10 +37,11 @@ export function EditMonitorPage() {
   const id = Number(useParams().id);
   const m = useMonitor(Number.isInteger(id) ? id : undefined, false);
   if (!Number.isInteger(id)) return <ErrorText>Not a monitor id.</ErrorText>;
-  // Only with nothing to show: the draft lives in the editor below, and
-  // unmounting it for an error would throw the draft away.
-  if (m.error && !m.data) return <ErrorText>{m.error.message}</ErrorText>;
-  if (!m.data) return <p className="text-sm text-zinc-500">Loading…</p>;
+  // The draft starts from a copy fetched now, not a cached one: saving a
+  // stale copy would undo whatever changed on the server since. Nothing
+  // refetches it afterwards (no poll), so the editor below is mounted once.
+  if (!m.isFetchedAfterMount) return <p className="text-sm text-zinc-500">Loading…</p>;
+  if (m.error || !m.data) return <ErrorText>Could not read the monitor: {m.error?.message ?? "no answer"}</ErrorText>;
   // Keyed by id: opening another monitor starts a fresh draft.
   return <MonitorEditor key={id} initial={formOf(m.data)} id={id} provisioned={m.data.provisioned} />;
 }
@@ -291,12 +292,12 @@ function Preview({
 
 function BacktestSummary({ backtest }: { backtest: Backtest }) {
   const transitions = backtest.events.filter((e) => e.from !== e.to);
-  const notifications = backtest.events.filter((e) => e.notify).length;
   return (
     <div className="flex flex-col gap-1 text-sm">
       <p>
-        Over {backtest.evaluations} evaluations it would have changed status {transitions.length} time(s) and notified{" "}
-        {notifications} time(s).
+        Over {backtest.evaluations} evaluations it would have changed status {backtest.transitions} time(s) and notified{" "}
+        {backtest.notifications} time(s).
+        {backtest.events_omitted > 0 ? ` The first ${backtest.events.length} events are listed and marked.` : ""}
       </p>
       {transitions.length > 0 ? (
         <details>

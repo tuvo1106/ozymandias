@@ -28,8 +28,8 @@ import {
   type StoredMonitor,
   type TestResult,
 } from "../../lib/monitorsApi";
-import { describeEvent, muteLabel, NOTIFICATION_KINDS, statusTimeline } from "../../lib/monitorView";
-import { MONITORS_KEY, useBacktest, useMonitor, useMonitorEvents, useMonitorStates, useValidation } from "../../lib/useMonitors";
+import { describeEvent, muteLabel, NOTIFICATION_KINDS, statusTimeline, TIMELINE_KINDS } from "../../lib/monitorView";
+import { isAboutMonitor, MONITORS_KEY, useBacktest, useMonitor, useMonitorEvents, useMonitorStates, useValidation } from "../../lib/useMonitors";
 import { formatValue } from "../../lib/chartData";
 import { MonitorChart } from "./MonitorChart";
 import { button, ErrorText, GroupCounts, StatusPill, TimelineBar } from "./parts";
@@ -68,11 +68,13 @@ function Actions({ m, now, onDeleted }: { m: StoredMonitor; now: number; onDelet
   const [results, setResults] = useState<TestResult[] | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
-  const run = async (f: () => Promise<unknown>) => {
+  /** Runs an action; on success, `after` (if any), then every monitor answer is refreshed. */
+  const run = async (f: () => Promise<unknown>, after?: () => void) => {
     setBusy(true);
     setError(null);
     try {
       await f();
+      after?.();
       await client.invalidateQueries({ queryKey: [MONITORS_KEY] });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -113,23 +115,15 @@ function Actions({ m, now, onDeleted }: { m: StoredMonitor; now: number; onDelet
         {m.provisioned ? null : confirmDelete ? (
           <>
             <button type="button" className={`${button} text-red-700 dark:text-red-400`} disabled={busy}
-              onClick={() => void (async () => {
-                setBusy(true);
-                setError(null);
-                try {
-                  await deleteMonitor(m.id);
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : String(e));
-                  setBusy(false);
-                  return;
-                }
-                // Unmount this monitor's queries first, then drop them: an
-                // invalidation would refetch them, and each is now a 404.
+              onClick={() => void run(() => deleteMonitor(m.id), () => {
+                // Its queries leave the cache before run's refresh, which
+                // then updates the list, badge and overlay but cannot refetch
+                // these (each would be a 404). onDeleted makes the page stop
+                // asking for them on its next render.
                 onDeleted();
-                client.removeQueries({ predicate: (q) => q.queryKey[0] === MONITORS_KEY && q.queryKey.includes(m.id) });
-                void client.invalidateQueries({ queryKey: [MONITORS_KEY, "list"] });
+                client.removeQueries({ predicate: (q) => isAboutMonitor(q.queryKey, m.id) });
                 navigate("/monitors");
-              })()}>
+              })}>
               Delete, with its history
             </button>
             <button type="button" className={button} onClick={() => setConfirmDelete(false)}>
@@ -159,6 +153,9 @@ function Actions({ m, now, onDeleted }: { m: StoredMonitor; now: number; onDelet
 function MonitorDetail({ m, now, onDeleted }: { m: StoredMonitor; now: number; onDeleted: () => void }) {
   const states = useMonitorStates(m.id);
   const events = useMonitorEvents({ monitor_id: m.id, limit: 1000 }, DAY);
+  // The timeline and markers ask only for what they read, so deliveries and
+  // errors cannot crowd an older transition or reset out of the newest 1000.
+  const changes = useMonitorEvents({ monitor_id: m.id, kind: TIMELINE_KINDS, limit: 5000 }, DAY);
   // Its own question: from the newest thousand events of every kind, a
   // flapping monitor's transitions would crowd the deliveries out.
   const deliveries = useMonitorEvents({ monitor_id: m.id, kind: NOTIFICATION_KINDS, limit: 1000 }, DAY);
@@ -176,13 +173,13 @@ function MonitorDetail({ m, now, onDeleted }: { m: StoredMonitor; now: number; o
   const backtest = useBacktest(valid ? def : undefined, m.id);
   const replayed = backtest.isPlaceholderData ? undefined : backtest.data;
   const timeline = useMemo(
-    () => (states.data && events.data ? statusTimeline(events.data, states.data, now - DAY, now) : []),
-    [states.data, events.data, now],
+    () => (states.data && changes.data ? statusTimeline(changes.data, states.data, now - DAY, now) : []),
+    [states.data, changes.data, now],
   );
   // Only what was recorded. Until the history arrives there are no markers,
   // not the replay's own: those would show the two agreeing when nothing
   // recorded has been read.
-  const markers = useMemo(() => (events.data ? transitionMarkers(events.data) : []), [events.data]);
+  const markers = useMemo(() => (changes.data ? transitionMarkers(changes.data) : []), [changes.data]);
   const muted = muteLabel(m.muted_until, now);
 
   return (
@@ -255,14 +252,14 @@ function MonitorDetail({ m, now, onDeleted }: { m: StoredMonitor; now: number; o
             ))}
           </div>
         ) : null}
-        {validation.data?.valid === false ? <ErrorText>{validation.data.errors.join("; ")}</ErrorText> : null}
+        {validation.data?.valid === false && !validation.isPlaceholderData ? <ErrorText>{validation.data.errors.join("; ")}</ErrorText> : null}
         {backtest.error ? <ErrorText>{backtest.error.message}</ErrorText> : null}
         {replayed && valid ? (
           <>
             <MonitorChart backtest={replayed} levels={valid.levels} evalWindow={valid.window} markers={markers} />
             <p className="text-xs text-zinc-500">
               The line is the last day replayed with today&apos;s data;{" "}
-              {events.data ? "the markers are the transitions that were recorded." : "the recorded transitions are not loaded, so there are no markers."}
+              {changes.data ? "the markers are the transitions that were recorded." : "the recorded transitions are not loaded, so there are no markers."}
             </p>
           </>
         ) : null}

@@ -25,6 +25,10 @@ const (
 	// events cover every group; the lines are for a person to look at, and
 	// past a few dozen they are not looked at, only downloaded.
 	MaxBacktestSeries = 20
+	// MaxBacktestEvents is how many events a backtest returns. Past it they
+	// are counted, not kept: a thousand groups flapping for a week is tens of
+	// millions of events, and the editor shows totals and markers.
+	MaxBacktestEvents = 5000
 )
 
 // GroupValue is one group's value in a dry run.
@@ -84,6 +88,11 @@ type Backtest struct {
 	Events      []BacktestEvent `json:"events"`
 	// Final is each group's status at the end of the range.
 	Final map[string]string `json:"final"`
+	// Transitions and Notifications count every event, kept or not;
+	// EventsOmitted is how many were past MaxBacktestEvents.
+	Transitions   int `json:"transitions"`
+	Notifications int `json:"notifications"`
+	EventsOmitted int `json:"events_omitted"`
 	// Series is the value each evaluation compared with the thresholds, per
 	// group: the editor's line. Not the raw query: what the evaluator saw
 	// after the window's reduction, so the line crosses a band exactly where
@@ -146,18 +155,27 @@ func (s *Scheduler) Backtest(ctx context.Context, c *spec.Compiled, id int64, fr
 	if err != nil {
 		return Backtest{}, err
 	}
-	// Two passes over the same replay. The first finds the events and every
-	// group; the second records lines for the MaxBacktestSeries groups shown.
-	// One pass recording every group's line before choosing was groups x
-	// ticks of memory per request (a thousand groups over twenty thousand
-	// ticks is hundreds of megabytes); this is twice the reduce work instead,
-	// bounded by the same tick limit.
+	// Two passes. The first finds the events and every group; the second
+	// records lines for the MaxBacktestSeries groups shown, replaying only
+	// their data. One pass recording every group's line before choosing was
+	// groups x ticks of memory per request (a thousand groups over twenty
+	// thousand ticks is hundreds of megabytes).
 	tags := map[string]spec.Group{}
 	states, ticks, err := replay(ctx, c, data, first, to, func(_ int, now time.Time, st groupStep) {
 		if _, ok := tags[st.Key]; !ok {
 			tags[st.Key] = st.Group
 		}
+		if st.Res.Changed() {
+			res.Transitions++
+		}
+		if st.Res.Notify != state.NotifyNone {
+			res.Notifications++
+		}
 		if st.Res.Changed() || st.Res.Notify != state.NotifyNone {
+			if len(res.Events) >= MaxBacktestEvents {
+				res.EventsOmitted++
+				return
+			}
 			res.Events = append(res.Events, BacktestEvent{Ts: now, Group: st.Key, From: string(st.Res.From),
 				To: string(st.Res.To), Value: notify.ValuePtr(st.Value), Notify: st.Res.Notify != state.NotifyNone,
 				Reason: string(st.Res.Notify)})
@@ -183,7 +201,16 @@ func (s *Scheduler) Backtest(ctx context.Context, c *spec.Compiled, id int64, fr
 		values[k] = v
 	}
 	if len(shown) > 0 {
-		if _, _, err := replay(ctx, c, data, first, to, func(i int, _ time.Time, st groupStep) {
+		// Groups step independently (advance), so the second pass replays only
+		// the chosen groups' data: twenty groups' work, not a second full run.
+		chosen := data
+		chosen.Series = make(map[string]*eval.Series, len(shown))
+		for _, k := range shown {
+			if s, ok := data.Series[k]; ok {
+				chosen.Series[k] = s
+			}
+		}
+		if _, _, err := replay(ctx, c, chosen, first, to, func(i int, _ time.Time, st groupStep) {
 			if v, ok := values[st.Key]; ok {
 				v[i] = st.Value
 			}

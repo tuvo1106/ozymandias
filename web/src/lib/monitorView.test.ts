@@ -77,7 +77,7 @@ describe("describeEvent", () => {
 });
 
 describe("statusTimeline and expiry", () => {
-  const expiredAt = (ts: number, group: string) => ({ id: ts + 0.5, ts: iso(ts), kind: "group_expired", monitor_id: 1, group, value: null }) as MonitorEvent;
+  const expiredAt = (ts: number, group: string, from = "NO_DATA") => ({ id: ts + 0.5, ts: iso(ts), kind: "group_expired", monitor_id: 1, group, from, value: null }) as MonitorEvent;
 
   // Forgotten at 600: what it was before is read back; after, it is unknown.
   it("ends a group's life at its expiry", () => {
@@ -102,9 +102,20 @@ describe("statusTimeline and expiry", () => {
   it("reads transitions after the expiry into the new life", () => {
     const out = statusTimeline([expiredAt(200, "q:x"), tr(700, "q:x", "OK", "ALERT")], [st("q:x", "ALERT", 700)], 0, 1000);
     expect(out[0]!.segments).toEqual([
-      { from: 0, to: 200, status: null },
+      { from: 0, to: 200, status: "NO_DATA" },
       { from: 200, to: 700, status: null },
       { from: 700, to: 1000, status: "ALERT" },
+    ]);
+  });
+
+  // The usual case: the transition into NO_DATA was a day before the expiry,
+  // out of range, so the event's own `from` is all there is.
+  it("reads the status before expiry from the event, with no transition in range", () => {
+    const out = statusTimeline([expiredAt(600, "q:old")], [st("q:a", "OK", -1)], 0, 1000);
+    expect(out.map((g) => g.group)).toEqual(["q:a", "q:old"]);
+    expect(out[1]!.segments).toEqual([
+      { from: 0, to: 600, status: "NO_DATA" },
+      { from: 600, to: 1000, status: null },
     ]);
   });
 });

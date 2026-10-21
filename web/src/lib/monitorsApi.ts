@@ -184,6 +184,11 @@ export interface Backtest {
   final: Record<string, Status>;
   series: BacktestSeries[];
   series_omitted: number;
+  /** Every status change and notification, including events past the cap. */
+  transitions: number;
+  notifications: number;
+  /** Events past the cap: counted above, not in `events`. */
+  events_omitted: number;
 }
 
 /** The scheduler's health and the counts behind the nav badge. */
@@ -297,7 +302,10 @@ function isBacktest(v: unknown): v is Backtest {
         Array.isArray(s.points) &&
         s.points.every((p) => Array.isArray(p) && p.length === 2 && isNum(p[0]) && isNumOrNull(p[1])),
     ) &&
-    isNum(v.series_omitted)
+    isNum(v.series_omitted) &&
+    isNum(v.transitions) &&
+    isNum(v.notifications) &&
+    isNum(v.events_omitted)
   );
 }
 

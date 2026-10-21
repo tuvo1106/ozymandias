@@ -150,3 +150,35 @@ func TestBacktestKeepsTheGroupsWithEvents(t *testing.T) {
 		t.Fatalf("second line %+v", bt.Series[1].Group)
 	}
 }
+
+// TestBacktestCountsEventsPastTheCap: past MaxBacktestEvents the events are
+// counted, not kept, and the totals still cover them all.
+func TestBacktestCountsEventsPastTheCap(t *testing.T) {
+	h := newHarness(t)
+	m := backlog()
+	m.Query = "last(last_1m):avg:queue.depth{*} by {q} > 20"
+	m.Options.Thresholds.Warning, m.Options.Thresholds.WarningRecovery = nil, nil
+	flap := func(off time.Duration) float64 {
+		if (off/(30*time.Second))%2 == 0 {
+			return 50
+		}
+		return 1
+	}
+	for i := range 300 {
+		h.points("queue.depth", []string{fmt.Sprintf("q:g%03d", i)}, 0, 10*time.Minute, flap)
+	}
+	c, err := spec.Compile(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bt, err := h.s.Backtest(context.Background(), c, 1, t0, t0.Add(10*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bt.Events) != MaxBacktestEvents || bt.EventsOmitted == 0 {
+		t.Fatalf("%d events kept, %d omitted", len(bt.Events), bt.EventsOmitted)
+	}
+	if bt.Transitions != len(bt.Events)+bt.EventsOmitted || bt.Notifications == 0 {
+		t.Fatalf("transitions %d, kept+omitted %d, notifications %d", bt.Transitions, len(bt.Events)+bt.EventsOmitted, bt.Notifications)
+	}
+}

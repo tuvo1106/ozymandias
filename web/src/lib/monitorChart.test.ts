@@ -52,7 +52,7 @@ describe("transitionMarkers", () => {
 });
 
 const bt = (series: Backtest["series"]): Backtest => ({
-  from: "", to: "", evaluations: 2, events: [], final: {}, series, series_omitted: 0,
+  from: "", to: "", evaluations: 2, events: [], final: {}, series, series_omitted: 0, transitions: 0, notifications: 0, events_omitted: 0,
 });
 
 describe("backtestData", () => {

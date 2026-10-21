@@ -12,10 +12,12 @@ OK
       "value": 25
     }
   ],
+  "events_omitted": 0,
   "final": {
     "*": "ALERT"
   },
   "from": "2026-09-20T14:13:20Z",
+  "notifications": 1,
   "series": [
     {
       "group": "*",
@@ -33,5 +35,6 @@ OK
     }
   ],
   "series_omitted": 0,
-  "to": "2026-09-21T14:13:20Z"
+  "to": "2026-09-21T14:13:20Z",
+  "transitions": 1
 }

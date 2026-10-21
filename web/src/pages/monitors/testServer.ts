@@ -81,4 +81,7 @@ export const backtestAnswer = {
   final: { "queue:a": "ALERT" },
   series: [{ group: "queue:a", tags: { queue: "a" }, points: [[1790000000, 5], [1790000030, 25]] }],
   series_omitted: 0,
+  transitions: 1,
+  notifications: 1,
+  events_omitted: 0,
 };

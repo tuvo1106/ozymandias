@@ -111,14 +111,14 @@ describe("validate", () => {
 
 describe("backtest", () => {
   it("sends the monitor with the saved id and reads the lines", async () => {
-    const body = { from: "f", to: "t", evaluations: 2, events: [], final: {}, series: [{ group: "*", tags: {}, points: [[1, null], [2, 3]] }], series_omitted: 0 };
+    const body = { from: "f", to: "t", evaluations: 2, events: [], final: {}, series: [{ group: "*", tags: {}, points: [[1, null], [2, 3]] }], series_omitted: 0, transitions: 0, notifications: 0, events_omitted: 0 };
     const { f, calls } = fakeFetch(body);
     await expect(backtestMonitor(def, { id: 4 }, f)).resolves.toEqual(body);
     expect(JSON.parse(calls[0]!.init!.body as string)).toEqual({ monitor: def, id: 4 });
   });
 
   it("refuses a point that is not a pair", async () => {
-    const body = { evaluations: 1, events: [], final: {}, series: [{ group: "*", tags: {}, points: [[1]] }], series_omitted: 0 };
+    const body = { evaluations: 1, events: [], final: {}, series: [{ group: "*", tags: {}, points: [[1]] }], series_omitted: 0, transitions: 0, notifications: 0, events_omitted: 0 };
     await expect(backtestMonitor(def, {}, fakeFetch(body).f)).rejects.toBeInstanceOf(ApiError);
   });
 });

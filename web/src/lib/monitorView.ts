@@ -66,16 +66,17 @@ function life(transitions: Transition[], end: Status | null, lo: number, hi: num
  * - `reset` (the query changed): every group's earlier states answered a
  *   different query, so the timeline is unknown before it.
  * - `group_expired` (forgotten after a day without data): that group's life
- *   ends there. Before it, the status is read back from the transitions
- *   before it; after it, unknown until the group is seen again (a later
- *   state's `since`, or a later transition).
+ *   ends there. Before it, the status is the one the event says it was
+ *   forgotten in, read back through any transitions before it; after it,
+ *   unknown until the group is seen again (a later state's `since`, or a
+ *   later transition).
  *
  * A state that began inside the range with no transition to explain it is
  * unknown before then: the group was created, and what came before is not
  * this monitor's answer.
  *
  * Groups appear in `states` order (worst first), then any group known only
- * from its transitions.
+ * from its transitions or its expiry.
  */
 export function statusTimeline(
   events: readonly MonitorEvent[],
@@ -87,30 +88,35 @@ export function statusTimeline(
   let start = from;
   for (const e of events) if (e.kind === "reset" && ts(e) > start && ts(e) <= to) start = ts(e);
   const transitions = new Map<string, Transition[]>();
-  const expired = new Map<string, number>();
+  // The latest expiry per group, with the status it was forgotten in (the
+  // event's own `from`: the transition into it is usually a day earlier, out
+  // of range).
+  const expired = new Map<string, { ts: number; from: Status | null }>();
   for (const e of events) {
     const t = ts(e);
     if (!e.group || t < start || t > to) continue;
-    if (e.kind === "group_expired") expired.set(e.group, Math.max(expired.get(e.group) ?? -Infinity, t));
+    if (e.kind === "group_expired" && t > (expired.get(e.group)?.ts ?? -Infinity)) expired.set(e.group, { ts: t, from: e.from ?? null });
     if (e.kind !== "transition" || !e.from || !e.to) continue;
     const list = transitions.get(e.group) ?? [];
     list.push({ ts: t, from: e.from, to: e.to });
     transitions.set(e.group, list);
   }
-  const groups = [...states.map((s) => s.group), ...[...transitions.keys()].filter((g) => !states.some((s) => s.group === g)).sort()];
+  const others = new Set([...transitions.keys(), ...expired.keys()].filter((g) => !states.some((s) => s.group === g)));
+  const groups = [...states.map((s) => s.group), ...[...others].sort()];
   return groups.map((group) => {
     const state = states.find((s) => s.group === group);
     const all = transitions.get(group) ?? [];
     const since = state ? Date.parse(state.since) / 1000 : undefined;
-    const exp = expired.get(group);
+    const expiry = expired.get(group);
+    const exp = expiry?.ts;
     const newestTo = (ts: Transition[]) => [...ts].sort((x, y) => y.ts - x.ts)[0]?.to ?? null;
     const segments: Segment[] = [];
     if (start > from) segments.push({ from, to: start, status: null });
     if (exp !== undefined) {
       const before = all.filter((t) => t.ts <= exp);
       const after = all.filter((t) => t.ts > exp);
-      // Before expiry: the status it was forgotten in is the last transition's.
-      segments.push(...life(before, newestTo(before), start, exp));
+      // Before expiry: the status it was forgotten in, as the event says.
+      segments.push(...life(before, expiry?.from ?? newestTo(before), start, exp));
       const end = state?.status ?? newestTo(after);
       // After it, unknown until seen again: a transition, or the state's since.
       const seen = after.length ? Math.min(...after.map((t) => t.ts)) : since !== undefined && since > exp ? since : to;
@@ -153,6 +159,9 @@ export function describeEvent(e: MonitorEvent): string {
       return e.text ? `${e.kind}: ${e.text}` : e.kind;
   }
 }
+
+/** Event kinds the status timeline reads. */
+export const TIMELINE_KINDS = ["transition", "reset", "group_expired"];
 
 /** Event kinds that are about delivering, for the notification log. */
 export const NOTIFICATION_KINDS = ["notify_ok", "notify_failed", "test_notification"];

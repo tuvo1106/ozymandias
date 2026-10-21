@@ -933,7 +933,9 @@ simulated clock — the same ticks, window, reduction and state machine the
 scheduler uses — and returns `{"evaluations", "events": [{"ts", "group",
 "from", "to", "value", "notify", "reason"}], "final": {group: status},
 "series": [{"group", "tags", "points": [[ts, value|null], ...]}],
-"series_omitted": n}`. `series` is the value each evaluation compared with the
+"series_omitted": n, "transitions": n, "notifications": n, "events_omitted": n}`.
+At most 5,000 events are returned; past that they are counted in
+`events_omitted`, and `transitions` and `notifications` count all of them. `series` is the value each evaluation compared with the
 thresholds, one point per evaluation (null when the group had no value): what
 the evaluator saw after the window's reduction, not the raw query, so the line
 crosses a band exactly where an event is. At most 20 groups, those with events

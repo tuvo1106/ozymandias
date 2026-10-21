@@ -134,3 +134,24 @@ describe("MonitorEditor", () => {
     expect(calls.find((c) => c.path.endsWith("/backtest"))!.body).toMatchObject({ id: 3 });
   });
 });
+
+describe("EditMonitorPage", () => {
+  // The detail page caches the monitor; someone saves in between; Edit must
+  // start from the server's copy, not the cached one.
+  it("starts the draft from a fresh read, not the cache", async () => {
+    const user = userEvent.setup();
+    let warning = 10;
+    const { router } = renderAt("/monitors/3", {
+      "GET /api/v1/monitors/3": () => ({ body: monitor({ id: 3, options: { thresholds: { warning } } }) }),
+      "GET /api/v1/monitors/3/states": { body: { states: [] } },
+      "GET /api/v1/events": { body: { events: [] } },
+      "POST /api/v1/monitors/validate": { body: validAnswer },
+      "POST /api/v1/monitors/backtest": { body: backtestAnswer },
+    });
+    await screen.findByRole("link", { name: "Edit" });
+    warning = 12;
+    await user.click(screen.getByRole("link", { name: "Edit" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/monitors/3/edit"));
+    expect(await screen.findByLabelText("Warning")).toHaveValue("12");
+  });
+});

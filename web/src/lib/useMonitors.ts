@@ -47,8 +47,30 @@ export function useMonitorList(filter: MonitorFilter): UseQueryResult<StoredMoni
 }
 
 /**
- * One monitor. `poll` is off for the editor: it reads the monitor once to
- * start a draft, and a refetch could only replace what is being edited.
+ * Whether a query key is about one monitor: its row, states, events or
+ * backtest. By position, as the keys in this file are built, not by "contains
+ * the number": a 86400-second span is not monitor 86400.
+ */
+export function isAboutMonitor(key: readonly unknown[], id: number): boolean {
+  if (key[0] !== MONITORS_KEY) return false;
+  switch (key[1]) {
+    case "one":
+    case "states":
+      return key[2] === id;
+    case "events":
+      return typeof key[2] === "object" && key[2] !== null && (key[2] as { monitor_id?: number }).monitor_id === id;
+    case "backtest":
+      return key[3] === id;
+    default:
+      return false;
+  }
+}
+
+/**
+ * One monitor. `poll` is off for the editor, which seeds its draft once: a
+ * poll there would only fetch answers the draft never reads. Instead it always
+ * fetches on mount, so the draft starts from the server's copy rather than a
+ * cached one that may predate someone else's save.
  */
 export function useMonitor(id: number | undefined, poll = true): UseQueryResult<StoredMonitor> {
   return useQuery({
@@ -56,6 +78,7 @@ export function useMonitor(id: number | undefined, poll = true): UseQueryResult<
     queryFn: ({ signal }) => fetchMonitor(id as number, fetch, signal),
     enabled: id !== undefined,
     refetchInterval: poll ? MONITOR_POLL_MS : false,
+    refetchOnMount: poll ? true : "always",
   });
 }
 
