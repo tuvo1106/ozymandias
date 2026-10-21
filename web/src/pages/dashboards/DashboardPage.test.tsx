@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routes } from "../../app/routes";
+import { STATUS_COLOR } from "../../lib/monitorChart";
 import type { TimeseriesChartProps } from "../../charts/TimeseriesChart";
 import type { HeatmapChartProps } from "../../charts/HeatmapChart";
 
@@ -11,8 +12,9 @@ import type { HeatmapChartProps } from "../../charts/HeatmapChart";
 // were handed, which is what these tests are actually about — the page's job
 // is to work out what to draw, not to draw it.
 vi.mock("../../charts/TimeseriesChart", () => ({
-  TimeseriesChart: ({ labels, data, xRange, syncKey }: TimeseriesChartProps) => (
-    <div data-testid="chart" data-points={JSON.stringify(data)} data-xrange={JSON.stringify(xRange)} data-sync={syncKey}>
+  TimeseriesChart: ({ labels, data, xRange, syncKey, annotations }: TimeseriesChartProps) => (
+    <div data-testid="chart" data-points={JSON.stringify(data)} data-xrange={JSON.stringify(xRange)} data-sync={syncKey}
+      data-markers={JSON.stringify(annotations?.markers ?? null)}>
       {labels.join(" | ")}
     </div>
   ),
@@ -218,6 +220,29 @@ describe("a stored dashboard", () => {
     expect(JSON.parse(heatmap.dataset.buckets!)).toHaveLength(1);
     // The window the server evaluated, so every chart on the page lines up.
     expect(JSON.parse(heatmap.dataset.xrange!)).toEqual([1_790_000_000, 1_790_003_600]);
+  });
+
+  // The overlay is off by default, asks for the window the server evaluated
+  // when on, and marks each transition by the status it entered.
+  it("marks monitor transitions on timeseries widgets when the overlay is on", async () => {
+    const user = userEvent.setup();
+    const f = mockApi((url, init) =>
+      url.pathname === "/api/v1/events"
+        ? { body: { events: [{ id: 1, ts: "2026-09-21T15:00:00Z", kind: "transition", monitor_id: 4, group: "*", from: "OK", to: "ALERT", value: 3 }] } }
+        : defaultApi(url, init),
+    );
+    renderAt("/dashboards/2");
+    const chart = await screen.findByTestId("chart");
+    expect(chart.dataset.markers).toBe("null");
+    await waitFor(() => expect(JSON.parse(screen.getByTestId("chart").dataset.xrange!)).toEqual([1_790_000_000, 1_790_003_600]));
+    await new Promise((r) => setTimeout(r, 100)); // time for a fetch that should not happen
+    expect(f.mock.calls.some(([u]) => String(u).startsWith("/api/v1/events"))).toBe(false);
+    await user.click(screen.getByRole("checkbox", { name: "Monitor events" }));
+    await waitFor(() => expect(JSON.parse(screen.getByTestId("chart").dataset.markers!)).toEqual([
+      { x: Date.parse("2026-09-21T15:00:00Z") / 1000, color: STATUS_COLOR.ALERT },
+    ]));
+    const asked = new URL(String(f.mock.calls.find(([u]) => String(u).startsWith("/api/v1/events"))![0]), "http://localhost").searchParams;
+    expect([asked.get("from"), asked.get("to"), asked.get("kind")]).toEqual(["1790000000", "1790003600", "transition"]);
   });
 
   it("puts every chart on the dashboard in one cursor group", async () => {

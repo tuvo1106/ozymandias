@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router";
 import { NAV_ITEMS } from "../lib/nav";
+import { MonitorsBadge, StallBanner } from "./MonitorStatus";
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   [
@@ -26,13 +27,17 @@ export function Layout() {
             <NavLink key={item.path} to={item.path} className={linkClass}>
               <span>{item.label}</span>
               {!item.live && <span className="text-xs text-zinc-400 dark:text-zinc-500">{item.milestone}</span>}
+              {item.path === "/monitors" && item.live ? <MonitorsBadge /> : null}
             </NavLink>
           ))}
         </nav>
       </aside>
-      <main className="min-w-0 flex-1 p-8">
-        <Outlet />
-      </main>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <StallBanner />
+        <main className="min-w-0 flex-1 p-8">
+          <Outlet />
+        </main>
+      </div>
     </div>
   );
 }

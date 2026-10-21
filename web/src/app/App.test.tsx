@@ -37,9 +37,9 @@ describe("app shell", () => {
   });
 
   it("renders a placeholder naming the milestone for unbuilt sections, deep links included", () => {
-    renderAt("/monitors/rules");
-    expect(screen.getByRole("heading", { name: "Monitors" })).toBeInTheDocument();
-    expect(screen.getByText("Coming in M6")).toBeInTheDocument();
+    renderAt("/infrastructure/hosts");
+    expect(screen.getByRole("heading", { name: "Infrastructure" })).toBeInTheDocument();
+    expect(screen.getByText("Coming in M3")).toBeInTheDocument();
   });
 
   it("renders not-found for unknown pages inside a live section", () => {

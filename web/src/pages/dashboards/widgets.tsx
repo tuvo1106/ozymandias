@@ -24,6 +24,7 @@ import type { BatchResult } from "../../lib/dashboardsApi";
 import type { FormatColor } from "../../lib/dashboardEditor";
 import type { SketchState } from "../../lib/useDashboards";
 import type { Series } from "../../lib/metricsApi";
+import type { Marker } from "../../lib/annotations";
 import { WidgetFrame } from "./WidgetFrame";
 
 /** What every widget renderer is given. */
@@ -48,6 +49,8 @@ export interface WidgetProps {
    * widget's own list so a sentence is not repeated six times.
    */
   hiddenWarnings?: ReadonlySet<string>;
+  /** Monitor transitions to mark on a timeseries, when the overlay is on. */
+  markers?: Marker[];
 }
 
 /**
@@ -176,8 +179,10 @@ export function TimeseriesWidget({
   xRange,
   syncKey,
   hiddenWarnings,
+  markers,
 }: WidgetProps) {
   const lines = useMemo(() => linesOf(widget, results), [widget, results]);
+  const annotations = useMemo(() => (markers ? { markers } : undefined), [markers]);
   const data = useMemo(() => alignSeries(lines.map((l) => l.series)), [lines]);
   const error = firstError(results);
   return (
@@ -193,6 +198,7 @@ export function TimeseriesWidget({
         labels={lines.map((l) => l.label)}
         xRange={xRange}
         syncKey={syncKey}
+        annotations={annotations}
       />
     </WidgetFrame>
   );

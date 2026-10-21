@@ -36,13 +36,16 @@ export interface DashboardViewState {
    * been chosen; a name mapped to "" is explicitly "all".
    */
   vars: Record<string, string>;
+  /** Whether timeseries widgets mark monitor transitions in the window. */
+  events: boolean;
 }
 
-/** A fresh view: the last hour, live, nothing chosen. */
+/** A fresh view: the last hour, live, nothing chosen, no event markers. */
 export const DEFAULT_VIEW_STATE: DashboardViewState = {
   range: { kind: "relative", preset: DEFAULT_PRESET },
   live: true,
   vars: {},
+  events: false,
 };
 
 /** The prefix a variable takes in the URL, matching the query API's own. */
@@ -79,7 +82,7 @@ export function parseViewState(params: URLSearchParams): DashboardViewState {
       vars[key.slice(VAR_PREFIX.length).toLowerCase()] = value.trim();
     }
   }
-  return { range: parseRange(params), live: params.get("live") !== "0", vars };
+  return { range: parseRange(params), live: params.get("live") !== "0", vars, events: params.get("events") === "1" };
 }
 
 /**
@@ -96,13 +99,14 @@ export function serializeViewState(state: DashboardViewState): URLSearchParams {
     params.set("range", state.range.preset);
   }
   if (!state.live) params.set("live", "0");
+  if (state.events) params.set("events", "1");
   for (const name of Object.keys(state.vars).sort()) params.set(VAR_PREFIX + name, state.vars[name] ?? "");
   return params;
 }
 
-/** The keys [[serializeViewState]] owns: the range, `live`, and every `var.*`. */
+/** The keys [[serializeViewState]] owns: the range, `live`, `events`, and every `var.*`. */
 function isViewStateKey(key: string): boolean {
-  return key === "range" || key === "from" || key === "to" || key === "live" || key.startsWith(VAR_PREFIX);
+  return key === "range" || key === "from" || key === "to" || key === "live" || key === "events" || key.startsWith(VAR_PREFIX);
 }
 
 /**

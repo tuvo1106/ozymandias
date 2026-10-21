@@ -318,6 +318,21 @@ func TestBacktestMatchesLive(t *testing.T) {
 	if bt.Final["*"] != "OK" || bt.Evaluations != 36 {
 		t.Errorf("final %v after %d", bt.Final, bt.Evaluations)
 	}
+	// The line is what each evaluation compared: one point per evaluation,
+	// and at every marker the line's value is the event's.
+	if len(bt.Series) != 1 || len(bt.Series[0].Points) != bt.Evaluations || bt.SeriesOmitted != 0 {
+		t.Fatalf("series %d lines, omitted %d", len(bt.Series), bt.SeriesOmitted)
+	}
+	at := map[int64]float64{}
+	for _, p := range bt.Series[0].Points {
+		at[p.Ts.Unix()] = p.Value
+	}
+	for _, e := range bt.Events {
+		v, ok := at[e.Ts.Unix()]
+		if !ok || (e.Value == nil) != math.IsNaN(v) || (e.Value != nil && v != *e.Value) {
+			t.Errorf("event at %v has value %v, line has %v", e.Ts, e.Value, v)
+		}
+	}
 }
 
 // TestRestartMidAlertSendsNoDuplicate is L5: a new scheduler over the same

@@ -2,9 +2,12 @@ package monitor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
+	"slices"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/meta"
@@ -18,6 +21,14 @@ import (
 const (
 	MaxBacktestRange = 7 * 24 * time.Hour
 	MaxBacktestTicks = 20_000
+	// MaxBacktestSeries is how many groups' values a backtest returns. The
+	// events cover every group; the lines are for a person to look at, and
+	// past a few dozen they are not looked at, only downloaded.
+	MaxBacktestSeries = 20
+	// MaxBacktestEvents is how many events a backtest returns. Past it they
+	// are counted, not kept: a thousand groups flapping for a week is tens of
+	// millions of events, and the editor shows totals and markers.
+	MaxBacktestEvents = 5000
 )
 
 // GroupValue is one group's value in a dry run.
@@ -77,6 +88,39 @@ type Backtest struct {
 	Events      []BacktestEvent `json:"events"`
 	// Final is each group's status at the end of the range.
 	Final map[string]string `json:"final"`
+	// Transitions and Notifications count every event, kept or not;
+	// EventsOmitted is how many were past MaxBacktestEvents.
+	Transitions   int `json:"transitions"`
+	Notifications int `json:"notifications"`
+	EventsOmitted int `json:"events_omitted"`
+	// Series is the value each evaluation compared with the thresholds, per
+	// group: the editor's line. Not the raw query: what the evaluator saw
+	// after the window's reduction, so the line crosses a band exactly where
+	// a marker is. At most MaxBacktestSeries groups, those with events first;
+	// SeriesOmitted counts the rest.
+	Series        []BacktestSeries `json:"series"`
+	SeriesOmitted int              `json:"series_omitted"`
+}
+
+// BacktestSeries is one group's evaluated values.
+type BacktestSeries struct {
+	Group  string            `json:"group"`
+	Tags   map[string]string `json:"tags"`
+	Points []TickValue       `json:"points"`
+}
+
+// TickValue is one evaluation's value, encoded as [unix seconds, value],
+// with null for a tick that had no value for the group (absent, skipped by
+// require_full_window, or before the group first had data). The pair is the
+// shape the query API's points already have.
+type TickValue struct {
+	Ts    time.Time
+	Value float64 // NaN: no value
+}
+
+// MarshalJSON encodes the pair.
+func (v TickValue) MarshalJSON() ([]byte, error) {
+	return json.Marshal([2]any{v.Ts.Unix(), notify.ValuePtr(v.Value)})
 }
 
 // Backtest replays c over [from, to] on a simulated clock: every tick the
@@ -103,7 +147,7 @@ func (s *Scheduler) Backtest(ctx context.Context, c *spec.Compiled, id int64, fr
 	}
 	fetchFrom, _ := eval.Window(c, first)
 	_, fetchTo := eval.Window(c, to)
-	res := Backtest{From: from, To: to, Events: []BacktestEvent{}, Final: map[string]string{}}
+	res := Backtest{From: from, To: to, Events: []BacktestEvent{}, Final: map[string]string{}, Series: []BacktestSeries{}}
 	if !fetchTo.After(fetchFrom) {
 		return res, nil
 	}
@@ -111,31 +155,143 @@ func (s *Scheduler) Backtest(ctx context.Context, c *spec.Compiled, id int64, fr
 	if err != nil {
 		return Backtest{}, err
 	}
+	// Two passes. The first finds the events and every group; the second
+	// records lines for the MaxBacktestSeries groups shown, replaying only
+	// their data. One pass recording every group's line before choosing was
+	// groups x ticks of memory per request (a thousand groups over twenty
+	// thousand ticks is hundreds of megabytes).
+	tags := map[string]spec.Group{}
+	// The order groups first had an event in, from every event, kept or past
+	// the cap: the lines must favour the groups that did something, and a
+	// group whose events all fell past the cap did something too.
+	var eventful []string
+	hadEvent := map[string]bool{}
+	states, ticks, err := replay(ctx, c, data, first, to, func(_ int, now time.Time, st groupStep) {
+		if _, ok := tags[st.Key]; !ok {
+			tags[st.Key] = st.Group
+		}
+		if (st.Res.Changed() || st.Res.Notify != state.NotifyNone) && !hadEvent[st.Key] {
+			hadEvent[st.Key] = true
+			eventful = append(eventful, st.Key)
+		}
+		if st.Res.Changed() {
+			res.Transitions++
+		}
+		if st.Res.Notify != state.NotifyNone {
+			res.Notifications++
+		}
+		if st.Res.Changed() || st.Res.Notify != state.NotifyNone {
+			if len(res.Events) >= MaxBacktestEvents {
+				res.EventsOmitted++
+				return
+			}
+			res.Events = append(res.Events, BacktestEvent{Ts: now, Group: st.Key, From: string(st.Res.From),
+				To: string(st.Res.To), Value: notify.ValuePtr(st.Value), Notify: st.Res.Notify != state.NotifyNone,
+				Reason: string(st.Res.Notify)})
+		}
+	})
+	if err != nil {
+		return Backtest{}, err
+	}
+	res.Evaluations = ticks
+	for k, t := range states {
+		res.Final[k] = string(t.State.Status)
+	}
+	shown, omitted := pickSeries(slices.Collect(maps.Keys(tags)), eventful)
+	res.SeriesOmitted = omitted
+	// Every tick a group was not stepped (before its first value, or skipped
+	// by require_full_window) stays NaN: a null, one point per evaluation.
+	values := make(map[string][]float64, len(shown))
+	for _, k := range shown {
+		v := make([]float64, res.Evaluations)
+		for i := range v {
+			v[i] = math.NaN()
+		}
+		values[k] = v
+	}
+	if len(shown) > 0 {
+		// Groups step independently (advance), so the second pass replays only
+		// the chosen groups' data: twenty groups' work, not a second full run.
+		chosen := data
+		chosen.Series = make(map[string]*eval.Series, len(shown))
+		for _, k := range shown {
+			if s, ok := data.Series[k]; ok {
+				chosen.Series[k] = s
+			}
+		}
+		if _, _, err := replay(ctx, c, chosen, first, to, func(i int, _ time.Time, st groupStep) {
+			if v, ok := values[st.Key]; ok {
+				v[i] = st.Value
+			}
+		}); err != nil {
+			return Backtest{}, err
+		}
+	}
+	res.Series = make([]BacktestSeries, 0, len(shown))
+	for _, k := range shown {
+		line := BacktestSeries{Group: k, Tags: tags[k], Points: make([]TickValue, res.Evaluations)}
+		for i, v := range values[k] {
+			line.Points[i] = TickValue{Ts: first.Add(time.Duration(i) * c.Interval), Value: v}
+		}
+		res.Series = append(res.Series, line)
+	}
+	return res, nil
+}
+
+// replay steps c through every tick from first to to, as the scheduler would,
+// calling each with the tick's index and every group step, and returns the
+// final states and how many ticks there were. Deterministic: two replays over the same data step the same
+// groups the same way, which is what lets Backtest run it twice.
+func replay(ctx context.Context, c *spec.Compiled, data eval.Data, first, to time.Time,
+	each func(i int, now time.Time, st groupStep)) (map[string]tracked, int, error) {
 	states := map[string]tracked{}
+	i := 0
 	for now := first; !now.After(to); now = now.Add(c.Interval) {
 		if err := ctx.Err(); err != nil {
-			return Backtest{}, err
+			return nil, 0, err
 		}
 		wf, wt := eval.Window(c, now)
 		vals := eval.Reduce(c, data, wf, wt)
 		for _, st := range advance(c, states, vals, data.AbsentIsZero, now, wt, false) {
+			each(i, now, st)
 			if st.Deleted {
 				delete(states, st.Key)
 				continue
 			}
 			states[st.Key] = tracked{State: st.Next, Group: st.Group}
-			if st.Res.Changed() || st.Res.Notify != state.NotifyNone {
-				res.Events = append(res.Events, BacktestEvent{Ts: now, Group: st.Key, From: string(st.Res.From),
-					To: string(st.Res.To), Value: notify.ValuePtr(st.Value), Notify: st.Res.Notify != state.NotifyNone,
-					Reason: string(st.Res.Notify)})
-			}
 		}
-		res.Evaluations++
+		i++
 	}
-	for k, t := range states {
-		res.Final[k] = string(t.State.Status)
+	return states, i, nil
+}
+
+// pickSeries chooses the MaxBacktestSeries groups whose lines are returned:
+// the groups with events first, in `eventful` order (the order of their first
+// event, which is the order a person reads the markers in), then the rest by
+// key. It returns them and how many were left out.
+func pickSeries(keys []string, eventful []string) ([]string, int) {
+	known := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		known[k] = true
 	}
-	return res, nil
+	order := make([]string, 0, len(keys))
+	seen := map[string]bool{}
+	for _, g := range eventful {
+		if !seen[g] && known[g] {
+			seen[g] = true
+			order = append(order, g)
+		}
+	}
+	rest := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	slices.Sort(rest)
+	order = append(order, rest...)
+	n := min(len(order), MaxBacktestSeries)
+	return order[:n], len(order) - n
 }
 
 // ErrNoMentions is returned by a test notification for a message that names

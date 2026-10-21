@@ -109,6 +109,14 @@ export async function putJSON(url: string, body: unknown, fetchImpl: FetchLike =
   );
 }
 
+/**
+ * DELETEs a resource. The answer is usually empty (204), so this resolves to
+ * undefined then; failures are reported as for [[getJSON]].
+ */
+export async function deleteJSON(url: string, fetchImpl: FetchLike = fetch, signal?: AbortSignal): Promise<unknown> {
+  return requestJSON(url, { method: "DELETE", signal, headers: { Accept: "application/json" } }, fetchImpl);
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }

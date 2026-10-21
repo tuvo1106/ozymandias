@@ -62,7 +62,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
     path: "/monitors",
     milestone: "M6",
     description: "Alert on any query, with hysteresis, no-data detection and notifications.",
-    live: false,
+    live: true,
   },
 ];
 

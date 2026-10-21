@@ -44,8 +44,10 @@ func (f *fakeEngine) Backtest(_ context.Context, c *spec.Compiled, id int64, fro
 		return monitor.Backtest{}, errors.New("backtest: too long")
 	}
 	v := 25.0
-	return monitor.Backtest{From: from.UTC(), To: to.UTC(), Evaluations: 3, Final: map[string]string{"*": "ALERT"},
-		Events: []monitor.BacktestEvent{{Ts: from.Add(time.Minute).UTC(), Group: "*", From: "OK", To: "ALERT", Value: &v, Notify: true, Reason: "transition"}}}, nil
+	return monitor.Backtest{From: from.UTC(), To: to.UTC(), Evaluations: 3, Transitions: 1, Notifications: 1, Final: map[string]string{"*": "ALERT"},
+		Events: []monitor.BacktestEvent{{Ts: from.Add(time.Minute).UTC(), Group: "*", From: "OK", To: "ALERT", Value: &v, Notify: true, Reason: "transition"}},
+		Series: []monitor.BacktestSeries{{Group: "*", Tags: map[string]string{}, Points: []monitor.TickValue{
+			{Ts: from.Add(30 * time.Second), Value: math.NaN()}, {Ts: from.Add(time.Minute), Value: v}}}}}, nil
 }
 func (f *fakeEngine) TestNotification(_ context.Context, row meta.MonitorRow) (map[string]error, error) {
 	f.tested = append(f.tested, row.ID)

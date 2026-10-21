@@ -29,6 +29,7 @@
 import { useEffect, useRef, useSyncExternalStore, type RefObject } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
+import { clipBand, inXRange, yRangeIncluding, type ChartAnnotations } from "../lib/annotations";
 import { formatValue, hasIsolatedValues, seriesColor, type AlignedData } from "../lib/chartData";
 
 /** Props for TimeseriesChart. */
@@ -55,6 +56,11 @@ export interface TimeseriesChartProps {
    * every group, which is what a standalone chart like the explorer's wants.
    */
   syncKey?: string;
+  /**
+   * Bands, lines, spans and markers drawn with the series (lib/annotations.ts).
+   * Changing them redraws without rebuilding, like data.
+   */
+  annotations?: ChartAnnotations;
 }
 
 /** Shortest canvas worth drawing on; below this an axis has no room for a tick. */
@@ -78,13 +84,89 @@ function prefersDark(): boolean {
   return window.matchMedia?.(DARK_QUERY).matches ?? false;
 }
 
-function buildOptions(
+/**
+ * Draws the annotations in canvas pixels. Bands and spans go under the series
+ * (the drawAxes hook runs before them), lines and markers over them (draw runs
+ * after), so a threshold line is never hidden by the series it judges.
+ */
+function drawUnder(u: uPlot, a: ChartAnnotations | undefined) {
+  if (!a) return;
+  const { ctx } = u;
+  const { left, top, width, height } = u.bbox;
+  const ymin = u.scales.y?.min ?? 0;
+  const ymax = u.scales.y?.max ?? 0;
+  const xmin = u.scales.x?.min ?? 0;
+  const xmax = u.scales.x?.max ?? 0;
+  ctx.save();
+  for (const b of a.bands ?? []) {
+    const c = clipBand(b.from, b.to, ymin, ymax);
+    if (!c) continue;
+    const y0 = u.valToPos(c[1], "y", true);
+    const y1 = u.valToPos(c[0], "y", true);
+    ctx.fillStyle = b.color;
+    ctx.fillRect(left, y0, width, y1 - y0);
+  }
+  for (const s of a.spans ?? []) {
+    const c = clipBand(s.from, s.to, xmin, xmax);
+    if (!c) continue;
+    const x0 = u.valToPos(c[0], "x", true);
+    const x1 = u.valToPos(c[1], "x", true);
+    ctx.fillStyle = s.color;
+    ctx.fillRect(x0, top, x1 - x0, height);
+  }
+  ctx.restore();
+}
+
+function drawOver(u: uPlot, a: ChartAnnotations | undefined) {
+  if (!a) return;
+  const { ctx } = u;
+  const { left, top, width, height } = u.bbox;
+  const ymin = u.scales.y?.min ?? 0;
+  const ymax = u.scales.y?.max ?? 0;
+  const xmin = u.scales.x?.min ?? 0;
+  const xmax = u.scales.x?.max ?? 0;
+  ctx.save();
+  ctx.lineWidth = Math.max(1, devicePixelRatio);
+  for (const l of a.hlines ?? []) {
+    if (l.y < ymin || l.y > ymax) continue;
+    const y = Math.round(u.valToPos(l.y, "y", true));
+    ctx.strokeStyle = l.color;
+    ctx.setLineDash(l.dash ? [6 * devicePixelRatio, 4 * devicePixelRatio] : []);
+    ctx.beginPath();
+    ctx.moveTo(left, y);
+    ctx.lineTo(left + width, y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  for (const m of a.markers ?? []) {
+    if (!inXRange(m.x, xmin, xmax)) continue;
+    const x = Math.round(u.valToPos(m.x, "x", true));
+    ctx.strokeStyle = m.color;
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, top + height);
+    ctx.stroke();
+    // A small flag at the top, so a marker on top of a line is still seen.
+    ctx.fillStyle = m.color;
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x + 6 * devicePixelRatio, top);
+    ctx.lineTo(x, top + 6 * devicePixelRatio);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** Exported for tests: the options a chart is built with. */
+export function buildOptions(
   labels: string[],
   dark: boolean,
   width: number,
   height: number,
   xRange: RefObject<[number, number] | undefined>,
   syncKey: string | undefined,
+  annotations: RefObject<ChartAnnotations | undefined>,
+  includesY: boolean,
 ): uPlot.Options {
   const ink = dark ? "#a1a1aa" : "#52525b";
   const grid = dark ? "#27272a" : "#e4e4e7";
@@ -97,6 +179,14 @@ function buildOptions(
         time: true,
         range: (_u, min, max) => xRange.current ?? [min, max],
       },
+      // Only for a chart that asks to include values; every other chart
+      // keeps uPlot's own auto-range, which the dashboards were tuned with.
+      // Whether it asks is part of the chart's rebuild key.
+      ...(includesY ? { y: { range: (_u: uPlot, min: number, max: number) => yRangeIncluding(min, max, annotations.current?.yInclude) } } : {}),
+    },
+    hooks: {
+      drawAxes: [(u) => drawUnder(u, annotations.current)],
+      draw: [(u) => drawOver(u, annotations.current)],
     },
     axes: [axis, { ...axis, size: 60, values: (_u, splits) => splits.map((v) => formatValue(v)) }],
     series: [
@@ -161,17 +251,20 @@ function fit(plot: uPlot, el: HTMLElement, explicit: number | undefined) {
 }
 
 /** A uPlot line chart that follows its container's size. */
-export function TimeseriesChart({ data, labels, xRange, height, syncKey }: TimeseriesChartProps) {
+export function TimeseriesChart({ data, labels, xRange, height, syncKey, annotations }: TimeseriesChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const xRangeRef = useRef(xRange);
   const dataRef = useRef(data);
+  const annotationsRef = useRef(annotations);
   const dark = useSyncExternalStore(subscribeDark, prefersDark, () => false);
   const seriesKey = JSON.stringify(labels);
+  const includesY = (annotations?.yInclude?.length ?? 0) > 0;
 
   useEffect(() => {
     xRangeRef.current = xRange;
     dataRef.current = data;
+    annotationsRef.current = annotations;
   });
 
   // Build (and rebuild) the chart whenever something uPlot can't change in
@@ -180,7 +273,7 @@ export function TimeseriesChart({ data, labels, xRange, height, syncKey }: Times
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const opts = buildOptions(JSON.parse(seriesKey) as string[], dark, el.clientWidth || 600, height ?? FALLBACK_HEIGHT, xRangeRef, syncKey);
+    const opts = buildOptions(JSON.parse(seriesKey) as string[], dark, el.clientWidth || 600, height ?? FALLBACK_HEIGHT, xRangeRef, syncKey, annotationsRef, includesY);
     const plot = new uPlot(opts, dataRef.current as uPlot.AlignedData, el);
     plotRef.current = plot;
     // Once, now that there is a legend to measure; then on every resize.
@@ -192,11 +285,32 @@ export function TimeseriesChart({ data, labels, xRange, height, syncKey }: Times
       plot.destroy();
       plotRef.current = null;
     };
-  }, [seriesKey, dark, height, syncKey]);
+  }, [seriesKey, dark, height, syncKey, includesY]);
 
   useEffect(() => {
     plotRef.current?.setData(data as uPlot.AlignedData, true);
   }, [data, xRange]);
+
+  // New annotations. Only a change to the values the y axis must include
+  // needs a rescale (setData); new markers or bands only need a redraw, and
+  // the first run is the chart just built, which has drawn them already.
+  const yKey = JSON.stringify(annotations?.yInclude ?? []);
+  const drawnY = useRef(yKey);
+  const firstAnnotations = useRef(true);
+  useEffect(() => {
+    if (firstAnnotations.current) {
+      firstAnnotations.current = false;
+      return;
+    }
+    const plot = plotRef.current;
+    if (!plot) return;
+    if (drawnY.current !== yKey) {
+      drawnY.current = yKey;
+      plot.setData(dataRef.current as uPlot.AlignedData, true);
+    } else {
+      plot.redraw(false);
+    }
+  }, [annotations, yKey]);
 
   return <div ref={containerRef} className="h-full w-full" data-testid="timeseries-chart" />;
 }

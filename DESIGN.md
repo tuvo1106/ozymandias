@@ -810,3 +810,14 @@ environment variables named in config, never stored or returned.
 says `stalled`, the UI shows a banner, and `ozy.monitor.last_eval_age_seconds` is there for something
 outside ozymandias to watch.
 
+**The UI draws only what the server answers.** The editor sends each paused draft to `validate`
+and backtests a valid one over the last day. The chart is the backtest's own `series` (the value
+each evaluation compared, after the window's reduction, not the raw query), the bands are
+`levels` (thresholds with every default applied), the shading is the `window` an evaluation at now
+reads, and the markers are the state machine's transitions. Nothing is worked out in the browser
+from the query text: a second reading of the grammar there would be a second answer to "would this
+have fired", and the one that runs the monitor is the one that decides. The detail page draws the
+same replay with the transitions that were *recorded*, so a gap between the two (late data, an
+edit since) is visible. A monitor with no status is shown as *why* (no data yet, disabled, not
+running), never as OK.
+

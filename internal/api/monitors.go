@@ -17,6 +17,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/meta"
 	"github.com/tuvo1106/ozymandias/internal/monitor"
+	"github.com/tuvo1106/ozymandias/internal/monitor/eval"
 	"github.com/tuvo1106/ozymandias/internal/monitor/notify"
 	"github.com/tuvo1106/ozymandias/internal/monitor/spec"
 	"github.com/tuvo1106/ozymandias/internal/monitor/state"
@@ -556,10 +557,16 @@ func (m *Monitors) validate(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"valid": false, "errors": strings.Split(err.Error(), "\n")})
 		return
 	}
+	now := m.Clock.Now()
+	// The window an evaluation at now reads, which the editor shades: with
+	// the delay, it ends before now, and that gap is the most common answer
+	// to "why has it not fired yet".
+	wf, wt := eval.Window(c, now)
 	resp := map[string]any{"valid": true, "query": c.Parsed.String(), "grouped": c.Parsed.Grouped(),
-		"levels": levelsJSON(c.Levels), "mentions": nonNil(c.Template.Recipients())}
+		"levels": levelsJSON(c.Levels), "mentions": nonNil(c.Template.Recipients()),
+		"window": map[string]int64{"from": wf.Unix(), "to": wt.Unix()}, "interval_s": int64(c.Interval / time.Second)}
 	if m.Engine != nil {
-		groups, err := m.Engine.DryRun(r.Context(), c, m.Clock.Now())
+		groups, err := m.Engine.DryRun(r.Context(), c, now)
 		if err != nil {
 			resp["eval_error"] = err.Error()
 		} else {
