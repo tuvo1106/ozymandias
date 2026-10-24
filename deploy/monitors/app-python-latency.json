@@ -1,0 +1,18 @@
+{
+  "uid": "app-python-latency",
+  "name": "app-python: a route's p95 latency is over a second",
+  "type": "metric",
+  "query": "avg(last_5m):p95:trace.http.request.duration{service:shikomi-api} by {resource} > 1",
+  "options": {
+    "thresholds": {
+      "critical": 1,
+      "warning": 0.7
+    },
+    "evaluation_interval_s": 60
+  },
+  "message": "p95 latency of {{.Group.resource}} is {{printf \"%.2f\" .Value}} s (alert above {{.Threshold}} s). Traces: service shikomi-api, slowest first. @log @hook",
+  "tags": [
+    "app:shikomi",
+    "component:api"
+  ]
+}

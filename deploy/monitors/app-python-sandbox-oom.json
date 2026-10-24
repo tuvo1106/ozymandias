@@ -1,0 +1,14 @@
+{
+  "uid": "app-python-sandbox-oom",
+  "name": "app-python: a judge sandbox was killed for memory",
+  "type": "metric",
+  "query": "sum(last_3m):sum:container.exits{image_name:shikomi-judge*,oom_killed:true}.as_count() > 0",
+  "options": {
+    "evaluation_interval_s": 60
+  },
+  "message": "{{printf \"%.0f\" .Value}} judge sandbox(es) were OOM-killed in three minutes: a submission hit the memory limit, or the limit is too low for a language. @log @hook",
+  "tags": [
+    "app:shikomi",
+    "component:judge"
+  ]
+}

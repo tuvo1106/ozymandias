@@ -1,0 +1,18 @@
+{
+  "uid": "app-python-5xx-rate",
+  "name": "app-python: more than 2% of requests fail",
+  "type": "metric",
+  "query": "sum(last_5m):(sum:http.request.count{service:shikomi-api}.as_count() - sum:http.request.count{service:shikomi-api,!status:5*}.as_count()) / sum:http.request.count{service:shikomi-api}.as_count() * 100 > 2",
+  "options": {
+    "thresholds": {
+      "critical": 2,
+      "critical_recovery": 1
+    },
+    "evaluation_interval_s": 60
+  },
+  "message": "{{printf \"%.1f\" .Value}}% of the api's requests answered 5xx over five minutes. @log @hook",
+  "tags": [
+    "app:shikomi",
+    "component:api"
+  ]
+}

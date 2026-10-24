@@ -126,6 +126,8 @@ transitions); a triggered-monitors badge in the nav.
 - app-python: judge queue backlog (above); `p95:trace.http.request.duration{service:app-python-api} by {resource} > 1` s;
   API 5xx rate > 2%; `logs("service:app-python-worker status:error").rollup("count").last("5m") > 5`;
   judge sandbox OOM exits > 0; worker no-data (heartbeat metric absent 3m).
+- *Shipped in M6: app-python and ozymandias only ([ADR-0053](../adr/0053-m6-ships-app-python-monitors-only.md)).
+  The app-node and app-ruby bullets below are the plan for when those apps are onboarded.*
 - app-node: 5xx count > 0 over 10m; `data/` disk usage gauge > 80%
   (emitted by a tiny SDK gauge on a timer — see docs/private/integrations.md);
   Metron `burstRemaining` < 3 (from its existing log field via a log monitor
@@ -178,10 +180,12 @@ delay, state in SQLite, Go templates; `docs/notes/M6.md`.
 
 ## 8. Acceptance criteria
 
-- [ ] Flooding app-python with submissions (script in `scripts/demo/`) fires the backlog monitor to Discord/webhook within `window + delay + interval`, then recovers on its own with one recovery message.
-- [ ] A value oscillating inside the hysteresis band produces zero extra notifications (scenario test + live demo).
-- [ ] Stopping the app-python worker triggers the no-data monitor; restarting clears it.
-- [ ] Restarting ozyd during an active alert sends no duplicate.
-- [ ] The log monitor fires on injected worker errors.
-- [ ] The editor's backtest markers match what the live evaluator then does.
-- [ ] Tests and docs deliverables complete; `docs/notes/M6.md` has evidence.
+*Evidence for each box: [docs/notes/M6.md](../notes/M6.md#evidence-the-acceptance-runs-2026-10-23-compose-stack--shikomi-with-the-ozymandias-override).*
+
+- [x] Flooding app-python with submissions (script in `scripts/demo/`) fires the backlog monitor to Discord/webhook within `window + delay + interval`, then recovers on its own with one recovery message.
+- [x] A value oscillating inside the hysteresis band produces zero extra notifications (scenario test + live demo).
+- [x] Stopping the app-python worker triggers the no-data monitor; restarting clears it.
+- [x] Restarting ozyd during an active alert sends no duplicate.
+- [x] The log monitor fires on injected worker errors.
+- [x] The editor's backtest markers match what the live evaluator then does.
+- [x] Tests and docs deliverables complete; `docs/notes/M6.md` has evidence.

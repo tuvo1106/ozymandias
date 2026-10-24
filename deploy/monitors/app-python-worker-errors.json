@@ -1,0 +1,14 @@
+{
+  "uid": "app-python-worker-errors",
+  "name": "app-python: the worker is logging errors",
+  "type": "log",
+  "query": "logs(\"service:shikomi-worker status:error\").rollup(\"count\").last(\"5m\") > 5",
+  "options": {
+    "evaluation_interval_s": 60
+  },
+  "message": "The judge worker logged {{printf \"%.0f\" .Value}} errors in five minutes. Logs: service:shikomi-worker status:error. @log @hook",
+  "tags": [
+    "app:shikomi",
+    "component:worker"
+  ]
+}
