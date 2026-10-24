@@ -8,7 +8,7 @@
     "notify_no_data": true,
     "no_data_timeframe_m": 3
   },
-  "message": "{{if .IsNoData}}The {{.Group.env}} judge worker has sent no heartbeat for three minutes: it is down or cannot reach the agent, and submissions are not being judged.{{else}}The judge worker heartbeat is {{.Status}}.{{end}} @log @hook",
+  "message": "{{if .IsNoData}}The {{.Group.env}} judge worker has sent no heartbeat for three minutes: it is down or cannot reach the agent, and submissions are not being judged.{{else if .IsRecovery}}The {{.Group.env}} judge worker is reporting again.{{else}}The {{.Group.env}} judge worker heartbeat is {{.Status}}.{{end}} @log @hook",
   "tags": [
     "app:shikomi",
     "component:worker"

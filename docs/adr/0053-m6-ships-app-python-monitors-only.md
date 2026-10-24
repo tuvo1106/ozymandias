@@ -31,9 +31,14 @@ app existed:
   - **5xx:** `.rollup(sum, 120)` on both terms, `max(last_6m)`. Rolled-up buckets are fixed
     (epoch-aligned), so one five-minute bucket would split a burst that straddles its boundary
     into two diluted halves. With two-minute buckets and the max of the last three, a burst of
-    three minutes or more fills a whole bucket wherever it falls, and a bucket closes within two
-    minutes. `TestShippedErrorRatesReadWholeRatios` evaluates the shipped file, including that
-    burst.
+    four minutes (twice the bucket) or more fills a whole bucket wherever it falls, and one of two
+    to four minutes still puts at least half its rate into one bucket. A bucket closes within two
+    minutes. `TestShippedErrorRatesReadWholeRatios` evaluates the shipped file with bursts swept
+    across every ten-second offset of a bucket.
+  - **No minimum traffic.** On a quiet stack, one 5xx among ten requests in two minutes reads 10%
+    and alerts. That is the error rate those requests had; the grammar has no "and at least N
+    requests" gate, and a smoothed ratio (`5xx / (all + k)`) would change what the number means.
+    A minimum-volume option on monitors is the fix if it proves noisy.
   - **Latency:** `.rollup(max, 300)`, `last(last_5m)`: one merged five-minute p95. A shorter
     regression can be split across two buckets and missed. A p95 monitor is for sustained
     regressions, and the five-minute sketch is what keeps one slow request from paging.

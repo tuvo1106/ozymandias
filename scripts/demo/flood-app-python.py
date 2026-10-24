@@ -99,10 +99,12 @@ def main() -> None:
     app = App(args.base)
     stamp(f"registering {args.users} users, 5 a minute (the auth rate limit)")
     tokens = []
+    first_token = None
     for i in range(args.users):
         if i and i % 5 == 0:
             time.sleep(61)
         tokens.append(make_user(app, args.container))
+        first_token = first_token or time.monotonic()
     status, problem = app.call("GET", f"/problems/{args.problem}", token=tokens[0])
     if status != 200:
         sys.exit(f"problem {args.problem}: {status}")
@@ -113,7 +115,12 @@ def main() -> None:
     pending: dict[str, str | None] = {t: None for t in tokens}  # token -> its submission in flight
     resting: dict[str, float] = {}  # token -> when it may POST again, after a 429
     sent = refused = failed = 0
-    end = time.monotonic() + args.duration
+    # The estimate above ignores the verify step and slow answers, so stop by the oldest token's
+    # real age too, a round's worth of timeouts before it expires.
+    margin = 60 + 2 * 15 * args.users / 10
+    end = min(time.monotonic() + args.duration, first_token + TOKEN_LIFETIME_S - margin)
+    if end < time.monotonic() + args.duration:
+        stamp(f"the flood will stop after {end - time.monotonic():.0f}s, before the first token expires")
     while time.monotonic() < end:
         for token, sid in pending.items():
             if resting.get(token, 0) > time.monotonic():
