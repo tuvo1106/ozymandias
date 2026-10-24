@@ -120,6 +120,9 @@ widget nobody can see, which stores happily and is then blamed on the browser.
 | `table` | groups as rows, queries as columns | ≥1 query with a `reducer` |
 | `heatmap` | a distribution's sketch bins over time | exactly 1 `dist:` query |
 | `note` | markdown | `markdown`, and **no** queries |
+| `monitor_summary` | the monitors a filter selects, worst first | optional `monitor_filter`, optional `limit`; **no** queries |
+| `alert_value` | one monitor's status and its worst group's value | `monitor_uid`; **no** queries |
+| `service_summary` | a card per service: req/s, error %, p95, a sparkline, and a status dot | optional `env`, optional `limit`; **no** queries |
 
 **A note's text is rendered as text, not as HTML.** Anyone who can `POST` a
 dashboard can write one, and turning stored text into markup is how a
@@ -130,8 +133,8 @@ The field is named `markdown` because that is what it will be once a sanitizer
 has been chosen on purpose.
 
 A field that belongs to another type is an error rather than ignored: a
-`markdown` on a timeseries, a `limit` on anything but a toplist, a `precision`
-on a chart. Ignoring it silently is how a dashboard ends up with a setting
+`markdown` on a timeseries, a `limit` on anything but a toplist or a summary,
+a `precision` on a chart, a `monitor_uid` on anything but an alert value. Ignoring it silently is how a dashboard ends up with a setting
 nobody can find the effect of.
 
 `heatmap` takes exactly one query, and its aggregator must be **`dist:`** — the
@@ -145,6 +148,32 @@ refused too: `dist:` on any other widget type, since those are drawn from
 Two distributions drawn over each other are not readable by anybody, so a
 heatmap refuses a second query rather than draw something misleading — use two
 widgets.
+
+### Monitor and service widgets
+
+The last three types draw from their own API rather than from metric queries,
+so they take none, and the dashboard's template variables do not apply to them.
+
+- **`monitor_summary`** lists what the Monitors page would for the same filter:
+  `monitor_filter` is `{"tag": "team:shop", "status": ["ALERT", "WARN", "NO_DATA"],
+  "q": "queue"}`, every part optional. `tag` and `q` mean what the monitor list's
+  `?tag=` and `?q=` mean ([api.md](api.md)); `status` is a set of `OK`, `WARN`,
+  `ALERT`, `NO_DATA`, because "triggered" is three of them. A monitor with no
+  status yet is in no status, so a filter naming statuses leaves it out. `limit`
+  (1–100, default 10) cuts the list and says how many more there are.
+- **`alert_value`** names its monitor by `monitor_uid`, not by id: ids differ per
+  database, and a uid is what lets a shipped dashboard name a shipped monitor.
+  The value is the worst group's, as the monitor last evaluated it. A uid that
+  names no monitor is said in the widget, not drawn as a blank.
+- **`service_summary`** reads the APM service table (`GET /api/v1/services`):
+  one card per service and entry-span kind, over the dashboard's time range,
+  counted from every request before trace sampling. `env` narrows it to one
+  environment. The dot is the worst status among the monitors **tagged
+  `service:<name>`**; a service with none says "no monitors", never a green dot.
+
+Each says which kind of nothing it has (no monitor matches, nothing is triggered,
+no service handled a request), because on Home a blank square reads as "all is
+well" whichever it is.
 
 ### Queries
 

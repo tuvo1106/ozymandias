@@ -59,8 +59,8 @@ type TemplateVar struct {
 // today and draws a blank square forever.
 type Type string
 
-// The widget types this milestone draws. Log, trace and monitor widgets join
-// them in later milestones (docs/plan/ui.md has the end-state catalog).
+// The widget types this build draws. Log and trace widgets join them in later
+// work (docs/plan/ui.md has the end-state catalog).
 const (
 	// TypeTimeseries is a line, area or bar chart over time.
 	TypeTimeseries Type = "timeseries"
@@ -75,7 +75,31 @@ const (
 	// TypeNote is markdown: a title, a runbook link, an explanation of what
 	// the chart next to it means.
 	TypeNote Type = "note"
+	// TypeMonitorSummary lists the monitors a MonitorFilter selects, worst
+	// first: "what is triggered" on a dashboard.
+	TypeMonitorSummary Type = "monitor_summary"
+	// TypeAlertValue is one monitor's status and value as a big number,
+	// named by MonitorUID.
+	TypeAlertValue Type = "alert_value"
+	// TypeServiceSummary is a card per service: request rate, error rate,
+	// p95 and a sparkline from the APM tables, and a status dot from the
+	// monitors tagged with the service.
+	TypeServiceSummary Type = "service_summary"
 )
+
+// MonitorFilter selects the monitors a monitor_summary lists. Tag and Name
+// mean what the monitor list's `?tag=` and `?q=` mean (docs/api.md), so the
+// widget lists what the Monitors page would. Statuses is a set rather than the
+// list's single `?status=`, because "triggered" is three statuses.
+type MonitorFilter struct {
+	// Tag is one exact tag, `team:shop`.
+	Tag string `json:"tag,omitempty"`
+	// Statuses keeps monitors whose worst status is one of these. Empty keeps
+	// every monitor, including those with no status yet.
+	Statuses []string `json:"status,omitempty"`
+	// Name is a case-insensitive substring of the monitor's name.
+	Name string `json:"q,omitempty"`
+}
 
 // Widget is one tile.
 //
@@ -110,11 +134,21 @@ type Widget struct {
 	// first match wins.
 	ConditionalFormats []ConditionalFormat `json:"conditional_formats,omitempty"`
 
-	// Limit is how many rows a toplist keeps.
+	// Limit is how many rows a toplist, monitor_summary or service_summary
+	// keeps.
 	Limit int `json:"limit,omitempty"`
 
 	// Markdown is a note's body.
 	Markdown string `json:"markdown,omitempty"`
+
+	// MonitorFilter is what a monitor_summary lists.
+	MonitorFilter *MonitorFilter `json:"monitor_filter,omitempty"`
+	// MonitorUID names the monitor an alert_value shows. A uid rather than an
+	// id, so a shipped dashboard can name a shipped monitor: ids differ per
+	// database, uids are what provisioning keys on.
+	MonitorUID string `json:"monitor_uid,omitempty"`
+	// Env narrows a service_summary to one environment; empty is every one.
+	Env string `json:"env,omitempty"`
 }
 
 // Layout places a widget on the grid. Units are grid cells, not pixels, so a

@@ -144,7 +144,8 @@ func (w *Widget) validate(where string, declared map[string]bool) []error {
 	}
 	errs = append(errs, w.Layout.validate(where)...)
 
-	known := []Type{TypeTimeseries, TypeQueryValue, TypeToplist, TypeTable, TypeHeatmap, TypeNote}
+	known := []Type{TypeTimeseries, TypeQueryValue, TypeToplist, TypeTable, TypeHeatmap, TypeNote,
+		TypeMonitorSummary, TypeAlertValue, TypeServiceSummary}
 	if !slices.Contains(known, w.Type) {
 		strs := make([]string, len(known))
 		for i, k := range known {
@@ -173,11 +174,16 @@ func (w *Widget) validate(where string, declared map[string]bool) []error {
 		// and conditional formats would validate — while the docs say a field
 		// belonging to another type is an error. The exemption was an accident
 		// of where the early return sat.
-		return append(errs, w.foreignFields(where, "a note")...)
+		errs = append(errs, w.foreignFields(where, "a note")...)
+		return append(errs, w.feedFields(where)...)
 	}
 	if w.Markdown != "" {
 		errs = append(errs, invalidf("%s: markdown belongs to a note, not a %s", where, w.Type))
 	}
+	if isFeedWidget(w.Type) {
+		return append(errs, w.validateFeed(where)...)
+	}
+	errs = append(errs, w.feedFields(where)...)
 
 	switch {
 	case len(w.Queries) == 0:
@@ -216,6 +222,98 @@ func (w *Widget) validate(where string, declared map[string]bool) []error {
 	}
 	if w.YAxis != nil {
 		errs = append(errs, w.YAxis.validate(where, w.Type)...)
+	}
+	return errs
+}
+
+// isFeedWidget is whether a widget draws from its own API rather than from
+// metric queries: the monitor list, one monitor, or the APM tables.
+func isFeedWidget(t Type) bool {
+	return t == TypeMonitorSummary || t == TypeAlertValue || t == TypeServiceSummary
+}
+
+// monitorStatuses are the statuses a monitor_filter may name, as the monitor
+// API spells them.
+var monitorStatuses = []string{"OK", "WARN", "ALERT", "NO_DATA"}
+
+// validateFeed checks a monitor_summary, alert_value or service_summary.
+// None of them takes queries: what they show is chosen by their own field,
+// and a query on one is a sign the author expects it to draw something it
+// will not.
+func (w *Widget) validateFeed(where string) []error {
+	var errs []error
+	if len(w.Queries) > 0 {
+		errs = append(errs, invalidf("%s: a %s has no queries", where, w.Type))
+	}
+	if w.Precision != nil {
+		errs = append(errs, invalidf("%s: precision belongs to a query_value or a table, not a %s", where, w.Type))
+	}
+	if w.YAxis != nil {
+		errs = append(errs, invalidf("%s: yaxis belongs to a timeseries or a heatmap, not a %s", where, w.Type))
+	}
+	if len(w.ConditionalFormats) > 0 {
+		errs = append(errs, invalidf("%s: conditional_formats belong to a query_value or a table, not a %s", where, w.Type))
+	}
+	if w.Type == TypeAlertValue {
+		if w.Limit != 0 {
+			errs = append(errs, invalidf("%s: an alert_value shows one monitor and takes no limit", where))
+		}
+	} else if w.Limit < 0 || w.Limit > 100 {
+		errs = append(errs, invalidf("%s: limit %d is outside 1…100 (0 means the default)", where, w.Limit))
+	}
+
+	if w.Type == TypeMonitorSummary {
+		if f := w.MonitorFilter; f != nil {
+			if len(f.Tag) > MaxTitle || len(f.Name) > MaxTitle {
+				errs = append(errs, invalidf("%s: monitor_filter tag or q is over %d bytes", where, MaxTitle))
+			}
+			seen := map[string]bool{}
+			for _, st := range f.Statuses {
+				if !slices.Contains(monitorStatuses, st) {
+					errs = append(errs, invalidf("%s: monitor_filter status %q is not one of %s", where, st, strings.Join(monitorStatuses, ", ")))
+				} else if seen[st] {
+					errs = append(errs, invalidf("%s: monitor_filter status %q is listed twice", where, st))
+				}
+				seen[st] = true
+			}
+		}
+	} else if w.MonitorFilter != nil {
+		errs = append(errs, invalidf("%s: monitor_filter belongs to a monitor_summary, not a %s", where, w.Type))
+	}
+
+	switch {
+	case w.Type == TypeAlertValue && strings.TrimSpace(w.MonitorUID) == "":
+		errs = append(errs, invalidf("%s: an alert_value needs monitor_uid", where))
+	case w.Type != TypeAlertValue && w.MonitorUID != "":
+		errs = append(errs, invalidf("%s: monitor_uid belongs to an alert_value, not a %s", where, w.Type))
+	}
+
+	if w.Type == TypeServiceSummary {
+		// The APM API refuses these in env, because a metric query cannot
+		// express them; refusing at save says so where it can be fixed.
+		if strings.ContainsAny(w.Env, ",{}\n") {
+			errs = append(errs, invalidf("%s: env %q cannot hold a comma, a brace or a newline", where, w.Env))
+		}
+		if len(w.Env) > MaxTitle {
+			errs = append(errs, invalidf("%s: env is %d bytes; the limit is %d", where, len(w.Env), MaxTitle))
+		}
+	} else if w.Env != "" {
+		errs = append(errs, invalidf("%s: env belongs to a service_summary, not a %s", where, w.Type))
+	}
+	return errs
+}
+
+// feedFields reports the feed widgets' fields on a widget of another type.
+func (w *Widget) feedFields(where string) []error {
+	var errs []error
+	if w.MonitorFilter != nil {
+		errs = append(errs, invalidf("%s: monitor_filter belongs to a monitor_summary, not a %s", where, w.Type))
+	}
+	if w.MonitorUID != "" {
+		errs = append(errs, invalidf("%s: monitor_uid belongs to an alert_value, not a %s", where, w.Type))
+	}
+	if w.Env != "" {
+		errs = append(errs, invalidf("%s: env belongs to a service_summary, not a %s", where, w.Type))
 	}
 	return errs
 }
