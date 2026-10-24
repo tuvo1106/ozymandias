@@ -22,7 +22,7 @@ Two follow the spec in substance but not in letter, because the spec's text was 
 app existed:
 
 - `service:app-python-api` is `service:shikomi-api` and `service:app-python-worker` is
-  `service:shikomi-worker`, the names the app reports. `deploy/` is where app-specific names live.
+  `service:shikomi-worker`, the names the app reports. The app is public, so naming it in `deploy/` is allowed (ADR-0054).
 - The 5xx rate and the latency p95 are **rolled up** so that each bucket is a whole ratio or a
   merged sketch. A window reduction applies to the expression's per-bucket values, so
   `sum(last_5m)` of a ratio on ten-second buckets adds thirty percentages (1% errors read as 30),

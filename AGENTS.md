@@ -180,7 +180,9 @@ generators, statsd libraries.
 `../app-node`, `../app-python` and `../app-ruby` are real projects with their own rules.
 They are referred to by role here because this repo is public (ADR-0012); their
 real names, paths and per-milestone integration points live in
-`docs/private/integrations.md`, which is gitignored. If that file is not on
+`docs/private/integrations.md`, which is gitignored. An app whose own repository is
+public (today app-python, which is shikomi) may also be named in `deploy/`,
+`scripts/demo/`, `docs/notes/` and ADRs, never in the core or its tests (ADR-0054). If that file is not on
 your machine, you are not the person who should be touching them.
 
 - **Read that repo's `AGENTS.md` / `CLAUDE.md` first** and follow it over this
