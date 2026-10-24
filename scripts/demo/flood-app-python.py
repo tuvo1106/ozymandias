@@ -24,6 +24,10 @@ that do not, and stops saying so if a token expires anyway.
     python3 scripts/demo/flood-app-python.py --users 10 --duration 120
     BASE_URL=http://localhost:8080 API_CONTAINER=shikomi-api-1 python3 scripts/demo/flood-app-python.py
 
+The accounts and their submissions are not removed: they stay in the app's
+database. On a throwaway local stack, `docker compose down -v` in the app's repo
+wipes that database, with everything else in it.
+
 It prints the time of every step, so the notes can measure "flood started" to
 "monitor alerted". Standard library only; needs `docker` for the verify step.
 """
@@ -115,14 +119,15 @@ def main() -> None:
     pending: dict[str, str | None] = {t: None for t in tokens}  # token -> its submission in flight
     resting: dict[str, float] = {}  # token -> when it may POST again, after a 429
     sent = refused = failed = 0
-    # The estimate above ignores the verify step and slow answers, so stop by the oldest token's
-    # real age too, a round's worth of timeouts before it expires.
-    margin = 60 + 2 * 15 * args.users / 10
-    end = min(time.monotonic() + args.duration, first_token + TOKEN_LIFETIME_S - margin)
+    # The estimate above ignores the verify step, so stop by the oldest token's real age too. The
+    # stop time is checked before every request, so a slow answer overruns it by one timeout (15s).
+    end = min(time.monotonic() + args.duration, first_token + TOKEN_LIFETIME_S - 60)
     if end < time.monotonic() + args.duration:
         stamp(f"the flood will stop after {end - time.monotonic():.0f}s, before the first token expires")
     while time.monotonic() < end:
         for token, sid in pending.items():
+            if time.monotonic() >= end:
+                break
             if resting.get(token, 0) > time.monotonic():
                 continue
             if sid is not None:

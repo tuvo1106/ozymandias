@@ -15,8 +15,10 @@ such metric yet; `docs/notes/M6.md` says so). On 2026-10-23 the owner chose app-
 ## Decision
 
 **`deploy/monitors/` gets the six app-python monitors of §5 and none for app-node or app-ruby.**
-Each was dry-run against live app-python data before it was committed, and the M6 acceptance runs
-(backlog flood, worker stop, ozyd restart, injected errors) use them.
+The backlog, heartbeat and worker-errors monitors fired live in the M6 acceptance runs (backlog
+flood, worker stop, ozyd restart, injected errors). The 5xx and latency queries changed in review
+after those runs: they are validated against the server and the 5xx one is evaluated by a test, but
+neither has fired live. The sandbox OOM monitor matched nothing, because no sandbox was OOM-killed.
 
 Two follow the spec in substance but not in letter, because the spec's text was written before the
 app existed:
@@ -39,9 +41,13 @@ app existed:
     and alerts. That is the error rate those requests had; the grammar has no "and at least N
     requests" gate, and a smoothed ratio (`5xx / (all + k)`) would change what the number means.
     A minimum-volume option on monitors is the fix if it proves noisy.
-  - **Latency:** `.rollup(max, 300)`, `last(last_5m)`: one merged five-minute p95. A shorter
-    regression can be split across two buckets and missed. A p95 monitor is for sustained
-    regressions, and the five-minute sketch is what keeps one slow request from paging.
+  - **Latency:** `.rollup(max, 300)`, `last(last_5m)`: one merged five-minute p95. The `max` is
+    ignored, with a warning on every validate: a percentile always merges sketches, and the grammar
+    requires a method to set a width. A shorter regression can be split across two buckets and
+    missed. A busy route needs many slow requests to move its five-minute p95; **a quiet one does
+    not**, since a bucket with one request has that request as its p95. On a quiet route, one slow
+    request pages, and with no further traffic the group keeps ALERT until it expires (below). The
+    same missing minimum-volume option as for 5xx is the fix.
 - **Every monitor is split by environment** (`by {env}`, or `.by("@env")` for the log monitor,
   whose logs carry `env` as an attribute rather than a tag). Only `dev` exists today, but a
   merged `max` would let a live dev worker hide a dead prod one, and a merged ratio would dilute

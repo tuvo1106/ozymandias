@@ -119,7 +119,10 @@ def main() -> None:
             stamp(f"{name} {len(sent)} notifications; transitions: {path}")
     finally:
         for mid in created:
-            ozy.call("DELETE", f"/api/v1/monitors/{mid}")
+            try:
+                ozy.call("DELETE", f"/api/v1/monitors/{mid}")
+            except Exception as e:  # report, and keep going: the original error matters more
+                print(f"could not delete monitor {mid}: {e}; delete it by hand", file=sys.stderr)
     # The demo shows something only if both hold: the banded monitor notified once each way, and
     # the naive one, on the same data, flapped.
     if len(b) != 2:

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -275,13 +276,13 @@ func TestScenario(t *testing.T) {
 // with a three-minute timeframe went NO_DATA after five.
 func TestNoDataWaitsForTheWindowToEmpty(t *testing.T) {
 	h := newHarness(t)
-	silent := func(window string) spec.Monitor {
-		return spec.Monitor{UID: "hb-" + window, Name: "hb " + window, Type: spec.TypeMetric,
+	silent := func(window string, delay int) spec.Monitor {
+		return spec.Monitor{UID: "hb-" + window + "-" + strconv.Itoa(delay), Name: "hb " + window, Type: spec.TypeMetric,
 			Query:   "max(last_" + window + "):max:heartbeat{*} < 1",
-			Options: spec.Options{EvaluationIntervalS: 30, EvaluationDelayS: i(0), NotifyNoData: true, NoDataTimeframeM: 2},
+			Options: spec.Options{EvaluationIntervalS: 30, EvaluationDelayS: i(delay), NotifyNoData: true, NoDataTimeframeM: 2},
 			Message: "{{.Status}} @cap"}
 	}
-	short, long := h.create(silent("1m")), h.create(silent("5m"))
+	short, long, delayed := h.create(silent("1m", 0)), h.create(silent("5m", 0)), h.create(silent("5m", 30))
 	// A heartbeat every 10s whose last point is at 12:04:00.
 	h.points("heartbeat", nil, 0, 4*time.Minute+time.Second, func(time.Duration) float64 { return 1 })
 	for off := 30 * time.Second; off <= 12*time.Minute; off += 30 * time.Second {
@@ -293,6 +294,9 @@ func TestNoDataWaitsForTheWindowToEmpty(t *testing.T) {
 	// window stops seeing the last point. The window includes its start, so at
 	// 12:09:00 it still holds the 12:04:00 point; 12:09:30 is the first without.
 	eqStrings(t, "5m window", h.transitions(long), []string{"12:09:30 transition OK>NO_DATA"})
+	// Both are measured to the window's end, evaluation_delay_s before the
+	// tick, so a delay adds itself.
+	eqStrings(t, "5m window, 30s delay", h.transitions(delayed), []string{"12:10:00 transition OK>NO_DATA"})
 }
 
 // TestBacktestMatchesLive is the acceptance criterion "the editor's backtest

@@ -693,7 +693,11 @@ Walk these in order:
    point, and only for a group that has had data. A group is absent only once
    its window holds no points, so a timeframe shorter than the window is
    overruled by it: on `max(last_5m)` with `no_data_timeframe_m: 3`, a stopped
-   series goes NO_DATA after five minutes, not three. For a heartbeat, make the
+   series goes NO_DATA once the five-minute window has passed its last point,
+   not three minutes after it. Both are measured to the window's end, which is
+   `evaluation_delay_s` before the tick, so the delay adds itself: with 30 s
+   ticks and the default 30 s delay, about six minutes after the last point
+   (`TestNoDataWaitsForTheWindowToEmpty`). For a heartbeat, make the
    window just longer than the beat (`last_2m` for one a minute) and let the
    timeframe decide. Counters are in between: the
    agent zero-fills a counter for `aggregator.context_expiry` (5 minutes) after

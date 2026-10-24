@@ -508,8 +508,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - `docs/operations.md` said no-data fires `no_data_timeframe_m` after the newest point; it
-  fires after the longer of that and the query window, since a group is absent only once
-  its window is empty.
+  fires after the longer of that and the query window, plus the evaluation delay, since a
+  group is absent only once its window is empty.
 - **A rotated log file's last lines could be delivered after the new file's.** The agent's
   tailer read each poll's files in inode order, and a filesystem may give the new file the
   lower inode. It now reads oldest first (the file's mtime when first opened, then open order),

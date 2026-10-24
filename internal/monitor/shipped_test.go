@@ -244,8 +244,13 @@ func TestShippedMessagesNameTheirGroupAndRecover(t *testing.T) {
 			"alert":    {Status: "ALERT", PrevStatus: "OK", Value: 42, Threshold: 20, IsAlert: true},
 			"recovery": {Status: "OK", PrevStatus: "ALERT", Value: 1, Threshold: 20, IsRecovery: true},
 		}
+		if c.Levels.HasWarning {
+			cases["warning"] = spec.Data{Status: "WARN", PrevStatus: "OK", Value: 15, Threshold: c.Levels.Warning, IsWarning: true}
+			cases["down to warning"] = spec.Data{Status: "WARN", PrevStatus: "ALERT", Value: 15, Threshold: c.Levels.Warning, IsWarning: true}
+		}
 		if c.Options.NotifyNoData {
 			cases["no data"] = spec.Data{Status: "NO_DATA", PrevStatus: "OK", Value: math.NaN(), IsNoData: true}
+			cases["data again"] = spec.Data{Status: "OK", PrevStatus: "NO_DATA", Value: 1, Threshold: 20, IsRecovery: true}
 		}
 		for name, d := range cases {
 			out := render(d)
@@ -263,7 +268,13 @@ func TestShippedMessagesNameTheirGroupAndRecover(t *testing.T) {
 				}
 			}
 		}
-		if render(cases["alert"]) == strings.Replace(render(cases["recovery"]), "1", "42", 1) {
+		// The same status, value and threshold, differing only in the flags a
+		// template branches on: printing {{.Status}} or {{.Value}} cannot make
+		// the two differ, only a recovery branch can.
+		same := spec.Data{Status: "S", PrevStatus: "P", Value: 7, Threshold: 20}
+		alert, recovery := same, same
+		alert.IsAlert, recovery.IsRecovery = true, true
+		if render(alert) == render(recovery) {
 			t.Errorf("%s: the recovery is the alert's message", r.UID)
 		}
 	}
