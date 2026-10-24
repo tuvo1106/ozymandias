@@ -9,6 +9,7 @@
   "message": "{{if .IsRecovery}}No judge sandbox has been OOM-killed for three minutes.{{else}}{{printf \"%.0f\" .Value}} judge sandbox(es) were OOM-killed in three minutes: a submission hit the memory limit, or the limit is too low for a language.{{end}} @log @hook",
   "tags": [
     "app:shikomi",
-    "component:judge"
+    "component:judge",
+    "service:shikomi-worker"
   ]
 }

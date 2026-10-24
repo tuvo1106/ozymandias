@@ -164,6 +164,15 @@ and loses some of it, which is an argument for smaller dashboards.
 | `table` | one row per group, one column per query, lined up on the group |
 | `heatmap` | the distribution behind a metric: a column per bucket, a band per bin, coloured by how many observations fell in it |
 | `note` | the author's text |
+| `monitor_summary` | the monitors a filter selects, worst first, each linking to its page |
+| `alert_value` | one monitor's worst group value, coloured by its status |
+| `service_summary` | a card per service: req/s, error %, p95, a request sparkline, and the worst status of its tagged monitors |
+
+The last three fetch for themselves (the monitor list, one monitor's states, the
+APM service table) and say which kind of nothing they have in words: no monitor
+matches, nothing is triggered, no monitor has that uid, no service handled a
+request. A service with no tagged monitor says "no monitors", never a green dot
+([dashboards.md](dashboards.md#monitor-and-service-widgets)).
 
 Every widget has the same four ways of having nothing to draw, and each says
 which one it is:
@@ -303,6 +312,8 @@ disabled, because pressing it again would make a second dashboard.
 Named here so the gap is visible rather than surprising: a heatmap for a
 `dist:` query in the Metrics Explorer (it says to use `/api/v1/query/sketch`
 instead), series counts over time ("top growing") on the Metric Summary,
-drag-to-zoom on a chart, the Home overview dashboard, and a
-Playwright run of the editor in CI. Sections beyond Metrics and Dashboards
+drag-to-zoom on a chart, Home's recent-error-logs stream and quick links
+(they need a log widget, which does not exist yet), and a Playwright run of
+the editor in CI. Home itself is the provisioned `home` dashboard under
+ozyd's status, and says so when there is none. Sections beyond Metrics and Dashboards
 belong to later milestones — [PLAN.md](../PLAN.md) has the map.
