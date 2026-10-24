@@ -12,7 +12,7 @@
         "w": 12,
         "h": 1
       },
-      "markdown": "Service cards come from the APM tables (every request, before trace sampling); a card's dot is the worst status of the monitors tagged service:<name>. Ingest health below is ozymandias watching itself through the same intake an agent's series take: if it is empty, the pipeline is down, not the dashboard."
+      "markdown": "Service cards come from the APM tables (every request, before trace sampling); a card's dot is the worst status, in that card's env, of the monitors tagged service:<name>, and is always now, whatever the window. Ingest health below is ozymandias watching itself through the same intake an agent's series take: if it is empty, the pipeline is down, not the dashboard."
     },
     {
       "id": "services",

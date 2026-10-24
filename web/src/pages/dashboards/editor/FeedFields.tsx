@@ -3,7 +3,7 @@
  * summary's filter, an alert value's monitor, a service summary's
  * environment. Which one shows is the type's `feed` rule.
  */
-import type { MonitorFilter, MonitorStatusName, Widget } from "../../../lib/dashboard";
+import type { MonitorStatusName, MonitorSummaryFilter, Widget } from "../../../lib/dashboard";
 import type { TypeRules } from "../../../lib/dashboardEditor";
 import { useMonitorList } from "../../../lib/useMonitors";
 import { Section, TextField } from "./fields";
@@ -11,8 +11,8 @@ import { Section, TextField } from "./fields";
 const FILTER_STATUSES: readonly MonitorStatusName[] = ["ALERT", "WARN", "NO_DATA", "OK"];
 
 /** A filter with its empty parts removed, or undefined when nothing is left. */
-function tidyFilter(f: MonitorFilter): MonitorFilter | undefined {
-  const out: MonitorFilter = {};
+function tidyFilter(f: MonitorSummaryFilter): MonitorSummaryFilter | undefined {
+  const out: MonitorSummaryFilter = {};
   if (f.tag) out.tag = f.tag;
   if (f.q) out.q = f.q;
   if (f.status && f.status.length > 0) out.status = f.status;
@@ -47,7 +47,7 @@ export function FeedFields({ widget, rules, set }: { widget: Widget; rules: Type
 
 function MonitorFilterFields({ widget, set }: { widget: Widget; set: (patch: Partial<Widget>) => void }) {
   const f = widget.monitor_filter ?? {};
-  const update = (patch: Partial<MonitorFilter>) => set({ monitor_filter: tidyFilter({ ...f, ...patch }) });
+  const update = (patch: Partial<MonitorSummaryFilter>) => set({ monitor_filter: tidyFilter({ ...f, ...patch }) });
   const statuses = f.status ?? [];
   return (
     <Section title="Monitors">

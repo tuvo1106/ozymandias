@@ -1,16 +1,17 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Widget } from "../../lib/dashboard";
-import { fakeServer, monitor, type Reply } from "../monitors/testServer";
+import type { TimeRange } from "../../lib/timeRange";
+import { fakeServer, HANG, monitor, type Reply } from "../monitors/testServer";
 import { AlertValueWidget, MonitorSummaryWidget, ServiceSummaryWidget } from "./FeedWidgets";
 
 afterEach(() => vi.unstubAllGlobals());
 
 const layout = { x: 0, y: 0, w: 6, h: 3 };
 
-function show(widget: Widget, replies: Record<string, Reply>) {
+function show(widget: Widget, replies: Record<string, Reply>, range?: TimeRange) {
   const calls = fakeServer(replies);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const Comp = { monitor_summary: MonitorSummaryWidget, alert_value: AlertValueWidget, service_summary: ServiceSummaryWidget }[
@@ -19,7 +20,7 @@ function show(widget: Widget, replies: Record<string, Reply>) {
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <Comp widget={widget} results={[]} />
+        <Comp widget={widget} results={[]} range={range} />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -112,6 +113,24 @@ describe("AlertValueWidget", () => {
     expect(screen.getByText("—")).toBeInTheDocument();
     expect(screen.queryByText("0")).not.toBeInTheDocument();
   });
+
+  it("says the value could not be loaded, rather than drawing the no-value dash", async () => {
+    show(w, {
+      "GET /api/v1/monitors": list(monitor({ id: 7, uid: "jobs", status: "ALERT" })),
+      "GET /api/v1/monitors/7/states": { status: 500, body: { error: "states down" } },
+    });
+    expect(await screen.findByText(/could not be loaded: .*states down/)).toBeInTheDocument();
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+
+  it("says its status is as of now on a fixed past window", async () => {
+    const past: TimeRange = { kind: "absolute", from: 1_700_000_000, to: 1_700_003_600 };
+    show(w, {
+      "GET /api/v1/monitors": list(monitor({ id: 7, uid: "jobs", status: "OK" })),
+      "GET /api/v1/monitors/7/states": { body: { states: [] } },
+    }, past);
+    expect(await screen.findByText("Monitor status is as of now, not the chosen window.")).toBeInTheDocument();
+  });
 });
 
 describe("ServiceSummaryWidget", () => {
@@ -130,25 +149,79 @@ describe("ServiceSummaryWidget", () => {
     ...extra,
   });
 
-  it("draws a card per service with its numbers and its monitors' worst status", async () => {
-    const calls = show(w, {
-      "GET /api/v1/services": { body: { services: [row("api"), row("worker", { p95_ms: null })], from: 1, to: 2 } },
-      "GET /api/v1/monitors": list(
-        monitor({ id: 1, status: "ALERT", tags: ["service:api"] }),
-        monitor({ id: 2, status: "OK", tags: ["service:api"] }),
-      ),
+  const grp = (status: string, tags: Record<string, string>) => ({
+    group: Object.entries(tags).map(([k, v]) => `${k}:${v}`).join(",") || "*",
+    tags,
+    status,
+    since: "2026-10-19T10:00:00Z",
+    value: 1,
+    last_eval: null,
+    last_data: null,
+    last_notified: null,
+  });
+
+  it("draws a card per service with its numbers and its own env's worst status", async () => {
+    const calls = show({ ...w, env: undefined }, {
+      "GET /api/v1/services": {
+        body: { services: [row("api", { env: "prod" }), row("api", { env: "staging", requests: 10 }), row("worker", { p95_ms: null })], from: 1, to: 2 },
+      },
+      "GET /api/v1/monitors": list(monitor({ id: 1, status: "ALERT", tags: ["service:api"] })),
+      "GET /api/v1/monitors/1/states": { body: { states: [grp("ALERT", { env: "staging" }), grp("OK", { env: "prod" })] } },
     });
-    const api = (await screen.findByRole("link", { name: "api" })).closest("li")!;
-    expect(api).toHaveTextContent("2.00");
-    expect(api).toHaveTextContent("1.0%");
-    expect(api).toHaveTextContent("120 ms");
-    expect(within(api).getByTitle("Monitors: ALERT")).toBeInTheDocument();
+    await screen.findByTitle("Monitors: ALERT");
+    const [prod, staging] = screen.getAllByRole("link", { name: "api" }).map((a) => a.closest("li")!);
+    expect(prod).toHaveTextContent("2.00");
+    expect(prod).toHaveTextContent("1.0%");
+    expect(prod).toHaveTextContent("120 ms");
+    // A staging alert does not turn the prod card red.
+    expect(within(prod!).getByTitle("Monitors: OK")).toBeInTheDocument();
+    expect(within(staging!).getByTitle("Monitors: ALERT")).toBeInTheDocument();
+    // The card opens the service in its env and the widget's window.
+    const href = new URL(within(prod!).getByRole("link", { name: "api" }).getAttribute("href")!, "http://x");
+    expect(href.pathname).toBe("/apm/services/api");
+    expect(href.searchParams.get("env")).toBe("prod");
     const worker = screen.getByRole("link", { name: "worker" }).closest("li")!;
     // No latency recorded is "—", not 0 ms; no tagged monitor is said, not green.
     expect(worker).toHaveTextContent("—");
     expect(worker).toHaveTextContent("no monitors");
-    const svc = calls.find((c) => c.path === "/api/v1/services")!;
-    expect(svc.search.get("env")).toBe("prod");
+    expect(calls.some((c) => c.path === "/api/v1/services" && c.search.get("env") === null)).toBe(true);
+  });
+
+  it("asks the services table for its env", async () => {
+    const calls = show(w, { "GET /api/v1/services": { body: { services: [row("api")], from: 1, to: 2 } }, "GET /api/v1/monitors": list() });
+    await screen.findByRole("link", { name: "api" });
+    expect(calls.find((c) => c.path === "/api/v1/services")!.search.get("env")).toBe("prod");
+  });
+
+  it("says the monitor statuses failed, rather than dropping the dots silently", async () => {
+    show(w, {
+      "GET /api/v1/services": { body: { services: [row("api")], from: 1, to: 2 } },
+      "GET /api/v1/monitors": { status: 500, body: { error: "boom" } },
+    });
+    expect(await screen.findByText(/Monitor statuses could not be loaded/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("no monitors")).not.toBeInTheDocument());
+  });
+
+  it("draws no dot while a tagged monitor's states are still loading", async () => {
+    const calls = show(w, {
+      "GET /api/v1/services": { body: { services: [row("api")], from: 1, to: 2 } },
+      "GET /api/v1/monitors": list(monitor({ id: 1, status: "ALERT", tags: ["service:api"] })),
+      "GET /api/v1/monitors/1/states": { body: HANG },
+    });
+    await screen.findByRole("link", { name: "api" });
+    await waitFor(() => expect(calls.some((c) => c.path === "/api/v1/monitors/1/states")).toBe(true));
+    expect(screen.queryByTitle(/Monitors:|no group/)).not.toBeInTheDocument();
+    expect(screen.queryByText("no monitors")).not.toBeInTheDocument();
+  });
+
+  it("says the monitor statuses failed when one monitor's states fail", async () => {
+    show(w, {
+      "GET /api/v1/services": { body: { services: [row("api")], from: 1, to: 2 } },
+      "GET /api/v1/monitors": list(monitor({ id: 1, status: "OK", tags: ["service:api"] })),
+      "GET /api/v1/monitors/1/states": { status: 500, body: { error: "boom" } },
+    });
+    expect(await screen.findByText(/Monitor statuses could not be loaded/)).toBeInTheDocument();
+    expect(screen.queryByTitle(/Monitors:/)).not.toBeInTheDocument();
   });
 
   it("says no service handled a request, rather than drawing nothing", async () => {

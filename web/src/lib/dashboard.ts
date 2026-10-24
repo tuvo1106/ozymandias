@@ -35,7 +35,7 @@ export type MonitorStatusName = "OK" | "WARN" | "ALERT" | "NO_DATA";
  * `?tag=` and `?q=` mean; `status` is a set, because "triggered" is three
  * statuses (docs/dashboards.md).
  */
-export interface MonitorFilter {
+export interface MonitorSummaryFilter {
   tag?: string;
   status?: MonitorStatusName[];
   q?: string;
@@ -130,7 +130,7 @@ export interface Widget {
   limit?: number;
   markdown?: string;
   /** What a monitor_summary lists. */
-  monitor_filter?: MonitorFilter;
+  monitor_filter?: MonitorSummaryFilter;
   /** The monitor an alert_value shows, by uid. */
   monitor_uid?: string;
   /** A service_summary's environment; empty is every one. */

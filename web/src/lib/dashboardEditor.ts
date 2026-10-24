@@ -326,7 +326,7 @@ export function unusedFields(w: Widget): UnusedField[] {
   if (!rules.markdown && has("markdown") && w.markdown !== "")
     out.push({ field: "markdown", message: `Markdown belongs to a note, not a ${name}.` });
   if (!rules.limit && has("limit") && w.limit !== 0)
-    out.push({ field: "limit", message: `A limit belongs to a toplist or a summary, not a ${name}.` });
+    out.push({ field: "limit", message: `A limit belongs to a toplist, a monitor summary or a service summary, not a ${name}.` });
   if (rules.feed !== "monitor_filter" && has("monitor_filter"))
     out.push({ field: "monitor_filter", message: `A monitor filter belongs to a monitor summary, not a ${name}.` });
   if (rules.feed !== "monitor_uid" && has("monitor_uid") && w.monitor_uid !== "")

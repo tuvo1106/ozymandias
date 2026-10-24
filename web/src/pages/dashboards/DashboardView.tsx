@@ -3,11 +3,16 @@
  *
  * The page owns three things and delegates the rest: the URL (which holds the
  * time range, the live flag and every variable), the one batch request its
- * widgets are drawn from, and the chrome around the grid. It is deliberately
- * the *only* place that fetches — a widget that fetched for itself would
- * defeat the shared selection the batch endpoint exists for (ADR-0018), and
- * twelve widgets polling independently is twelve times the load for the same
- * picture.
+ * widgets are drawn from, and the chrome around the grid. It is the only
+ * place that fetches *metric* data — a query widget that fetched for itself
+ * would defeat the shared selection the batch endpoint exists for (ADR-0018),
+ * and twelve widgets polling independently is twelve times the load for the
+ * same picture.
+ *
+ * The feed widgets (monitor_summary, alert_value, service_summary) are the
+ * exception: they draw from the monitor and APM APIs, which the batch does not
+ * serve, so they fetch for themselves on their own poll (FeedWidgets.tsx). The
+ * page's refresh, live toggle and dimming do not reach them.
  */
 import { useMemo } from "react";
 import { useSearchParams } from "react-router";

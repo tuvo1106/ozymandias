@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SUMMARY_LIMIT, listParams, monitorByUid, selectMonitors, serviceCards, serviceStatuses } from "./feedWidgets";
-import type { Status, StoredMonitor } from "./monitorsApi";
+import { DEFAULT_SUMMARY_LIMIT, listParams, monitorByUid, selectMonitors, serviceCards, serviceEnvStatus, taggedMonitors } from "./feedWidgets";
+import type { GroupState, Status, StoredMonitor } from "./monitorsApi";
 
 let next = 1;
 function mon(name: string, status: Status | null, extra: Partial<StoredMonitor> = {}): StoredMonitor {
@@ -52,28 +52,51 @@ describe("listParams", () => {
   });
 });
 
-describe("serviceStatuses", () => {
-  it("takes each service's worst status from the monitors tagged with it", () => {
-    const s = serviceStatuses([
-      mon("1", "OK", { tags: ["service:api", "app:x"] }),
-      mon("2", "ALERT", { tags: ["service:api"] }),
-      mon("3", "WARN", { tags: ["service:worker"] }),
-      mon("4", "ALERT", { tags: ["app:x"] }),
-    ]);
-    expect(s.get("api")).toBe("ALERT");
-    expect(s.get("worker")).toBe("WARN");
-    expect(s.size).toBe(2);
+describe("serviceEnvStatus", () => {
+  const g = (status: Status, tags: Record<string, string>): GroupState => ({
+    group: Object.entries(tags).map(([k, v]) => `${k}:${v}`).join(",") || "*",
+    tags,
+    status,
+    since: "",
+    value: 1,
+    last_eval: null,
+    last_data: null,
+    last_notified: null,
+  });
+  const byEnv = mon("5xx", "ALERT", { tags: ["service:api"] });
+  const ungrouped = mon("oom", "OK", { tags: ["service:api"] });
+  const states = new Map<number, GroupState[]>([
+    [byEnv.id, [g("ALERT", { env: "staging" }), g("OK", { env: "prod" })]],
+    [ungrouped.id, [g("OK", {})]],
+  ]);
+
+  it("does not turn a prod card red for a staging alert", () => {
+    expect(serviceEnvStatus([byEnv, ungrouped], states, "api", "prod")).toBe("OK");
+    expect(serviceEnvStatus([byEnv, ungrouped], states, "api", "staging")).toBe("ALERT");
   });
 
-  it("knows a service whose monitors have no status, and is not fooled by order", () => {
-    expect(serviceStatuses([mon("1", null, { tags: ["service:api"] })]).get("api")).toBeNull();
-    expect(serviceStatuses([mon("1", null, { tags: ["service:api"] })]).has("api")).toBe(true);
-    const later = serviceStatuses([mon("1", "WARN", { tags: ["service:api"] }), mon("2", null, { tags: ["service:api"] })]);
-    expect(later.get("api")).toBe("WARN");
+  it("lets an ungrouped monitor speak for every env, and a card with no env take every group", () => {
+    const oomAlert = new Map(states).set(ungrouped.id, [g("ALERT", {})]);
+    expect(serviceEnvStatus([byEnv, ungrouped], oomAlert, "api", "prod")).toBe("ALERT");
+    expect(serviceEnvStatus([byEnv, ungrouped], states, "api", undefined)).toBe("ALERT");
   });
 
-  it("has no entry for a service with no monitors: absent, not OK", () => {
-    expect(serviceStatuses([mon("1", "OK", { tags: ["app:x"] })]).has("api")).toBe(false);
+  it("says no monitors (undefined) and no group for this env yet (null) apart", () => {
+    expect(serviceEnvStatus([byEnv], states, "worker", "prod")).toBeUndefined();
+    expect(serviceEnvStatus([byEnv], states, "api", "dev")).toBeNull();
+  });
+
+  it("takes no claim from a monitor with no status (disabled, not running)", () => {
+    const off = mon("off", null, { tags: ["service:api"] });
+    expect(serviceEnvStatus([off], new Map([[off.id, [g("ALERT", {})]]]), "api", "prod")).toBeNull();
+  });
+});
+
+describe("taggedMonitors", () => {
+  it("keeps the monitors tagged with a shown service, up to the cap", () => {
+    const ms = [mon("a", "OK", { tags: ["service:api"] }), mon("b", "OK", { tags: ["service:other"] }), mon("c", "OK", { tags: ["app:x"] }), mon("d", "OK", { tags: ["service:api"] })];
+    expect(taggedMonitors(ms, new Set(["api"])).map((m) => m.name)).toEqual(["a", "d"]);
+    expect(taggedMonitors(ms, new Set(["api"]), 1).map((m) => m.name)).toEqual(["a"]);
   });
 });
 

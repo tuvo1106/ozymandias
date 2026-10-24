@@ -133,7 +133,7 @@ The field is named `markdown` because that is what it will be once a sanitizer
 has been chosen on purpose.
 
 A field that belongs to another type is an error rather than ignored: a
-`markdown` on a timeseries, a `limit` on anything but a toplist or a summary,
+`markdown` on a timeseries, a `limit` on anything but a toplist, a monitor summary or a service summary,
 a `precision` on a chart, a `monitor_uid` on anything but an alert value. Ignoring it silently is how a dashboard ends up with a setting
 nobody can find the effect of.
 
@@ -153,6 +153,13 @@ widgets.
 
 The last three types draw from their own API rather than from metric queries,
 so they take none, and the dashboard's template variables do not apply to them.
+They poll on their own (monitors every 15 seconds, services every minute)
+rather than with the page's refresh.
+
+**Monitor status is always now.** The monitor API keeps current state, not a
+history of it, so a monitor summary, an alert value and a service card's dot
+show the present whatever window the page is set to. On a fixed window in the
+past, each says so in the widget. A service card's numbers do follow the window.
 
 - **`monitor_summary`** lists what the Monitors page would for the same filter:
   `monitor_filter` is `{"tag": "team:shop", "status": ["ALERT", "WARN", "NO_DATA"],
@@ -168,8 +175,14 @@ so they take none, and the dashboard's template variables do not apply to them.
 - **`service_summary`** reads the APM service table (`GET /api/v1/services`):
   one card per service and entry-span kind, over the dashboard's time range,
   counted from every request before trace sampling. `env` narrows it to one
-  environment. The dot is the worst status among the monitors **tagged
-  `service:<name>`**; a service with none says "no monitors", never a green dot.
+  environment. The dot is the worst status among the **groups** of the monitors
+  **tagged `service:<name>`** that belong to the card's environment: a group
+  whose `env` tag names it, or a group with no `env` at all (an ungrouped
+  monitor speaks for every env). So a monitor grouped `by {env}` that alerts in
+  staging does not turn the prod card red. A service with no tagged monitor
+  says "no monitors", never a green dot, and a failed monitor fetch is said in
+  the widget rather than drawn as missing dots. A card links to the service's
+  APM page in its env and the widget's window.
 
 Each says which kind of nothing it has (no monitor matches, nothing is triggered,
 no service handled a request), because on Home a blank square reads as "all is

@@ -10,8 +10,8 @@
  * blank widget on Home reads as "all is well" whichever it is.
  */
 import type { RedRow } from "./apmApi";
-import type { MonitorFilter } from "./dashboard";
-import { severity, type Status, type StoredMonitor } from "./monitorsApi";
+import type { MonitorSummaryFilter } from "./dashboard";
+import { severity, type GroupState, type Status, type StoredMonitor } from "./monitorsApi";
 import { sortMonitors } from "./monitorView";
 
 /** How many rows a summary shows when its definition sets no limit. */
@@ -29,7 +29,7 @@ export interface MonitorRows {
  * monitor with no status (no data yet, disabled, not running) is in no
  * status, so a filter that names statuses drops it.
  */
-export function selectMonitors(ms: readonly StoredMonitor[], filter: MonitorFilter | undefined, limit = 0): MonitorRows {
+export function selectMonitors(ms: readonly StoredMonitor[], filter: MonitorSummaryFilter | undefined, limit = 0): MonitorRows {
   const want = filter?.status ?? [];
   const kept = want.length === 0 ? [...ms] : ms.filter((m) => m.status !== null && want.includes(m.status));
   const sorted = sortMonitors(kept);
@@ -38,30 +38,58 @@ export function selectMonitors(ms: readonly StoredMonitor[], filter: MonitorFilt
 }
 
 /** The server-side part of a filter, as the monitor list takes it. */
-export function listParams(filter: MonitorFilter | undefined): { tag?: string; q?: string } {
+export function listParams(filter: MonitorSummaryFilter | undefined): { tag?: string; q?: string } {
   const out: { tag?: string; q?: string } = {};
   if (filter?.tag) out.tag = filter.tag;
   if (filter?.q) out.q = filter.q;
   return out;
 }
 
+/** At most this many tagged monitors have their states fetched for one widget. */
+export const MAX_STATUS_MONITORS = 50;
+
+/** The monitors tagged `service:<name>` for any of the services shown, at most `cap`. */
+export function taggedMonitors(ms: readonly StoredMonitor[], services: ReadonlySet<string>, cap = MAX_STATUS_MONITORS): StoredMonitor[] {
+  return ms.filter((m) => serviceTags(m).some((s) => services.has(s))).slice(0, cap);
+}
+
+function serviceTags(m: StoredMonitor): string[] {
+  return (m.tags ?? []).filter((t) => t.startsWith("service:")).map((t) => t.slice("service:".length));
+}
+
 /**
- * Each service's worst monitor status, from monitors tagged `service:<name>`.
- * A service with no tagged monitor is absent from the map, which the card
- * says as "no monitors", not as OK. Monitors with no status count as tagged
- * but do not set a status: "has monitors, none has data yet".
+ * One card's dot: the worst status among the groups of the monitors tagged
+ * `service:<name>` that belong to the card's environment.
+ *
+ * By group, not by monitor: a monitor grouped `by {env}` is ALERT when staging
+ * is, and a prod card must not turn red for it. A group belongs to the card
+ * when its tags name the card's env, or name no env at all (an ungrouped
+ * monitor speaks for every env). A card with no env (spans without one) takes
+ * every group.
+ *
+ * `undefined`: no monitor is tagged with the service, said as "no monitors",
+ * never as OK. `null`: monitors are tagged but none has a group for this env
+ * yet. `states` maps a monitor id to its groups; a tagged monitor missing
+ * from it (not loaded) is skipped, and the caller says so.
  */
-export function serviceStatuses(ms: readonly StoredMonitor[]): Map<string, Status | null> {
-  const out = new Map<string, Status | null>();
-  for (const m of ms) {
-    for (const tag of m.tags ?? []) {
-      if (!tag.startsWith("service:")) continue;
-      const svc = tag.slice("service:".length);
-      const prev = out.get(svc) ?? null;
-      out.set(svc, severity(m.status) > severity(prev) ? m.status : prev);
+export function serviceEnvStatus(
+  tagged: readonly StoredMonitor[],
+  states: ReadonlyMap<number, readonly GroupState[]>,
+  service: string,
+  env: string | undefined,
+): Status | null | undefined {
+  const mine = tagged.filter((m) => serviceTags(m).includes(service));
+  if (mine.length === 0) return undefined;
+  let worst: Status | null = null;
+  for (const m of mine) {
+    if (m.status === null) continue; // disabled, not running or never evaluated: no claim either way
+    for (const g of states.get(m.id) ?? []) {
+      const ge = g.tags.env;
+      if (env && ge !== undefined && ge !== env) continue;
+      if (severity(g.status) > severity(worst)) worst = g.status;
     }
   }
-  return out;
+  return worst;
 }
 
 /** The monitor an alert_value names, or undefined when no monitor has that uid. */
