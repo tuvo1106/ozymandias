@@ -2,13 +2,13 @@
   "uid": "app-python-worker-silent",
   "name": "app-python: the judge worker stopped reporting",
   "type": "metric",
-  "query": "max(last_2m):max:worker.heartbeat{service:shikomi-worker} < 1",
+  "query": "max(last_2m):max:worker.heartbeat{service:shikomi-worker} by {env} < 1",
   "options": {
     "evaluation_interval_s": 30,
     "notify_no_data": true,
     "no_data_timeframe_m": 3
   },
-  "message": "{{if .IsNoData}}The judge worker has sent no heartbeat for three minutes: it is down or cannot reach the agent, and submissions are not being judged.{{else}}The judge worker heartbeat is {{.Status}}.{{end}} @log @hook",
+  "message": "{{if .IsNoData}}The {{.Group.env}} judge worker has sent no heartbeat for three minutes: it is down or cannot reach the agent, and submissions are not being judged.{{else}}The judge worker heartbeat is {{.Status}}.{{end}} @log @hook",
   "tags": [
     "app:shikomi",
     "component:worker"

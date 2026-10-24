@@ -37,6 +37,15 @@ app existed:
   - **Latency:** `.rollup(max, 300)`, `last(last_5m)`: one merged five-minute p95. A shorter
     regression can be split across two buckets and missed. A p95 monitor is for sustained
     regressions, and the five-minute sketch is what keeps one slow request from paging.
+- **Every monitor is split by environment** (`by {env}`, or `.by("@env")` for the log monitor,
+  whose logs carry `env` as an attribute rather than a tag). Only `dev` exists today, but a
+  merged `max` would let a live dev worker hide a dead prod one, and a merged ratio would dilute
+  prod's errors with dev's traffic. The exception is sandbox OOM: judge sandboxes carry no env or
+  compose labels.
+- **The OOM monitor recovers because its counter is zero-filled.** `container.exits` goes through
+  the agent's aggregator as a counter, zero-filled for `context_expiry` (5 minutes), which is
+  longer than the monitor's 3-minute window. A window longer than the zero-fill would leave an OOM
+  alert stuck once the series went absent.
 - **A quiet group keeps its status.** A per-resource latency group that alerts and then gets no
   traffic has no value, and an absent group keeps its status (state/doc.go) until it expires after
   24 hours. That is the state machine's rule (absence is not recovery), and `notify_no_data` here

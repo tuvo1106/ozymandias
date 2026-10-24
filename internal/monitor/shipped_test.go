@@ -105,6 +105,30 @@ func TestShippedErrorRatesReadWholeRatios(t *testing.T) {
 }
 
 func checkErrorRate(t *testing.T, c *spec.Compiled, svc string) {
+	// One environment's errors are not diluted by another's traffic: a prod
+	// outage under a busy dev stack still reads as prod's own ratio.
+	t.Run("environments apart", func(t *testing.T) {
+		h := newHarness(t)
+		for _, s := range []struct {
+			tags []string
+			n    float64
+		}{
+			{[]string{"env:dev", "service:" + svc, "status:200"}, 1000},
+			{[]string{"env:prod", "service:" + svc, "status:200"}, 95},
+			{[]string{"env:prod", "service:" + svc, "status:500"}, 5},
+		} {
+			n := s.n
+			h.points("http.request.count", s.tags, 0, 10*time.Minute, func(time.Duration) float64 { return n })
+		}
+		vals, _, err := h.ev.Evaluate(context.Background(), c, t0.Add(9*time.Minute))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(vals) != 1 || vals[0].Group.String() != "env:prod" || math.Abs(vals[0].Value-5) > 1e-9 {
+			t.Fatalf("got %+v, want env:prod alone at 5", vals)
+		}
+	})
+
 	const end = 10 * time.Minute // evaluated at t0+10m
 	steady := func(n float64) func(time.Duration) float64 { return func(time.Duration) float64 { return n } }
 	for _, tc := range []struct {
@@ -133,7 +157,7 @@ func checkErrorRate(t *testing.T, c *spec.Compiled, svc string) {
 				n      func(time.Duration) float64
 			}{{"200", tc.ok}, {"500", tc.fail}} {
 				n := s.n
-				h.points("http.request.count", []string{"service:" + svc, "status:" + s.status}, 0, end, func(off time.Duration) float64 {
+				h.points("http.request.count", []string{"env:dev", "service:" + svc, "status:" + s.status}, 0, end, func(off time.Duration) float64 {
 					if v := n(off); v > 0 {
 						return v
 					}
