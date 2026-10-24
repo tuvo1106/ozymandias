@@ -10,7 +10,7 @@
     },
     "evaluation_interval_s": 60
   },
-  "message": "p95 latency of {{.Group.resource}} is {{printf \"%.2f\" .Value}} s (alert above {{.Threshold}} s). Traces: service shikomi-api, slowest first. @log @hook",
+  "message": "{{if .IsRecovery}}p95 latency of {{.Group.resource}} is back to {{printf \"%.2f\" .Value}} s.{{else}}p95 latency of {{.Group.resource}} is {{printf \"%.2f\" .Value}} s, {{.Status}} (threshold {{.Threshold}} s). Traces: service shikomi-api, slowest first.{{end}} @log @hook",
   "tags": [
     "app:shikomi",
     "component:api"

@@ -10,8 +10,8 @@ The monitor with a recovery level stays ALERT through the swings, because 14 is
 not below 10, and notifies twice in all: the ALERT and one recovery. The one
 without flaps on every swing. The script counts each monitor's deliveries from
 the events API (`notify_ok`), prints both counts, deletes both monitors, and
-exits non-zero if the monitor with a recovery level notified anything but
-exactly twice.
+exits non-zero unless the monitor with a recovery level notified exactly twice
+and the one without notified more than that.
 
     python3 scripts/demo/hysteresis.py                  # ozyd on localhost:9400
     OZY_URL=http://localhost:9400 python3 scripts/demo/hysteresis.py --swings 8
@@ -96,10 +96,13 @@ def main() -> None:
 
     ozy = Ozy(args.url)
     run = secrets.token_hex(3)
-    banded = ozy.call("POST", "/api/v1/monitors", monitor(run, "banded", {"critical": 20, "critical_recovery": 10}))["id"]
-    naive = ozy.call("POST", "/api/v1/monitors", monitor(run, "naive", {"critical": 20}))["id"]
-    stamp(f"run {run}: monitor {banded} recovers below 10, monitor {naive} below 20")
+    created = []
     try:
+        banded = ozy.call("POST", "/api/v1/monitors", monitor(run, "banded", {"critical": 20, "critical_recovery": 10}))["id"]
+        created.append(banded)
+        naive = ozy.call("POST", "/api/v1/monitors", monitor(run, "naive", {"critical": 20}))["id"]
+        created.append(naive)
+        stamp(f"run {run}: monitor {banded} recovers below 10, monitor {naive} below 20")
         until(ozy, run, 5, banded, "OK")
         stamp("both OK at 5")
         until(ozy, run, 25, banded, "ALERT")
@@ -115,10 +118,14 @@ def main() -> None:
             path = " ".join(e["to"] for e in ozy.events(mid, "transition"))
             stamp(f"{name} {len(sent)} notifications; transitions: {path}")
     finally:
-        for mid in (banded, naive):
+        for mid in created:
             ozy.call("DELETE", f"/api/v1/monitors/{mid}")
+    # The demo shows something only if both hold: the banded monitor notified once each way, and
+    # the naive one, on the same data, flapped.
     if len(b) != 2:
         sys.exit(f"expected exactly 2 notifications with a recovery level, got {len(b)}")
+    if len(n) <= 2:
+        sys.exit(f"the monitor without a recovery level notified only {len(n)} times: the swings did not cross the threshold, so this run shows nothing")
 
 
 if __name__ == "__main__":

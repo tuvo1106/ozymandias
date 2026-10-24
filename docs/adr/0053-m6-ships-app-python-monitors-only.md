@@ -23,14 +23,25 @@ app existed:
 
 - `service:app-python-api` is `service:shikomi-api` and `service:app-python-worker` is
   `service:shikomi-worker`, the names the app reports. `deploy/` is where app-specific names live.
-- The 5xx rate and the latency p95 are **rolled up to the window**
-  (`.rollup(sum, 300)` on both terms of the ratio, `.rollup(max, 300)` on the percentile, read
-  with `last(last_5m)`). A window reduction applies to the expression's per-bucket values, so
+- The 5xx rate and the latency p95 are **rolled up** so that each bucket is a whole ratio or a
+  merged sketch. A window reduction applies to the expression's per-bucket values, so
   `sum(last_5m)` of a ratio on ten-second buckets adds thirty percentages (1% errors read as 30),
   and `avg(last_5m)` of a p95 averages per-bucket percentiles, so one slow request on a quiet route
-  is the whole answer. One bucket per window makes one ratio and one merged-sketch p95. The cost: a
-  rolled-up window ends on a five-minute boundary, so these two can fire up to five minutes later
-  than an un-rolled one. `TestShippedErrorRatesAreOneRatioOverTheWindow` evaluates the shipped file.
+  is the whole answer.
+  - **5xx:** `.rollup(sum, 120)` on both terms, `max(last_6m)`. Rolled-up buckets are fixed
+    (epoch-aligned), so one five-minute bucket would split a burst that straddles its boundary
+    into two diluted halves. With two-minute buckets and the max of the last three, a burst of
+    three minutes or more fills a whole bucket wherever it falls, and a bucket closes within two
+    minutes. `TestShippedErrorRatesReadWholeRatios` evaluates the shipped file, including that
+    burst.
+  - **Latency:** `.rollup(max, 300)`, `last(last_5m)`: one merged five-minute p95. A shorter
+    regression can be split across two buckets and missed. A p95 monitor is for sustained
+    regressions, and the five-minute sketch is what keeps one slow request from paging.
+- **A quiet group keeps its status.** A per-resource latency group that alerts and then gets no
+  traffic has no value, and an absent group keeps its status (state/doc.go) until it expires after
+  24 hours. That is the state machine's rule (absence is not recovery), and `notify_no_data` here
+  would page on every quiet route. The same holds for the 5xx monitor if the api goes completely
+  silent after an outage, which is not a recovery either.
 - The 5xx rate stays the **direct** ratio `5xx / all`, as docs/dashboards.md says for error rates.
   Healthy, it has no series, and a group that never had data never becomes NO_DATA, so it just
   never alerts; during a total outage it reads 100, where the complement `(all - non_5xx) / all`

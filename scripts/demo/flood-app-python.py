@@ -111,10 +111,13 @@ def main() -> None:
 
     stamp(f"flood started: {args.users} users, each keeping one submission queued, each sleeping {args.sleep}s")
     pending: dict[str, str | None] = {t: None for t in tokens}  # token -> its submission in flight
+    resting: dict[str, float] = {}  # token -> when it may POST again, after a 429
     sent = refused = failed = 0
     end = time.monotonic() + args.duration
     while time.monotonic() < end:
         for token, sid in pending.items():
+            if resting.get(token, 0) > time.monotonic():
+                continue
             if sid is not None:
                 status, body = app.call("GET", f"/submissions/{sid}", token=token)
                 if status == 401:
@@ -129,6 +132,11 @@ def main() -> None:
                 sys.exit("a token expired mid-flood; the numbers above are incomplete")
             elif status == 0:
                 failed += 1  # no answer; the submission may or may not exist, so ask again
+            elif status == 429:
+                # In flight (a POST that timed out may have landed) or rate limited. The app counts
+                # every POST against the per-user limit, so retrying each round would use it up.
+                refused += 1
+                resting[token] = time.monotonic() + 10
             else:
                 pending[token] = None
                 refused += 1

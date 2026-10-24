@@ -2,7 +2,7 @@
   "uid": "app-python-judge-backlog",
   "name": "app-python: the judge queue is backing up",
   "type": "metric",
-  "query": "max(last_2m):max:arq.queue.depth{service:shikomi-api} > 20",
+  "query": "max(last_2m):max:arq.queue.depth{service:shikomi-api,queue:judge} > 20",
   "options": {
     "thresholds": {
       "critical": 20,
