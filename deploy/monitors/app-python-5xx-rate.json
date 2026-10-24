@@ -2,7 +2,7 @@
   "uid": "app-python-5xx-rate",
   "name": "app-python: more than 2% of requests fail",
   "type": "metric",
-  "query": "sum(last_5m):(sum:http.request.count{service:shikomi-api}.as_count() - sum:http.request.count{service:shikomi-api,!status:5*}.as_count()) / sum:http.request.count{service:shikomi-api}.as_count() * 100 > 2",
+  "query": "last(last_5m):sum:http.request.count{service:shikomi-api,status:5*}.as_count().rollup(sum, 300) / sum:http.request.count{service:shikomi-api}.as_count().rollup(sum, 300) * 100 > 2",
   "options": {
     "thresholds": {
       "critical": 2,

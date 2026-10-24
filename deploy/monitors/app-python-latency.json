@@ -2,7 +2,7 @@
   "uid": "app-python-latency",
   "name": "app-python: a route's p95 latency is over a second",
   "type": "metric",
-  "query": "avg(last_5m):p95:trace.http.request.duration{service:shikomi-api} by {resource} > 1",
+  "query": "last(last_5m):p95:trace.http.request.duration{service:shikomi-api} by {resource}.rollup(max, 300) > 1",
   "options": {
     "thresholds": {
       "critical": 1,

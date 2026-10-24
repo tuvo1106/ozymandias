@@ -7,14 +7,18 @@ app's own CLI in its api container, and has each submit a slow program to one
 problem. The program sleeps before the judge's per-case timer starts, so each
 run holds a worker slot for that long.
 
-The app allows each user one submission in flight, so the queue can only be as
-deep as the number of users minus the worker's concurrency (4): the default 30
-users keep about 26 jobs waiting, past the judge-backlog monitor's 20. Each user
+The app allows each user one submission in flight, so the queue is about as
+deep as the number of users: the default 30 users read 31-33 on 2026-10-23
+(docs/notes/M6.md), past the judge-backlog monitor's 20. That is a measurement,
+not a bound: what arq counts as queued is arq's business. Each user
 resubmits as soon as its previous submission is judged, for `--duration`
 seconds; then the queue drains and the monitor should recover by itself.
 
 Registering is the slow part: register and login are both auth calls, limited
 to 10 a minute per IP, so users are made 5 a minute (30 users take 6 minutes).
+Every token is fetched up front and the app's access tokens last 15 minutes, so
+registration plus `--duration` must fit in that: the script refuses settings
+that do not, and stops saying so if a token expires anyway.
 
     python3 scripts/demo/flood-app-python.py                    # 30 users for 5 minutes
     python3 scripts/demo/flood-app-python.py --users 10 --duration 120
@@ -32,6 +36,10 @@ import sys
 import time
 import urllib.error
 import urllib.request
+
+
+# The app's access-token lifetime (its jwt_access_ttl_seconds default).
+TOKEN_LIFETIME_S = 900
 
 
 def stamp(msg: str) -> None:
@@ -53,6 +61,9 @@ class App:
                 return r.status, json.loads(r.read() or b"null")
         except urllib.error.HTTPError as e:
             return e.code, None
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            # A flood slows the app down on purpose; a slow answer is not a reason to stop.
+            return 0, None
 
 
 def make_user(app: App, container: str) -> str:
@@ -80,6 +91,10 @@ def main() -> None:
     ap.add_argument("--duration", type=float, default=300, help="seconds to keep every user's submission queued")
     ap.add_argument("--sleep", type=float, default=8, help="seconds each submission sleeps before running")
     args = ap.parse_args()
+    registering = (args.users - 1) // 5 * 61
+    if registering + args.duration > TOKEN_LIFETIME_S - 60:
+        sys.exit(f"{args.users} users take about {registering}s to register; with --duration {args.duration:.0f} "
+                 f"the first tokens expire mid-flood (they last {TOKEN_LIFETIME_S}s). Use fewer users or a shorter duration.")
 
     app = App(args.base)
     stamp(f"registering {args.users} users, 5 a minute (the auth rate limit)")
@@ -96,23 +111,29 @@ def main() -> None:
 
     stamp(f"flood started: {args.users} users, each keeping one submission queued, each sleeping {args.sleep}s")
     pending: dict[str, str | None] = {t: None for t in tokens}  # token -> its submission in flight
-    sent = refused = 0
+    sent = refused = failed = 0
     end = time.monotonic() + args.duration
     while time.monotonic() < end:
         for token, sid in pending.items():
             if sid is not None:
                 status, body = app.call("GET", f"/submissions/{sid}", token=token)
-                if status == 200 and body["status"] in ("pending", "running"):
-                    continue
+                if status == 401:
+                    sys.exit("a token expired mid-flood; the numbers above are incomplete")
+                if status == 0 or (status == 200 and body["status"] in ("pending", "running")):
+                    continue  # still queued, or the app is too slow to say: ask again next round
             status, body = app.call("POST", "/submissions", {"problem_id": problem["id"], "code": code, "language": "python"}, token)
             if status in (200, 201, 202):
                 pending[token] = body["id"]
                 sent += 1
+            elif status == 401:
+                sys.exit("a token expired mid-flood; the numbers above are incomplete")
+            elif status == 0:
+                failed += 1  # no answer; the submission may or may not exist, so ask again
             else:
                 pending[token] = None
                 refused += 1
         time.sleep(2)
-    stamp(f"flood stopped: {sent} submitted, {refused} refused; the queue now drains")
+    stamp(f"flood stopped: {sent} submitted, {refused} refused, {failed} unanswered; the queue now drains")
 
 
 if __name__ == "__main__":

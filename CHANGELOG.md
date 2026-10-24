@@ -203,12 +203,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   are pre-1.0, not because the repo is private. Git install is documented for
   Python; a first publish would use PyPI `ozy` and npm `@tuvo1106/ozy`.
 
-### Fixed
-
-- `docs/operations.md` said no-data fires `no_data_timeframe_m` after the newest point; it
-  fires after the longer of that and the query window, since a group is absent only once
-  its window is empty.
-
 ### Added
 
 - **The Metric Summary page** (`/metrics/summary`): every metric by series
@@ -513,6 +507,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `docs/operations.md` said no-data fires `no_data_timeframe_m` after the newest point; it
+  fires after the longer of that and the query window, since a group is absent only once
+  its window is empty.
 - **A rotated log file's last lines could be delivered after the new file's.** The agent's
   tailer read each poll's files in inode order, and a filesystem may give the new file the
   lower inode. It now reads oldest first (the file's mtime when first opened, then open order),

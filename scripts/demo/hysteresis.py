@@ -18,7 +18,7 @@ exactly twice.
 
 Points go straight to ozyd's intake (`/v1/series`, as `scripts/smoke.sh` does),
 so no agent and no UDP are involved. Notifications go to the `log` notifier.
-Standard library only; takes about `swings x 20s + 2 minutes`.
+Standard library only; takes about `swings x 40s + 2 minutes` (about 6 minutes).
 """
 import argparse
 import json
@@ -55,7 +55,7 @@ class Ozy:
 
     def events(self, mid: int, kind: str) -> list:
         events = self.call("GET", f"/api/v1/events?monitor_id={mid}&kind={kind}")["events"]
-        return sorted(events, key=lambda e: e["ts"])
+        return sorted(events, key=lambda e: e["id"])  # ids are in commit order; ts strings do not sort
 
 
 def monitor(run: str, name: str, thresholds: dict) -> dict:

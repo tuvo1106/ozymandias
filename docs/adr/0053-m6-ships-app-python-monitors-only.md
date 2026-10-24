@@ -23,9 +23,19 @@ app existed:
 
 - `service:app-python-api` is `service:shikomi-api` and `service:app-python-worker` is
   `service:shikomi-worker`, the names the app reports. `deploy/` is where app-specific names live.
-- The 5xx rate is written `(all - non_5xx) / all`, not `5xx / all`: a selection that matches
-  nothing is no series (query-language.md), so the plain ratio has no value while the app is
-  healthy and the monitor would sit in "no data" exactly when all is well. The complement is 0.
+- The 5xx rate and the latency p95 are **rolled up to the window**
+  (`.rollup(sum, 300)` on both terms of the ratio, `.rollup(max, 300)` on the percentile, read
+  with `last(last_5m)`). A window reduction applies to the expression's per-bucket values, so
+  `sum(last_5m)` of a ratio on ten-second buckets adds thirty percentages (1% errors read as 30),
+  and `avg(last_5m)` of a p95 averages per-bucket percentiles, so one slow request on a quiet route
+  is the whole answer. One bucket per window makes one ratio and one merged-sketch p95. The cost: a
+  rolled-up window ends on a five-minute boundary, so these two can fire up to five minutes later
+  than an un-rolled one. `TestShippedErrorRatesAreOneRatioOverTheWindow` evaluates the shipped file.
+- The 5xx rate stays the **direct** ratio `5xx / all`, as docs/dashboards.md says for error rates.
+  Healthy, it has no series, and a group that never had data never becomes NO_DATA, so it just
+  never alerts; during a total outage it reads 100, where the complement `(all - non_5xx) / all`
+  would read nothing. (An earlier draft of this ADR chose the complement for a reason that was
+  wrong.)
 
 ## Alternatives considered
 
