@@ -115,6 +115,24 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 		t.Fatalf("the service table never reached the full request count: %v / metrics %v", get("/api/v1/services?env=e2e&"+window), get("/api/v1/metrics?prefix=trace."))
 	}
 
+	// Every environment, the APM page's default and Home's service cards: no
+	// matcher at all, which once built `sum:trace.x.hits by {…}` with no
+	// selector, a parse error, so the table failed for everyone who had not
+	// picked an env.
+	all := get("/api/v1/services?" + window)
+	if all["_code"] != 200.0 {
+		t.Fatalf("services with no env: %v", all)
+	}
+	var everyEnv map[string]any
+	for _, r := range all["services"].([]any) {
+		if row := r.(map[string]any); row["service"] == "shop" {
+			everyEnv = row
+		}
+	}
+	if everyEnv == nil || everyEnv["requests"] != float64(total) {
+		t.Errorf("services with no env: shop = %v, want %d requests", everyEnv, total)
+	}
+
 	if shop["errors"] != float64(failing) || shop["error_pct"] != 10.0 {
 		t.Errorf("errors = %v (%v%%), want exactly %d: statistics must not be sampled", shop["errors"], shop["error_pct"], failing)
 	}

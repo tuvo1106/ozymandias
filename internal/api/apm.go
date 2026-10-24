@@ -374,9 +374,11 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 	if len(entry) > maxEntryNames {
 		entry, truncated = entry[:maxEntryNames], true
 	}
-	sel := "{" + strings.Join(matchers, ",") + "}"
-	if len(matchers) == 0 {
-		sel = ""
+	// No matcher is every series, which metricql spells {*}: a query cannot
+	// leave the selector out before `by` (docs/query-language.md).
+	sel := "{*}"
+	if len(matchers) > 0 {
+		sel = "{" + strings.Join(matchers, ",") + "}"
 	}
 	group := " by {" + strings.Join(by, ",") + "}"
 	spark := max((to-from)/sparkPoints, 1)
