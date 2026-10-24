@@ -10,6 +10,7 @@
  * The heatmap lives in its own file, because it draws a distribution from a
  * different endpoint (ADR-0019).
  */
+import type { TimeRange } from "../../lib/timeRange";
 import { useMemo } from "react";
 import { TimeseriesChart } from "../../charts/TimeseriesChart";
 import { alignSeries, formatValue, seriesLabel } from "../../lib/chartData";
@@ -34,6 +35,12 @@ export interface WidgetProps {
   results: (BatchResult | undefined)[];
   /** The window the server evaluated, for a chart's x-axis. */
   xRange?: [number, number];
+  /**
+   * The range the dashboard asks for, for the widgets that fetch for
+   * themselves (a service summary) and so cannot wait for xRange: a dashboard
+   * of only those has no metric answer to take a window from.
+   */
+  range?: TimeRange;
   /** Charts sharing this key share a cursor. */
   syncKey?: string;
   /**

@@ -141,6 +141,7 @@ export function DashboardView({
             byWidget={data.byWidget}
             sketches={data.sketches}
             xRange={xRange}
+            range={state.range}
             markers={markers}
             syncKey={syncKey}
             hiddenWarnings={hidden}

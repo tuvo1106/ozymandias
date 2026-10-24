@@ -27,6 +27,8 @@ import { cellDelta, moveBy, resizeBy } from "../../lib/gridLayout";
 import type { BatchResult } from "../../lib/dashboardsApi";
 import type { SketchState } from "../../lib/useDashboards";
 import { widgetResults, widgetSketch, type Answer } from "../../lib/dashboardQueries";
+import type { TimeRange } from "../../lib/timeRange";
+import { AlertValueWidget, MonitorSummaryWidget, ServiceSummaryWidget } from "./FeedWidgets";
 import { HeatmapWidget } from "./HeatmapWidget";
 import { WidgetFrame } from "./WidgetFrame";
 import {
@@ -50,6 +52,8 @@ export interface DashboardGridProps {
   sketches: Map<string, SketchState>;
   /** The evaluated window, so every chart's x-axis covers it. */
   xRange?: [number, number];
+  /** The range the dashboard asks for, for widgets that fetch for themselves. */
+  range?: TimeRange;
   /** Charts sharing this key share a cursor; one per dashboard. */
   syncKey: string;
   /** Warnings said once above the grid; see [[sharedWarnings]]. */
@@ -119,6 +123,9 @@ const RENDERERS: Record<
   table: TableWidget,
   heatmap: HeatmapWidget,
   note: NoteWidget,
+  monitor_summary: MonitorSummaryWidget,
+  alert_value: AlertValueWidget,
+  service_summary: ServiceSummaryWidget,
 };
 
 /** Draws every widget in its place. */
@@ -127,6 +134,7 @@ export function DashboardGrid({
   byWidget,
   sketches,
   xRange,
+  range,
   syncKey,
   hiddenWarnings,
   edit,
@@ -160,6 +168,7 @@ export function DashboardGrid({
               widget={widget}
               results={widgetResults(widget, byWidget)}
               xRange={xRange}
+              range={range}
               syncKey={syncKey}
               sketch={widgetSketch(widget, sketches)}
               hiddenWarnings={hiddenWarnings}

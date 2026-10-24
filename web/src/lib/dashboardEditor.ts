@@ -46,6 +46,12 @@ export interface TypeRules {
   conditionalFormats: boolean;
   limit: boolean;
   markdown: boolean;
+  /**
+   * The one field a feed widget draws from instead of queries: the monitor
+   * filter, the monitor's uid, or the services' environment. None for the
+   * query widgets and a note.
+   */
+  feed: "monitor_filter" | "monitor_uid" | "env" | "none";
   /** The aggregator the query must, or must not, use. */
   dist: "required" | "refused" | "n/a";
   /** The size a new widget of this type starts at. */
@@ -68,6 +74,7 @@ export const TYPE_RULES = {
     conditionalFormats: false,
     limit: false,
     markdown: false,
+    feed: "none",
     dist: "refused",
     size: { w: 6, h: 3 },
   },
@@ -81,6 +88,7 @@ export const TYPE_RULES = {
     conditionalFormats: true,
     limit: false,
     markdown: false,
+    feed: "none",
     dist: "refused",
     size: { w: 3, h: 2 },
   },
@@ -94,6 +102,7 @@ export const TYPE_RULES = {
     conditionalFormats: false,
     limit: true,
     markdown: false,
+    feed: "none",
     dist: "refused",
     size: { w: 4, h: 3 },
   },
@@ -107,6 +116,7 @@ export const TYPE_RULES = {
     conditionalFormats: true,
     limit: false,
     markdown: false,
+    feed: "none",
     dist: "refused",
     size: { w: 6, h: 3 },
   },
@@ -120,6 +130,7 @@ export const TYPE_RULES = {
     conditionalFormats: false,
     limit: false,
     markdown: false,
+    feed: "none",
     dist: "required",
     size: { w: 6, h: 3 },
   },
@@ -133,8 +144,51 @@ export const TYPE_RULES = {
     conditionalFormats: false,
     limit: false,
     markdown: true,
+    feed: "none",
     dist: "n/a",
     size: { w: 4, h: 2 },
+  },
+  monitor_summary: {
+    label: "Monitor summary",
+    queries: "none",
+    reducer: "refused",
+    display: false,
+    yaxis: false,
+    precision: false,
+    conditionalFormats: false,
+    limit: true,
+    markdown: false,
+    feed: "monitor_filter",
+    dist: "n/a",
+    size: { w: 6, h: 3 },
+  },
+  alert_value: {
+    label: "Alert value",
+    queries: "none",
+    reducer: "refused",
+    display: false,
+    yaxis: false,
+    precision: false,
+    conditionalFormats: false,
+    limit: false,
+    markdown: false,
+    feed: "monitor_uid",
+    dist: "n/a",
+    size: { w: 3, h: 2 },
+  },
+  service_summary: {
+    label: "Service summary",
+    queries: "none",
+    reducer: "refused",
+    display: false,
+    yaxis: false,
+    precision: false,
+    conditionalFormats: false,
+    limit: true,
+    markdown: false,
+    feed: "env",
+    dist: "n/a",
+    size: { w: 12, h: 3 },
   },
 } as const satisfies Record<WidgetType, TypeRules>;
 
@@ -230,7 +284,18 @@ export function readNumber(
 /** A field a widget carries that its type does not use. */
 export interface UnusedField {
   /** Where it is: a widget field, or one query's field. */
-  field: "queries" | "markdown" | "limit" | "precision" | "yaxis" | "conditional_formats" | "display" | "reducer";
+  field:
+    | "queries"
+    | "markdown"
+    | "limit"
+    | "precision"
+    | "yaxis"
+    | "conditional_formats"
+    | "display"
+    | "reducer"
+    | "monitor_filter"
+    | "monitor_uid"
+    | "env";
   /** The query it belongs to, for a per-query field. */
   query?: number;
   /** Why the server will refuse it. */
@@ -261,7 +326,13 @@ export function unusedFields(w: Widget): UnusedField[] {
   if (!rules.markdown && has("markdown") && w.markdown !== "")
     out.push({ field: "markdown", message: `Markdown belongs to a note, not a ${name}.` });
   if (!rules.limit && has("limit") && w.limit !== 0)
-    out.push({ field: "limit", message: `A limit belongs to a toplist, not a ${name}.` });
+    out.push({ field: "limit", message: `A limit belongs to a toplist or a summary, not a ${name}.` });
+  if (rules.feed !== "monitor_filter" && has("monitor_filter"))
+    out.push({ field: "monitor_filter", message: `A monitor filter belongs to a monitor summary, not a ${name}.` });
+  if (rules.feed !== "monitor_uid" && has("monitor_uid") && w.monitor_uid !== "")
+    out.push({ field: "monitor_uid", message: `A monitor belongs to an alert value, not a ${name}.` });
+  if (rules.feed !== "env" && has("env") && w.env !== "")
+    out.push({ field: "env", message: `An environment belongs to a service summary, not a ${name}.` });
   if (!rules.precision && has("precision"))
     out.push({ field: "precision", message: `Precision belongs to a query value or a table, not a ${name}.` });
   if (!rules.yaxis && has("yaxis"))
@@ -300,6 +371,9 @@ const KNOWN_KEYS = {
     "conditional_formats",
     "limit",
     "markdown",
+    "monitor_filter",
+    "monitor_uid",
+    "env",
   ],
   query: ["q", "name", "display", "reducer"],
 } as const;
@@ -374,7 +448,11 @@ function newWidget(type: WidgetType, widgets: readonly Widget[]): Widget {
   // for a toplist: which number a toplist ranks by is the question the
   // widget exists to answer, and a default here is the silent choice
   // dashboards.md warns about.
-  return rules.queries === "none" ? { ...base, markdown: "" } : { ...base, queries: [{ q: "" }] };
+  if (rules.markdown) return { ...base, markdown: "" };
+  // An alert value starts with an empty uid, refused on save until one is
+  // chosen; the summaries start showing everything.
+  if (rules.feed === "monitor_uid") return { ...base, monitor_uid: "" };
+  return rules.queries === "none" ? base : { ...base, queries: [{ q: "" }] };
 }
 
 function mapWidget(d: Dashboard, id: string, f: (w: Widget) => Widget): Dashboard {
@@ -416,6 +494,7 @@ export function editDashboard(d: Dashboard, a: EditorAction): Dashboard {
         const rules = TYPE_RULES[a.to];
         if (rules.queries !== "none" && (next.queries?.length ?? 0) === 0) next.queries = [{ q: "" }];
         if (rules.markdown && next.markdown === undefined) next.markdown = "";
+        if (rules.feed === "monitor_uid" && next.monitor_uid === undefined) next.monitor_uid = "";
         return next;
       });
     case "setLayout": {

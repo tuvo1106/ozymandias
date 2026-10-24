@@ -64,7 +64,17 @@ describe("readNumber", () => {
 
 describe("TYPE_RULES", () => {
   it("has rules for every type, and none for a type this build does not know", () => {
-    expect(WIDGET_TYPES).toEqual(["timeseries", "query_value", "toplist", "table", "heatmap", "note"]);
+    expect(WIDGET_TYPES).toEqual([
+      "timeseries",
+      "query_value",
+      "toplist",
+      "table",
+      "heatmap",
+      "note",
+      "monitor_summary",
+      "alert_value",
+      "service_summary",
+    ]);
     expect(rulesFor("log_stream")).toBeUndefined();
     expect(rulesFor("toString")).toBeUndefined(); // not an inherited property
   });
@@ -126,6 +136,37 @@ describe("editDashboard", () => {
     const note = editDashboard(base, { type: "addWidget", widgetType: "note" }).widgets[1];
     expect(note).toMatchObject({ markdown: "" });
     expect(note).not.toHaveProperty("queries");
+  });
+
+  it("adds feed widgets with only their own field: no queries, no markdown", () => {
+    for (const t of ["monitor_summary", "service_summary"] as const) {
+      const w = editDashboard(base, { type: "addWidget", widgetType: t }).widgets[1];
+      expect(w).not.toHaveProperty("queries");
+      expect(w).not.toHaveProperty("markdown");
+      expect(unusedFields(w as Widget)).toEqual([]);
+    }
+    // An alert value starts with an empty uid: refused on save until chosen.
+    const av = editDashboard(base, { type: "addWidget", widgetType: "alert_value" }).widgets[1];
+    expect(av).toMatchObject({ monitor_uid: "" });
+    expect(av).not.toHaveProperty("queries");
+    expect(av).not.toHaveProperty("markdown");
+  });
+
+  it("gives a type change to an alert value its uid, and lists the queries it does not use", () => {
+    const d = editDashboard(base, { type: "setType", id: "req", to: "alert_value" });
+    expect(d.widgets[0]?.monitor_uid).toBe("");
+    expect(unusedFields(d.widgets[0] as Widget).map((f) => f.field)).toContain("queries");
+  });
+
+  it("lists a feed field on a type that does not use it", () => {
+    const carrying: Widget = { ...chart, monitor_filter: { tag: "a:b" }, monitor_uid: "m", env: "prod" };
+    expect(unusedFields(carrying).map((f) => f.field)).toEqual(["monitor_filter", "monitor_uid", "env"]);
+    // An empty uid or env is the "not set" a new widget carries, not a field to remove.
+    expect(unusedFields({ ...chart, monitor_uid: "", env: "" })).toEqual([]);
+    const summary: Widget = { id: "s", type: "monitor_summary", layout: chart.layout, monitor_uid: "m", limit: 5 };
+    expect(unusedFields(summary).map((f) => f.field)).toEqual(["monitor_uid"]);
+    const av: Widget = { id: "a", type: "alert_value", layout: chart.layout, monitor_uid: "m", limit: 5 };
+    expect(unusedFields(av).map((f) => f.field)).toEqual(["limit"]);
   });
 
   it("changes only the type, keeping what the new type does not use", () => {

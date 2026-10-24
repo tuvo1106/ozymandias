@@ -22,7 +22,24 @@ export type WidgetType =
   | "toplist"
   | "table"
   | "heatmap"
-  | "note";
+  | "note"
+  | "monitor_summary"
+  | "alert_value"
+  | "service_summary";
+
+/** A monitor status as the monitor API spells it. */
+export type MonitorStatusName = "OK" | "WARN" | "ALERT" | "NO_DATA";
+
+/**
+ * What a monitor_summary lists. `tag` and `q` mean what the monitor list's
+ * `?tag=` and `?q=` mean; `status` is a set, because "triggered" is three
+ * statuses (docs/dashboards.md).
+ */
+export interface MonitorFilter {
+  tag?: string;
+  status?: MonitorStatusName[];
+  q?: string;
+}
 
 /** How a timeseries draws a line. */
 export type Display = "line" | "area" | "bars" | "points";
@@ -112,6 +129,12 @@ export interface Widget {
   conditional_formats?: ConditionalFormat[];
   limit?: number;
   markdown?: string;
+  /** What a monitor_summary lists. */
+  monitor_filter?: MonitorFilter;
+  /** The monitor an alert_value shows, by uid. */
+  monitor_uid?: string;
+  /** A service_summary's environment; empty is every one. */
+  env?: string;
 }
 
 /** One selector on the variable bar. */
