@@ -110,9 +110,9 @@ the code (test-first for parsers, encoders and state machines).
 
 ### Before you ask for a review
 
-A review round costs a push and finds, at best, what you did not already look for. Six kinds of
-bug kept turning up in M2 and M3 (the Python SDK middleware, its dashboard, and the apps
-integrated against it), and each has a check that is far cheaper *before* the first round than
+A review round costs a push and finds, at best, what you did not already look for. Eight kinds of
+bug kept turning up in M2, M3 and M6 (the Python SDK middleware, its dashboard, the apps
+integrated against it, and the monitors shipped for them), and each has a check that is far cheaper *before* the first round than
 after it. Do these first.
 
 | Bug class | What it looked like | Check before review |
@@ -123,6 +123,8 @@ after it. Do these first.
 | **A test that pins nothing** | deleting the code under test left the suite green (five times in one PR); a substring search over a datagram that also held a random duration, which failed one run in three | Break each new line, confirm a test fails, and restore with a script (a killed run leaves the file mutated). Assert on parsed values, never on text that contains a measured number. |
 | **A fix that causes the next bug** | about half of each review round's findings were regressions from the previous round's fix | Before committing a fix to shared code, list its callers and test the ones you did not mean to change. Decide by what a thing *is*, not by a proxy. Run the mutation pass on the fix itself. |
 | **A seam only the live stack shows** | arq dedupes a cron job across *all* workers by name, so two workers sharing one meant one never ran; the SDK caches DNS for 60s; `uv lock` keeps the old hash for a same-version wheel; a framework reports a different route per version | Run the thing end to end once, through the app's own up script, before the first review. Test against the real framework, not a hand-built stand-in for its scope or request. |
+| **A query checked only where it is healthy** | a monitor's dry run read 0 for 5xx, so `sum(last_5m)` of a ratio (thirty percentages added, M6) looked right; a complement ratio that reads nothing in a total outage; a selector that merged the judge and accounts queues because `queue` was never pinned | Evaluate every monitor or widget query on data that should fire, should not, and sits on an edge (a burst across a bucket boundary, a total outage, a second environment). For each metric selected, list every tag key's *values*: a key the query does not pin is merged. Grep `docs/` for the pattern first; the answer may already be written down. |
+| **One sibling fixed, the others left** | a recovery message fixed on one monitor and left reading like an alert on three others; a doc claim corrected in one file and left in another | Fix the class, not the instance: before committing, grep for the same pattern in its siblings and fix them all, or say why not. |
 
 What is enforced and what is not: the coverage gates, `make ci` and the shipped-dashboards test
 run in CI. The cardinality-budget test, "every metric appears after the driver runs" and the
@@ -178,7 +180,9 @@ generators, statsd libraries.
 `../app-node`, `../app-python` and `../app-ruby` are real projects with their own rules.
 They are referred to by role here because this repo is public (ADR-0012); their
 real names, paths and per-milestone integration points live in
-`docs/private/integrations.md`, which is gitignored. If that file is not on
+`docs/private/integrations.md`, which is gitignored. An app whose own repository is
+public (today app-python, which is shikomi) may also be named in `deploy/`,
+`scripts/demo/`, `docs/notes/` and ADRs, never in the core or its tests (ADR-0054). If that file is not on
 your machine, you are not the person who should be touching them.
 
 - **Read that repo's `AGENTS.md` / `CLAUDE.md` first** and follow it over this

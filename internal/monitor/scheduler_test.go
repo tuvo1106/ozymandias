@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -266,6 +267,36 @@ func TestScenario(t *testing.T) {
 	if n.Value != nil || !strings.HasPrefix(n.Link, "http://ozy/monitors/") {
 		t.Errorf("no-data notification %+v", n)
 	}
+}
+
+// TestNoDataWaitsForTheWindowToEmpty pins what docs/operations.md says about
+// no-data timing: a group is absent only once its window holds no points, so a
+// series that stops goes NO_DATA after the longer of the window and
+// no_data_timeframe_m. Found live: a heartbeat monitor on a five-minute window
+// with a three-minute timeframe went NO_DATA after five.
+func TestNoDataWaitsForTheWindowToEmpty(t *testing.T) {
+	h := newHarness(t)
+	silent := func(window string, delay int) spec.Monitor {
+		return spec.Monitor{UID: "hb-" + window + "-" + strconv.Itoa(delay), Name: "hb " + window, Type: spec.TypeMetric,
+			Query:   "max(last_" + window + "):max:heartbeat{*} < 1",
+			Options: spec.Options{EvaluationIntervalS: 30, EvaluationDelayS: i(delay), NotifyNoData: true, NoDataTimeframeM: 2},
+			Message: "{{.Status}} @cap"}
+	}
+	short, long, delayed := h.create(silent("1m", 0)), h.create(silent("5m", 0)), h.create(silent("5m", 30))
+	// A heartbeat every 10s whose last point is at 12:04:00.
+	h.points("heartbeat", nil, 0, 4*time.Minute+time.Second, func(time.Duration) float64 { return 1 })
+	for off := 30 * time.Second; off <= 12*time.Minute; off += 30 * time.Second {
+		h.evalAt(t0.Add(off))
+	}
+	// The timeframe decides: two minutes after the last point.
+	eqStrings(t, "1m window", h.transitions(short), []string{"12:06:00 transition OK>NO_DATA"})
+	// The window decides: the timeframe has passed long before the five-minute
+	// window stops seeing the last point. The window includes its start, so at
+	// 12:09:00 it still holds the 12:04:00 point; 12:09:30 is the first without.
+	eqStrings(t, "5m window", h.transitions(long), []string{"12:09:30 transition OK>NO_DATA"})
+	// Both are measured to the window's end, evaluation_delay_s before the
+	// tick, so a delay adds itself.
+	eqStrings(t, "5m window, 30s delay", h.transitions(delayed), []string{"12:10:00 transition OK>NO_DATA"})
 }
 
 // TestBacktestMatchesLive is the acceptance criterion "the editor's backtest

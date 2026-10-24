@@ -1,0 +1,23 @@
+{
+  "uid": "app-python-judge-backlog",
+  "name": "app-python: the judge queue is backing up",
+  "type": "metric",
+  "query": "max(last_2m):max:arq.queue.depth{service:shikomi-api,queue:judge} by {env} > 20",
+  "options": {
+    "thresholds": {
+      "critical": 20,
+      "warning": 10,
+      "critical_recovery": 15,
+      "warning_recovery": 5
+    },
+    "evaluation_interval_s": 30,
+    "renotify_interval_m": 30,
+    "notify_no_data": true,
+    "no_data_timeframe_m": 10
+  },
+  "message": "{{if .IsNoData}}The api ({{.Group.env}}) has reported no queue depth for ten minutes: it is down or cannot reach the agent, so a backlog would go unseen.{{else if eq .PrevStatus \"NO_DATA\"}}The {{.Group.env}} api is reporting queue depth again: {{printf \"%.0f\" .Value}} jobs.{{else if .IsRecovery}}The {{.Group.env}} judge queue is back to {{printf \"%.0f\" .Value}} jobs.{{else}}The {{.Group.env}} judge queue holds {{printf \"%.0f\" .Value}} jobs (above {{.Threshold}}). Submissions are waiting for a sandbox: check the worker is up and its concurrency.{{end}} @log @hook",
+  "tags": [
+    "app:shikomi",
+    "component:judge"
+  ]
+}

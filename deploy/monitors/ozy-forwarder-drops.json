@@ -3,7 +3,13 @@
   "name": "ozymandias: agent forwarder is dropping series",
   "type": "metric",
   "query": "sum(last_10m):sum:ozy.agent.forwarder.dropped{*} by {host} > 0",
-  "options": {"evaluation_interval_s": 60, "renotify_interval_m": 120},
-  "message": "The agent on {{.Group}} dropped {{.Value}} series in ten minutes: its memory cap, a refused payload, or ozyd unreachable. Data is being lost. See docs/operations.md. @log",
-  "tags": ["app:ozymandias", "component:agent"]
+  "options": {
+    "evaluation_interval_s": 60,
+    "renotify_interval_m": 120
+  },
+  "message": "{{if .IsRecovery}}The agent on {{.Group.host}} has dropped nothing for ten minutes.{{else}}The agent on {{.Group.host}} dropped {{printf \"%.0f\" .Value}} series in ten minutes: its memory cap, a refused payload, or ozyd unreachable. Data is being lost. See docs/operations.md.{{end}} @log",
+  "tags": [
+    "app:ozymandias",
+    "component:agent"
+  ]
 }

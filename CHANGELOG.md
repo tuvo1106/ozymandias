@@ -9,6 +9,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **app-python monitors and demos** (M6). `deploy/monitors/` ships six monitors for the
+  Python app: judge queue backlog (with no-data), trace p95 latency by resource, 5xx rate,
+  worker error logs, judge sandbox OOM kills and a worker heartbeat no-data (ADR-0053; no
+  app-node or app-ruby monitors yet). `scripts/demo/flood-app-python.py` backs the judge
+  queue up; `scripts/demo/hysteresis.py` shows a recovery threshold stopping a flapping
+  monitor.
+
 - **Monitors UI** (M6). A list sorted worst first with group counts, filters in the URL and
   one-click mute; an editor that validates as you type and backtests the last day, drawing
   the evaluated line, threshold bands, the evaluation window and every transition; a detail
@@ -500,6 +507,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `docs/operations.md` said no-data fires `no_data_timeframe_m` after the newest point; it
+  fires after the longer of that and the query window, plus the evaluation delay, since a
+  group is absent only once its window is empty.
 - **A rotated log file's last lines could be delivered after the new file's.** The agent's
   tailer read each poll's files in inode order, and a filesystem may give the new file the
   lower inode. It now reads oldest first (the file's mtime when first opened, then open order),
