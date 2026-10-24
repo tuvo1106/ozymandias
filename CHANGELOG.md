@@ -9,6 +9,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **app-python monitors and demos** (M6). `deploy/monitors/` ships six monitors for the
+  Python app: judge queue backlog (with no-data), trace p95 latency by resource, 5xx rate,
+  worker error logs, judge sandbox OOM kills and a worker heartbeat no-data (ADR-0053; no
+  app-node or app-ruby monitors yet). `scripts/demo/flood-app-python.py` backs the judge
+  queue up; `scripts/demo/hysteresis.py` shows a recovery threshold stopping a flapping
+  monitor.
+
 - **Monitors UI** (M6). A list sorted worst first with group counts, filters in the URL and
   one-click mute; an editor that validates as you type and backtests the last day, drawing
   the evaluated line, threshold bands, the evaluation window and every transition; a detail
@@ -195,6 +202,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The SDKs stay vendored** (ADR-0014, supersedes ADR-0007) — now because they
   are pre-1.0, not because the repo is private. Git install is documented for
   Python; a first publish would use PyPI `ozy` and npm `@tuvo1106/ozy`.
+
+### Fixed
+
+- `docs/operations.md` said no-data fires `no_data_timeframe_m` after the newest point; it
+  fires after the longer of that and the query window, since a group is absent only once
+  its window is empty.
 
 ### Added
 
