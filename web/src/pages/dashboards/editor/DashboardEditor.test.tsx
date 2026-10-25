@@ -605,3 +605,24 @@ describe("?add=: a query from the Metrics Explorer", () => {
     expect(screen.queryByText(/unsaved changes/)).not.toBeInTheDocument();
   });
 });
+
+describe("DashboardEditor feed widgets", () => {
+  it("draws a service summary over the editor's chosen window, not a fallback", async () => {
+    const summary = {
+      ...stored,
+      widgets: [{ id: "svc", type: "service_summary", title: "Services", layout: { x: 0, y: 0, w: 12, h: 3 } }],
+    };
+    const f = mockApi(
+      over((path) => {
+        if (path === "/api/v1/dashboards/2") return { body: summary };
+        if (path === "/api/v1/services") return { body: { services: [], from: 1, to: 2 } };
+        if (path === "/api/v1/monitors") return { body: { monitors: [] } };
+        return undefined;
+      }),
+    );
+    await openEditor("/dashboards/2/edit?from=1700000000&to=1700003600");
+    await waitFor(() => expect(f.mock.calls.some(([u]) => String(u).startsWith("/api/v1/services"))).toBe(true));
+    const url = new URL(String(f.mock.calls.find(([u]) => String(u).startsWith("/api/v1/services"))![0]), "http://x");
+    expect(url.searchParams.get("from")).toBe(String(1_700_000_000 * 1000));
+  });
+});

@@ -31,6 +31,7 @@ import {
 } from "../../../lib/dashboardEditor";
 import { EnumSelect } from "../../../ui/EnumSelect";
 import { NumberField } from "../../../ui/NumberField";
+import { FeedFields } from "./FeedFields";
 import { button, Section, TextField } from "./fields";
 import { QueryEditor } from "./QueryEditor";
 
@@ -198,6 +199,8 @@ function TypedFields({
           ) : null}
         </Section>
       ) : null}
+
+      <FeedFields widget={widget} rules={rules} set={set} />
 
       {rules.yaxis ? (
         <Section title="Y axis">

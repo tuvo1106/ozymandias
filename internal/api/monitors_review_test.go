@@ -130,3 +130,39 @@ func TestMonitors_ProblemCacheCoversEveryCompiledField(t *testing.T) {
 		t.Fatalf("a monitor deleted elsewhere is still cached: %v", m.problems)
 	}
 }
+
+// TestMonitors_ListWithStates: ?states=1 gives each running monitor's groups,
+// worst first with their tags and values, and none for a disabled one, whose
+// stored states are stale. Without it the list stays as it was.
+func TestMonitors_ListWithStates(t *testing.T) {
+	h, db, _, _ := monitorsAPI(t)
+	send(t, h, "POST", "/api/v1/monitors", monitorBody)
+	if _, err := db.Commit(context.Background(), meta.Commit{MonitorID: 1, Upsert: []meta.StateRow{
+		{GroupKey: "env:prod", Group: map[string]string{"env": "prod"}, Status: "OK", Since: now, LastValue: 1},
+		{GroupKey: "env:staging", Group: map[string]string{"env": "staging"}, Status: "ALERT", Since: now, LastValue: 31},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	_, plain := get(t, h, "/api/v1/monitors")
+	if _, ok := plain["monitors"].([]any)[0].(map[string]any)["group_states"]; ok {
+		t.Errorf("group_states without ?states=1: %v", plain)
+	}
+	_, list := get(t, h, "/api/v1/monitors?states=1")
+	gs, _ := list["monitors"].([]any)[0].(map[string]any)["group_states"].([]any)
+	if len(gs) != 2 {
+		t.Fatalf("group_states: %v", list)
+	}
+	first := gs[0].(map[string]any)
+	if first["status"] != "ALERT" || first["value"] != 31.0 || first["tags"].(map[string]any)["env"] != "staging" || first["group"] != "env:staging" {
+		t.Errorf("not worst first with tags and value: %v", gs)
+	}
+
+	disabled := strings.Replace(monitorBody, `"tags"`, `"enabled": false, "tags"`, 1)
+	if rec, _ := send(t, h, "PUT", "/api/v1/monitors/1", disabled); rec.Code != 200 {
+		t.Fatalf("disable: %d %s", rec.Code, rec.Body)
+	}
+	_, list = get(t, h, "/api/v1/monitors?states=1")
+	if _, ok := list["monitors"].([]any)[0].(map[string]any)["group_states"]; ok {
+		t.Errorf("a disabled monitor's stale states were listed: %v", list)
+	}
+}

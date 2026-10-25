@@ -2,7 +2,7 @@
  * Pure helpers for the monitor pages: mute wording, the status timeline, and
  * reading an event for a person.
  */
-import type { GroupState, MonitorEvent, Status } from "./monitorsApi";
+import { severity, type GroupState, type MonitorEvent, type Status, type StoredMonitor } from "./monitorsApi";
 import { formatUptime } from "./health";
 
 /**
@@ -165,3 +165,8 @@ export const TIMELINE_KINDS = ["transition", "reset", "group_expired"];
 
 /** Event kinds that are about delivering, for the notification log. */
 export const NOTIFICATION_KINDS = ["notify_ok", "notify_failed", "test_notification"];
+
+/** Worst status first, then name. A monitor with no status sorts below OK. */
+export function sortMonitors(ms: readonly StoredMonitor[]): StoredMonitor[] {
+  return [...ms].sort((a, b) => severity(b.status) - severity(a.status) || a.name.localeCompare(b.name));
+}

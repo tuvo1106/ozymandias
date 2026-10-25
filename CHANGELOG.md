@@ -9,6 +9,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Monitor and service widgets, and a Home that shows them** (M6). Three dashboard
+  widget types that draw from their own API rather than metric queries:
+  `monitor_summary` (the monitors a tag, status set and name select, worst first),
+  `alert_value` (one monitor's status and value, named by uid) and `service_summary`
+  (a card per service with req/s, error %, p95, a sparkline and the worst status of
+  the monitors tagged `service:<name>`). Home (`/`) now shows the provisioned `home`
+  dashboard under ozyd's status: service cards, triggered monitors and ingest health.
+  The shipped app-python monitors carry `service:` tags.
+- **`GET /api/v1/monitors?states=1`** (M6) adds each running monitor's groups
+  (`group`, `tags`, `status`, `value`, worst first), so a page can read every
+  monitor's group tags in one request.
 - **app-python monitors and demos** (M6). `deploy/monitors/` ships six monitors for the
   Python app: judge queue backlog (with no-data), trace p95 latency by resource, 5xx rate,
   worker error logs, judge sandbox OOM kills and a worker heartbeat no-data (ADR-0053; no
@@ -507,6 +518,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The APM service table failed for "every environment".** With no `env`, the
+  query it built had no selector before `by`, a parse error, so `/api/v1/services`
+  answered 500 and the APM landing page showed an error until an env was picked.
 - `docs/operations.md` said no-data fires `no_data_timeframe_m` after the newest point; it
   fires after the longer of that and the query window, plus the evaluation delay, since a
   group is absent only once its window is empty.

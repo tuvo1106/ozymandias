@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router";
-import { fetchResources, fetchServices, fetchTraces, type RedRow } from "../../lib/apmApi";
+import { fetchResources, fetchTraces, type RedRow } from "../../lib/apmApi";
 import { apmWindow, traceSearchLink } from "../../lib/apmState";
 import { fmtCount, fmtMs, fmtPct, fmtRate } from "../../lib/apmView";
+import { useServiceTable } from "../../lib/useApmQueries";
 import { rangeKey } from "../../lib/useMetricsApi";
 import { ApmHeader, BTN, ErrorNote, scopeSearch, useApmState } from "./ApmShell";
 import { RedTable } from "./RedTable";
@@ -56,11 +57,7 @@ export function ServicePage() {
   const { service = "" } = useParams();
   const { state, update } = useApmState();
   const rk = rangeKey(state.range);
-  const kinds = useQuery({
-    queryKey: ["apm", "services", state.env, rk],
-    queryFn: ({ signal }) => fetchServices(state.env, apmWindow(state.range, Date.now()), fetch, signal),
-    retry: false,
-  });
+  const kinds = useServiceTable(state.env, state.range);
   const resources = useQuery({
     queryKey: ["apm", "resources", service, state.env, rk],
     queryFn: ({ signal }) => fetchResources(service, state.env, apmWindow(state.range, Date.now()), fetch, signal),

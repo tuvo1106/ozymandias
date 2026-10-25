@@ -80,6 +80,19 @@ export interface StoredMonitor extends MonitorDefinition {
   status: Status | null;
   /** Why the stored definition does not compile; the monitor is not running. */
   problem?: string;
+  /**
+   * Each group, worst first: only when the list was asked `?states=1`, and
+   * only for a monitor with a status (a disabled one's states are stale).
+   */
+  group_states?: GroupStatus[];
+}
+
+/** A group in the list's `?states=1` answer: `/states` without the timestamps. */
+export interface GroupStatus {
+  group: string;
+  tags: Record<string, string>;
+  status: Status;
+  value: number | null;
 }
 
 /** One group's state, from `/states`. */
@@ -247,8 +260,13 @@ function isStoredMonitor(v: unknown): v is StoredMonitor {
     isNumOrNull(v.muted_until) &&
     isCounts(v.groups) &&
     (v.status === null || isStatus(v.status)) &&
-    (v.problem === undefined || isStr(v.problem))
+    (v.problem === undefined || isStr(v.problem)) &&
+    (v.group_states === undefined || (Array.isArray(v.group_states) && v.group_states.every(isGroupStatus)))
   );
+}
+
+function isGroupStatus(v: unknown): v is GroupStatus {
+  return isRecord(v) && isStr(v.group) && isRecord(v.tags) && isStatus(v.status) && isNumOrNull(v.value);
 }
 
 function isGroupState(v: unknown): v is GroupState {
@@ -329,6 +347,8 @@ export interface MonitorFilter {
   tag?: string;
   status?: Status;
   q?: string;
+  /** "1" adds each monitor's group_states. */
+  states?: "1";
 }
 
 /** Lists monitors, by name. */

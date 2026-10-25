@@ -17,6 +17,13 @@ function chart(id: string, ...queries: string[]): Widget {
 }
 
 describe("collectRequests", () => {
+  it("sends no leftover queries for a type that takes none, and still sends an unknown type's", () => {
+    const leftover: Widget = { ...chart("svc", "sum:left{*}"), type: "service_summary" };
+    const unknown: Widget = { ...chart("u", "sum:u{*}"), type: "log_stream" as Widget["type"] };
+    const { chunks } = collectRequests([leftover, chart("a", "sum:x{*}"), unknown]);
+    expect(chunks.flat().map((s) => s.widgetId)).toEqual(["a", "u"]);
+  });
+
   it("flattens every widget's queries in order", () => {
     const { chunks } = collectRequests([chart("a", "sum:x{*}", "sum:y{*}"), chart("b", "avg:z{*}")]);
     expect(chunks).toHaveLength(1);

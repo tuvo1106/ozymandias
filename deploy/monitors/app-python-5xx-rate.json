@@ -13,6 +13,7 @@
   "message": "{{if .IsRecovery}}The {{.Group.env}} api is back to {{printf \"%.1f\" .Value}}% 5xx.{{else}}{{printf \"%.1f\" .Value}}% of the {{.Group.env}} api's requests answered 5xx over two minutes (threshold {{.Threshold}}%).{{end}} @log @hook",
   "tags": [
     "app:shikomi",
-    "component:api"
+    "component:api",
+    "service:shikomi-api"
   ]
 }

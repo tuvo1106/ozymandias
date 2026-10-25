@@ -1,7 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
-import { fetchServices } from "../../lib/apmApi";
-import { apmWindow } from "../../lib/apmState";
-import { rangeKey } from "../../lib/useMetricsApi";
+import { useServiceTable } from "../../lib/useApmQueries";
 import { ApmHeader, BTN, ErrorNote, useApmState } from "./ApmShell";
 import { RedTable } from "./RedTable";
 
@@ -13,11 +10,7 @@ import { RedTable } from "./RedTable";
  */
 export function ServiceList() {
   const { state, update } = useApmState();
-  const q = useQuery({
-    queryKey: ["apm", "services", state.env, rangeKey(state.range)],
-    queryFn: ({ signal }) => fetchServices(state.env, apmWindow(state.range, Date.now()), fetch, signal),
-    retry: false,
-  });
+  const q = useServiceTable(state.env, state.range);
   return (
     <div className="flex flex-col gap-3">
       <ApmHeader title="APM" state={state} update={update}>

@@ -13,6 +13,7 @@
   "message": "{{if .IsRecovery}}{{.Group.env}}: p95 latency of {{.Group.resource}} is back to {{printf \"%.2f\" .Value}} s.{{else}}{{.Group.env}}: p95 latency of {{.Group.resource}} is {{printf \"%.2f\" .Value}} s, {{.Status}} (threshold {{.Threshold}} s). Traces: service shikomi-api, slowest first.{{end}} @log @hook",
   "tags": [
     "app:shikomi",
-    "component:api"
+    "component:api",
+    "service:shikomi-api"
   ]
 }

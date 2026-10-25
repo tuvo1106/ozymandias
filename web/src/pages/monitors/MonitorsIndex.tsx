@@ -13,16 +13,11 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router";
-import { muteMonitor, severity, STATUSES, unmuteMonitor, type Status, type StoredMonitor } from "../../lib/monitorsApi";
-import { muteLabel } from "../../lib/monitorView";
+import { muteMonitor, STATUSES, unmuteMonitor, type Status, type StoredMonitor } from "../../lib/monitorsApi";
+import { muteLabel, sortMonitors } from "../../lib/monitorView";
 import { useDebouncedValue } from "../../lib/useDebouncedValue";
 import { MONITORS_KEY, useMonitorList } from "../../lib/useMonitors";
 import { button, ErrorText, GroupCounts, input, primary, StatusPill } from "./parts";
-
-/** Worst status first, then name. */
-export function sortMonitors(ms: readonly StoredMonitor[]): StoredMonitor[] {
-  return [...ms].sort((a, b) => severity(b.status) - severity(a.status) || a.name.localeCompare(b.name));
-}
 
 /** Mute and unmute from the list. */
 function MuteButton({ m, now }: { m: StoredMonitor; now: number }) {

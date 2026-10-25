@@ -386,6 +386,7 @@ function Editor({ base, add, storedId: initialId, initialSave }: EditorProps) {
                 sketches={data.sketches}
                 xRange={data.range ? [data.range.from, data.range.to] : undefined}
                 syncKey={syncKey}
+                range={state.range}
                 hiddenWarnings={hidden}
                 edit={{
                   selected: selected?.id,

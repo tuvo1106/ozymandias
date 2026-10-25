@@ -713,3 +713,76 @@ func TestValidate_TheAggregatorHasToMatchTheWidget(t *testing.T) {
 		t.Errorf("a heatmap of a distribution was refused: %v", err)
 	}
 }
+
+// The feed widgets draw from their own API, so each is valid with only its
+// own field, refuses queries, and refuses every other type's field; and their
+// fields are refused on every other type.
+func TestValidate_FeedWidgets(t *testing.T) {
+	feed := func(w Widget) Dashboard {
+		w.ID, w.Layout = "f", Layout{X: 0, Y: 3, W: 6, H: 3}
+		d := good()
+		d.Widgets = append(d.Widgets, w)
+		return d
+	}
+	two := 2
+	valid := []Widget{
+		{Type: TypeMonitorSummary},
+		{Type: TypeMonitorSummary, Limit: 10, MonitorFilter: &MonitorFilter{Tag: "app:x", Statuses: []string{"ALERT", "WARN", "NO_DATA"}, Name: "queue"}},
+		{Type: TypeAlertValue, MonitorUID: "judge-backlog"},
+		{Type: TypeServiceSummary},
+		{Type: TypeServiceSummary, Env: "prod", Limit: 12},
+	}
+	for _, w := range valid {
+		d := feed(w)
+		if err := d.Validate(); err != nil {
+			t.Errorf("%s %+v: %v", w.Type, w, err)
+		}
+	}
+	for _, tc := range []struct {
+		w    Widget
+		want string
+	}{
+		{Widget{Type: TypeMonitorSummary, Queries: []Query{{Q: "sum:x{*}"}}}, "has no queries"},
+		{Widget{Type: TypeServiceSummary, Precision: &two}, "precision belongs"},
+		{Widget{Type: TypeAlertValue}, "needs monitor_uid"},
+		{Widget{Type: TypeAlertValue, MonitorUID: "  "}, "needs monitor_uid"},
+		{Widget{Type: TypeAlertValue, MonitorUID: strings.Repeat("u", MaxTitle+1)}, "monitor_uid is"},
+		{Widget{Type: TypeAlertValue, MonitorUID: " judge-backlog"}, "spaces around it"},
+		{Widget{Type: TypeAlertValue, MonitorUID: "m", Limit: 3}, "limit belongs to a toplist, a monitor_summary or a service_summary, not an alert_value"},
+		{Widget{Type: TypeMonitorSummary, Limit: 101}, "outside 1…100"},
+		{Widget{Type: TypeMonitorSummary, MonitorFilter: &MonitorFilter{Statuses: []string{"alert"}}}, `status "alert" is not one of`},
+		{Widget{Type: TypeMonitorSummary, MonitorFilter: &MonitorFilter{Statuses: []string{"OK", "OK"}}}, "listed twice"},
+		{Widget{Type: TypeMonitorSummary, MonitorUID: "m"}, "monitor_uid belongs to an alert_value"},
+		{Widget{Type: TypeAlertValue, MonitorUID: "m", MonitorFilter: &MonitorFilter{}}, "monitor_filter belongs"},
+		{Widget{Type: TypeAlertValue, MonitorUID: "m", Env: "prod"}, "env belongs to a service_summary"},
+		{Widget{Type: TypeServiceSummary, Env: "a,b"}, "cannot hold a comma"},
+		{Widget{Type: TypeServiceSummary, Env: "prod\r"}, "cannot hold a comma"},
+		{Widget{Type: TypeServiceSummary, Env: strings.Repeat("e", MaxTitle+1)}, "bytes; the limit"},
+		{Widget{Type: TypeServiceSummary, Markdown: "x"}, "markdown belongs to a note"},
+	} {
+		d := feed(tc.w)
+		err := d.Validate()
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s %+v: got %v, want %q", tc.w.Type, tc.w, err, tc.want)
+		}
+	}
+	// And their fields on the types that existed before them.
+	for _, mut := range []func(*Widget){
+		func(w *Widget) { w.MonitorFilter = &MonitorFilter{} },
+		func(w *Widget) { w.MonitorUID = "m" },
+		func(w *Widget) { w.Env = "prod" },
+	} {
+		d := good()
+		mut(&d.Widgets[0])
+		if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "belongs to") {
+			t.Errorf("a timeseries carrying a feed field: %v", err)
+		}
+		n := Widget{ID: "n", Type: TypeNote, Markdown: "x", Layout: Layout{X: 0, Y: 3, W: 2, H: 1}}
+		mut(&n)
+		d = good()
+		d.Widgets = append(d.Widgets, n)
+		if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "belongs to") {
+			t.Errorf("a note carrying a feed field: %v", err)
+		}
+	}
+}

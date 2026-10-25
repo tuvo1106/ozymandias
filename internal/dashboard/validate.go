@@ -144,7 +144,8 @@ func (w *Widget) validate(where string, declared map[string]bool) []error {
 	}
 	errs = append(errs, w.Layout.validate(where)...)
 
-	known := []Type{TypeTimeseries, TypeQueryValue, TypeToplist, TypeTable, TypeHeatmap, TypeNote}
+	known := []Type{TypeTimeseries, TypeQueryValue, TypeToplist, TypeTable, TypeHeatmap, TypeNote,
+		TypeMonitorSummary, TypeAlertValue, TypeServiceSummary}
 	if !slices.Contains(known, w.Type) {
 		strs := make([]string, len(known))
 		for i, k := range known {
@@ -173,11 +174,16 @@ func (w *Widget) validate(where string, declared map[string]bool) []error {
 		// and conditional formats would validate — while the docs say a field
 		// belonging to another type is an error. The exemption was an accident
 		// of where the early return sat.
-		return append(errs, w.foreignFields(where, "a note")...)
+		errs = append(errs, w.foreignFields(where, "a note", false)...)
+		return append(errs, w.feedFields(where, "")...)
 	}
 	if w.Markdown != "" {
 		errs = append(errs, invalidf("%s: markdown belongs to a note, not a %s", where, w.Type))
 	}
+	if isFeedWidget(w.Type) {
+		return append(errs, w.validateFeed(where)...)
+	}
+	errs = append(errs, w.feedFields(where, "")...)
 
 	switch {
 	case len(w.Queries) == 0:
@@ -199,7 +205,7 @@ func (w *Widget) validate(where string, declared map[string]bool) []error {
 		errs = append(errs, invalidf("%s: limit %d is outside 1…100 (0 means the default)", where, w.Limit))
 	}
 	if w.Type != TypeToplist && w.Limit != 0 {
-		errs = append(errs, invalidf("%s: limit belongs to a toplist, not a %s", where, w.Type))
+		errs = append(errs, invalidf("%s: %s, not %s", where, limitBelongs, aType(w.Type)))
 	}
 	if w.Precision != nil {
 		if w.Type != TypeQueryValue && w.Type != TypeTable {
@@ -220,14 +226,110 @@ func (w *Widget) validate(where string, declared map[string]bool) []error {
 	return errs
 }
 
-// foreignFields reports the widget-specific fields that do not belong to a
-// type which has none of them. It exists for the note branch, which returns
-// before the per-type checks below and would otherwise be the one type allowed
-// to carry anything.
-func (w *Widget) foreignFields(where, what string) []error {
+// isFeedWidget is whether a widget draws from its own API rather than from
+// metric queries: the monitor list, one monitor, or the APM tables.
+func isFeedWidget(t Type) bool {
+	return t == TypeMonitorSummary || t == TypeAlertValue || t == TypeServiceSummary
+}
+
+// monitorStatuses are the statuses a monitor_filter may name, as the monitor
+// API spells them.
+var monitorStatuses = []string{"OK", "WARN", "ALERT", "NO_DATA"}
+
+// validateFeed checks a monitor_summary, alert_value or service_summary.
+// None of them takes queries: what they show is chosen by their own field,
+// and a query on one is a sign the author expects it to draw something it
+// will not.
+func (w *Widget) validateFeed(where string) []error {
 	var errs []error
-	if w.Limit != 0 {
-		errs = append(errs, invalidf("%s: limit belongs to a toplist, not %s", where, what))
+	if len(w.Queries) > 0 {
+		errs = append(errs, invalidf("%s: a %s has no queries", where, w.Type))
+	}
+	takesLimit := w.Type != TypeAlertValue
+	errs = append(errs, w.foreignFields(where, aType(w.Type), takesLimit)...)
+	if takesLimit && (w.Limit < 0 || w.Limit > 100) {
+		errs = append(errs, invalidf("%s: limit %d is outside 1…100 (0 means the default)", where, w.Limit))
+	}
+	errs = append(errs, w.feedFields(where, w.Type)...)
+
+	if f := w.MonitorFilter; w.Type == TypeMonitorSummary && f != nil {
+		if len(f.Tag) > MaxTitle || len(f.Name) > MaxTitle {
+			errs = append(errs, invalidf("%s: monitor_filter tag or q is over %d bytes", where, MaxTitle))
+		}
+		seen := map[string]bool{}
+		for _, st := range f.Statuses {
+			if !slices.Contains(monitorStatuses, st) {
+				errs = append(errs, invalidf("%s: monitor_filter status %q is not one of %s", where, st, strings.Join(monitorStatuses, ", ")))
+			} else if seen[st] {
+				errs = append(errs, invalidf("%s: monitor_filter status %q is listed twice", where, st))
+			}
+			seen[st] = true
+		}
+	}
+	switch {
+	case w.Type == TypeAlertValue && strings.TrimSpace(w.MonitorUID) == "":
+		errs = append(errs, invalidf("%s: an alert_value needs monitor_uid", where))
+	case strings.TrimSpace(w.MonitorUID) != w.MonitorUID:
+		// A uid is matched exactly, so " judge-backlog" would name no monitor.
+		errs = append(errs, invalidf("%s: monitor_uid %q has spaces around it", where, w.MonitorUID))
+	}
+	if len(w.MonitorUID) > MaxTitle {
+		errs = append(errs, invalidf("%s: monitor_uid is %d bytes; the limit is %d", where, len(w.MonitorUID), MaxTitle))
+	}
+	if w.Type == TypeServiceSummary {
+		// The APM API refuses these in env, because a metric query cannot
+		// express them; refusing at save says so where it can be fixed.
+		if strings.ContainsAny(w.Env, EnvRefused) {
+			errs = append(errs, invalidf("%s: env %q cannot hold a comma, a brace or a line break", where, w.Env))
+		}
+		if len(w.Env) > MaxTitle {
+			errs = append(errs, invalidf("%s: env is %d bytes; the limit is %d", where, len(w.Env), MaxTitle))
+		}
+	}
+	return errs
+}
+
+// feedFields reports the feed widgets' fields on a widget they do not belong
+// to; own is the feed type whose field is allowed, or "" for none. The one
+// place each "X belongs to Y" message for these fields is written.
+func (w *Widget) feedFields(where string, own Type) []error {
+	var errs []error
+	if w.MonitorFilter != nil && own != TypeMonitorSummary {
+		errs = append(errs, invalidf("%s: monitor_filter belongs to a monitor_summary, not %s", where, aType(w.Type)))
+	}
+	if w.MonitorUID != "" && own != TypeAlertValue {
+		errs = append(errs, invalidf("%s: monitor_uid belongs to an alert_value, not %s", where, aType(w.Type)))
+	}
+	if w.Env != "" && own != TypeServiceSummary {
+		errs = append(errs, invalidf("%s: env belongs to a service_summary, not %s", where, aType(w.Type)))
+	}
+	return errs
+}
+
+// aType is a type name with its article: "a toplist", "an alert_value".
+func aType(t Type) string {
+	if t != "" && strings.ContainsRune("aeiou", rune(t[0])) {
+		return "an " + string(t)
+	}
+	return "a " + string(t)
+}
+
+// EnvRefused are the characters a service_summary's env cannot hold: the APM
+// API refuses the same set (internal/api/apm.go, matcher), because a metric
+// query cannot express them.
+const EnvRefused = ",{}\n\r"
+
+// limitBelongs is the one statement of which types take a limit.
+const limitBelongs = "limit belongs to a toplist, a monitor_summary or a service_summary"
+
+// foreignFields reports the query widgets' display fields on a type that has
+// none of them: a note, or a feed widget. takesLimit leaves limit to the
+// caller (the summaries take one). It exists because those branches return
+// before the per-type checks and would otherwise be allowed to carry anything.
+func (w *Widget) foreignFields(where, what string, takesLimit bool) []error {
+	var errs []error
+	if w.Limit != 0 && !takesLimit {
+		errs = append(errs, invalidf("%s: %s, not %s", where, limitBelongs, what))
 	}
 	if w.Precision != nil {
 		errs = append(errs, invalidf("%s: precision belongs to a query_value or a table, not %s", where, what))
