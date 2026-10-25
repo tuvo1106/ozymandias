@@ -229,6 +229,26 @@ func TestRails_FlushKeepsArrivalOrderOnTies(t *testing.T) {
 	}
 }
 
+// TestRails_ShutdownFlushKeepsArrivalOrder: FlushAll, on shutdown, emits the
+// open requests in the order they opened, ties included.
+func TestRails_ShutdownFlushKeepsArrivalOrder(t *testing.T) {
+	p, clk := newPipeline(t, Spec{Source: "rails", RateLimit: -1})
+	m := meta()
+	m.Received = clk.Now()
+	for i := 0; i < 50; i++ {
+		p.Process(fmt.Sprintf(`[end%05d] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, i), m)
+	}
+	out := p.FlushAll()
+	if len(out) != 50 {
+		t.Fatalf("flushed %d, want 50", len(out))
+	}
+	for i, l := range out {
+		if want := fmt.Sprintf("end%05d", i); l.Attrs["request_id"] != want {
+			t.Fatalf("out[%d] = %v, want %s: shutdown emitted in map order", i, l.Attrs["request_id"], want)
+		}
+	}
+}
+
 func TestRails_ALineCapStopsBufferingButTheRequestStillEnds(t *testing.T) {
 	p, _ := newPipeline(t, Spec{Source: "rails", RateLimit: -1})
 	id := "[cafecafe-0001]"

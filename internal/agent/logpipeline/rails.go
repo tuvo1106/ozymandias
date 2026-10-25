@@ -1,8 +1,9 @@
 package logpipeline
 
 import (
+	"cmp"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -46,9 +47,10 @@ type railsGroup struct {
 	id    string
 	meta  Meta
 	first time.Time // when its first line arrived
-	// seq is the order it opened in. Lines often share a received time (one
-	// read, one timestamp), so first alone ties, and a tie broken by map order
-	// evicts or emits a random one of them.
+	// seq is the order it opened in, which is what "oldest" means for
+	// eviction and flushing. Not first: lines often share a received time
+	// (one read, one timestamp), and a tie broken by map order evicts or
+	// emits a random one of them.
 	seq    uint64
 	fields map[string]any
 	lines  int
@@ -122,7 +124,7 @@ func (g *railsGrouper) flushAll() []groupedEvent {
 
 // incomplete emits groups as unfinished requests, in the order they opened.
 func incomplete(groups []*railsGroup) []groupedEvent {
-	sort.Slice(groups, func(i, j int) bool { return groups[i].openedBefore(groups[j]) })
+	slices.SortFunc(groups, func(a, b *railsGroup) int { return cmp.Compare(a.seq, b.seq) })
 	out := make([]groupedEvent, 0, len(groups))
 	for _, grp := range groups {
 		out = append(out, grp.event(true))
@@ -130,12 +132,11 @@ func incomplete(groups []*railsGroup) []groupedEvent {
 	return out
 }
 
-// openedBefore orders groups by their first line, then by arrival: lines
-// that share a received time keep the order they were read in.
+// openedBefore is arrival order: which group's first line was read first.
+// Not the received time, which ties whenever lines share a read (and a
+// caller replaying lines could even send backwards); arrival is what
+// "oldest" and "in the order they opened" mean.
 func (grp *railsGroup) openedBefore(other *railsGroup) bool {
-	if !grp.first.Equal(other.first) {
-		return grp.first.Before(other.first)
-	}
 	return grp.seq < other.seq
 }
 
