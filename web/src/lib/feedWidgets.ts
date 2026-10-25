@@ -56,13 +56,6 @@ export function matchesFilter(m: StoredMonitor, filter: MonitorSummaryFilter | u
   return true;
 }
 
-/** The tag and name part of a filter, as the Monitors page's URL takes it. */
-export function listParams(filter: MonitorSummaryFilter | undefined): { tag?: string; q?: string } {
-  const out: { tag?: string; q?: string } = {};
-  if (filter?.tag) out.tag = filter.tag;
-  if (filter?.q) out.q = filter.q;
-  return out;
-}
 
 function serviceTags(m: StoredMonitor): string[] {
   return (m.tags ?? []).filter((t) => t.startsWith("service:")).map((t) => t.slice("service:".length));
@@ -117,7 +110,9 @@ export function monitorByUid(ms: readonly StoredMonitor[], uid: string | undefin
  * a set it shows them all, which still holds every row the widget cut).
  */
 export function monitorsLink(filter: MonitorSummaryFilter | undefined): string {
-  const p = new URLSearchParams(listParams(filter));
+  const p = new URLSearchParams();
+  if (filter?.tag) p.set("tag", filter.tag);
+  if (filter?.q) p.set("q", filter.q);
   if (filter?.status?.length === 1) p.set("status", filter.status[0]!);
   const qs = p.toString();
   return qs ? `/monitors?${qs}` : "/monitors";

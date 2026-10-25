@@ -3,8 +3,12 @@
  * the monitor list (monitor_summary), one monitor (alert_value) and the APM
  * service table (service_summary).
  *
- * Each fetches for itself, through the same hooks the Monitors and APM pages
- * use, so a dashboard shows what those pages would and the caches are shared.
+ * Each fetches for itself. The service table is the APM pages' own query, so
+ * that cache is shared; the monitor list is one list with every group
+ * (`?states=1`) shared by the feed widgets on a page, not with the Monitors
+ * page, which asks without groups. Polling one list with every group, rather
+ * than one per widget, is a trade: a page with only a monitor summary still
+ * downloads every group, which grows with the groups, not the monitors.
  * And each says which kind of nothing it has: no monitor matches, nothing is
  * triggered, no monitor has that uid, no service handled a request. A blank
  * square on Home reads as "all is well" whichever of those it is.
@@ -111,12 +115,17 @@ export function AlertValueWidget({ widget, range }: WidgetProps) {
     );
   }
   // Worst first (docs/api.md), so the first group is the one the status is.
+  // A NO_DATA group keeps the last value it saw (the state machine does not
+  // clear it), which is not a value now: drawn as the dash, said in the title.
   const worst = m.group_states?.[0];
-  const value = worst?.value;
+  const value = worst?.status === "NO_DATA" ? null : worst?.value;
   return (
     <WidgetFrame title={widget.title ?? m.name} warnings={[...staleWarning("the monitor", list.error, true), ...nowWarning(range)]}>
       <Link to={`/monitors/${m.id}`} className="flex flex-1 flex-col items-center justify-center gap-1">
-        <span className={`text-3xl font-semibold tabular-nums ${VALUE_COLOR[m.status ?? "none"]}`}>
+        <span
+          title={worst?.status === "NO_DATA" ? "No data: the last value seen is not a value now" : undefined}
+          className={`text-3xl font-semibold tabular-nums ${VALUE_COLOR[m.status ?? "none"]}`}
+        >
           {value === undefined || value === null ? "—" : formatValue(value)}
         </span>
         <span className="flex items-center gap-1 text-xs text-zinc-500">
@@ -156,7 +165,7 @@ export function ServiceSummaryWidget({ widget, range }: WidgetProps) {
   const rows = services.data.services;
   if (rows.length === 0) {
     return (
-      <WidgetFrame title={widget.title}>
+      <WidgetFrame title={widget.title} warnings={staleWarning("the services", services.error, true)}>
         <p className="text-sm text-zinc-500">
           No service handled a request in this window{env ? ` in env “${env}”` : ""}. Services appear once an instrumented app does.
         </p>

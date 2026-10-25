@@ -172,7 +172,8 @@ past, each says so in the widget. A service card's numbers do follow the window.
   (1–100, default 10) cuts the list and says how many more there are.
 - **`alert_value`** names its monitor by `monitor_uid`, not by id: ids differ per
   database, and a uid is what lets a shipped dashboard name a shipped monitor.
-  The value is the worst group's, as the monitor last evaluated it. A uid that
+  The value is the worst group's, as the monitor last evaluated it; a group
+  in `NO_DATA` has no value now, so it draws a dash rather than the last one seen. A uid that
   names no monitor is said in the widget, not drawn as a blank.
 - **`service_summary`** reads the APM service table (`GET /api/v1/services`):
   one card per service and entry-span kind, over the dashboard's time range,

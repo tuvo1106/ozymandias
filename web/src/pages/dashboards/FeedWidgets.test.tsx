@@ -120,6 +120,16 @@ describe("AlertValueWidget", () => {
     expect(calls.every((c) => c.path === "/api/v1/monitors" && c.search.get("states") === "1")).toBe(true);
   });
 
+  it("draws the dash, not the last value seen, when the worst group has no data", async () => {
+    show(w, {
+      "GET /api/v1/monitors": list(
+        monitor({ id: 7, uid: "jobs", status: "NO_DATA", group_states: [{ group: "*", tags: {}, status: "NO_DATA", value: 42 }] }),
+      ),
+    });
+    expect(await screen.findByText("—")).toBeInTheDocument();
+    expect(screen.queryByText("42")).not.toBeInTheDocument();
+  });
+
   it("says when no monitor has the uid, rather than drawing a blank", async () => {
     show({ ...w, monitor_uid: "gone" }, { "GET /api/v1/monitors": list(monitor({ uid: "jobs" })) });
     expect(await screen.findByText('No monitor has the uid "gone".')).toBeInTheDocument();
@@ -225,6 +235,17 @@ describe("ServiceSummaryWidget", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("says a failed refresh over an earlier empty answer", async () => {
+    let n = 0;
+    show(w, {
+      "GET /api/v1/services": () => (n++ === 0 ? { body: { services: [], from: 1, to: 2 } } : { status: 500, body: { error: "restarting" } }),
+      "GET /api/v1/monitors": list(),
+    });
+    await screen.findByText(/No service handled a request/);
+    await queryClient.refetchQueries();
+    expect(await screen.findByText(/Could not refresh the services: .*restarting/)).toBeInTheDocument();
   });
 
   it("says no service handled a request, rather than drawing nothing", async () => {

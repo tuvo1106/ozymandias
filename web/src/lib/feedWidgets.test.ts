@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SUMMARY_LIMIT, listParams, monitorByUid, monitorsLink, selectMonitors, serviceEnvStatus } from "./feedWidgets";
+import { DEFAULT_SUMMARY_LIMIT, monitorByUid, monitorsLink, selectMonitors, serviceEnvStatus } from "./feedWidgets";
 import type { GroupStatus, Status, StoredMonitor } from "./monitorsApi";
 
 let next = 1;
@@ -48,14 +48,6 @@ describe("selectMonitors", () => {
     expect(selectMonitors(ms, undefined, 2).rows).toHaveLength(2);
     const many = Array.from({ length: DEFAULT_SUMMARY_LIMIT + 3 }, (_, i) => mon(`m${i}`, "OK"));
     expect(selectMonitors(many, undefined)).toMatchObject({ more: 3 });
-  });
-});
-
-describe("listParams", () => {
-  it("sends the tag and name to the server and keeps the statuses here", () => {
-    expect(listParams({ tag: "app:x", q: "queue", status: ["ALERT"] })).toEqual({ tag: "app:x", q: "queue" });
-    expect(listParams(undefined)).toEqual({});
-    expect(listParams({ tag: "", q: "" })).toEqual({});
   });
 });
 

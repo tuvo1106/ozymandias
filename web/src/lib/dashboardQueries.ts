@@ -21,6 +21,7 @@
  *     heatmap widgets are collected separately and asked for one at a time.
  */
 import type { Widget } from "./dashboard";
+import { rulesFor } from "./dashboardEditor";
 import { MAX_QUERIES_PER_BATCH } from "./dashboardsApi";
 
 /** Where one query in a flattened batch came from. */
@@ -40,9 +41,21 @@ export interface DashboardRequests {
 }
 
 /**
+ * Whether a widget's type takes no queries, by its rules rather than by name,
+ * so a new query-less type is covered. An unknown type's queries are still
+ * sent: whether it takes them is unknown.
+ */
+function takesNoQueries(w: Widget): boolean {
+  return rulesFor(w.type)?.queries === "none";
+}
+
+/**
  * Collects everything a dashboard's widgets ask for.
  *
- * A note has no queries, and a widget whose `q` is blank is skipped rather
+ * A type that takes no queries (a note, the feed widgets) is skipped even when
+ * it still carries some, left over from a type change in the editor: they
+ * would be evaluated for a widget that never draws them. A widget whose `q` is
+ * blank is skipped rather
  * than sent: the server would refuse it, and one unfinished widget should not
  * cost its neighbours a request.
  */
@@ -50,7 +63,7 @@ export function collectRequests(widgets: readonly Widget[]): DashboardRequests {
   const slots: QuerySlot[] = [];
   const heatmaps: { widgetId: string; q: string }[] = [];
   for (const w of widgets) {
-    if (w.type === "note") continue;
+    if (takesNoQueries(w)) continue;
     (w.queries ?? []).forEach((query, queryIndex) => {
       const q = query.q.trim();
       if (q === "") return;
@@ -204,7 +217,7 @@ export function sharedWarnings<
   sketches: Map<string, S>,
 ): string[] {
   const said: Said[] = widgets.map((w): Said => {
-    if (w.type === "note" || !(w.queries ?? []).some((q) => q.q.trim() !== "")) return { kind: "nothing asked" };
+    if (takesNoQueries(w) || !(w.queries ?? []).some((q) => q.q.trim() !== "")) return { kind: "nothing asked" };
     if (w.type === "heatmap") {
       const s = widgetSketch(w, sketches);
       if (!s) return { kind: "waiting" };

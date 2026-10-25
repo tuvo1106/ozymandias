@@ -266,8 +266,12 @@ func (w *Widget) validateFeed(where string) []error {
 			seen[st] = true
 		}
 	}
-	if w.Type == TypeAlertValue && strings.TrimSpace(w.MonitorUID) == "" {
+	switch {
+	case w.Type == TypeAlertValue && strings.TrimSpace(w.MonitorUID) == "":
 		errs = append(errs, invalidf("%s: an alert_value needs monitor_uid", where))
+	case strings.TrimSpace(w.MonitorUID) != w.MonitorUID:
+		// A uid is matched exactly, so " judge-backlog" would name no monitor.
+		errs = append(errs, invalidf("%s: monitor_uid %q has spaces around it", where, w.MonitorUID))
 	}
 	if len(w.MonitorUID) > MaxTitle {
 		errs = append(errs, invalidf("%s: monitor_uid is %d bytes; the limit is %d", where, len(w.MonitorUID), MaxTitle))

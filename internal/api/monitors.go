@@ -199,23 +199,37 @@ type groupStatusJSON struct {
 	Value  *float64          `json:"value"`
 }
 
-// groupStatuses is a monitor's groups, worst first then by group, as /states
-// orders them.
-func groupStatuses(states []meta.StateRow) []groupStatusJSON {
-	out := make([]groupStatusJSON, 0, len(states))
-	for _, s := range states {
-		tags := s.Group
-		if tags == nil {
-			tags = map[string]string{}
-		}
-		out = append(out, groupStatusJSON{Group: s.GroupKey, Tags: tags, Status: s.Status, Value: notify.ValuePtr(s.LastValue)})
-	}
-	slices.SortStableFunc(out, func(a, b groupStatusJSON) int {
+// sortedStates orders a monitor's states worst first, then by group: the
+// table a person opens during an incident should lead with what is wrong. The
+// one ordering /states and the list's group_states share; alert_value relies
+// on the first being the worst.
+func sortedStates(rows []meta.StateRow) []meta.StateRow {
+	out := slices.Clone(rows)
+	slices.SortStableFunc(out, func(a, b meta.StateRow) int {
 		if d := severity[b.Status] - severity[a.Status]; d != 0 {
 			return d
 		}
-		return strings.Compare(a.Group, b.Group)
+		return strings.Compare(a.GroupKey, b.GroupKey)
 	})
+	return out
+}
+
+// toGroupStatus is the part of a state both answers carry.
+func toGroupStatus(s meta.StateRow) groupStatusJSON {
+	tags := s.Group
+	if tags == nil {
+		tags = map[string]string{}
+	}
+	return groupStatusJSON{Group: s.GroupKey, Tags: tags, Status: s.Status, Value: notify.ValuePtr(s.LastValue)}
+}
+
+// groupStatuses is a monitor's groups for the list's ?states=1.
+func groupStatuses(states []meta.StateRow) []groupStatusJSON {
+	sorted := sortedStates(states)
+	out := make([]groupStatusJSON, 0, len(sorted))
+	for _, s := range sorted {
+		out = append(out, toGroupStatus(s))
+	}
 	return out
 }
 
@@ -477,14 +491,11 @@ func (m *Monitors) setMute(w http.ResponseWriter, r *http.Request, id int64, unt
 
 // stateJSON is one group's state.
 type stateJSON struct {
-	Group        string            `json:"group"`
-	Tags         map[string]string `json:"tags"`
-	Status       string            `json:"status"`
-	Since        time.Time         `json:"since"`
-	Value        *float64          `json:"value"`
-	LastEval     *time.Time        `json:"last_eval"`
-	LastData     *time.Time        `json:"last_data"`
-	LastNotified *time.Time        `json:"last_notified"`
+	groupStatusJSON
+	Since        time.Time  `json:"since"`
+	LastEval     *time.Time `json:"last_eval"`
+	LastData     *time.Time `json:"last_data"`
+	LastNotified *time.Time `json:"last_notified"`
 }
 
 func optTime(t time.Time) *time.Time {
@@ -510,23 +521,10 @@ func (m *Monitors) states(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]stateJSON, 0, len(rows))
-	for _, s := range rows {
-		tags := s.Group
-		if tags == nil {
-			tags = map[string]string{}
-		}
-		out = append(out, stateJSON{Group: s.GroupKey, Tags: tags, Status: s.Status, Since: s.Since.UTC(),
-			Value: notify.ValuePtr(s.LastValue), LastEval: optTime(s.LastEval), LastData: optTime(s.LastData),
-			LastNotified: optTime(s.LastNotified)})
+	for _, s := range sortedStates(rows) {
+		out = append(out, stateJSON{groupStatusJSON: toGroupStatus(s), Since: s.Since.UTC(),
+			LastEval: optTime(s.LastEval), LastData: optTime(s.LastData), LastNotified: optTime(s.LastNotified)})
 	}
-	// Worst first, then by group: the table a person opens during an incident
-	// should lead with what is wrong.
-	slices.SortStableFunc(out, func(a, b stateJSON) int {
-		if d := severity[b.Status] - severity[a.Status]; d != 0 {
-			return d
-		}
-		return strings.Compare(a.Group, b.Group)
-	})
 	writeJSON(w, http.StatusOK, map[string]any{"states": out})
 }
 
