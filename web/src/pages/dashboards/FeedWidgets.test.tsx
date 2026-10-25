@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Widget } from "../../lib/dashboard";
@@ -10,10 +10,12 @@ import { AlertValueWidget, MonitorSummaryWidget, ServiceSummaryWidget } from "./
 afterEach(() => vi.unstubAllGlobals());
 
 const layout = { x: 0, y: 0, w: 6, h: 3 };
+let queryClient: QueryClient;
 
 function show(widget: Widget, replies: Record<string, Reply>, range?: TimeRange) {
   const calls = fakeServer(replies);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = client;
   const Comp = { monitor_summary: MonitorSummaryWidget, alert_value: AlertValueWidget, service_summary: ServiceSummaryWidget }[
     widget.type as "monitor_summary" | "alert_value" | "service_summary"
   ];
@@ -38,9 +40,10 @@ describe("MonitorSummaryWidget", () => {
     monitor_filter: { tag: "team:shop", status: ["ALERT", "WARN", "NO_DATA"] },
   };
 
-  it("asks the server for the tag, keeps the statuses, and lists worst first", async () => {
+  it("keeps the tag and statuses from the shared list, and lists worst first", async () => {
     const calls = show(triggered, {
       "GET /api/v1/monitors": list(
+        monitor({ id: 9, name: "other team", status: "ALERT", tags: ["team:other"] }),
         monitor({ id: 1, name: "warned", status: "WARN", groups: { WARN: 1 } }),
         monitor({ id: 2, name: "fine", status: "OK", groups: { OK: 1 } }),
         monitor({ id: 3, name: "red", status: "ALERT", groups: { ALERT: 2 } }),
@@ -50,8 +53,8 @@ describe("MonitorSummaryWidget", () => {
     await screen.findByRole("link", { name: "red" });
     const items = within(screen.getByRole("list")).getAllByRole("listitem").map((li) => within(li).getByRole("link").textContent);
     expect(items).toEqual(["red", "warned"]);
-    expect(calls[0]!.search.get("tag")).toBe("team:shop");
-    expect(calls[0]!.search.has("status")).toBe(false);
+    // One list for every feed widget on the page: filtered here, not by the server.
+    expect(calls.every((c) => c.path === "/api/v1/monitors" && c.search.get("states") === "1" && !c.search.has("tag"))).toBe(true);
     expect(screen.getByRole("link", { name: "red" })).toHaveAttribute("href", "/monitors/3");
   });
 
@@ -73,6 +76,17 @@ describe("MonitorSummaryWidget", () => {
     const href = new URL(screen.getByRole("link", { name: "all of them" }).getAttribute("href")!, "http://x");
     expect(href.pathname).toBe("/monitors");
     expect(href.searchParams.get("tag")).toBe("team:shop");
+  });
+
+  it("says a failed refresh over the last answer, rather than showing it as current", async () => {
+    let n = 0;
+    show(triggered, {
+      "GET /api/v1/monitors": () => (n++ === 0 ? { body: { monitors: [monitor({ status: "OK", groups: { OK: 1 } })] } } : { status: 500, body: { error: "db locked" } }),
+    });
+    await screen.findByText("Nothing is alerting, warning, without data.");
+    await queryClient.refetchQueries();
+    expect(await screen.findByText(/Could not refresh the monitors: .*db locked.*Showing the last answer/)).toBeInTheDocument();
+    expect(screen.getByText("Nothing is alerting, warning, without data.")).toBeInTheDocument();
   });
 
   it("shows the error, not an empty list, when the list cannot be fetched", async () => {
@@ -193,6 +207,24 @@ describe("ServiceSummaryWidget", () => {
     });
     expect(await screen.findByText(/Monitor statuses could not be loaded/)).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText("no monitors")).not.toBeInTheDocument());
+  });
+
+  it("polls a relative window and not a fixed one, whose answer cannot change", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const svc = { "GET /api/v1/services": { body: { services: [row("api")], from: 1, to: 2 } }, "GET /api/v1/monitors": list() };
+      const fixed = show(w, svc, { kind: "absolute", from: 1_700_000_000, to: 1_700_003_600 });
+      await screen.findByRole("link", { name: "api" });
+      await vi.advanceTimersByTimeAsync(130_000);
+      expect(fixed.filter((c) => c.path === "/api/v1/services")).toHaveLength(1);
+      cleanup();
+      const live = show(w, svc, { kind: "relative", preset: "1h" });
+      await screen.findByRole("link", { name: "api" });
+      await vi.advanceTimersByTimeAsync(130_000);
+      expect(live.filter((c) => c.path === "/api/v1/services").length).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("says no service handled a request, rather than drawing nothing", async () => {

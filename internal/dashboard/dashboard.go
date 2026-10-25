@@ -94,8 +94,9 @@ const (
 type MonitorFilter struct {
 	// Tag is one exact tag, `team:shop`.
 	Tag string `json:"tag,omitempty"`
-	// Statuses keeps monitors whose worst status is one of these. Empty keeps
-	// every monitor, including those with no status yet.
+	// Statuses keeps a monitor when any of its groups is in one of these, as
+	// the list's `?status=` does (not only its worst). Empty keeps every
+	// monitor, including those with no status yet.
 	Statuses []string `json:"status,omitempty"`
 	// Name is a case-insensitive substring of the monitor's name.
 	Name string `json:"q,omitempty"`

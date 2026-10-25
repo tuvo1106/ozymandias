@@ -156,6 +156,10 @@ describe("editDashboard", () => {
     const d = editDashboard(base, { type: "setType", id: "req", to: "alert_value" });
     expect(d.widgets[0]?.monitor_uid).toBe("");
     expect(unusedFields(d.widgets[0] as Widget).map((f) => f.field)).toContain("queries");
+    expect(unusedFields(d.widgets[0] as Widget).find((f) => f.field === "queries")?.message).toBe("An alert value has no queries.");
+    expect(unusedFields({ ...(d.widgets[0] as Widget), markdown: "x" }).find((f) => f.field === "markdown")?.message).toBe(
+      "Markdown belongs to a note, not an alert value.",
+    );
   });
 
   it("lists a feed field on a type that does not use it", () => {

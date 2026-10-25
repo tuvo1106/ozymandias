@@ -755,6 +755,7 @@ func TestValidate_FeedWidgets(t *testing.T) {
 		{Widget{Type: TypeAlertValue, MonitorUID: "m", MonitorFilter: &MonitorFilter{}}, "monitor_filter belongs"},
 		{Widget{Type: TypeAlertValue, MonitorUID: "m", Env: "prod"}, "env belongs to a service_summary"},
 		{Widget{Type: TypeServiceSummary, Env: "a,b"}, "cannot hold a comma"},
+		{Widget{Type: TypeServiceSummary, Env: "prod\r"}, "cannot hold a comma"},
 		{Widget{Type: TypeServiceSummary, Env: strings.Repeat("e", MaxTitle+1)}, "bytes; the limit"},
 		{Widget{Type: TypeServiceSummary, Markdown: "x"}, "markdown belongs to a note"},
 	} {

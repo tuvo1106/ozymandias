@@ -168,8 +168,8 @@ and loses some of it, which is an argument for smaller dashboards.
 | `alert_value` | one monitor's worst group value, coloured by its status |
 | `service_summary` | a card per service: req/s, error %, p95, a request sparkline, and the worst status of its tagged monitors |
 
-The last three fetch for themselves (the monitor list, one monitor's states, the
-APM service table) and say which kind of nothing they have in words: no monitor
+The last three fetch for themselves (the monitor list with its groups, `?states=1`,
+shared by all three, and the APM service table) and say which kind of nothing they have in words: no monitor
 matches, nothing is triggered, no monitor has that uid, no service handled a
 request. A service with no tagged monitor says "no monitors", never a green dot,
 and a card's dot reads only its own environment's groups. Monitor status is

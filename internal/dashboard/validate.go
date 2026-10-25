@@ -275,8 +275,8 @@ func (w *Widget) validateFeed(where string) []error {
 	if w.Type == TypeServiceSummary {
 		// The APM API refuses these in env, because a metric query cannot
 		// express them; refusing at save says so where it can be fixed.
-		if strings.ContainsAny(w.Env, ",{}\n") {
-			errs = append(errs, invalidf("%s: env %q cannot hold a comma, a brace or a newline", where, w.Env))
+		if strings.ContainsAny(w.Env, EnvRefused) {
+			errs = append(errs, invalidf("%s: env %q cannot hold a comma, a brace or a line break", where, w.Env))
 		}
 		if len(w.Env) > MaxTitle {
 			errs = append(errs, invalidf("%s: env is %d bytes; the limit is %d", where, len(w.Env), MaxTitle))
@@ -309,6 +309,11 @@ func aType(t Type) string {
 	}
 	return "a " + string(t)
 }
+
+// EnvRefused are the characters a service_summary's env cannot hold: the APM
+// API refuses the same set (internal/api/apm.go, matcher), because a metric
+// query cannot express them.
+const EnvRefused = ",{}\n\r"
 
 // limitBelongs is the one statement of which types take a limit.
 const limitBelongs = "limit belongs to a toplist, a monitor_summary or a service_summary"

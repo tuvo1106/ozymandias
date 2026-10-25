@@ -5,6 +5,7 @@
  */
 import type { MonitorStatusName, MonitorSummaryFilter, Widget } from "../../../lib/dashboard";
 import type { TypeRules } from "../../../lib/dashboardEditor";
+import { FEED_LIST } from "../../../lib/feedWidgets";
 import { useMonitorList } from "../../../lib/useMonitors";
 import { Section, TextField } from "./fields";
 
@@ -30,9 +31,9 @@ export function FeedFields({ widget, rules, set }: { widget: Widget; rules: Type
       return (
         <Section title="Services">
           <TextField label="Environment" placeholder="every environment" value={widget.env} onChange={(env) => set({ env })} />
-          {/[,{}\n]/.test(widget.env ?? "") ? (
+          {/[,{}\n\r]/.test(widget.env ?? "") ? (
             <p role="note" className="text-xs text-red-700 dark:text-red-400">
-              An environment cannot hold a comma, a brace or a newline.
+              An environment cannot hold a comma, a brace or a line break.
             </p>
           ) : null}
           <p className="text-xs text-zinc-500">
@@ -75,7 +76,7 @@ function MonitorFilterFields({ widget, set }: { widget: Widget; set: (patch: Par
 }
 
 function MonitorPicker({ widget, set }: { widget: Widget; set: (patch: Partial<Widget>) => void }) {
-  const list = useMonitorList({});
+  const list = useMonitorList(FEED_LIST);
   const withUid = (list.data ?? []).filter((m) => m.uid);
   const missing = list.data && widget.monitor_uid && !withUid.some((m) => m.uid === widget.monitor_uid);
   return (

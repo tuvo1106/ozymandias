@@ -319,38 +319,41 @@ export function unusedFields(w: Widget): UnusedField[] {
   const rules = rulesFor(w.type);
   if (!rules) return []; // an unknown type's rules are unknown too
   const name = rules.label.toLowerCase();
+  // "an alert value", not "a alert value".
+  const aName = `${/^[aeiou]/.test(name) ? "an" : "a"} ${name}`;
+  const AName = aName[0]!.toUpperCase() + aName.slice(1);
   const out: UnusedField[] = [];
   const has = (k: keyof Widget) => Object.hasOwn(w, k) && w[k] !== undefined;
   if (rules.queries === "none" && (w.queries?.length ?? 0) > 0)
-    out.push({ field: "queries", message: `A ${name} has no queries.` });
+    out.push({ field: "queries", message: `${AName} has no queries.` });
   if (!rules.markdown && has("markdown") && w.markdown !== "")
-    out.push({ field: "markdown", message: `Markdown belongs to a note, not a ${name}.` });
+    out.push({ field: "markdown", message: `Markdown belongs to a note, not ${aName}.` });
   if (!rules.limit && has("limit") && w.limit !== 0)
-    out.push({ field: "limit", message: `A limit belongs to a toplist, a monitor summary or a service summary, not a ${name}.` });
+    out.push({ field: "limit", message: `A limit belongs to a toplist, a monitor summary or a service summary, not ${aName}.` });
   if (rules.feed !== "monitor_filter" && has("monitor_filter"))
-    out.push({ field: "monitor_filter", message: `A monitor filter belongs to a monitor summary, not a ${name}.` });
+    out.push({ field: "monitor_filter", message: `A monitor filter belongs to a monitor summary, not ${aName}.` });
   if (rules.feed !== "monitor_uid" && has("monitor_uid") && w.monitor_uid !== "")
-    out.push({ field: "monitor_uid", message: `A monitor belongs to an alert value, not a ${name}.` });
+    out.push({ field: "monitor_uid", message: `A monitor belongs to an alert value, not ${aName}.` });
   if (rules.feed !== "env" && has("env") && w.env !== "")
-    out.push({ field: "env", message: `An environment belongs to a service summary, not a ${name}.` });
+    out.push({ field: "env", message: `An environment belongs to a service summary, not ${aName}.` });
   if (!rules.precision && has("precision"))
-    out.push({ field: "precision", message: `Precision belongs to a query value or a table, not a ${name}.` });
+    out.push({ field: "precision", message: `Precision belongs to a query value or a table, not ${aName}.` });
   if (!rules.yaxis && has("yaxis"))
-    out.push({ field: "yaxis", message: `A y-axis belongs to a timeseries or a heatmap, not a ${name}.` });
+    out.push({ field: "yaxis", message: `A y-axis belongs to a timeseries or a heatmap, not ${aName}.` });
   if (!rules.conditionalFormats && (w.conditional_formats?.length ?? 0) > 0)
     out.push({
       field: "conditional_formats",
-      message: `Conditional formats belong to a query value or a table, not a ${name}.`,
+      message: `Conditional formats belong to a query value or a table, not ${aName}.`,
     });
   if (rules.queries !== "none") {
     (w.queries ?? []).forEach((q, i) => {
       if (!rules.display && q.display !== undefined)
-        out.push({ field: "display", query: i, message: `Display belongs to a timeseries, not a ${name}.` });
+        out.push({ field: "display", query: i, message: `Display belongs to a timeseries, not ${aName}.` });
       if (rules.reducer === "refused" && q.reducer !== undefined)
         out.push({
           field: "reducer",
           query: i,
-          message: `A ${name} draws every bucket, so a reducer would be ignored.`,
+          message: `${AName} draws every bucket, so a reducer would be ignored.`,
         });
     });
   }

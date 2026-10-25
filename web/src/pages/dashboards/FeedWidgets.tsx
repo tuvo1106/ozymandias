@@ -12,7 +12,7 @@
 import { Link } from "react-router";
 import type { RedRow } from "../../lib/apmApi";
 import { DEFAULT_APM_STATE } from "../../lib/apmState";
-import { DEFAULT_SUMMARY_LIMIT, listParams, monitorByUid, monitorsLink, selectMonitors, serviceEnvStatus } from "../../lib/feedWidgets";
+import { DEFAULT_SUMMARY_LIMIT, FEED_LIST, matchesFilter, monitorByUid, monitorsLink, selectMonitors, serviceEnvStatus } from "../../lib/feedWidgets";
 import type { MonitorStatusName } from "../../lib/dashboard";
 import type { Status } from "../../lib/monitorsApi";
 import type { TimeRange } from "../../lib/timeRange";
@@ -40,10 +40,18 @@ function nowWarning(range: TimeRange | undefined): string[] {
   return range?.kind === "absolute" ? ["Monitor status is as of now, not the chosen window."] : [];
 }
 
+/**
+ * A refresh that failed while an older answer is still drawn. Said, because a
+ * stale "nothing is alerting" or a stale green dot is worse than none.
+ */
+function staleWarning(what: string, error: unknown, hasData: boolean): string[] {
+  return error && hasData ? [`Could not refresh ${what}: ${errorText(error)}. Showing the last answer.`] : [];
+}
+
 /** Monitors matching the widget's filter, worst first. */
 export function MonitorSummaryWidget({ widget, range }: WidgetProps) {
   const filter = widget.monitor_filter;
-  const list = useMonitorList(listParams(filter));
+  const list = useMonitorList(FEED_LIST);
   if (list.error && !list.data) return <WidgetFrame title={widget.title} error={errorText(list.error)} />;
   if (!list.data) return <WidgetFrame title={widget.title} />;
   const { rows, more } = selectMonitors(list.data, filter, widget.limit);
@@ -51,20 +59,17 @@ export function MonitorSummaryWidget({ widget, range }: WidgetProps) {
   if (rows.length === 0) {
     // Two different answers: nothing matches the tag and name at all, or
     // things match and none is in the statuses asked for.
-    const msg =
-      list.data.length === 0
-        ? "No monitor matches this widget's filter."
-        : statuses.length > 0
-          ? `Nothing is ${statuses.map(statusWord).join(", ")}.`
-          : "No monitor matches this widget's filter.";
+    const msg = list.data.some((m) => matchesFilter(m, filter))
+      ? `Nothing is ${statuses.map(statusWord).join(", ")}.`
+      : "No monitor matches this widget's filter.";
     return (
-      <WidgetFrame title={widget.title} warnings={nowWarning(range)}>
+      <WidgetFrame title={widget.title} warnings={[...staleWarning("the monitors", list.error, true), ...nowWarning(range)]}>
         <p className="text-sm text-zinc-500">{msg}</p>
       </WidgetFrame>
     );
   }
   return (
-    <WidgetFrame title={widget.title} warnings={nowWarning(range)}>
+    <WidgetFrame title={widget.title} warnings={[...staleWarning("the monitors", list.error, true), ...nowWarning(range)]}>
       <ul className="min-h-0 flex-1 divide-y divide-zinc-100 overflow-auto text-sm dark:divide-zinc-800">
         {rows.map((m) => (
           <li key={m.id} className="flex items-center gap-2 py-1">
@@ -93,7 +98,7 @@ function statusWord(s: MonitorStatusName): string {
 export function AlertValueWidget({ widget, range }: WidgetProps) {
   // The list with group states: one request, and a disabled or skipped
   // monitor comes with none, so its last stored value is never shown as now.
-  const list = useMonitorList({ states: "1" });
+  const list = useMonitorList(FEED_LIST);
   const m = list.data ? monitorByUid(list.data, widget.monitor_uid) : undefined;
   if (list.error && !list.data) return <WidgetFrame title={widget.title} error={errorText(list.error)} />;
   if (!list.data) return <WidgetFrame title={widget.title} />;
@@ -109,7 +114,7 @@ export function AlertValueWidget({ widget, range }: WidgetProps) {
   const worst = m.group_states?.[0];
   const value = worst?.value;
   return (
-    <WidgetFrame title={widget.title ?? m.name} warnings={nowWarning(range)}>
+    <WidgetFrame title={widget.title ?? m.name} warnings={[...staleWarning("the monitor", list.error, true), ...nowWarning(range)]}>
       <Link to={`/monitors/${m.id}`} className="flex flex-1 flex-col items-center justify-center gap-1">
         <span className={`text-3xl font-semibold tabular-nums ${VALUE_COLOR[m.status ?? "none"]}`}>
           {value === undefined || value === null ? "—" : formatValue(value)}
@@ -140,10 +145,11 @@ function formatValue(v: number): string {
 export function ServiceSummaryWidget({ widget, range }: WidgetProps) {
   const env = widget.env ?? "";
   const r = range ?? FALLBACK_RANGE;
-  const services = useServiceTable(env, r, { refetchInterval: 60_000 });
+  // A fixed window's answer cannot change, so only a relative one is polled.
+  const services = useServiceTable(env, r, { refetchInterval: r.kind === "absolute" ? undefined : 60_000 });
   // Every monitor with its groups in one request: a card is one env, and a
   // monitor grouped by env speaks for each env separately (serviceEnvStatus).
-  const monitors = useMonitorList({ states: "1" });
+  const monitors = useMonitorList(FEED_LIST);
   if (services.error && !services.data) return <WidgetFrame title={widget.title} error={errorText(services.error)} />;
   if (!services.data) return <WidgetFrame title={widget.title} />;
   // The server sorts busiest first, then by name (GET /api/v1/services).
@@ -160,7 +166,9 @@ export function ServiceSummaryWidget({ widget, range }: WidgetProps) {
   const limit = widget.limit && widget.limit > 0 ? widget.limit : DEFAULT_SUMMARY_LIMIT;
   const ms = monitors.data;
   const warnings = [
+    ...staleWarning("the services", services.error, true),
     ...(monitors.error && !ms ? ["Monitor statuses could not be loaded, so the cards have no status dots."] : []),
+    ...staleWarning("the monitor statuses", monitors.error, ms !== undefined),
     ...(ms ? nowWarning(range) : []),
   ];
   return (

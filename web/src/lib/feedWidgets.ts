@@ -10,8 +10,14 @@
  * blank widget on Home reads as "all is well" whichever it is.
  */
 import type { MonitorSummaryFilter } from "./dashboard";
-import { severity, type Status, type StoredMonitor } from "./monitorsApi";
+import { severity, type MonitorFilter, type Status, type StoredMonitor } from "./monitorsApi";
 import { sortMonitors } from "./monitorView";
+
+/**
+ * The one monitor list every feed widget reads, groups included, so a page
+ * with several (and the editor's monitor picker) polls it once.
+ */
+export const FEED_LIST: MonitorFilter = { states: "1" };
 
 /** How many rows a summary shows when its definition sets no limit. */
 export const DEFAULT_SUMMARY_LIMIT = 10;
@@ -23,22 +29,34 @@ export interface MonitorRows {
 }
 
 /**
- * The monitors a filter keeps, worst first, cut at the limit. `tag` and `q`
- * were already applied by the server; the status set is applied here, with
+ * The monitors a filter keeps, worst first, cut at the limit. Everything is
+ * applied here, from the one list every feed widget shares (`?states=1`), so a
+ * page with three of them polls the list once. The status set has
  * the Monitors page's meaning of `?status=`: a monitor is kept when any of its
  * groups is in a status asked for, not only its worst one. A monitor with no
  * status (no data yet, disabled, not running) has no groups counted, so a
  * filter that names statuses drops it.
  */
 export function selectMonitors(ms: readonly StoredMonitor[], filter: MonitorSummaryFilter | undefined, limit = 0): MonitorRows {
+  const matching = ms.filter((m) => matchesFilter(m, filter));
   const want = filter?.status ?? [];
-  const kept = want.length === 0 ? [...ms] : ms.filter((m) => want.some((st) => (m.groups[st] ?? 0) > 0));
+  const kept = want.length === 0 ? matching : matching.filter((m) => want.some((st) => (m.groups[st] ?? 0) > 0));
   const sorted = sortMonitors(kept);
   const n = limit > 0 ? limit : DEFAULT_SUMMARY_LIMIT;
   return { rows: sorted.slice(0, n), more: Math.max(0, sorted.length - n) };
 }
 
-/** The server-side part of a filter, as the monitor list takes it. */
+/**
+ * Whether a monitor matches a filter's tag and name, with the list API's
+ * meaning: `tag` is one exact tag, `q` a case-insensitive name substring.
+ */
+export function matchesFilter(m: StoredMonitor, filter: MonitorSummaryFilter | undefined): boolean {
+  if (filter?.tag && !(m.tags ?? []).includes(filter.tag)) return false;
+  if (filter?.q && !m.name.toLowerCase().includes(filter.q.toLowerCase())) return false;
+  return true;
+}
+
+/** The tag and name part of a filter, as the Monitors page's URL takes it. */
 export function listParams(filter: MonitorSummaryFilter | undefined): { tag?: string; q?: string } {
   const out: { tag?: string; q?: string } = {};
   if (filter?.tag) out.tag = filter.tag;

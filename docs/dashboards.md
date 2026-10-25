@@ -153,8 +153,9 @@ widgets.
 
 The last three types draw from their own API rather than from metric queries,
 so they take none, and the dashboard's template variables do not apply to them.
-They poll on their own (monitors every 15 seconds, services every minute)
-rather than with the page's refresh.
+They poll on their own (one shared monitor list every 15 seconds, services
+every minute on a relative window, never on a fixed one) rather than with the
+page's refresh. A failed refresh over an earlier answer is said in the widget.
 
 **Monitor status is always now.** The monitor API keeps current state, not a
 history of it, so a monitor summary, an alert value and a service card's dot

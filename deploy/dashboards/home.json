@@ -10,7 +10,7 @@
         "x": 0,
         "y": 0,
         "w": 12,
-        "h": 1
+        "h": 2
       },
       "markdown": "Service cards come from the APM tables (every request, before trace sampling); a card's dot is the worst status, in that card's env, of the monitors tagged service:<name>, and is always now, whatever the window. Ingest health below is ozymandias watching itself through the same intake an agent's series take: if it is empty, the pipeline is down, not the dashboard."
     },
@@ -20,7 +20,7 @@
       "title": "Services",
       "layout": {
         "x": 0,
-        "y": 1,
+        "y": 2,
         "w": 12,
         "h": 5
       },
@@ -32,7 +32,7 @@
       "title": "Triggered monitors",
       "layout": {
         "x": 0,
-        "y": 6,
+        "y": 7,
         "w": 6,
         "h": 3
       },
@@ -50,7 +50,7 @@
       "title": "Points stored",
       "layout": {
         "x": 6,
-        "y": 6,
+        "y": 7,
         "w": 6,
         "h": 3
       },
@@ -71,7 +71,7 @@
       "title": "Series refused",
       "layout": {
         "x": 0,
-        "y": 9,
+        "y": 10,
         "w": 6,
         "h": 3
       },
@@ -92,7 +92,7 @@
       "title": "Sketches stored",
       "layout": {
         "x": 6,
-        "y": 9,
+        "y": 10,
         "w": 6,
         "h": 3
       },
@@ -113,7 +113,7 @@
       "title": "Series in the store",
       "layout": {
         "x": 0,
-        "y": 12,
+        "y": 13,
         "w": 4,
         "h": 2
       },
@@ -131,7 +131,7 @@
       "title": "Series in the head",
       "layout": {
         "x": 4,
-        "y": 12,
+        "y": 13,
         "w": 4,
         "h": 2
       },
@@ -149,7 +149,7 @@
       "title": "Store on disk (bytes)",
       "layout": {
         "x": 8,
-        "y": 12,
+        "y": 13,
         "w": 4,
         "h": 2
       },
@@ -167,7 +167,7 @@
       "title": "Series sent, by agent",
       "layout": {
         "x": 0,
-        "y": 14,
+        "y": 15,
         "w": 6,
         "h": 3
       },
