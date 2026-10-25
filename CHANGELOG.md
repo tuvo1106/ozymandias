@@ -17,6 +17,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the monitors tagged `service:<name>`). Home (`/`) now shows the provisioned `home`
   dashboard under ozyd's status: service cards, triggered monitors and ingest health.
   The shipped app-python monitors carry `service:` tags.
+- **`GET /api/v1/monitors?states=1`** (M6) adds each running monitor's groups
+  (`group`, `tags`, `status`, `value`, worst first), so a page can read every
+  monitor's group tags in one request.
 - **app-python monitors and demos** (M6). `deploy/monitors/` ships six monitors for the
   Python app: judge queue backlog (with no-data), trace p95 latency by resource, 5xx rate,
   worker error logs, judge sandbox OOM kills and a worker heartbeat no-data (ADR-0053; no

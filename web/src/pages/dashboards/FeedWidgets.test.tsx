@@ -4,7 +4,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Widget } from "../../lib/dashboard";
 import type { TimeRange } from "../../lib/timeRange";
-import { fakeServer, HANG, monitor, type Reply } from "../monitors/testServer";
+import { fakeServer, monitor, type Reply } from "../monitors/testServer";
 import { AlertValueWidget, MonitorSummaryWidget, ServiceSummaryWidget } from "./FeedWidgets";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -70,6 +70,9 @@ describe("MonitorSummaryWidget", () => {
       "GET /api/v1/monitors": list(monitor({ id: 1, name: "a", status: "ALERT" }), monitor({ id: 2, name: "b", status: "ALERT" })),
     });
     expect(await screen.findByText(/and 1 more/)).toBeInTheDocument();
+    const href = new URL(screen.getByRole("link", { name: "all of them" }).getAttribute("href")!, "http://x");
+    expect(href.pathname).toBe("/monitors");
+    expect(href.searchParams.get("tag")).toBe("team:shop");
   });
 
   it("shows the error, not an empty list, when the list cannot be fetched", async () => {
@@ -82,21 +85,25 @@ describe("MonitorSummaryWidget", () => {
 describe("AlertValueWidget", () => {
   const w: Widget = { id: "a", type: "alert_value", layout, monitor_uid: "jobs" };
 
-  it("shows the worst group's value and the monitor's status", async () => {
-    show(w, {
-      "GET /api/v1/monitors": list(monitor({ id: 7, uid: "jobs", name: "Jobs", status: "ALERT" })),
-      "GET /api/v1/monitors/7/states": {
-        body: {
-          states: [
-            { group: "queue:default", tags: { queue: "default" }, status: "ALERT", since: "2026-10-19T10:00:00Z", value: 31, last_eval: null, last_data: null, last_notified: null },
-            { group: "queue:low", tags: { queue: "low" }, status: "OK", since: "2026-10-19T10:00:00Z", value: 2, last_eval: null, last_data: null, last_notified: null },
+  it("shows the worst group's value and the monitor's status, from one list request", async () => {
+    const calls = show(w, {
+      "GET /api/v1/monitors": list(
+        monitor({
+          id: 7,
+          uid: "jobs",
+          name: "Jobs",
+          status: "ALERT",
+          group_states: [
+            { group: "queue:default", tags: { queue: "default" }, status: "ALERT", value: 31 },
+            { group: "queue:low", tags: { queue: "low" }, status: "OK", value: 2 },
           ],
-        },
-      },
+        }),
+      ),
     });
     expect(await screen.findByText("31")).toBeInTheDocument();
     expect(screen.getByText("queue:default")).toBeInTheDocument();
     expect(screen.getByText("ALERT")).toBeInTheDocument();
+    expect(calls.every((c) => c.path === "/api/v1/monitors" && c.search.get("states") === "1")).toBe(true);
   });
 
   it("says when no monitor has the uid, rather than drawing a blank", async () => {
@@ -107,27 +114,16 @@ describe("AlertValueWidget", () => {
   it("draws a dash, not a zero, for a monitor with no value yet", async () => {
     show(w, {
       "GET /api/v1/monitors": list(monitor({ id: 7, uid: "jobs", status: null, groups: {} })),
-      "GET /api/v1/monitors/7/states": { body: { states: [] } },
     });
     expect(await screen.findByText("no data yet")).toBeInTheDocument();
     expect(screen.getByText("—")).toBeInTheDocument();
     expect(screen.queryByText("0")).not.toBeInTheDocument();
   });
 
-  it("says the value could not be loaded, rather than drawing the no-value dash", async () => {
-    show(w, {
-      "GET /api/v1/monitors": list(monitor({ id: 7, uid: "jobs", status: "ALERT" })),
-      "GET /api/v1/monitors/7/states": { status: 500, body: { error: "states down" } },
-    });
-    expect(await screen.findByText(/could not be loaded: .*states down/)).toBeInTheDocument();
-    expect(screen.queryByText("—")).not.toBeInTheDocument();
-  });
-
   it("says its status is as of now on a fixed past window", async () => {
     const past: TimeRange = { kind: "absolute", from: 1_700_000_000, to: 1_700_003_600 };
     show(w, {
       "GET /api/v1/monitors": list(monitor({ id: 7, uid: "jobs", status: "OK" })),
-      "GET /api/v1/monitors/7/states": { body: { states: [] } },
     }, past);
     expect(await screen.findByText("Monitor status is as of now, not the chosen window.")).toBeInTheDocument();
   });
@@ -153,11 +149,7 @@ describe("ServiceSummaryWidget", () => {
     group: Object.entries(tags).map(([k, v]) => `${k}:${v}`).join(",") || "*",
     tags,
     status,
-    since: "2026-10-19T10:00:00Z",
     value: 1,
-    last_eval: null,
-    last_data: null,
-    last_notified: null,
   });
 
   it("draws a card per service with its numbers and its own env's worst status", async () => {
@@ -165,8 +157,9 @@ describe("ServiceSummaryWidget", () => {
       "GET /api/v1/services": {
         body: { services: [row("api", { env: "prod" }), row("api", { env: "staging", requests: 10 }), row("worker", { p95_ms: null })], from: 1, to: 2 },
       },
-      "GET /api/v1/monitors": list(monitor({ id: 1, status: "ALERT", tags: ["service:api"] })),
-      "GET /api/v1/monitors/1/states": { body: { states: [grp("ALERT", { env: "staging" }), grp("OK", { env: "prod" })] } },
+      "GET /api/v1/monitors": list(
+        monitor({ id: 1, status: "ALERT", tags: ["service:api"], group_states: [grp("ALERT", { env: "staging" }), grp("OK", { env: "prod" })] }),
+      ),
     });
     await screen.findByTitle("Monitors: ALERT");
     const [prod, staging] = screen.getAllByRole("link", { name: "api" }).map((a) => a.closest("li")!);
@@ -200,28 +193,6 @@ describe("ServiceSummaryWidget", () => {
     });
     expect(await screen.findByText(/Monitor statuses could not be loaded/)).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText("no monitors")).not.toBeInTheDocument());
-  });
-
-  it("draws no dot while a tagged monitor's states are still loading", async () => {
-    const calls = show(w, {
-      "GET /api/v1/services": { body: { services: [row("api")], from: 1, to: 2 } },
-      "GET /api/v1/monitors": list(monitor({ id: 1, status: "ALERT", tags: ["service:api"] })),
-      "GET /api/v1/monitors/1/states": { body: HANG },
-    });
-    await screen.findByRole("link", { name: "api" });
-    await waitFor(() => expect(calls.some((c) => c.path === "/api/v1/monitors/1/states")).toBe(true));
-    expect(screen.queryByTitle(/Monitors:|no group/)).not.toBeInTheDocument();
-    expect(screen.queryByText("no monitors")).not.toBeInTheDocument();
-  });
-
-  it("says the monitor statuses failed when one monitor's states fail", async () => {
-    show(w, {
-      "GET /api/v1/services": { body: { services: [row("api")], from: 1, to: 2 } },
-      "GET /api/v1/monitors": list(monitor({ id: 1, status: "OK", tags: ["service:api"] })),
-      "GET /api/v1/monitors/1/states": { status: 500, body: { error: "boom" } },
-    });
-    expect(await screen.findByText(/Monitor statuses could not be loaded/)).toBeInTheDocument();
-    expect(screen.queryByTitle(/Monitors:/)).not.toBeInTheDocument();
   });
 
   it("says no service handled a request, rather than drawing nothing", async () => {

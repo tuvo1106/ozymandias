@@ -165,7 +165,8 @@ past, each says so in the widget. A service card's numbers do follow the window.
   `monitor_filter` is `{"tag": "team:shop", "status": ["ALERT", "WARN", "NO_DATA"],
   "q": "queue"}`, every part optional. `tag` and `q` mean what the monitor list's
   `?tag=` and `?q=` mean ([api.md](api.md)); `status` is a set of `OK`, `WARN`,
-  `ALERT`, `NO_DATA`, because "triggered" is three of them. A monitor with no
+  `ALERT`, `NO_DATA`, because "triggered" is three of them. A monitor is listed when any
+  of its groups is in a status named, as the Monitors page's `?status=` does. A monitor with no
   status yet is in no status, so a filter naming statuses leaves it out. `limit`
   (1–100, default 10) cuts the list and says how many more there are.
 - **`alert_value`** names its monitor by `monitor_uid`, not by id: ids differ per
@@ -177,7 +178,8 @@ past, each says so in the widget. A service card's numbers do follow the window.
   counted from every request before trace sampling. `env` narrows it to one
   environment. The dot is the worst status among the **groups** of the monitors
   **tagged `service:<name>`** that belong to the card's environment: a group
-  whose `env` tag names it, or a group with no `env` at all (an ungrouped
+  whose `env` tag (or `@env`, for a log monitor grouped by the attribute) names
+  it, or a group with no env at all (an ungrouped
   monitor speaks for every env). So a monitor grouped `by {env}` that alerts in
   staging does not turn the prod card red. A service with no tagged monitor
   says "no monitors", never a green dot, and a failed monitor fetch is said in

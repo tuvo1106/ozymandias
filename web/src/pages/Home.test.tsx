@@ -52,6 +52,12 @@ describe("Home", () => {
     expect(screen.getByRole("heading", { name: "Sections" })).toBeInTheDocument();
   });
 
+  it("says a stored row could not be read, rather than telling you to provision home", async () => {
+    renderHome({ "GET /api/v1/dashboards": { body: { dashboards: [], unreadable: [4] } } });
+    expect(await screen.findByText(/could not be read \(ids 4\): the home dashboard may be one of them/)).toBeInTheDocument();
+    expect(screen.queryByText(/Provision deploy/)).not.toBeInTheDocument();
+  });
+
   it("says when the dashboards cannot be listed, rather than claiming there is no home", async () => {
     renderHome({ "GET /api/v1/dashboards": { status: 500, body: { status: "error", error: "db locked" } } });
     expect(await screen.findByText(/could not be listed/)).toBeInTheDocument();

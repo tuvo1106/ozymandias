@@ -269,6 +269,9 @@ func (w *Widget) validateFeed(where string) []error {
 	if w.Type == TypeAlertValue && strings.TrimSpace(w.MonitorUID) == "" {
 		errs = append(errs, invalidf("%s: an alert_value needs monitor_uid", where))
 	}
+	if len(w.MonitorUID) > MaxTitle {
+		errs = append(errs, invalidf("%s: monitor_uid is %d bytes; the limit is %d", where, len(w.MonitorUID), MaxTitle))
+	}
 	if w.Type == TypeServiceSummary {
 		// The APM API refuses these in env, because a metric query cannot
 		// express them; refusing at save says so where it can be fixed.

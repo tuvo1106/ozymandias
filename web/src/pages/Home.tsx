@@ -53,7 +53,9 @@ export function Home() {
           note={
             list.error
               ? `The dashboards could not be listed: ${(list.error as Error).message}`
-              : `No dashboard has the uid "${HOME_UID}", so there is nothing to show here yet. Provision deploy/dashboards/home.json to get service health, triggered monitors and ingest health on this page.`
+              : list.data && list.data.unreadable.length > 0
+                ? `No readable dashboard has the uid "${HOME_UID}", and ${list.data.unreadable.length} could not be read (ids ${list.data.unreadable.join(", ")}): the home dashboard may be one of them. The Dashboards page lists them.`
+                : `No dashboard has the uid "${HOME_UID}", so there is nothing to show here yet. Provision deploy/dashboards/home.json to get service health, triggered monitors and ingest health on this page.`
           }
         />
       )}

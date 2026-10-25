@@ -9,9 +9,8 @@
  * monitor, a service has no monitors), and each is said in words, because a
  * blank widget on Home reads as "all is well" whichever it is.
  */
-import type { RedRow } from "./apmApi";
 import type { MonitorSummaryFilter } from "./dashboard";
-import { severity, type GroupState, type Status, type StoredMonitor } from "./monitorsApi";
+import { severity, type Status, type StoredMonitor } from "./monitorsApi";
 import { sortMonitors } from "./monitorView";
 
 /** How many rows a summary shows when its definition sets no limit. */
@@ -25,13 +24,15 @@ export interface MonitorRows {
 
 /**
  * The monitors a filter keeps, worst first, cut at the limit. `tag` and `q`
- * were already applied by the server; the status set is applied here. A
- * monitor with no status (no data yet, disabled, not running) is in no
- * status, so a filter that names statuses drops it.
+ * were already applied by the server; the status set is applied here, with
+ * the Monitors page's meaning of `?status=`: a monitor is kept when any of its
+ * groups is in a status asked for, not only its worst one. A monitor with no
+ * status (no data yet, disabled, not running) has no groups counted, so a
+ * filter that names statuses drops it.
  */
 export function selectMonitors(ms: readonly StoredMonitor[], filter: MonitorSummaryFilter | undefined, limit = 0): MonitorRows {
   const want = filter?.status ?? [];
-  const kept = want.length === 0 ? [...ms] : ms.filter((m) => m.status !== null && want.includes(m.status));
+  const kept = want.length === 0 ? [...ms] : ms.filter((m) => want.some((st) => (m.groups[st] ?? 0) > 0));
   const sorted = sortMonitors(kept);
   const n = limit > 0 ? limit : DEFAULT_SUMMARY_LIMIT;
   return { rows: sorted.slice(0, n), more: Math.max(0, sorted.length - n) };
@@ -45,46 +46,40 @@ export function listParams(filter: MonitorSummaryFilter | undefined): { tag?: st
   return out;
 }
 
-/** At most this many tagged monitors have their states fetched for one widget. */
-export const MAX_STATUS_MONITORS = 50;
-
-/** The monitors tagged `service:<name>` for any of the services shown, at most `cap`. */
-export function taggedMonitors(ms: readonly StoredMonitor[], services: ReadonlySet<string>, cap = MAX_STATUS_MONITORS): StoredMonitor[] {
-  return ms.filter((m) => serviceTags(m).some((s) => services.has(s))).slice(0, cap);
-}
-
 function serviceTags(m: StoredMonitor): string[] {
   return (m.tags ?? []).filter((t) => t.startsWith("service:")).map((t) => t.slice("service:".length));
 }
 
 /**
+ * A group's environment: its `env` tag, or `@env` for a log monitor grouped
+ * by the attribute (logs carry env as an attribute, not a tag).
+ */
+function groupEnv(tags: Readonly<Record<string, string>>): string | undefined {
+  return tags.env ?? tags["@env"];
+}
+
+/**
  * One card's dot: the worst status among the groups of the monitors tagged
- * `service:<name>` that belong to the card's environment.
+ * `service:<name>` that belong to the card's environment. The monitors must
+ * come from the list asked `?states=1`, which carries every group.
  *
  * By group, not by monitor: a monitor grouped `by {env}` is ALERT when staging
  * is, and a prod card must not turn red for it. A group belongs to the card
- * when its tags name the card's env, or name no env at all (an ungrouped
+ * when its env (groupEnv) is the card's, or when it has none (an ungrouped
  * monitor speaks for every env). A card with no env (spans without one) takes
  * every group.
  *
  * `undefined`: no monitor is tagged with the service, said as "no monitors",
  * never as OK. `null`: monitors are tagged but none has a group for this env
- * yet. `states` maps a monitor id to its groups; a tagged monitor missing
- * from it (not loaded) is skipped, and the caller says so.
+ * yet, or none is running.
  */
-export function serviceEnvStatus(
-  tagged: readonly StoredMonitor[],
-  states: ReadonlyMap<number, readonly GroupState[]>,
-  service: string,
-  env: string | undefined,
-): Status | null | undefined {
-  const mine = tagged.filter((m) => serviceTags(m).includes(service));
+export function serviceEnvStatus(ms: readonly StoredMonitor[], service: string, env: string | undefined): Status | null | undefined {
+  const mine = ms.filter((m) => serviceTags(m).includes(service));
   if (mine.length === 0) return undefined;
   let worst: Status | null = null;
   for (const m of mine) {
-    if (m.status === null) continue; // disabled, not running or never evaluated: no claim either way
-    for (const g of states.get(m.id) ?? []) {
-      const ge = g.tags.env;
+    for (const g of m.group_states ?? []) {
+      const ge = groupEnv(g.tags);
       if (env && ge !== undefined && ge !== env) continue;
       if (severity(g.status) > severity(worst)) worst = g.status;
     }
@@ -99,11 +94,13 @@ export function monitorByUid(ms: readonly StoredMonitor[], uid: string | undefin
 }
 
 /**
- * Service cards busiest first, then by name. The API answers in name order and
- * includes services known from earlier windows with no request in this one;
- * those stay, last, because a service gone silent is worth seeing, but they
- * must not push the busy ones off a small widget.
+ * The Monitors page for the rest of a summary's list: its tag and name, and
+ * its status when it names exactly one (the page filters on one status; for
+ * a set it shows them all, which still holds every row the widget cut).
  */
-export function serviceCards(rows: readonly RedRow[]): RedRow[] {
-  return [...rows].sort((a, b) => b.requests - a.requests || a.service.localeCompare(b.service) || a.name.localeCompare(b.name));
+export function monitorsLink(filter: MonitorSummaryFilter | undefined): string {
+  const p = new URLSearchParams(listParams(filter));
+  if (filter?.status?.length === 1) p.set("status", filter.status[0]!);
+  const qs = p.toString();
+  return qs ? `/monitors?${qs}` : "/monitors";
 }

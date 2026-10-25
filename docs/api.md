@@ -863,6 +863,13 @@ states describe when it last ran, not now (`/states` still returns them).
 Filters: `?tag=team:shop` (exact tag), `?status=ALERT` (has a group in that
 status), `?q=` (name substring, case-insensitive).
 
+`?states=1` adds `group_states` to each monitor that has a `status`: its groups
+as `{group, tags, status, value}`, worst first, which is `/states` without the
+timestamps. A disabled or skipped monitor has none, for the reason above. It is
+for a page that needs every monitor's group tags at once (a dashboard's service
+cards read each group's `env`), which would otherwise be one `/states` call per
+monitor.
+
 ### `POST /api/v1/monitors`
 
 Creates one. `201` with the stored monitor and a `Location` header. `enabled`

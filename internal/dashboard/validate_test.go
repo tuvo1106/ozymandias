@@ -746,6 +746,7 @@ func TestValidate_FeedWidgets(t *testing.T) {
 		{Widget{Type: TypeServiceSummary, Precision: &two}, "precision belongs"},
 		{Widget{Type: TypeAlertValue}, "needs monitor_uid"},
 		{Widget{Type: TypeAlertValue, MonitorUID: "  "}, "needs monitor_uid"},
+		{Widget{Type: TypeAlertValue, MonitorUID: strings.Repeat("u", MaxTitle+1)}, "monitor_uid is"},
 		{Widget{Type: TypeAlertValue, MonitorUID: "m", Limit: 3}, "limit belongs to a toplist, a monitor_summary or a service_summary, not an alert_value"},
 		{Widget{Type: TypeMonitorSummary, Limit: 101}, "outside 1…100"},
 		{Widget{Type: TypeMonitorSummary, MonitorFilter: &MonitorFilter{Statuses: []string{"alert"}}}, `status "alert" is not one of`},

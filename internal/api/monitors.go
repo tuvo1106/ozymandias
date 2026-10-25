@@ -182,6 +182,41 @@ type monitorJSON struct {
 	// older or newer build, or by hand). The scheduler skips such a monitor,
 	// so "enabled" alone would claim it runs.
 	Problem string `json:"problem,omitempty"`
+	// GroupStates is each group's status, worst first, only when the list is
+	// asked for it (?states=1) and only for a monitor that has a status: a
+	// disabled or skipped monitor's stored states are stale, as above. It
+	// lets a page that needs group tags (a service card's env) read every
+	// monitor in one request instead of one /states call per monitor.
+	GroupStates []groupStatusJSON `json:"group_states,omitempty"`
+}
+
+// groupStatusJSON is a group in the list's ?states=1 answer: /states without
+// the timestamps.
+type groupStatusJSON struct {
+	Group  string            `json:"group"`
+	Tags   map[string]string `json:"tags"`
+	Status string            `json:"status"`
+	Value  *float64          `json:"value"`
+}
+
+// groupStatuses is a monitor's groups, worst first then by group, as /states
+// orders them.
+func groupStatuses(states []meta.StateRow) []groupStatusJSON {
+	out := make([]groupStatusJSON, 0, len(states))
+	for _, s := range states {
+		tags := s.Group
+		if tags == nil {
+			tags = map[string]string{}
+		}
+		out = append(out, groupStatusJSON{Group: s.GroupKey, Tags: tags, Status: s.Status, Value: notify.ValuePtr(s.LastValue)})
+	}
+	slices.SortStableFunc(out, func(a, b groupStatusJSON) int {
+		if d := severity[b.Status] - severity[a.Status]; d != 0 {
+			return d
+		}
+		return strings.Compare(a.Group, b.Group)
+	})
+	return out
 }
 
 // severity orders statuses for "worst of".
@@ -238,6 +273,7 @@ func (m *Monitors) list(w http.ResponseWriter, r *http.Request) {
 	}
 	now := m.Clock.Now()
 	tag, status, name := q.Get("tag"), q.Get("status"), strings.ToLower(q.Get("q"))
+	withStates := q.Get("states") == "1"
 	out := []monitorJSON{}
 	ids := map[int64]bool{}
 	for _, row := range rows {
@@ -251,6 +287,9 @@ func (m *Monitors) list(w http.ResponseWriter, r *http.Request) {
 		j := toMonitorJSON(row, byMonitor[row.ID], now, m.problemOf(row))
 		if status != "" && j.Groups[status] == 0 {
 			continue
+		}
+		if withStates && j.Status != nil {
+			j.GroupStates = groupStatuses(byMonitor[row.ID])
 		}
 		out = append(out, j)
 	}
