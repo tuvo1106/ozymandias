@@ -518,6 +518,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Rails grouping evicted and flushed tied requests in map order.** Lines that
+  share a received time opened groups with equal start times, so the "oldest"
+  request evicted at the 1000-group cap, and the order timed-out requests came
+  out in, were picked at random. Ties now go by arrival order. This also made
+  `TestRails_MemoryIsBounded` fail about once in 300 runs.
 - **The APM service table failed for "every environment".** With no `env`, the
   query it built had no selector before `by`, a parse error, so `/api/v1/services`
   answered 500 and the APM landing page showed an error until an env was picked.

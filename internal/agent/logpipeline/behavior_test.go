@@ -193,12 +193,39 @@ func TestRails_MemoryIsBounded(t *testing.T) {
 	if emitted != 10 || len(p.rails.groups) != maxRailsGroups {
 		t.Fatalf("emitted %d, %d open", emitted, len(p.rails.groups))
 	}
+	// Every line shares one received time, so only arrival order says which
+	// are oldest: exactly the first ten go, never one picked by map order.
+	for i := 0; i < 10; i++ {
+		if _, open := p.rails.groups[fmt.Sprintf("id%08d", i)]; open {
+			t.Fatalf("id%08d, among the oldest, is still open", i)
+		}
+	}
 	// One request cannot buffer unbounded lines either: absorb stops at the cap.
 	for i := 0; i < maxRailsLines*3; i++ {
 		p.Process(`[id00000500]   Parameters: {"n"=>1}`, meta())
 	}
 	if g := p.rails.groups["id00000500"]; g == nil || g.lines != maxRailsLines*3+1 {
 		t.Fatal("line count not tracked")
+	}
+}
+
+// TestRails_FlushKeepsArrivalOrderOnTies: requests timed out together, whose
+// first lines share a received time, come out in the order they opened.
+func TestRails_FlushKeepsArrivalOrderOnTies(t *testing.T) {
+	p, clk := newPipeline(t, Spec{Source: "rails", RailsGroupTimeout: 5 * time.Second, RateLimit: -1})
+	m := meta()
+	m.Received = clk.Now()
+	for i := 0; i < 50; i++ {
+		p.Process(fmt.Sprintf(`[tie%05d] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, i), m)
+	}
+	out := p.Flush(clk.Now().Add(time.Minute))
+	if len(out) != 50 {
+		t.Fatalf("flushed %d, want 50", len(out))
+	}
+	for i, l := range out {
+		if want := fmt.Sprintf("tie%05d", i); l.Attrs["request_id"] != want {
+			t.Fatalf("out[%d] = %v, want %s: ties came out in map order", i, l.Attrs["request_id"], want)
+		}
 	}
 }
 

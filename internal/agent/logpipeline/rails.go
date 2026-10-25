@@ -43,9 +43,13 @@ const (
 )
 
 type railsGroup struct {
-	id     string
-	meta   Meta
-	first  time.Time // when its first line arrived
+	id    string
+	meta  Meta
+	first time.Time // when its first line arrived
+	// seq is the order it opened in. Lines often share a received time (one
+	// read, one timestamp), so first alone ties, and a tie broken by map order
+	// evicts or emits a random one of them.
+	seq    uint64
 	fields map[string]any
 	lines  int
 	done   bool
@@ -54,6 +58,7 @@ type railsGroup struct {
 type railsGrouper struct {
 	timeout time.Duration
 	groups  map[string]*railsGroup
+	opened  uint64 // the next group's seq
 }
 
 func newRailsGrouper(timeout time.Duration) *railsGrouper {
@@ -75,7 +80,8 @@ func (g *railsGrouper) consume(line string, m Meta) (done []groupedEvent, handle
 		if len(g.groups) >= maxRailsGroups {
 			done = append(done, g.evictOldest()...)
 		}
-		grp = &railsGroup{id: id, meta: m, first: m.Received, fields: map[string]any{"request_id": id}}
+		grp = &railsGroup{id: id, meta: m, first: m.Received, seq: g.opened, fields: map[string]any{"request_id": id}}
+		g.opened++
 		g.groups[id] = grp
 	}
 	grp.lines++
@@ -94,32 +100,49 @@ func (g *railsGrouper) consume(line string, m Meta) (done []groupedEvent, handle
 // marking it incomplete: a request that never logs "Completed" (the process
 // died, the line was lost) should still appear, not vanish.
 func (g *railsGrouper) flush(now time.Time) []groupedEvent {
-	var out []groupedEvent
+	var expired []*railsGroup
 	for id, grp := range g.groups {
 		if now.Sub(grp.first) >= g.timeout {
 			delete(g.groups, id)
-			out = append(out, grp.event(true))
+			expired = append(expired, grp)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].meta.Received.Before(out[j].meta.Received) })
-	return out
+	return incomplete(expired)
 }
 
 // flushAll finishes everything, for shutdown.
 func (g *railsGrouper) flushAll() []groupedEvent {
-	out := make([]groupedEvent, 0, len(g.groups))
+	all := make([]*railsGroup, 0, len(g.groups))
 	for id, grp := range g.groups {
 		delete(g.groups, id)
+		all = append(all, grp)
+	}
+	return incomplete(all)
+}
+
+// incomplete emits groups as unfinished requests, in the order they opened.
+func incomplete(groups []*railsGroup) []groupedEvent {
+	sort.Slice(groups, func(i, j int) bool { return groups[i].openedBefore(groups[j]) })
+	out := make([]groupedEvent, 0, len(groups))
+	for _, grp := range groups {
 		out = append(out, grp.event(true))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].meta.Received.Before(out[j].meta.Received) })
 	return out
+}
+
+// openedBefore orders groups by their first line, then by arrival: lines
+// that share a received time keep the order they were read in.
+func (grp *railsGroup) openedBefore(other *railsGroup) bool {
+	if !grp.first.Equal(other.first) {
+		return grp.first.Before(other.first)
+	}
+	return grp.seq < other.seq
 }
 
 func (g *railsGrouper) evictOldest() []groupedEvent {
 	var oldest *railsGroup
 	for _, grp := range g.groups {
-		if oldest == nil || grp.first.Before(oldest.first) {
+		if oldest == nil || grp.openedBefore(oldest) {
 			oldest = grp
 		}
 	}
