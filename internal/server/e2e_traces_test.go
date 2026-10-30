@@ -133,6 +133,16 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 		t.Errorf("services with no env: shop = %v, want %d requests", everyEnv, total)
 	}
 
+	// A later window with no requests has no latency: the percentiles once read
+	// every sketch from the epoch on (one bucket that wide), so an idle service
+	// kept showing its old p95.
+	later := fmt.Sprintf("from=%d&to=%d", clk.Now().Add(2*time.Hour).UnixMilli(), clk.Now().Add(3*time.Hour).UnixMilli())
+	for _, r := range get("/api/v1/services?env=e2e&" + later)["services"].([]any) {
+		if row := r.(map[string]any); row["service"] == "shop" && (row["p95_ms"] != nil || row["requests"] != 0.0) {
+			t.Errorf("shop in a window with no requests: %v", row)
+		}
+	}
+
 	if shop["errors"] != float64(failing) || shop["error_pct"] != 10.0 {
 		t.Errorf("errors = %v (%v%%), want exactly %d: statistics must not be sampled", shop["errors"], shop["error_pct"], failing)
 	}

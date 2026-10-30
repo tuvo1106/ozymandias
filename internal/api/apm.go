@@ -398,7 +398,9 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 		if err != nil {
 			return eval.Result{}, err
 		}
-		return a.eval.Eval(ctx, eval.Request{Expr: node, From: from, To: to, Interval: interval})
+		// Held to the window: the percentiles ask one bucket that starts at
+		// the epoch, which would otherwise read every sketch ever stored.
+		return a.eval.Eval(ctx, eval.Request{Expr: node, From: from, To: to, Interval: interval, ClampToWindow: true})
 	}
 	for _, name := range entry {
 		base := "trace." + name

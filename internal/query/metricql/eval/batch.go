@@ -119,7 +119,7 @@ func (e *Evaluator) evalWith(ctx context.Context, req Request, shared *selection
 	if err != nil {
 		return Result{}, err
 	}
-	st := &state{vars: req.Vars, shared: shared}
+	st := newState(req, shared)
 	f, err := e.node(ctx, req.Expr, g, st)
 	if err != nil {
 		return Result{}, err
@@ -207,7 +207,7 @@ func (s *selections) put(key string, series []bucketed) {
 // spell themselves the same way — the failure mode of a hand-rolled cache key is
 // a collision serving one query's data to another, and it is worth a few bytes to
 // make that impossible rather than unlikely.
-func selectionKey(sel tsdb.Selector, post postFilter, g grid, method rollup) string {
+func selectionKey(sel tsdb.Selector, post postFilter, g grid, method rollup, st *state) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "m=%q", sel.Metric)
 	for _, m := range sel.Matchers {
@@ -219,7 +219,8 @@ func selectionKey(sel tsdb.Selector, post postFilter, g grid, method rollup) str
 			fmt.Fprintf(&b, ",%q", v)
 		}
 	}
-	fmt.Fprintf(&b, " g=%d/%d/%d r=%q", g.first, g.interval, g.n, method)
+	from, to := st.readRange(g)
+	fmt.Fprintf(&b, " g=%d/%d/%d w=%d/%d r=%q", g.first, g.interval, g.n, from, to, method)
 	return b.String()
 }
 
@@ -235,12 +236,13 @@ func (e *Evaluator) selectBucketed(
 	ctx context.Context, q *metricql.Query, sel tsdb.Selector, post postFilter,
 	g grid, method rollup, st *state,
 ) ([]bucketed, error) {
-	key := selectionKey(sel, post, g, method)
+	key := selectionKey(sel, post, g, method, st)
 	if series, ok := st.shared.get(key); ok {
 		return series, nil
 	}
 
-	set, err := e.Store.Select(ctx, sel, g.first*1000, g.endMs()-1)
+	from, to := st.readRange(g)
+	set, err := e.Store.Select(ctx, sel, from, to)
 	if err != nil {
 		return nil, err
 	}
