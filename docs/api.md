@@ -452,7 +452,7 @@ One row per (service, env, entry span name): `requests`, `requests_per_second`, 
 30-point `sparkline` of requests. Computed from metrics, so exact under sampling. A service with
 two kinds of entry span (`http.request`, `arq.job`) has a row for each: latency percentiles of
 different operations cannot be merged honestly. Percentiles are over the whole window and only the window: a
-service with no requests in it has no percentile, not the one from its last busy hour. Parameters `env`, `from`, `to`; `400` if `env`
+service with no requests in it has no row, not one carrying the percentile of its last busy hour. Parameters `env`, `from`, `to`; `400` if `env`
 holds a comma, brace or newline, which a metric query cannot express. At most 50 entry-span names
 are queried, in name order; `truncated: true` says there were more.
 

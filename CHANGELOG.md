@@ -526,7 +526,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **APM latency percentiles covered all of history, not the window.** The service
   table's one window-wide bucket started at the epoch, so p50/p95/p99 merged every
   sketch ever stored, and an idle service showed its old p95. Reads are now held to
-  the window; charts are unchanged.
+  the window; charts are unchanged. A service with no requests in the window no
+  longer gets a row at all (the stale percentile was what created it).
 - **A JSON log's own `env` became an attribute, never the `env` tag.** The agent
   now promotes it, like `service`: when the stream has no env tag, and only for an
   environment-shaped value. `env:prod` queries and `.by("env")` see such logs; the
