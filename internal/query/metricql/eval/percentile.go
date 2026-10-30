@@ -63,7 +63,8 @@ func (e *Evaluator) sketchGroups(ctx context.Context, q *metricql.Query, g grid,
 	}
 	sel.Metric = q.Metric + wire.SuffixCount
 
-	set, err := e.Store.Select(ctx, sel, g.first*1000, g.endMs()-1)
+	from, to := st.readRange(g)
+	set, err := e.Store.Select(ctx, sel, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +90,7 @@ func (e *Evaluator) sketchGroups(ctx context.Context, q *metricql.Query, g grid,
 			sg = &sketchGroup{tags: tags, buckets: make([]*sketch.Sketch, g.n)}
 		}
 		seen := false
-		err := e.Sketches.ReadEach(ctx, ref, g.first*1000, g.endMs()-1, func(p sketchstore.Point) error {
+		err := e.Sketches.ReadEach(ctx, ref, from, to, func(p sketchstore.Point) error {
 			landed, err := sg.add(p, g)
 			if err != nil {
 				return err

@@ -518,6 +518,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **APM latency percentiles covered all of history, not the window.** The service
+  table's one window-wide bucket started at the epoch, so p50/p95/p99 merged every
+  sketch ever stored, and an idle service showed its old p95. A row's numbers
+  (requests, errors, percentiles) are now read over exactly the window, so they
+  describe the same span; its sparkline still draws whole buckets, as charts do.
+  A service with no requests in the window no longer gets a row at all.
 - **Rails grouping evicted and flushed tied requests in map order.** Lines that
   share a received time opened groups with equal start times, so the "oldest"
   request evicted at the 1000-group cap, and the order timed-out requests came

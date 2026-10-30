@@ -79,6 +79,18 @@ type Request struct {
 	// expand to several matchers (`$env` -> `env:dev`), to one, or to none —
 	// "no constraint", which is what a dashboard's "all" selection means.
 	Vars map[string][]string
+	// ClampToWindow reads only samples in [From, To]. The grid's first bucket
+	// starts at From rounded down to the interval, so by default it holds data
+	// from before From: right for a chart, whose buckets are what it draws.
+	// Wrong for one number over exactly the window, which is what a caller
+	// asking a single bucket wants (the APM table's percentiles, over a bucket
+	// wide enough to start at the epoch, read every sketch ever stored).
+	//
+	// An edge bucket then holds only part of its span, and nothing rescales
+	// it: `.as_rate()` and an avg rollup divide it by the full interval, so an
+	// edge rate reads low. Ask a clamped read for totals over one bucket, as
+	// the APM table does, not for per-bucket rates.
+	ClampToWindow bool
 }
 
 // Result is a query's answer.
@@ -241,6 +253,34 @@ type state struct {
 	// [Evaluator.Batch]. Nil is a valid value and means "share nothing", so a
 	// single query and a batch of one run the same code — see [selections].
 	shared *selections
+	// clamp, when set, is the window reads are held to
+	// (Request.ClampToWindow), as millisecond offsets from the start of the
+	// grid being read, so it moves with a shifted grid; nil reads the grid's
+	// whole buckets.
+	clamp *[2]int64
+}
+
+// readRange is the unix-millisecond range a store read covers: the grid's
+// buckets, cut to the window when the request asked for that. Every
+// grid-bounded read goes through here, so none can be fixed and another missed.
+//
+// The window moves with the grid: timeshift reads a grid shifted from the
+// request's, and its window is the request's window shifted by as much, not
+// the request's absolute [From, To], which a day-old grid does not overlap.
+func (s *state) readRange(g grid) (from, to int64) {
+	from, to = g.first*1000, g.endMs()-1
+	if s != nil && s.clamp != nil {
+		from, to = max(from, g.first*1000+s.clamp[0]), min(to, g.first*1000+s.clamp[1])
+	}
+	return from, to
+}
+
+func newState(req Request, shared *selections, g grid) *state {
+	st := &state{vars: req.Vars, shared: shared}
+	if req.ClampToWindow {
+		st.clamp = &[2]int64{(req.From - g.first) * 1000, (req.To-g.first)*1000 + 999}
+	}
+	return st
 }
 
 func (s *state) warnf(format string, a ...any) {

@@ -133,6 +133,34 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 		t.Errorf("services with no env: shop = %v, want %d requests", everyEnv, total)
 	}
 
+	// A later window with no requests has no latency: the percentiles once read
+	// every sketch from the epoch on (one bucket that wide), so an idle service
+	// kept showing its old p95.
+	later := fmt.Sprintf("from=%d&to=%d", clk.Now().Add(2*time.Hour).UnixMilli(), clk.Now().Add(3*time.Hour).UnixMilli())
+	// The same holds for the counts: a window starting just after the traffic,
+	// inside the same sparkline bucket, counts none of it. One row describes
+	// one window, so it cannot carry requests from before it beside
+	// percentiles from within it.
+	// The clock starts at 1790000000, a multiple of 1000. A 30000 s window has
+	// 1000 s sparkline buckets, so one starting 500 s after the clock's start
+	// has its first bucket begin at the start, over the traffic, every run.
+	from := time.Unix(1790000000+500, 0)
+	justAfter := fmt.Sprintf("from=%d&to=%d", from.UnixMilli(), from.Add(30000*time.Second).UnixMilli())
+	for _, r := range get("/api/v1/services?env=e2e&" + justAfter)["services"].([]any) {
+		if row := r.(map[string]any); row["service"] == "shop" {
+			t.Errorf("shop counts requests from before the window: %v", row)
+		}
+	}
+	idle := get("/api/v1/services?env=e2e&" + later)
+	if idle["_code"] != 200.0 {
+		t.Fatalf("a later window: %v", idle)
+	}
+	for _, r := range idle["services"].([]any) {
+		if row := r.(map[string]any); row["service"] == "shop" {
+			t.Errorf("shop has a row in a window with no requests: %v", row)
+		}
+	}
+
 	if shop["errors"] != float64(failing) || shop["error_pct"] != 10.0 {
 		t.Errorf("errors = %v (%v%%), want exactly %d: statistics must not be sampled", shop["errors"], shop["error_pct"], failing)
 	}

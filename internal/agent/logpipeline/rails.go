@@ -47,10 +47,10 @@ type railsGroup struct {
 	id    string
 	meta  Meta
 	first time.Time // when its first line arrived
-	// seq is the order it opened in, which is what "oldest" means for
-	// eviction and flushing. Not first: lines often share a received time
-	// (one read, one timestamp), and a tie broken by map order evicts or
-	// emits a random one of them.
+	// seq is the order it opened in, which orders the timed-out and shutdown
+	// flushes. Not first: lines often share a received time (one read, one
+	// timestamp), and a tie broken by map order emits them in a random order.
+	// Eviction takes the same order from the grouper's queue.
 	seq    uint64
 	fields map[string]any
 	lines  int
@@ -61,6 +61,11 @@ type railsGrouper struct {
 	timeout time.Duration
 	groups  map[string]*railsGroup
 	opened  uint64 // the next group's seq
+	// order is the open groups oldest first, so eviction finds the oldest
+	// without scanning the map. Finished groups stay in it until they reach
+	// the front (or a compaction drops them); a group is live only while
+	// groups[id] is that same group.
+	order []*railsGroup
 }
 
 func newRailsGrouper(timeout time.Duration) *railsGrouper {
@@ -85,6 +90,19 @@ func (g *railsGrouper) consume(line string, m Meta) (done []groupedEvent, handle
 		grp = &railsGroup{id: id, meta: m, first: m.Received, seq: g.opened, fields: map[string]any{"request_id": id}}
 		g.opened++
 		g.groups[id] = grp
+		g.order = append(g.order, grp)
+		// Finished groups linger in order until they reach the front; keep it
+		// within twice the live count so a long-open request cannot make it grow.
+		if len(g.order) > 2*len(g.groups)+64 {
+			live := g.order[:0]
+			for _, o := range g.order {
+				if g.groups[o.id] == o {
+					live = append(live, o)
+				}
+			}
+			clear(g.order[len(live):])
+			g.order = live
+		}
 	}
 	grp.lines++
 	// Past the cap only the terminal line is read: a chatty request still ends.
@@ -109,6 +127,7 @@ func (g *railsGrouper) flush(now time.Time) []groupedEvent {
 			expired = append(expired, grp)
 		}
 	}
+	g.dropQueueIfEmpty()
 	return incomplete(expired)
 }
 
@@ -119,7 +138,17 @@ func (g *railsGrouper) flushAll() []groupedEvent {
 		delete(g.groups, id)
 		all = append(all, grp)
 	}
+	g.dropQueueIfEmpty()
 	return incomplete(all)
+}
+
+// dropQueueIfEmpty releases the eviction queue once no group is open: every
+// entry in it is then finished, and holding them would keep their fields
+// alive for as long as the source stays quiet.
+func (g *railsGrouper) dropQueueIfEmpty() {
+	if len(g.groups) == 0 {
+		g.order = nil
+	}
 }
 
 // incomplete emits groups as unfinished requests, in the order they opened.
@@ -132,26 +161,18 @@ func incomplete(groups []*railsGroup) []groupedEvent {
 	return out
 }
 
-// openedBefore is arrival order: which group's first line was read first.
-// Not the received time, which ties whenever lines share a read (and a
-// caller replaying lines could even send backwards); arrival is what
-// "oldest" and "in the order they opened" mean.
-func (grp *railsGroup) openedBefore(other *railsGroup) bool {
-	return grp.seq < other.seq
-}
-
 func (g *railsGrouper) evictOldest() []groupedEvent {
-	var oldest *railsGroup
-	for _, grp := range g.groups {
-		if oldest == nil || grp.openedBefore(oldest) {
-			oldest = grp
+	for len(g.order) > 0 {
+		oldest := g.order[0]
+		g.order[0] = nil
+		g.order = g.order[1:]
+		if g.groups[oldest.id] != oldest {
+			continue // finished or flushed already
 		}
+		delete(g.groups, oldest.id)
+		return []groupedEvent{oldest.event(true)}
 	}
-	if oldest == nil {
-		return nil
-	}
-	delete(g.groups, oldest.id)
-	return []groupedEvent{oldest.event(true)}
+	return nil
 }
 
 // groupedEvent is a finished request: fields for the remappers and the meta

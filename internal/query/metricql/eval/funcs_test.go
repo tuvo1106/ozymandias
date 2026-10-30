@@ -1,9 +1,11 @@
 package eval
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/tuvo1106/ozymandias/internal/query/metricql"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
@@ -232,6 +234,51 @@ func TestEval_Timeshift(t *testing.T) {
 				t.Errorf("\n got %q\nwant %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestEval_TimeshiftUnderClampToWindow: a clamped read is held to the window
+// of the grid being read, so timeshift reads the request's window moved by
+// the shift, the same answer as unclamped on an aligned window. Clamped to the
+// request's absolute window, the shifted read was empty (or inverted).
+func TestEval_TimeshiftUnderClampToWindow(t *testing.T) {
+	n, err := metricql.Parse("timeshift(sum:req.count{route:/x} by {route}, -60)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := fixture().Eval(context.Background(), Request{Expr: n, From: 60, To: 119, Interval: 30, ClampToWindow: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(lines(res), "|"); got != "route:/x: 66,165" {
+		t.Errorf("clamped timeshift = %q, want the shifted window's data", got)
+	}
+}
+
+// TestEval_ClampedTimeshiftForwardReadsItsWholeShiftedWindow: forwards, the
+// clamp's upper bound is the one that binds, so it too must move with the
+// grid; held to the request's own end, the shifted read is cut to nothing.
+func TestEval_ClampedTimeshiftForwardReadsItsWholeShiftedWindow(t *testing.T) {
+	n, err := metricql.Parse("timeshift(sum:req.count{route:/x} by {route}, 60)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Data at 100, 130 and 155 s; the window [40, 99] shifted forward by 60 s is
+	// [100, 159], which holds all three, the last near its end. The window starts mid-bucket (30 s
+	// buckets from 30), so the clamp's lower bound is in play as well.
+	e := &Evaluator{
+		Store: &memStore{series: []tsdb.SeriesSamples{
+			series("req.count", []string{"route:/x"}, sec(100, 7, 130, 9, 155, 4)),
+		}},
+		Types:   types{"req.count": wire.KindCount},
+		Timeout: -1,
+	}
+	res, err := e.Eval(context.Background(), Request{Expr: n, From: 40, To: 99, Interval: 30, ClampToWindow: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(lines(res), "|"); got != "route:/x: 7,9,4" {
+		t.Errorf("clamped forward timeshift = %q, want the shifted window's data", got)
 	}
 }
 

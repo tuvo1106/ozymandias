@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tuvo1106/ozymandias/internal/query/metricql"
 	"github.com/tuvo1106/ozymandias/internal/sketch"
 	"github.com/tuvo1106/ozymandias/internal/sketchstore"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
@@ -327,5 +328,55 @@ func TestEval_SketchesOffTheGridDrawNothing(t *testing.T) {
 	r2.ignoreRange = true
 	if res := run(t, e2, "p95:lat{*}", 0, 59, 60); len(res.Series) != 0 {
 		t.Errorf("got %q, want no line at all", lines(res))
+	}
+}
+
+// TestEval_ClampToWindowReadsOnlyTheWindow: one bucket wide enough to start at
+// the epoch (the APM table's percentiles) reads every sketch ever stored
+// unless the request is held to its window. Slow requests long ago must not
+// be today's p95, and a window with none has no p95 at all.
+func TestEval_ClampToWindowReadsOnlyTheWindow(t *testing.T) {
+	const day = 86400
+	now := int64(1_800_000_000)
+	slow := make([]float64, 100)
+	for i := range slow {
+		slow[i] = 8
+	}
+	e := sketchEnv(t, map[string]map[int64]*sketch.Sketch{
+		"host:a": {now - 30*day: sketchOf(t, slow...), now - 600: sketchOf(t, 0.05, 0.05, 0.05)},
+	})
+	ask := func(from, to int64, clamp bool) Result {
+		t.Helper()
+		n, err := metricql.Parse("p95:lat{*}")
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := e.Eval(context.Background(), Request{Expr: n, From: from, To: to, Interval: 1 << 31, ClampToWindow: clamp})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	last := func(r Result) float64 {
+		for _, s := range r.Series {
+			for i := len(s.Points) - 1; i >= 0; i-- {
+				if !math.IsNaN(s.Points[i].V) {
+					return s.Points[i].V
+				}
+			}
+		}
+		return math.NaN()
+	}
+	// The last hour holds only the fast requests.
+	if got := last(ask(now-3600, now, true)); math.Abs(got-0.05) > 0.01 {
+		t.Errorf("clamped p95 over the last hour = %v, want ~0.05", got)
+	}
+	// Unclamped, the month-old slow requests leak in: what the APM table did.
+	if got := last(ask(now-3600, now, false)); got < 1 {
+		t.Errorf("unclamped p95 = %v; the test no longer shows the leak it guards against", got)
+	}
+	// A window with no requests has no p95, not an old one.
+	if got := last(ask(now-300, now, true)); !math.IsNaN(got) {
+		t.Errorf("p95 over an empty window = %v, want none", got)
 	}
 }

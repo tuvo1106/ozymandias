@@ -282,3 +282,99 @@ func TestPipeline_MultilineEventsStillMatchTheirFirstLinesPattern(t *testing.T) 
 		t.Fatalf("%+v", l)
 	}
 }
+
+// TestRails_TheQueueIsBoundedAtTheCap: at the cap, eviction pops the queue
+// from the front, which keeps it bounded however many requests pass through.
+// (Below the cap, compaction does that: TestRails_TheQueueCompactsBelowTheCap.)
+func TestRails_TheQueueIsBoundedAtTheCap(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "rails", RateLimit: -1})
+	p.Process(`[keepopen] Started GET "/long" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, meta())
+	for i := 0; i < 20*maxRailsGroups; i++ {
+		id := fmt.Sprintf("[r%08d]", i)
+		p.Process(id+` Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, meta())
+		if i%3 == 0 { // most finish; the rest are evicted
+			p.Process(id+` Completed 200 OK in 1ms`, meta())
+		}
+	}
+	g := p.rails
+	if len(g.order) > 2*len(g.groups)+64 {
+		t.Errorf("order grew to %d for %d open", len(g.order), len(g.groups))
+	}
+	for _, o := range g.order {
+		if o == nil {
+			t.Fatal("a nil in the eviction queue")
+		}
+	}
+}
+
+// BenchmarkRails_NewRequestAtTheCap is the hot path the eviction queue exists
+// for: every new request id at 1000 open evicts the oldest.
+func BenchmarkRails_NewRequestAtTheCap(b *testing.B) {
+	p, _ := newPipeline(b, Spec{Source: "rails", RateLimit: -1})
+	lines := make([]string, maxRailsGroups+b.N)
+	for i := range lines {
+		lines[i] = fmt.Sprintf(`[id%08d] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, i)
+	}
+	for _, l := range lines[:maxRailsGroups] {
+		p.Process(l, meta())
+	}
+	b.ResetTimer()
+	for _, l := range lines[maxRailsGroups:] {
+		p.Process(l, meta())
+	}
+}
+
+// TestRails_TheQueueCompactsBelowTheCap: below the cap nothing is evicted, so
+// only compaction keeps finished requests from piling up in the queue behind
+// one that stays open.
+func TestRails_TheQueueCompactsBelowTheCap(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "rails", RateLimit: -1})
+	p.Process(`[keepopen] Started GET "/long" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, meta())
+	for i := 0; i < 20000; i++ {
+		id := fmt.Sprintf("[r%08d]", i)
+		p.Process(id+` Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, meta())
+		p.Process(id+` Completed 200 OK in 1ms`, meta())
+	}
+	if g := p.rails; len(g.groups) != 1 || len(g.order) > 2*len(g.groups)+64 {
+		t.Errorf("%d open, queue of %d", len(g.groups), len(g.order))
+	}
+}
+
+// TestRails_AFinishedRequestIsNeverEvicted: a request that completed is still
+// in the queue until it reaches the front. Eviction must skip it, not emit it
+// a second time as incomplete.
+func TestRails_AFinishedRequestIsNeverEvicted(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "rails", RateLimit: -1})
+	p.Process(`[done0001] Started GET "/quick" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, meta())
+	if out := p.Process(`[done0001] Completed 200 OK in 1ms`, meta()); len(out) != 1 {
+		t.Fatalf("not completed: %+v", out)
+	}
+	var evicted []wire.Log
+	for i := 0; i < maxRailsGroups+1; i++ {
+		evicted = append(evicted, p.Process(fmt.Sprintf(`[id%08d] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, i), meta())...)
+	}
+	if len(evicted) != 1 || evicted[0].Attrs["request_id"] != "id00000000" {
+		t.Errorf("evicted %+v, want only id00000000", evicted)
+	}
+}
+
+// TestRails_AFlushThatEmptiesTheGrouperReleasesTheQueue: once no request is
+// open, nothing in the queue is live, so it is let go rather than held while
+// the source is quiet.
+func TestRails_AFlushThatEmptiesTheGrouperReleasesTheQueue(t *testing.T) {
+	p, clk := newPipeline(t, Spec{Source: "rails", RailsGroupTimeout: 5 * time.Second, RateLimit: -1})
+	m := meta()
+	m.Received = clk.Now()
+	for i := 0; i < 100; i++ {
+		p.Process(fmt.Sprintf(`[gone%04d] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, i), m)
+	}
+	p.Flush(clk.Now().Add(time.Minute))
+	if len(p.rails.order) != 0 {
+		t.Errorf("the timeout flush kept %d dead entries", len(p.rails.order))
+	}
+	p.Process(`[last0001] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, m)
+	p.FlushAll()
+	if len(p.rails.order) != 0 {
+		t.Errorf("the shutdown flush kept %d dead entries", len(p.rails.order))
+	}
+}
