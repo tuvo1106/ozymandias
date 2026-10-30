@@ -71,8 +71,8 @@ type Stats struct {
 	Unparsed    int64 // lines no parser recognized (kept as plain text)
 	Redactions  int64 // strings the redactor changed
 	// RailsLate counts lines of a Rails request already emitted as incomplete
-	// (evicted at the group cap, or timed out), dropped rather than emitted as
-	// a second, fragment event for the same request.
+	// (evicted at the group cap, or timed out), each emitted on its own and
+	// marked late rather than opening a group.
 	RailsLate int64
 }
 
@@ -102,6 +102,7 @@ type Pipeline struct {
 	exclude []*regexp.Regexp
 	lim     *limiter
 	rails   *railsGrouper
+	envs    map[string]bool // the env values promoted so far (promoteEnv)
 	clk     clock.Clock
 	n       *Totals
 }
@@ -118,7 +119,7 @@ func New(spec Spec, opts Options) (*Pipeline, error) {
 	if opts.Totals == nil {
 		opts.Totals = &Totals{}
 	}
-	p := &Pipeline{source: spec.Source, parsers: ps, clk: opts.Clock, n: opts.Totals}
+	p := &Pipeline{source: spec.Source, parsers: ps, clk: opts.Clock, n: opts.Totals, envs: map[string]bool{}}
 	if p.red, err = NewRedactor(spec.Redact, func(string) { p.n.redactions.Add(1) }); err != nil {
 		return nil, err
 	}
@@ -268,7 +269,6 @@ func (p *Pipeline) finish(fields map[string]any, m Meta, recognized bool) wire.L
 	if l.Service == "" {
 		l.Service = "unknown"
 	}
-	promoteEnv(fields, &l)
 	takeTrace(fields, &l)
 
 	if len(fields) > 0 {
@@ -280,34 +280,54 @@ func (p *Pipeline) finish(fields map[string]any, m Meta, recognized bool) wire.L
 	if l.Attrs != nil {
 		p.red.Attrs(l.Attrs)
 	}
+	// After redaction: a value the redactor masked is no longer env-shaped and
+	// stays an attribute, so a secret in env never becomes an indexed tag.
+	p.promoteEnv(&l)
 	p.n.emitted.Add(1)
 	return l
 }
 
 // envValue is what a log's own "env" field must look like to become a tag.
-// A tag is indexed and grouped on, so a value from a line must come from a
-// small, fixed-shape set: an environment name, not whatever an app (or a
-// request it echoes) happened to write there.
 var envValue = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,31}$`)
+
+// maxPromotedEnvs bounds the distinct env values one pipeline promotes. A tag
+// is a series to group on, so its values must be a small set, and a shape
+// alone does not bound a set: an app that echoed request input into env
+// (prod-1, prod-2, ...) would mint one tag per value. Real environments per
+// stream are one or two.
+const maxPromotedEnvs = 8
 
 // promoteEnv makes a log's own "env" field its env tag, the way its "service"
 // field becomes its service: only when the stream has none (an env tag from
-// the container or the config wins), and only for a value shaped like an
-// environment name. Anything else stays an attribute, still searchable as
-// @env. Without this, a JSON app that writes env per line (rather than the
-// container labelling it) has logs no `env:` query or `.by("env")` can see.
-func promoteEnv(fields map[string]any, l *wire.Log) {
+// the container or the config wins), only for a value shaped like an
+// environment name, and only for the first maxPromotedEnvs distinct values a
+// pipeline sees. Anything else stays an attribute, still searchable as @env.
+// Without this, an app that writes env per line (rather than the container
+// labelling it) has logs no `env:` query or `.by("env")` can see.
+//
+// It reads the field whichever parser produced it: a JSON key, or a grok or
+// remapper capture named env.
+func (p *Pipeline) promoteEnv(l *wire.Log) {
 	for _, t := range l.Tags {
 		if k, _ := wire.SplitTag(t); k == "env" {
 			return
 		}
 	}
-	v, ok := fields["env"].(string)
+	v, ok := l.Attrs["env"].(string)
 	if !ok || !envValue.MatchString(v) {
 		return
 	}
+	if !p.envs[v] {
+		if len(p.envs) >= maxPromotedEnvs {
+			return
+		}
+		p.envs[v] = true
+	}
 	l.Tags = append(l.Tags, "env:"+v)
-	delete(fields, "env")
+	delete(l.Attrs, "env")
+	if len(l.Attrs) == 0 {
+		l.Attrs = nil
+	}
 }
 
 func takeMessage(fields map[string]any) string {

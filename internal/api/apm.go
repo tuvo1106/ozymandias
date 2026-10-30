@@ -393,18 +393,16 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 		}
 		return rows[k]
 	}
-	run := func(q string, interval int64) (eval.Result, error) {
+	run := func(q string, interval int64, clamp bool) (eval.Result, error) {
 		node, err := metricql.Parse(q)
 		if err != nil {
 			return eval.Result{}, err
 		}
-		// Held to the window: the percentiles ask one bucket that starts at
-		// the epoch, which would otherwise read every sketch ever stored.
-		return a.eval.Eval(ctx, eval.Request{Expr: node, From: from, To: to, Interval: interval, ClampToWindow: true})
+		return a.eval.Eval(ctx, eval.Request{Expr: node, From: from, To: to, Interval: interval, ClampToWindow: clamp})
 	}
 	for _, name := range entry {
 		base := "trace." + name
-		hits, err := run("sum:"+base+".hits"+sel+group+".as_count()", spark)
+		hits, err := run("sum:"+base+".hits"+sel+group+".as_count()", spark, false)
 		if err != nil {
 			return nil, false, err
 		}
@@ -417,7 +415,7 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 				rw.Spark = append(rw.Spark, nanToZero(p.V))
 			}
 		}
-		errs, err := run("sum:"+base+".errors"+sel+group+".as_count()", spark)
+		errs, err := run("sum:"+base+".errors"+sel+group+".as_count()", spark, false)
 		if err != nil {
 			return nil, false, err
 		}
@@ -436,7 +434,10 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 				fn  string
 				dst func(*red) **float64
 			}{{"p50", func(r *red) **float64 { return &r.P50Ms }}, {"p95", func(r *red) **float64 { return &r.P95Ms }}, {"p99", func(r *red) **float64 { return &r.P99Ms }}} {
-				res, err := run(q.fn+":"+base+".duration"+sel+group, wholeWindow)
+				// Held to the window: one bucket this wide starts at the epoch,
+				// and would otherwise read every sketch ever stored. The counts
+				// above keep their sparkline buckets whole, as a chart does.
+				res, err := run(q.fn+":"+base+".duration"+sel+group, wholeWindow, true)
 				if err != nil {
 					return nil, false, err
 				}

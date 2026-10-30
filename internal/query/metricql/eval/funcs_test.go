@@ -1,9 +1,11 @@
 package eval
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/tuvo1106/ozymandias/internal/query/metricql"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
@@ -232,6 +234,24 @@ func TestEval_Timeshift(t *testing.T) {
 				t.Errorf("\n got %q\nwant %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestEval_TimeshiftUnderClampToWindow: a clamped read is held to the window
+// of the grid being read, so timeshift reads the request's window moved by
+// the shift, the same answer as unclamped on an aligned window. Clamped to the
+// request's absolute window, the shifted read was empty (or inverted).
+func TestEval_TimeshiftUnderClampToWindow(t *testing.T) {
+	n, err := metricql.Parse("timeshift(sum:req.count{route:/x} by {route}, -60)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := fixture().Eval(context.Background(), Request{Expr: n, From: 60, To: 119, Interval: 30, ClampToWindow: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(lines(res), "|"); got != "route:/x: 66,165" {
+		t.Errorf("clamped timeshift = %q, want the shifted window's data", got)
 	}
 }
 

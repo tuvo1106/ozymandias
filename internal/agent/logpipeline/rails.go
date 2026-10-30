@@ -67,36 +67,56 @@ type railsGrouper struct {
 	// groups[id] is that same group.
 	order []*railsGroup
 	// ended remembers the ids already emitted as incomplete (evicted or timed
-	// out), at most maxRailsGroups of them, oldest forgotten first. A late
-	// line for one is dropped: opening a new group for it would emit a second,
-	// fragment event for the same request (a "Completed 200" with no method or
-	// path) and, at the cap, evict another live request to make room.
-	ended      map[string]bool
-	endedOrder []string
+	// out), at most maxRailsGroups of them in a ring, oldest forgotten first.
+	// A late line for one is emitted on its own (lateEvent) rather than opening
+	// a group: a group for it would sit open until it timed out as a second,
+	// fragment request and, at the cap, evict a live request to make room.
+	// The value is the ring slot's generation, so a slot reused for a later
+	// ending of the same id does not forget the newer one.
+	ended    map[string]uint64
+	ring     [maxRailsGroups]endedSlot
+	ringNext int
+	endings  uint64
+}
+
+type endedSlot struct {
+	id  string
+	gen uint64
 }
 
 func newRailsGrouper(timeout time.Duration) *railsGrouper {
-	return &railsGrouper{timeout: timeout, groups: map[string]*railsGroup{}, ended: map[string]bool{}}
+	return &railsGrouper{timeout: timeout, groups: map[string]*railsGroup{}, ended: map[string]uint64{}}
 }
 
 // endIncomplete records that a group was emitted unfinished.
 func (g *railsGrouper) endIncomplete(id string) {
-	if g.ended[id] {
-		return
+	old := g.ring[g.ringNext]
+	if old.id != "" && g.ended[old.id] == old.gen {
+		delete(g.ended, old.id)
 	}
-	if len(g.endedOrder) >= maxRailsGroups {
-		delete(g.ended, g.endedOrder[0])
-		g.endedOrder = g.endedOrder[1:]
-	}
-	g.ended[id] = true
-	g.endedOrder = append(g.endedOrder, id)
+	g.endings++
+	g.ring[g.ringNext] = endedSlot{id: id, gen: g.endings}
+	g.ended[id] = g.endings
+	g.ringNext = (g.ringNext + 1) % maxRailsGroups
+}
+
+// lateEvent is one line of a request already emitted as incomplete, as an
+// event of its own: what the line says (a late "Completed" keeps its status
+// and duration, which is how a request slower than the timeout is still
+// found by @status_code or @duration), linked by request_id and marked late.
+// No group is opened for it, so it evicts nothing.
+func lateEvent(id, rest string, m Meta) groupedEvent {
+	one := &railsGroup{id: id, meta: m, first: m.Received, fields: map[string]any{"request_id": id, "late": true}}
+	one.absorb(rest)
+	return one.event(false)
 }
 
 // consume offers a line to the grouper. handled is false if the line is not a
 // request-id-prefixed line, and the caller should parse it as an ordinary
 // line. When handled, done holds the finished requests (zero or one, plus
 // any flushed to make room), as field sets ready for the remappers. late is
-// true for a line of a request already emitted as incomplete, which is dropped.
+// true for a line of a request already emitted as incomplete, emitted on its
+// own (lateEvent).
 func (g *railsGrouper) consume(line string, m Meta) (done []groupedEvent, handled, late bool) {
 	pm := railsPrefix.FindStringSubmatch(line)
 	if pm == nil {
@@ -104,8 +124,13 @@ func (g *railsGrouper) consume(line string, m Meta) (done []groupedEvent, handle
 	}
 	id, rest := pm[1], pm[2]
 	grp := g.groups[id]
-	if grp == nil && g.ended[id] {
-		return nil, true, true
+	if _, ended := g.ended[id]; grp == nil && ended {
+		if !railsStarted.MatchString(rest) {
+			return []groupedEvent{lateEvent(id, rest, m)}, true, true
+		}
+		// A new request reusing the id (Rails keeps a client's X-Request-Id,
+		// and a retry sends it again): it opens a group like any other.
+		delete(g.ended, id)
 	}
 	if grp == nil {
 		if len(g.groups) >= maxRailsGroups {
@@ -260,10 +285,11 @@ func (grp *railsGroup) event(incomplete bool) groupedEvent {
 		f["incomplete"] = true
 	}
 	msg := strings.TrimSpace(strings.Join([]string{asString(f["method"]), asString(f["path"])}, " "))
+	if msg == "" {
+		msg = "request " + grp.id
+	}
 	if code, ok := f["status_code"]; ok {
 		msg += " " + strconv.FormatInt(code.(int64), 10)
-	} else if msg == "" {
-		msg = "request " + grp.id
 	}
 	f["message"] = msg
 	if code, ok := f["status_code"].(int64); ok {

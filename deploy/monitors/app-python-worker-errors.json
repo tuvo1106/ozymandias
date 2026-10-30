@@ -6,7 +6,7 @@
   "options": {
     "evaluation_interval_s": 60
   },
-  "message": "{{if .IsRecovery}}The {{index .Group \"env\"}} judge worker is down to {{printf \"%.0f\" .Value}} errors in five minutes.{{else}}The {{index .Group \"env\"}} judge worker logged {{printf \"%.0f\" .Value}} errors in five minutes. Logs: service:shikomi-worker status:error.{{end}} @log @hook",
+  "message": "{{if .IsRecovery}}The {{.Group.env}} judge worker is down to {{printf \"%.0f\" .Value}} errors in five minutes.{{else}}The {{.Group.env}} judge worker logged {{printf \"%.0f\" .Value}} errors in five minutes. Logs: service:shikomi-worker status:error.{{end}} @log @hook",
   "tags": [
     "app:shikomi",
     "component:worker",

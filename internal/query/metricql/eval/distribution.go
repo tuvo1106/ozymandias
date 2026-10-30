@@ -218,7 +218,7 @@ func (e *Evaluator) Distribution(ctx context.Context, req Request) (Distribution
 		defer cancel()
 	}
 
-	st := newState(req, nil)
+	st := newState(req, nil, g)
 	groups, err := e.sketchGroups(ctx, q, g, st, e.metricKind(q.Metric))
 	if err != nil {
 		return Distribution{}, err

@@ -137,9 +137,13 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 	// every sketch from the epoch on (one bucket that wide), so an idle service
 	// kept showing its old p95.
 	later := fmt.Sprintf("from=%d&to=%d", clk.Now().Add(2*time.Hour).UnixMilli(), clk.Now().Add(3*time.Hour).UnixMilli())
-	for _, r := range get("/api/v1/services?env=e2e&" + later)["services"].([]any) {
-		if row := r.(map[string]any); row["service"] == "shop" && (row["p95_ms"] != nil || row["requests"] != 0.0) {
-			t.Errorf("shop in a window with no requests: %v", row)
+	idle := get("/api/v1/services?env=e2e&" + later)
+	if idle["_code"] != 200.0 {
+		t.Fatalf("a later window: %v", idle)
+	}
+	for _, r := range idle["services"].([]any) {
+		if row := r.(map[string]any); row["service"] == "shop" {
+			t.Errorf("shop has a row in a window with no requests: %v", row)
 		}
 	}
 

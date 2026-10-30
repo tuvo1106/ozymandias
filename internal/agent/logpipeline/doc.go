@@ -40,8 +40,10 @@
 //     event when "Completed" arrives, or marked incomplete after a timeout.
 //     Both the number of open requests and one request's buffered lines are
 //     bounded. A request emitted as incomplete (evicted at the cap, or timed
-//     out) is remembered, boundedly, so its late lines are dropped and counted
-//     rather than emitted as a second, fragment event for the same request.
+//     out) is remembered, boundedly, and each late line of it is emitted as
+//     its own event marked late, keeping what it says (a late Completed keeps
+//     its status and duration) without opening a group that could evict
+//     another request.
 //   - Grok patterns are Go regular expressions (RE2). They cannot backtrack,
 //     so a hostile line cannot make the agent spin.
 //   - Redaction errs toward over-matching: hiding a harmless value costs a

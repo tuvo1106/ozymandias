@@ -340,10 +340,55 @@ func TestEnv_HostileValuesStayAttributes(t *testing.T) {
 	}
 }
 
-// TestRails_ALateLineOfAnEvictedRequestIsDropped: a request evicted at the cap
-// was already emitted as incomplete. Its Completed line must not open a second,
-// fragment group (a "200" with no method or path) that evicts another request.
-func TestRails_ALateLineOfAnEvictedRequestIsDropped(t *testing.T) {
+// TestEnv_DistinctValuesAreBounded: a shape is not a set. Well-shaped values
+// that keep changing (an app echoing input into env) mint at most
+// maxPromotedEnvs tags; the rest stay attributes, and an env already promoted
+// keeps being promoted.
+func TestEnv_DistinctValuesAreBounded(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "json", RateLimit: -1})
+	m := meta()
+	m.Tags = nil
+	tags := map[string]bool{}
+	for i := 0; i < 10000; i++ {
+		b, _ := json.Marshal(map[string]any{"message": "x", "env": fmt.Sprintf("prod-%d", i)})
+		out := p.Process(string(b), m)
+		for _, tag := range out[0].Tags {
+			tags[tag] = true
+		}
+		if len(out[0].Tags) == 0 && out[0].Attrs["env"] != fmt.Sprintf("prod-%d", i) {
+			t.Fatalf("value %d neither promoted nor kept: %+v", i, out[0])
+		}
+	}
+	if len(tags) != maxPromotedEnvs {
+		t.Errorf("10000 distinct envs minted %d tags, want %d", len(tags), maxPromotedEnvs)
+	}
+	out := p.Process(`{"message":"x","env":"prod-0"}`, m)
+	if !slices.Contains(out[0].Tags, "env:prod-0") {
+		t.Errorf("an env already promoted stopped being promoted: %+v", out[0])
+	}
+}
+
+// TestEnv_PromotedAfterRedaction: a value the redactor masks is no longer an
+// environment name, so it stays an attribute and never becomes a tag.
+func TestEnv_PromotedAfterRedaction(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "json", RateLimit: -1, Redact: RedactConfig{Keys: []string{"env"}}})
+	m := meta()
+	m.Tags = nil
+	out := p.Process(`{"message":"x","env":"skabc123"}`, m)
+	for _, tag := range out[0].Tags {
+		if strings.Contains(tag, "skabc123") {
+			t.Fatalf("a value the redactor masks became a tag: %v", out[0].Tags)
+		}
+	}
+	if v, _ := out[0].Attrs["env"].(string); v == "skabc123" || v == "" {
+		t.Errorf("env was not redacted in place: %+v", out[0].Attrs)
+	}
+}
+
+// TestRails_ALateLineOfAnEvictedRequestIsItsOwnEvent: a request evicted at
+// the cap was already emitted as incomplete. Its Completed line is emitted on
+// its own, with what it says, and opens no group that would evict another.
+func TestRails_ALateLineOfAnEvictedRequestIsItsOwnEvent(t *testing.T) {
 	var totals Totals
 	p, err := New(Spec{Source: "rails", RateLimit: -1}, Options{Clock: testutil.NewFakeClock(received), Totals: &totals})
 	if err != nil {
@@ -352,8 +397,9 @@ func TestRails_ALateLineOfAnEvictedRequestIsDropped(t *testing.T) {
 	for i := 0; i < maxRailsGroups+1; i++ { // the last one evicts id00000000
 		p.Process(fmt.Sprintf(`[id%08d] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, i), meta())
 	}
-	if out := p.Process(`[id00000000] Completed 200 OK in 9ms`, meta()); len(out) != 0 {
-		t.Fatalf("a late line was emitted: %+v", out)
+	out := p.Process(`[id00000000] Completed 200 OK in 9ms`, meta())
+	if len(out) != 1 || out[0].Attrs["request_id"] != "id00000000" || out[0].Attrs["late"] != true || out[0].Attrs["status_code"] != int64(200) {
+		t.Fatalf("late line: %+v", out)
 	}
 	if _, open := p.rails.groups["id00000000"]; open {
 		t.Error("the late line reopened its request")
@@ -366,21 +412,66 @@ func TestRails_ALateLineOfAnEvictedRequestIsDropped(t *testing.T) {
 	}
 }
 
-// TestRails_ALateLineOfATimedOutRequestIsDropped: the same for a request the
-// timeout flushed as incomplete.
-func TestRails_ALateLineOfATimedOutRequestIsDropped(t *testing.T) {
-	p, clk := newPipeline(t, Spec{Source: "rails", RailsGroupTimeout: 5 * time.Second, RateLimit: -1})
+// TestRails_ARequestSlowerThanTheTimeoutKeepsItsStatus: the slowest requests
+// are what @status_code and @duration queries look for. The timeout emits the
+// request as incomplete; its late Completed line still carries both.
+func TestRails_ARequestSlowerThanTheTimeoutKeepsItsStatus(t *testing.T) {
+	p, clk := newPipeline(t, Spec{Source: "rails", RailsGroupTimeout: 10 * time.Second, RateLimit: -1})
 	m := meta()
 	m.Received = clk.Now()
-	p.Process(`[slow0001] Started GET "/slow" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, m)
-	if out := p.Flush(clk.Now().Add(6 * time.Second)); len(out) != 1 {
+	p.Process(`[slow0001] Started GET "/report" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, m)
+	if out := p.Flush(clk.Now().Add(11 * time.Second)); len(out) != 1 || out[0].Attrs["incomplete"] != true {
 		t.Fatalf("not flushed: %+v", out)
 	}
-	if out := p.Process(`[slow0001] Completed 200 OK in 6100ms`, m); len(out) != 0 {
-		t.Errorf("a timed-out request's late line was emitted: %+v", out)
+	out := p.Process(`[slow0001] Completed 500 Internal Server Error in 12000ms`, m)
+	if len(out) != 1 {
+		t.Fatalf("late Completed: %+v", out)
+	}
+	l := out[0]
+	if l.Attrs["status_code"] != int64(500) || l.Attrs["duration"] != 12000.0 || l.Status != wire.StatusError || l.Attrs["late"] != true {
+		t.Errorf("late Completed lost its status or duration: %+v", l)
+	}
+	if l.Message != "request slow0001 500" {
+		t.Errorf("late Completed message = %q: it should name its request", l.Message)
 	}
 	if out := p.Flush(clk.Now().Add(time.Hour)); len(out) != 0 {
 		t.Errorf("the late line opened a group that flushed later: %+v", out)
+	}
+}
+
+// TestRails_AReusedIdStartsANewRequest: Rails keeps a client's X-Request-Id,
+// so a retry can reuse the id of a request that timed out. Its Started line
+// opens a new request rather than being treated as late.
+func TestRails_AReusedIdStartsANewRequest(t *testing.T) {
+	p, clk := newPipeline(t, Spec{Source: "rails", RailsGroupTimeout: 5 * time.Second, RateLimit: -1})
+	m := meta()
+	m.Received = clk.Now()
+	p.Process(`[retry-0001] Started GET "/pay" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, m)
+	p.Flush(clk.Now().Add(6 * time.Second))
+	p.Process(`[retry-0001] Started GET "/pay" for 1.1.1.1 at 2026-10-04 12:00:06 +0000`, m)
+	out := p.Process(`[retry-0001] Completed 200 OK in 30ms`, m)
+	if len(out) != 1 || out[0].Attrs["late"] != nil || out[0].Message != "GET /pay 200" {
+		t.Errorf("the retry was not its own request: %+v", out)
+	}
+}
+
+// TestRails_AConstantTagLosesNoLines: "[ActiveJob]" matches the request-id
+// prefix but never completes. After it times out, every later line is still
+// emitted, one event each.
+func TestRails_AConstantTagLosesNoLines(t *testing.T) {
+	p, clk := newPipeline(t, Spec{Source: "rails", RailsGroupTimeout: 5 * time.Second, RateLimit: -1})
+	m := meta()
+	m.Received = clk.Now()
+	p.Process(`[ActiveJob] Performing MyJob from Async(default)`, m)
+	if out := p.Flush(clk.Now().Add(6 * time.Second)); len(out) != 1 {
+		t.Fatalf("not flushed: %+v", out)
+	}
+	n := 0
+	for i := 0; i < 5; i++ {
+		n += len(p.Process(fmt.Sprintf(`[ActiveJob] Performed MyJob in %dms`, i), m))
+	}
+	if n != 5 {
+		t.Errorf("%d of 5 later lines emitted", n)
 	}
 }
 
@@ -398,8 +489,8 @@ func TestRails_MemoryOfEndedAndOrderIsBounded(t *testing.T) {
 		}
 	}
 	g := p.rails
-	if len(g.ended) > maxRailsGroups || len(g.endedOrder) > maxRailsGroups {
-		t.Errorf("ended grew to %d / %d", len(g.ended), len(g.endedOrder))
+	if len(g.ended) > maxRailsGroups {
+		t.Errorf("ended grew to %d", len(g.ended))
 	}
 	if len(g.order) > 2*len(g.groups)+64 {
 		t.Errorf("order grew to %d for %d open", len(g.order), len(g.groups))
@@ -459,5 +550,30 @@ func TestRails_AFinishedRequestIsNeverEvicted(t *testing.T) {
 	}
 	if len(evicted) != 1 || evicted[0].Attrs["request_id"] != "id00000000" {
 		t.Errorf("evicted %+v, want only id00000000", evicted)
+	}
+}
+
+// TestRails_TheRingForgetsOnlyItsOwnEnding: an id ended, reused, and ended
+// again has two ring slots. The older slot's recycling must not forget the
+// newer ending.
+func TestRails_TheRingForgetsOnlyItsOwnEnding(t *testing.T) {
+	g := newRailsGrouper(time.Second)
+	g.endIncomplete("A")
+	delete(g.ended, "A") // a Started line reused it
+	g.endIncomplete("B")
+	g.endIncomplete("A") // ended again, in a later slot
+	// Slots 0 (A), 1 (B), 2 (A again) are used; 999 more fill 3..999 and
+	// recycle 0 and 1, leaving A's newer slot 2.
+	for i := 0; i < maxRailsGroups-1; i++ {
+		g.endIncomplete(fmt.Sprintf("x%d", i))
+	}
+	if _, ok := g.ended["A"]; !ok {
+		t.Error("recycling A's old slot forgot its newer ending")
+	}
+	if _, ok := g.ended["B"]; ok {
+		t.Error("B's slot was recycled but B is still remembered")
+	}
+	if len(g.ended) > maxRailsGroups {
+		t.Errorf("%d remembered", len(g.ended))
 	}
 }

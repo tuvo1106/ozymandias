@@ -119,7 +119,7 @@ func (e *Evaluator) evalWith(ctx context.Context, req Request, shared *selection
 	if err != nil {
 		return Result{}, err
 	}
-	st := newState(req, shared)
+	st := newState(req, shared, g)
 	f, err := e.node(ctx, req.Expr, g, st)
 	if err != nil {
 		return Result{}, err
@@ -219,8 +219,12 @@ func selectionKey(sel tsdb.Selector, post postFilter, g grid, method rollup, st 
 			fmt.Fprintf(&b, ",%q", v)
 		}
 	}
-	from, to := st.readRange(g)
-	fmt.Fprintf(&b, " g=%d/%d/%d w=%d/%d r=%q", g.first, g.interval, g.n, from, to, method)
+	fmt.Fprintf(&b, " g=%d/%d/%d r=%q", g.first, g.interval, g.n, method)
+	if st != nil && st.clamp != nil {
+		// A clamped read holds different samples from the whole grid's.
+		from, to := st.readRange(g)
+		fmt.Fprintf(&b, " w=%d/%d", from, to)
+	}
 	return b.String()
 }
 

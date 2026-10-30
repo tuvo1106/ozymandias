@@ -328,7 +328,7 @@ func TestSelectionKey_CannotCollide(t *testing.T) {
 func TestSelectionKey_ClampIsPartOfTheKey(t *testing.T) {
 	g := grid{first: 0, interval: 1 << 31, n: 1}
 	sel := tsdb.Selector{Metric: "m"}
-	clamped := newState(Request{From: 1000, To: 2000, ClampToWindow: true}, nil)
+	clamped := newState(Request{From: 1000, To: 2000, ClampToWindow: true}, nil, g)
 	if selectionKey(sel, nil, g, rollupAvg, nil) == selectionKey(sel, nil, g, rollupAvg, clamped) {
 		t.Error("a clamped and an unclamped read share a key")
 	}
