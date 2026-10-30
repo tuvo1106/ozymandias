@@ -109,7 +109,6 @@ func (a *Agent) registerLogMetrics(t *logpipeline.Totals) {
 		"ozy.agent.logs.rate_limited": func(s logpipeline.Stats) int64 { return s.RateLimited },
 		"ozy.agent.logs.unparsed":     func(s logpipeline.Stats) int64 { return s.Unparsed },
 		"ozy.agent.logs.redactions":   func(s logpipeline.Stats) int64 { return s.Redactions },
-		"ozy.agent.logs.rails_late":   func(s logpipeline.Stats) int64 { return s.RailsLate },
 	} {
 		a.reg.CounterFunc(name, func() float64 { return float64(get(t.Stats())) })
 	}

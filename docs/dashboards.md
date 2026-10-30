@@ -180,8 +180,8 @@ past, each says so in the widget. A service card's numbers do follow the window.
   counted from every request before trace sampling. `env` narrows it to one
   environment. The dot is the worst status among the **groups** of the monitors
   **tagged `service:<name>`** that belong to the card's environment: a group
-  whose `env` tag names it (a log monitor groups `.by("env")`; the log pipeline
-  promotes a line's own `env` field to that tag), or a group with no env at all (an ungrouped
+  whose `env` tag (or `@env`, for a log monitor grouped by the attribute) names
+  it, or a group with no env at all (an ungrouped
   monitor speaks for every env). So a monitor grouped `by {env}` that alerts in
   staging does not turn the prod card red. A service with no tagged monitor
   says "no monitors", never a green dot, and a failed monitor fetch is said in

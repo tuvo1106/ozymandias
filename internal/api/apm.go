@@ -393,16 +393,20 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 		}
 		return rows[k]
 	}
-	run := func(q string, interval int64, clamp bool) (eval.Result, error) {
+	// Every query here is held to the window (ClampToWindow), so a row's
+	// counts and percentiles describe the same span: the sparkline's first
+	// bucket would otherwise start before `from` and count traffic the
+	// percentiles leave out. Its edge buckets are partial as a result.
+	run := func(q string, interval int64) (eval.Result, error) {
 		node, err := metricql.Parse(q)
 		if err != nil {
 			return eval.Result{}, err
 		}
-		return a.eval.Eval(ctx, eval.Request{Expr: node, From: from, To: to, Interval: interval, ClampToWindow: clamp})
+		return a.eval.Eval(ctx, eval.Request{Expr: node, From: from, To: to, Interval: interval, ClampToWindow: true})
 	}
 	for _, name := range entry {
 		base := "trace." + name
-		hits, err := run("sum:"+base+".hits"+sel+group+".as_count()", spark, false)
+		hits, err := run("sum:"+base+".hits"+sel+group+".as_count()", spark)
 		if err != nil {
 			return nil, false, err
 		}
@@ -415,7 +419,7 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 				rw.Spark = append(rw.Spark, nanToZero(p.V))
 			}
 		}
-		errs, err := run("sum:"+base+".errors"+sel+group+".as_count()", spark, false)
+		errs, err := run("sum:"+base+".errors"+sel+group+".as_count()", spark)
 		if err != nil {
 			return nil, false, err
 		}
@@ -435,9 +439,8 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 				dst func(*red) **float64
 			}{{"p50", func(r *red) **float64 { return &r.P50Ms }}, {"p95", func(r *red) **float64 { return &r.P95Ms }}, {"p99", func(r *red) **float64 { return &r.P99Ms }}} {
 				// Held to the window: one bucket this wide starts at the epoch,
-				// and would otherwise read every sketch ever stored. The counts
-				// above keep their sparkline buckets whole, as a chart does.
-				res, err := run(q.fn+":"+base+".duration"+sel+group, wholeWindow, true)
+				// and would otherwise read every sketch ever stored.
+				res, err := run(q.fn+":"+base+".duration"+sel+group, wholeWindow)
 				if err != nil {
 					return nil, false, err
 				}

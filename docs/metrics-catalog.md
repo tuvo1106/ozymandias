@@ -73,7 +73,6 @@ interval's increase.
 | `ozy.agent.logs.excluded` | counter | lines | — | agent | Lines dropped by `exclude_at_match` |
 | `ozy.agent.logs.rate_limited` | counter | lines | — | agent | Lines dropped by a source's rate limit |
 | `ozy.agent.logs.unparsed` | counter | lines | — | agent | Lines no parser recognized, kept as plain text |
-| `ozy.agent.logs.rails_late` | counter | lines | — | agent | Lines of a Rails request already emitted as incomplete (evicted at 1000 open requests, or timed out), each emitted as its own event marked `late` rather than opening a group |
 | `ozy.agent.logs.redactions` | counter | strings | — | agent | Messages and attribute values the redactor changed |
 | `ozy.agent.logs.files_tailed` | gauge | files | — | agent | Files currently open |
 | `ozy.agent.logs.file_truncations` | counter | events | — | agent | Files that shrank in place (copytruncate) and restarted at 0 |

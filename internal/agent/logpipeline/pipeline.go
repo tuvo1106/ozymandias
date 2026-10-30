@@ -70,25 +70,18 @@ type Stats struct {
 	RateLimited int64 // dropped by the rate limit
 	Unparsed    int64 // lines no parser recognized (kept as plain text)
 	Redactions  int64 // strings the redactor changed
-	// RailsLate counts lines of a Rails request already emitted as incomplete
-	// (evicted at the group cap, or timed out), each emitted on its own and
-	// marked late rather than opening a group.
-	RailsLate int64
 }
 
 // Totals are the counters of one or more pipelines. Pipelines built with the
 // same Totals add into it, so the agent can report one number for every file and
 // container it follows, including the ones that have since gone away.
-type Totals struct {
-	lines, emitted, excluded, rateLimited, unparsed, redactions, railsLate atomic.Int64
-}
+type Totals struct{ lines, emitted, excluded, rateLimited, unparsed, redactions atomic.Int64 }
 
 // Stats returns the counters so far.
 func (t *Totals) Stats() Stats {
 	return Stats{
 		Lines: t.lines.Load(), Emitted: t.emitted.Load(), Excluded: t.excluded.Load(),
 		RateLimited: t.rateLimited.Load(), Unparsed: t.unparsed.Load(), Redactions: t.redactions.Load(),
-		RailsLate: t.railsLate.Load(),
 	}
 }
 
@@ -102,7 +95,6 @@ type Pipeline struct {
 	exclude []*regexp.Regexp
 	lim     *limiter
 	rails   *railsGrouper
-	envs    map[string]bool // the env values promoted so far (promoteEnv)
 	clk     clock.Clock
 	n       *Totals
 }
@@ -119,7 +111,7 @@ func New(spec Spec, opts Options) (*Pipeline, error) {
 	if opts.Totals == nil {
 		opts.Totals = &Totals{}
 	}
-	p := &Pipeline{source: spec.Source, parsers: ps, clk: opts.Clock, n: opts.Totals, envs: map[string]bool{}}
+	p := &Pipeline{source: spec.Source, parsers: ps, clk: opts.Clock, n: opts.Totals}
 	if p.red, err = NewRedactor(spec.Redact, func(string) { p.n.redactions.Add(1) }); err != nil {
 		return nil, err
 	}
@@ -167,10 +159,7 @@ func (p *Pipeline) Process(line string, m Meta) []wire.Log {
 		return nil
 	}
 	if p.rails != nil {
-		if done, handled, late := p.rails.consume(line, m); handled {
-			if late {
-				p.n.railsLate.Add(1)
-			}
+		if done, handled := p.rails.consume(line, m); handled {
 			return p.finishAll(done)
 		}
 	}
@@ -280,54 +269,8 @@ func (p *Pipeline) finish(fields map[string]any, m Meta, recognized bool) wire.L
 	if l.Attrs != nil {
 		p.red.Attrs(l.Attrs)
 	}
-	// After redaction: a value the redactor masked is no longer env-shaped and
-	// stays an attribute, so a secret in env never becomes an indexed tag.
-	p.promoteEnv(&l)
 	p.n.emitted.Add(1)
 	return l
-}
-
-// envValue is what a log's own "env" field must look like to become a tag.
-var envValue = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,31}$`)
-
-// maxPromotedEnvs bounds the distinct env values one pipeline promotes. A tag
-// is a series to group on, so its values must be a small set, and a shape
-// alone does not bound a set: an app that echoed request input into env
-// (prod-1, prod-2, ...) would mint one tag per value. Real environments per
-// stream are one or two.
-const maxPromotedEnvs = 8
-
-// promoteEnv makes a log's own "env" field its env tag, the way its "service"
-// field becomes its service: only when the stream has none (an env tag from
-// the container or the config wins), only for a value shaped like an
-// environment name, and only for the first maxPromotedEnvs distinct values a
-// pipeline sees. Anything else stays an attribute, still searchable as @env.
-// Without this, an app that writes env per line (rather than the container
-// labelling it) has logs no `env:` query or `.by("env")` can see.
-//
-// It reads the field whichever parser produced it: a JSON key, or a grok or
-// remapper capture named env.
-func (p *Pipeline) promoteEnv(l *wire.Log) {
-	for _, t := range l.Tags {
-		if k, _ := wire.SplitTag(t); k == "env" {
-			return
-		}
-	}
-	v, ok := l.Attrs["env"].(string)
-	if !ok || !envValue.MatchString(v) {
-		return
-	}
-	if !p.envs[v] {
-		if len(p.envs) >= maxPromotedEnvs {
-			return
-		}
-		p.envs[v] = true
-	}
-	l.Tags = append(l.Tags, "env:"+v)
-	delete(l.Attrs, "env")
-	if len(l.Attrs) == 0 {
-		l.Attrs = nil
-	}
 }
 
 func takeMessage(fields map[string]any) string {
