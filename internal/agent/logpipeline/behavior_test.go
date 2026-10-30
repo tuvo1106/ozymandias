@@ -283,8 +283,9 @@ func TestPipeline_MultilineEventsStillMatchTheirFirstLinesPattern(t *testing.T) 
 	}
 }
 
-// TestRails_TheQueueIsBoundedAtTheCap: the eviction queue stays bounded
-// however many requests pass through, including while one stays open.
+// TestRails_TheQueueIsBoundedAtTheCap: at the cap, eviction pops the queue
+// from the front, which keeps it bounded however many requests pass through.
+// (Below the cap, compaction does that: TestRails_TheQueueCompactsBelowTheCap.)
 func TestRails_TheQueueIsBoundedAtTheCap(t *testing.T) {
 	p, _ := newPipeline(t, Spec{Source: "rails", RateLimit: -1})
 	p.Process(`[keepopen] Started GET "/long" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, meta())
@@ -354,5 +355,26 @@ func TestRails_AFinishedRequestIsNeverEvicted(t *testing.T) {
 	}
 	if len(evicted) != 1 || evicted[0].Attrs["request_id"] != "id00000000" {
 		t.Errorf("evicted %+v, want only id00000000", evicted)
+	}
+}
+
+// TestRails_AFlushThatEmptiesTheGrouperReleasesTheQueue: once no request is
+// open, nothing in the queue is live, so it is let go rather than held while
+// the source is quiet.
+func TestRails_AFlushThatEmptiesTheGrouperReleasesTheQueue(t *testing.T) {
+	p, clk := newPipeline(t, Spec{Source: "rails", RailsGroupTimeout: 5 * time.Second, RateLimit: -1})
+	m := meta()
+	m.Received = clk.Now()
+	for i := 0; i < 100; i++ {
+		p.Process(fmt.Sprintf(`[gone%04d] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, i), m)
+	}
+	p.Flush(clk.Now().Add(time.Minute))
+	if len(p.rails.order) != 0 {
+		t.Errorf("the timeout flush kept %d dead entries", len(p.rails.order))
+	}
+	p.Process(`[last0001] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, m)
+	p.FlushAll()
+	if len(p.rails.order) != 0 {
+		t.Errorf("the shutdown flush kept %d dead entries", len(p.rails.order))
 	}
 }

@@ -47,10 +47,10 @@ type railsGroup struct {
 	id    string
 	meta  Meta
 	first time.Time // when its first line arrived
-	// seq is the order it opened in, which is what "oldest" means for
-	// eviction and flushing. Not first: lines often share a received time
-	// (one read, one timestamp), and a tie broken by map order evicts or
-	// emits a random one of them.
+	// seq is the order it opened in, which orders the timed-out and shutdown
+	// flushes. Not first: lines often share a received time (one read, one
+	// timestamp), and a tie broken by map order emits them in a random order.
+	// Eviction takes the same order from the grouper's queue.
 	seq    uint64
 	fields map[string]any
 	lines  int
@@ -127,6 +127,7 @@ func (g *railsGrouper) flush(now time.Time) []groupedEvent {
 			expired = append(expired, grp)
 		}
 	}
+	g.dropQueueIfEmpty()
 	return incomplete(expired)
 }
 
@@ -137,7 +138,17 @@ func (g *railsGrouper) flushAll() []groupedEvent {
 		delete(g.groups, id)
 		all = append(all, grp)
 	}
+	g.dropQueueIfEmpty()
 	return incomplete(all)
+}
+
+// dropQueueIfEmpty releases the eviction queue once no group is open: every
+// entry in it is then finished, and holding them would keep their fields
+// alive for as long as the source stays quiet.
+func (g *railsGrouper) dropQueueIfEmpty() {
+	if len(g.groups) == 0 {
+		g.order = nil
+	}
 }
 
 // incomplete emits groups as unfinished requests, in the order they opened.

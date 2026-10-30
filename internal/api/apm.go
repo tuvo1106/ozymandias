@@ -393,41 +393,58 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 		}
 		return rows[k]
 	}
-	// Every query here is held to the window (ClampToWindow), so a row's
-	// counts and percentiles describe the same span: the sparkline's first
-	// bucket would otherwise start before `from` and count traffic the
-	// percentiles leave out. Its edge buckets are partial as a result.
-	run := func(q string, interval int64) (eval.Result, error) {
+	existing := func(name string, s eval.Series) *red {
+		return rows[key{name, s.Tags["service"], s.Tags["env"], s.Tags["resource"]}]
+	}
+	// The numbers (requests, errors, percentiles) are read held to the window
+	// (ClampToWindow) in one window-wide bucket, so a row's counts and
+	// percentiles describe the same span. The sparkline is a chart and reads
+	// whole buckets like one: clamped, its first bucket would be cut short and
+	// every service would show a dip at the window's start. It only draws on
+	// rows the numbers made, so traffic before the window makes no row.
+	run := func(q string, interval int64, clamp bool) (eval.Result, error) {
 		node, err := metricql.Parse(q)
 		if err != nil {
 			return eval.Result{}, err
 		}
-		return a.eval.Eval(ctx, eval.Request{Expr: node, From: from, To: to, Interval: interval, ClampToWindow: true})
+		return a.eval.Eval(ctx, eval.Request{Expr: node, From: from, To: to, Interval: interval, ClampToWindow: clamp})
+	}
+	sum := func(s eval.Series) (n float64) {
+		for _, p := range s.Points {
+			if !math.IsNaN(p.V) {
+				n += p.V
+			}
+		}
+		return n
 	}
 	for _, name := range entry {
 		base := "trace." + name
-		hits, err := run("sum:"+base+".hits"+sel+group+".as_count()", spark)
+		hits, err := run("sum:"+base+".hits"+sel+group+".as_count()", wholeWindow, true)
 		if err != nil {
 			return nil, false, err
 		}
 		for _, s := range hits.Series {
-			rw := row(name, s)
-			for _, p := range s.Points {
-				if !math.IsNaN(p.V) {
-					rw.Requests += p.V
-				}
-				rw.Spark = append(rw.Spark, nanToZero(p.V))
+			if n := sum(s); n > 0 {
+				row(name, s).Requests = n
 			}
 		}
-		errs, err := run("sum:"+base+".errors"+sel+group+".as_count()", spark)
+		errs, err := run("sum:"+base+".errors"+sel+group+".as_count()", wholeWindow, true)
 		if err != nil {
 			return nil, false, err
 		}
 		for _, s := range errs.Series {
-			rw := row(name, s)
-			for _, p := range s.Points {
-				if !math.IsNaN(p.V) {
-					rw.Errors += p.V
+			if rw := existing(name, s); rw != nil {
+				rw.Errors = sum(s)
+			}
+		}
+		spk, err := run("sum:"+base+".hits"+sel+group+".as_count()", spark, false)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, s := range spk.Series {
+			if rw := existing(name, s); rw != nil {
+				for _, p := range s.Points {
+					rw.Spark = append(rw.Spark, nanToZero(p.V))
 				}
 			}
 		}
@@ -440,15 +457,19 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 			}{{"p50", func(r *red) **float64 { return &r.P50Ms }}, {"p95", func(r *red) **float64 { return &r.P95Ms }}, {"p99", func(r *red) **float64 { return &r.P99Ms }}} {
 				// Held to the window: one bucket this wide starts at the epoch,
 				// and would otherwise read every sketch ever stored.
-				res, err := run(q.fn+":"+base+".duration"+sel+group, wholeWindow)
+				res, err := run(q.fn+":"+base+".duration"+sel+group, wholeWindow, true)
 				if err != nil {
 					return nil, false, err
 				}
 				for _, s := range res.Series {
+					rw := existing(name, s)
+					if rw == nil {
+						continue // latency with no request counted: no row to put it on
+					}
 					for i := len(s.Points) - 1; i >= 0; i-- {
 						if p := s.Points[i]; !math.IsNaN(p.V) {
 							ms := p.V * 1000
-							*q.dst(row(name, s)) = &ms
+							*q.dst(rw) = &ms
 							break
 						}
 					}
