@@ -70,18 +70,25 @@ type Stats struct {
 	RateLimited int64 // dropped by the rate limit
 	Unparsed    int64 // lines no parser recognized (kept as plain text)
 	Redactions  int64 // strings the redactor changed
+	// RailsLate counts lines of a Rails request already emitted as incomplete
+	// (evicted at the group cap, or timed out), dropped rather than emitted as
+	// a second, fragment event for the same request.
+	RailsLate int64
 }
 
 // Totals are the counters of one or more pipelines. Pipelines built with the
 // same Totals add into it, so the agent can report one number for every file and
 // container it follows, including the ones that have since gone away.
-type Totals struct{ lines, emitted, excluded, rateLimited, unparsed, redactions atomic.Int64 }
+type Totals struct {
+	lines, emitted, excluded, rateLimited, unparsed, redactions, railsLate atomic.Int64
+}
 
 // Stats returns the counters so far.
 func (t *Totals) Stats() Stats {
 	return Stats{
 		Lines: t.lines.Load(), Emitted: t.emitted.Load(), Excluded: t.excluded.Load(),
 		RateLimited: t.rateLimited.Load(), Unparsed: t.unparsed.Load(), Redactions: t.redactions.Load(),
+		RailsLate: t.railsLate.Load(),
 	}
 }
 
@@ -159,7 +166,10 @@ func (p *Pipeline) Process(line string, m Meta) []wire.Log {
 		return nil
 	}
 	if p.rails != nil {
-		if done, handled := p.rails.consume(line, m); handled {
+		if done, handled, late := p.rails.consume(line, m); handled {
+			if late {
+				p.n.railsLate.Add(1)
+			}
 			return p.finishAll(done)
 		}
 	}

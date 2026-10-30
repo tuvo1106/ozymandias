@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/testutil"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
@@ -336,5 +337,127 @@ func TestEnv_HostileValuesStayAttributes(t *testing.T) {
 	}
 	if len(envs) != 0 {
 		t.Errorf("500 malformed envs minted %d tags", len(envs))
+	}
+}
+
+// TestRails_ALateLineOfAnEvictedRequestIsDropped: a request evicted at the cap
+// was already emitted as incomplete. Its Completed line must not open a second,
+// fragment group (a "200" with no method or path) that evicts another request.
+func TestRails_ALateLineOfAnEvictedRequestIsDropped(t *testing.T) {
+	var totals Totals
+	p, err := New(Spec{Source: "rails", RateLimit: -1}, Options{Clock: testutil.NewFakeClock(received), Totals: &totals})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxRailsGroups+1; i++ { // the last one evicts id00000000
+		p.Process(fmt.Sprintf(`[id%08d] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, i), meta())
+	}
+	if out := p.Process(`[id00000000] Completed 200 OK in 9ms`, meta()); len(out) != 0 {
+		t.Fatalf("a late line was emitted: %+v", out)
+	}
+	if _, open := p.rails.groups["id00000000"]; open {
+		t.Error("the late line reopened its request")
+	}
+	if _, open := p.rails.groups["id00000001"]; !open || len(p.rails.groups) != maxRailsGroups {
+		t.Errorf("the late line evicted another request: %d open", len(p.rails.groups))
+	}
+	if got := totals.Stats().RailsLate; got != 1 {
+		t.Errorf("RailsLate = %d, want 1", got)
+	}
+}
+
+// TestRails_ALateLineOfATimedOutRequestIsDropped: the same for a request the
+// timeout flushed as incomplete.
+func TestRails_ALateLineOfATimedOutRequestIsDropped(t *testing.T) {
+	p, clk := newPipeline(t, Spec{Source: "rails", RailsGroupTimeout: 5 * time.Second, RateLimit: -1})
+	m := meta()
+	m.Received = clk.Now()
+	p.Process(`[slow0001] Started GET "/slow" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, m)
+	if out := p.Flush(clk.Now().Add(6 * time.Second)); len(out) != 1 {
+		t.Fatalf("not flushed: %+v", out)
+	}
+	if out := p.Process(`[slow0001] Completed 200 OK in 6100ms`, m); len(out) != 0 {
+		t.Errorf("a timed-out request's late line was emitted: %+v", out)
+	}
+	if out := p.Flush(clk.Now().Add(time.Hour)); len(out) != 0 {
+		t.Errorf("the late line opened a group that flushed later: %+v", out)
+	}
+}
+
+// TestRails_MemoryOfEndedAndOrderIsBounded: the remembered ids and the
+// eviction queue stay bounded however many requests pass through, including
+// while one request stays open the whole time.
+func TestRails_MemoryOfEndedAndOrderIsBounded(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "rails", RateLimit: -1})
+	p.Process(`[keepopen] Started GET "/long" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, meta())
+	for i := 0; i < 20*maxRailsGroups; i++ {
+		id := fmt.Sprintf("[r%08d]", i)
+		p.Process(id+` Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, meta())
+		if i%3 == 0 { // most finish; the rest are evicted
+			p.Process(id+` Completed 200 OK in 1ms`, meta())
+		}
+	}
+	g := p.rails
+	if len(g.ended) > maxRailsGroups || len(g.endedOrder) > maxRailsGroups {
+		t.Errorf("ended grew to %d / %d", len(g.ended), len(g.endedOrder))
+	}
+	if len(g.order) > 2*len(g.groups)+64 {
+		t.Errorf("order grew to %d for %d open", len(g.order), len(g.groups))
+	}
+	for _, o := range g.order {
+		if o == nil {
+			t.Fatal("a nil in the eviction queue")
+		}
+	}
+}
+
+// BenchmarkRails_NewRequestAtTheCap is the hot path the eviction queue exists
+// for: every new request id at 1000 open evicts the oldest.
+func BenchmarkRails_NewRequestAtTheCap(b *testing.B) {
+	p, _ := newPipeline(b, Spec{Source: "rails", RateLimit: -1})
+	lines := make([]string, maxRailsGroups+b.N)
+	for i := range lines {
+		lines[i] = fmt.Sprintf(`[id%08d] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, i)
+	}
+	for _, l := range lines[:maxRailsGroups] {
+		p.Process(l, meta())
+	}
+	b.ResetTimer()
+	for _, l := range lines[maxRailsGroups:] {
+		p.Process(l, meta())
+	}
+}
+
+// TestRails_TheQueueCompactsBelowTheCap: below the cap nothing is evicted, so
+// only compaction keeps finished requests from piling up in the queue behind
+// one that stays open.
+func TestRails_TheQueueCompactsBelowTheCap(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "rails", RateLimit: -1})
+	p.Process(`[keepopen] Started GET "/long" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, meta())
+	for i := 0; i < 20000; i++ {
+		id := fmt.Sprintf("[r%08d]", i)
+		p.Process(id+` Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, meta())
+		p.Process(id+` Completed 200 OK in 1ms`, meta())
+	}
+	if g := p.rails; len(g.groups) != 1 || len(g.order) > 2*len(g.groups)+64 {
+		t.Errorf("%d open, queue of %d", len(g.groups), len(g.order))
+	}
+}
+
+// TestRails_AFinishedRequestIsNeverEvicted: a request that completed is still
+// in the queue until it reaches the front. Eviction must skip it, not emit it
+// a second time as incomplete.
+func TestRails_AFinishedRequestIsNeverEvicted(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "rails", RateLimit: -1})
+	p.Process(`[done0001] Started GET "/quick" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, meta())
+	if out := p.Process(`[done0001] Completed 200 OK in 1ms`, meta()); len(out) != 1 {
+		t.Fatalf("not completed: %+v", out)
+	}
+	var evicted []wire.Log
+	for i := 0; i < maxRailsGroups+1; i++ {
+		evicted = append(evicted, p.Process(fmt.Sprintf(`[id%08d] Started GET "/x" for 1.1.1.1 at 2026-10-04 12:00:00 +0000`, i), meta())...)
+	}
+	if len(evicted) != 1 || evicted[0].Attrs["request_id"] != "id00000000" {
+		t.Errorf("evicted %+v, want only id00000000", evicted)
 	}
 }

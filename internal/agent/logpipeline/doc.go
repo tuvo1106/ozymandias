@@ -39,7 +39,9 @@
 //     wrong there; lines are correlated by the request id and emitted as one
 //     event when "Completed" arrives, or marked incomplete after a timeout.
 //     Both the number of open requests and one request's buffered lines are
-//     bounded.
+//     bounded. A request emitted as incomplete (evicted at the cap, or timed
+//     out) is remembered, boundedly, so its late lines are dropped and counted
+//     rather than emitted as a second, fragment event for the same request.
 //   - Grok patterns are Go regular expressions (RE2). They cannot backtrack,
 //     so a hostile line cannot make the agent spin.
 //   - Redaction errs toward over-matching: hiding a harmless value costs a

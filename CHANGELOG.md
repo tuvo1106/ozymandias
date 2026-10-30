@@ -518,6 +518,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A Rails request dropped at the 1000-request cap, or timed out, came back as a
+  second event.** Its late lines opened a new group, emitted as a fragment (a
+  `200` with no method or path) that at the cap evicted another request. Late
+  lines are now dropped and counted in `ozy.agent.logs.rails_late`, and eviction
+  takes the oldest from a queue instead of scanning every open request.
 - **APM latency percentiles covered all of history, not the window.** The service
   table's one window-wide bucket started at the epoch, so p50/p95/p99 merged every
   sketch ever stored, and an idle service showed its old p95. Reads are now held to

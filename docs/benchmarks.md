@@ -205,6 +205,22 @@ The criterion was under 30 seconds for a gigabyte. Replay is dominated by
 re-encoding chunks, not by reading the file: the log reader alone does 1.1
 GB/s.
 
+## Log pipeline — `internal/agent/logpipeline`
+
+```
+go test -run '^$' -bench NewRequestAtTheCap -benchtime 20000x -count 3 ./internal/agent/logpipeline
+```
+
+Taken 2026-10-29 on the machine above, on the efficiency cores (`taskpolicy -b`).
+
+| Benchmark | ns/op | Reading |
+|---|---:|---|
+| `Rails_NewRequestAtTheCap` (before) | ~58 000 | a new request id with 1000 open: a scan of all 1000 for the oldest |
+| `Rails_NewRequestAtTheCap` (after) | ~28 500 | the same, the oldest taken from a queue; the rest is building the evicted request's event |
+
+The cap is reached only when 1000 requests are open at once (or never log
+"Completed"), so this is the overload path, not the steady one.
+
 ## Distributions (M2 part two)
 
 ### The sketch — `internal/sketch`
