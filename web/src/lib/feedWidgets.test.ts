@@ -66,10 +66,13 @@ describe("serviceEnvStatus", () => {
     expect(serviceEnvStatus([byEnv, ungrouped], "api", "staging")).toBe("ALERT");
   });
 
-  it("reads a log monitor's @env the same way", () => {
-    const logs = mon("worker errors", "ALERT", { tags: ["service:api"], group_states: [g("ALERT", { "@env": "staging" })] });
+  it("reads a log monitor grouped by env the same way, and does not guess from an attribute", () => {
+    const logs = mon("worker errors", "ALERT", { tags: ["service:api"], group_states: [g("ALERT", { env: "staging" })] });
     expect(serviceEnvStatus([logs, ungrouped], "api", "prod")).toBe("OK");
     expect(serviceEnvStatus([logs], "api", "staging")).toBe("ALERT");
+    // An @env group is an attribute's value, not an env: it speaks for every card.
+    const byAttr = mon("by attr", "ALERT", { tags: ["service:api"], group_states: [g("ALERT", { "@env": "staging" })] });
+    expect(serviceEnvStatus([byAttr], "api", "prod")).toBe("ALERT");
   });
 
   it("lets an ungrouped monitor speak for every env, and a card with no env take every group", () => {

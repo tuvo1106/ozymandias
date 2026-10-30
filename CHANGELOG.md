@@ -518,6 +518,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A JSON log's own `env` became an attribute, never the `env` tag.** The agent
+  now promotes it, like `service`: when the stream has no env tag, and only for an
+  environment-shaped value. `env:prod` queries and `.by("env")` see such logs; the
+  app-python worker-errors monitor groups by `env` instead of `@env`.
 - **Rails grouping evicted and flushed tied requests in map order.** Lines that
   share a received time opened groups with equal start times, so the "oldest"
   request evicted at the 1000-group cap, and the order timed-out requests came

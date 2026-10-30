@@ -62,11 +62,12 @@ function serviceTags(m: StoredMonitor): string[] {
 }
 
 /**
- * A group's environment: its `env` tag, or `@env` for a log monitor grouped
- * by the attribute (logs carry env as an attribute, not a tag).
+ * A group's environment: its `env` tag. A log monitor grouped `.by("env")`
+ * reads the same tag, which the log pipeline promotes from a line's own `env`
+ * field; a group by an attribute like `@env` is not an environment here.
  */
 function groupEnv(tags: Readonly<Record<string, string>>): string | undefined {
-  return tags.env ?? tags["@env"];
+  return tags.env;
 }
 
 /**

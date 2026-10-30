@@ -359,7 +359,7 @@ most 63 deep. The empty query is valid and matches everything.
 
 | Term | Matches |
 |---|---|
-| `service:api` (reserved key) | the log's field, as a **whole**, case-sensitively. `*` stands for any run of characters (`service:app-*`); `host:*` means "has a host", and `-host:*` "has none". A missing label is the empty string. `env` is the value of the log's `env:` tag. |
+| `service:api` (reserved key) | the log's field, as a **whole**, case-sensitively. `*` stands for any run of characters (`service:app-*`); `host:*` means "has a host", and `-host:*` "has none". A missing label is the empty string. `env` is the value of the log's `env:` tag: the stream's, or, when the stream has none, a JSON line's own `env` field, which the agent promotes to the tag when it looks like an environment name (lowercase letters, digits, `_.-`, up to 32 characters; anything else stays the attribute `@env`). |
 | `@path:value` (attribute) | an attribute of the structured log. `path` is dotted (`@http.status`); a key that itself contains a dot is found too, and an array contributes each element, so `@items.sku:B2` searches every element's `sku`. Equality compares two numbers as numbers (`@ms:250` finds `250` and `250.0`), anything else as text with `*` wildcards (`@path:/api/*`); `@x:*` means "the attribute exists". Comparisons and ranges apply to numbers only: a string that looks like a number is not one. |
 | `timeout`, `"refused by"`, `conn*err` (free text) | a **case-insensitive substring** of the message, or of any **string** attribute value (numbers and booleans are not text). `*` is a wildcard for any run, and order of the pieces matters. |
 

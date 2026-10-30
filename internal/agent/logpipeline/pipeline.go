@@ -258,6 +258,7 @@ func (p *Pipeline) finish(fields map[string]any, m Meta, recognized bool) wire.L
 	if l.Service == "" {
 		l.Service = "unknown"
 	}
+	promoteEnv(fields, &l)
 	takeTrace(fields, &l)
 
 	if len(fields) > 0 {
@@ -271,6 +272,32 @@ func (p *Pipeline) finish(fields map[string]any, m Meta, recognized bool) wire.L
 	}
 	p.n.emitted.Add(1)
 	return l
+}
+
+// envValue is what a log's own "env" field must look like to become a tag.
+// A tag is indexed and grouped on, so a value from a line must come from a
+// small, fixed-shape set: an environment name, not whatever an app (or a
+// request it echoes) happened to write there.
+var envValue = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,31}$`)
+
+// promoteEnv makes a log's own "env" field its env tag, the way its "service"
+// field becomes its service: only when the stream has none (an env tag from
+// the container or the config wins), and only for a value shaped like an
+// environment name. Anything else stays an attribute, still searchable as
+// @env. Without this, a JSON app that writes env per line (rather than the
+// container labelling it) has logs no `env:` query or `.by("env")` can see.
+func promoteEnv(fields map[string]any, l *wire.Log) {
+	for _, t := range l.Tags {
+		if k, _ := wire.SplitTag(t); k == "env" {
+			return
+		}
+	}
+	v, ok := fields["env"].(string)
+	if !ok || !envValue.MatchString(v) {
+		return
+	}
+	l.Tags = append(l.Tags, "env:"+v)
+	delete(fields, "env")
 }
 
 func takeMessage(fields map[string]any) string {

@@ -3,6 +3,8 @@ package logpipeline
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -280,5 +282,59 @@ func TestPipeline_MultilineEventsStillMatchTheirFirstLinesPattern(t *testing.T) 
 	l := one(t, p, "ERROR watchdog Account email is backed up\nTraceback (most recent call last):\n  File \"x.py\", line 1\nValueError: no", meta())
 	if l.Status != wire.StatusError || l.Attrs["logger"] != "watchdog" || l.Message != "Account email is backed up\nTraceback (most recent call last):\n  File \"x.py\", line 1\nValueError: no" {
 		t.Fatalf("%+v", l)
+	}
+}
+
+// TestEnv_PromotedLikeService: a JSON log's own env becomes its env tag when
+// the stream has none, and the stream's wins when it has one.
+func TestEnv_PromotedLikeService(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "json", RateLimit: -1})
+	bare := meta()
+	bare.Tags = []string{"team:judge"}
+	out := p.Process(`{"message":"job failed","level":"error","env":"prod"}`, bare)
+	if len(out) != 1 || !slices.Contains(out[0].Tags, "env:prod") || out[0].Attrs["env"] != nil {
+		t.Fatalf("not promoted: %+v", out)
+	}
+	out = p.Process(`{"message":"job failed","env":"prod"}`, meta()) // the stream says env:dev
+	if slices.Contains(out[0].Tags, "env:prod") || out[0].Attrs["env"] != "prod" {
+		t.Errorf("the line overrode the stream's env: %+v", out[0])
+	}
+}
+
+// TestEnv_HostileValuesStayAttributes: a tag is a series to group on, so only
+// an environment-shaped value becomes one. Whatever else a line carries stays
+// a searchable attribute, and the distinct env tags stay a small, valid set.
+func TestEnv_HostileValuesStayAttributes(t *testing.T) {
+	p, _ := newPipeline(t, Spec{Source: "json", RateLimit: -1})
+	m := meta()
+	m.Tags = nil
+	hostile := []string{"Prod", "prod staging", "", strings.Repeat("e", 33), "prod,env:x", "../etc", "env:prod", "é", `{"a":1}`}
+	envs := map[string]bool{}
+	for i, v := range hostile {
+		b, _ := json.Marshal(map[string]any{"message": "x", "env": v})
+		out := p.Process(string(b), m)
+		for _, tag := range out[0].Tags {
+			if k, val := wire.SplitTag(tag); k == "env" {
+				t.Errorf("hostile[%d] %q became env tag %q", i, v, val)
+			}
+		}
+		if out[0].Attrs["env"] != v {
+			t.Errorf("hostile[%d] %q was dropped, not kept as an attribute: %+v", i, v, out[0].Attrs)
+		}
+	}
+	for _, v := range []any{3, true, []string{"prod"}} {
+		b, _ := json.Marshal(map[string]any{"message": "x", "env": v})
+		if out := p.Process(string(b), m); len(out[0].Tags) != 0 {
+			t.Errorf("non-string env %v became a tag: %v", v, out[0].Tags)
+		}
+	}
+	for i := 0; i < 500; i++ {
+		b, _ := json.Marshal(map[string]any{"message": "x", "env": fmt.Sprintf("Env %d!", i)})
+		for _, tag := range p.Process(string(b), m)[0].Tags {
+			envs[tag] = true
+		}
+	}
+	if len(envs) != 0 {
+		t.Errorf("500 malformed envs minted %d tags", len(envs))
 	}
 }
