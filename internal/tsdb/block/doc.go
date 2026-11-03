@@ -47,7 +47,10 @@
 // leaves a `.tmp` directory, or a directory with no meta.json, and
 // [CleanTmp] removes both at startup. Deletion runs the same argument
 // backwards: a tombstone file goes down first, so an interrupted delete is
-// finished by [CleanCondemned] rather than leaving a block missing files.
+// finished by [CleanCondemned] rather than leaving a block missing files; then
+// meta.json is unlinked and the directory fsynced before anything else goes,
+// so what is left is no longer a block. The order is set in code, never left
+// to the filesystem's listing order.
 //
 // Corruption is caught, not guessed at: every chunk record carries a CRC32C
 // over its own bytes, and index.dat carries one over the whole file. The

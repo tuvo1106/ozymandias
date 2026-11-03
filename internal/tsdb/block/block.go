@@ -272,39 +272,50 @@ func Delete(dir string) error {
 	if err := syncDir(dir); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := removeCondemned(dir); err != nil {
+	if err := removeCondemned(dir, os.RemoveAll); err != nil {
 		return fmt.Errorf("block: deleting %s: %w", dir, err)
 	}
 	return syncDir(filepath.Dir(dir))
 }
 
-// removeCondemned removes a tombstoned block directory, the tombstone last.
+// removeCondemned removes a tombstoned block directory, meta.json first.
 //
-// Not os.RemoveAll: that unlinks in directory-listing order, which is the
-// filesystem's choice. Where the tombstone is listed before meta.json, a crash
-// between the two leaves meta.json with chunks.dat gone and no tombstone, the
-// exact state the tombstone exists to prevent: startup takes it for a block and
-// fails to open it. (The crash loop found it the day CI's runner image changed
-// filesystems; the old one happened to list the tombstone last.) Removing the
-// tombstone only once nothing else is left makes every crash point leave
-// either a marked directory or an empty one, and OpenAll skips an empty one.
-func removeCondemned(dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+// meta.json is what makes a directory a block: OpenAll opens only directories
+// that have one, and CleanTmp removes those that do not. So it goes first, and
+// the directory is fsynced before anything else is unlinked. From then on a
+// crash, or a power cut, leaves a directory startup removes whatever else is
+// still in it; before then the block is whole and tombstoned. The rest can go
+// in any order.
+//
+// Not os.RemoveAll on its own: that unlinks in listing order, which is the
+// filesystem's choice. Where it put the tombstone before meta.json, a crash
+// between the two left meta.json, no chunks.dat and no tombstone: a block
+// startup tried to open and failed on. The crash loop found it the day CI's
+// runner image changed and ext4 listed the files in a new order.
+//
+// remove is os.RemoveAll outside tests, so an entry nobody expected in a block
+// directory is still removed rather than wedging startup; tests stop it partway
+// to stand in for a crash.
+func removeCondemned(dir string, remove func(string) error) error {
+	if err := remove(filepath.Join(dir, MetaFilename)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := syncDir(dir); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
 	for _, e := range entries {
-		if e.Name() == tombstoneFilename {
-			continue
-		}
-		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+		if err := remove(filepath.Join(dir, e.Name())); err != nil {
 			return err
 		}
 	}
-	return os.RemoveAll(dir) // only the tombstone is left
+	return remove(dir)
 }
 
 const tombstoneFilename = "tombstone"
@@ -331,7 +342,7 @@ func CleanCondemned(parent string) (removed []string, err error) {
 		if !e.IsDir() || !Condemned(dir) {
 			continue
 		}
-		if err := removeCondemned(dir); err != nil {
+		if err := removeCondemned(dir, os.RemoveAll); err != nil {
 			return removed, errors.Join(fmt.Errorf("block: finishing deletion of %s", dir), err)
 		}
 		removed = append(removed, e.Name())
