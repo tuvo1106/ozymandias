@@ -395,6 +395,59 @@ func TestBlock_DeleteIsCrashSafe(t *testing.T) {
 	}
 }
 
+// TestBlock_ADeletionThatStopsPartwayKeepsTheTombstone: whatever a deletion
+// manages to remove before it stops, the tombstone outlives the block's files,
+// so startup still knows to finish the job. os.RemoveAll unlinks in listing
+// order and carries on past an error, so it could drop the tombstone while
+// meta.json stayed: a block startup then fails to open (the crash loop on a
+// new runner image). An undeletable entry stops the deletion here on any
+// filesystem, whatever order it lists in.
+func TestBlock_ADeletionThatStopsPartwayKeepsTheTombstone(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	parent, b, _ := writeFixture(t, 2)
+	dir := b.Dir()
+	_ = b.Close()
+	// Named to list after the tombstone where listing is sorted (macOS), so
+	// a loop that removes the tombstone in turn would get to it first.
+	stuck := filepath.Join(dir, "zz-stuck")
+	if err := os.Mkdir(stuck, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stuck, "f"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(stuck, 0o555); err != nil { // its file cannot be unlinked
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stuck, 0o755) })
+
+	if err := Delete(dir); err == nil {
+		t.Fatal("Delete succeeded on a directory it could not empty")
+	}
+	if !Condemned(dir) {
+		t.Fatal("the deletion stopped partway and took the tombstone with it")
+	}
+	// Startup finishing the deletion can be interrupted the same way.
+	if _, err := CleanCondemned(parent); err == nil {
+		t.Fatal("CleanCondemned succeeded on a directory it could not empty")
+	}
+	if !Condemned(dir) {
+		t.Fatal("the interrupted cleanup took the tombstone with it")
+	}
+	// It finishes the job once the entry can go.
+	if err := os.Chmod(stuck, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := CleanCondemned(parent); err != nil || len(removed) != 1 {
+		t.Fatalf("CleanCondemned removed %v, err %v", removed, err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the block directory survived: %v", err)
+	}
+}
+
 // --- corruption ------------------------------------------------------------
 
 func TestBlock_CorruptionIsDetected(t *testing.T) {

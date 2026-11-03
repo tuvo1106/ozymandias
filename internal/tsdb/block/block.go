@@ -272,10 +272,39 @@ func Delete(dir string) error {
 	if err := syncDir(dir); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	if err := removeCondemned(dir); err != nil {
 		return fmt.Errorf("block: deleting %s: %w", dir, err)
 	}
 	return syncDir(filepath.Dir(dir))
+}
+
+// removeCondemned removes a tombstoned block directory, the tombstone last.
+//
+// Not os.RemoveAll: that unlinks in directory-listing order, which is the
+// filesystem's choice. Where the tombstone is listed before meta.json, a crash
+// between the two leaves meta.json with chunks.dat gone and no tombstone, the
+// exact state the tombstone exists to prevent: startup takes it for a block and
+// fails to open it. (The crash loop found it the day CI's runner image changed
+// filesystems; the old one happened to list the tombstone last.) Removing the
+// tombstone only once nothing else is left makes every crash point leave
+// either a marked directory or an empty one, and OpenAll skips an empty one.
+func removeCondemned(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if e.Name() == tombstoneFilename {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return os.RemoveAll(dir) // only the tombstone is left
 }
 
 const tombstoneFilename = "tombstone"
@@ -302,7 +331,7 @@ func CleanCondemned(parent string) (removed []string, err error) {
 		if !e.IsDir() || !Condemned(dir) {
 			continue
 		}
-		if err := os.RemoveAll(dir); err != nil {
+		if err := removeCondemned(dir); err != nil {
 			return removed, errors.Join(fmt.Errorf("block: finishing deletion of %s", dir), err)
 		}
 		removed = append(removed, e.Name())
