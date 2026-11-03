@@ -395,6 +395,91 @@ func TestBlock_DeleteIsCrashSafe(t *testing.T) {
 	}
 }
 
+// TestBlock_ADeletionStoppedAnywhereIsFinishedAtStartup stops a deletion after
+// each of its unlinks in turn, standing in for a crash there, and runs what
+// startup runs. Every stopping point must leave a directory startup clears,
+// never a block it fails to open.
+//
+// The sweep can only reach the one order os.ReadDir gives the rest (sorted by
+// name), so the ordering that makes any order safe is pinned directly as well:
+// meta.json is the first unlink, and the directory is fsynced after it and
+// before any other. The fsync is what keeps that order on disk after a power
+// cut, which no test here can cause.
+func TestBlock_ADeletionStoppedAnywhereIsFinishedAtStartup(t *testing.T) {
+	errCrash := errors.New("crash")
+	for stopAfter := 0; ; stopAfter++ {
+		parent, b, _ := writeFixture(t, 2)
+		dir := b.Dir()
+		_ = b.Close()
+		if err := writeFileSync(filepath.Join(dir, tombstoneFilename), []byte("deleted\n")); err != nil {
+			t.Fatal(err)
+		}
+		var events []string // "rm <name>" and "sync"
+		removed := 0
+		err := removeCondemned(dir, func(path string) error {
+			if removed == stopAfter {
+				return errCrash
+			}
+			removed++
+			events = append(events, "rm "+filepath.Base(path))
+			return os.RemoveAll(path)
+		}, func(d string) error {
+			events = append(events, "sync")
+			return syncDir(d)
+		})
+		if len(events) > 0 && events[0] != "rm "+MetaFilename {
+			t.Fatalf("the first unlink was %q, not meta.json: %v", events[0], events)
+		}
+		if len(events) > 2 && events[1] != "sync" {
+			t.Fatalf("unlinked more before the directory was fsynced: %v", events)
+		}
+		if _, err := CleanCondemned(parent); err != nil {
+			t.Fatalf("stopped after %v: CleanCondemned: %v", events, err)
+		}
+		if _, err := CleanTmp(parent); err != nil {
+			t.Fatalf("stopped after %v: CleanTmp: %v", events, err)
+		}
+		blocks, openErr := OpenAll(parent)
+		if openErr != nil {
+			t.Fatalf("stopped after %v: startup cannot open what is left: %v", events, openErr)
+		}
+		if len(blocks) != 0 {
+			t.Fatalf("stopped after %v: the deleted block came back", events)
+		}
+		if entries, _ := os.ReadDir(parent); len(entries) != 0 {
+			t.Fatalf("stopped after %v: startup left %d entries", events, len(entries))
+		}
+		if err == nil {
+			if stopAfter < 3 {
+				t.Fatalf("the deletion finished after %d unlinks; the fixture is too small to test", stopAfter)
+			}
+			return // every stopping point, then the whole run, was covered
+		}
+	}
+}
+
+// TestBlock_ADeletionKeepsGoingPastAnEntryItCannotRemove: one entry that will
+// not go does not leave the others behind, as with os.RemoveAll.
+func TestBlock_ADeletionKeepsGoingPastAnEntryItCannotRemove(t *testing.T) {
+	_, b, _ := writeFixture(t, 2)
+	dir := b.Dir()
+	_ = b.Close()
+	stuck := errors.New("stuck")
+	err := removeCondemned(dir, func(path string) error {
+		if filepath.Base(path) == "chunks.dat" {
+			return stuck
+		}
+		return os.RemoveAll(path)
+	}, syncDir)
+	if !errors.Is(err, stuck) {
+		t.Fatalf("err = %v, want the stuck entry reported", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 || entries[0].Name() != "chunks.dat" {
+		t.Errorf("left %v, want only the stuck chunks.dat", entries)
+	}
+}
+
 // --- corruption ------------------------------------------------------------
 
 func TestBlock_CorruptionIsDetected(t *testing.T) {

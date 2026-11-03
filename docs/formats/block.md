@@ -31,7 +31,11 @@ startup.
 
 Deletion runs the argument backwards: a `tombstone` file is written and fsynced
 *before* anything is unlinked, so an interrupted delete is finished at startup
-rather than leaving a block missing half its files.
+rather than leaving a block missing half its files. Then `meta.json` is unlinked
+and the directory fsynced before anything else, so from that point the remains
+are not a block and startup removes them. The order is set in code, never left to
+the filesystem's listing order: a delete that removed the tombstone before
+`meta.json` would leave exactly the broken block this prevents.
 
 ## meta.json
 

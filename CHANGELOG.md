@@ -518,6 +518,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A crash while deleting a block could stop ozyd from starting.** Deletion wrote a
+  tombstone and then unlinked the block's files in whatever order the filesystem
+  listed them; where the tombstone came before `meta.json`, a crash between the two
+  left a block with no `chunks.dat` and no mark, which startup tried to open and
+  failed on. `meta.json` (what makes a directory a block) is now unlinked first and
+  the directory fsynced before the rest goes, so an interrupted deletion always
+  leaves either a marked block or remains startup removes. The crash loop began
+  failing this way when CI's runner image changed.
+
 - **APM latency percentiles covered all of history, not the window.** The service
   table's one window-wide bucket started at the epoch, so p50/p95/p99 merged every
   sketch ever stored, and an idle service showed its old p95. A row's numbers

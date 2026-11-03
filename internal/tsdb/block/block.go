@@ -272,10 +272,58 @@ func Delete(dir string) error {
 	if err := syncDir(dir); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := os.RemoveAll(dir); err != nil {
+	if err := removeCondemned(dir, os.RemoveAll, syncDir); err != nil {
 		return fmt.Errorf("block: deleting %s: %w", dir, err)
 	}
 	return syncDir(filepath.Dir(dir))
+}
+
+// removeCondemned removes a tombstoned block directory, meta.json first.
+//
+// meta.json is what makes a directory a block: OpenAll opens only directories
+// that have one, and CleanTmp removes those that do not. So it goes first, and
+// the directory is fsynced before anything else is unlinked. From then on a
+// crash leaves a directory startup removes whatever else is still in it;
+// before then the block is whole and tombstoned. The rest can go in any order.
+// The fsync is what carries that across a power cut, where unlinks can reach
+// the disk out of order; the tests check it is called in that place, but no
+// test can cut the power.
+//
+// Not os.RemoveAll on its own: that unlinks in the order the filesystem lists
+// entries. Where the tombstone was listed before meta.json, a crash between
+// the two left meta.json, no chunks.dat and no tombstone: a block startup
+// tried to open and failed on. The crash loop began failing that way when CI's
+// runner image changed; a new listing order is the likely reason, not one we
+// reproduced.
+//
+// remove is os.RemoveAll and sync is syncDir outside tests, which stop remove
+// partway to stand in for a crash and record when sync runs. Like os.RemoveAll,
+// it keeps going past an entry it cannot remove, so one bad entry does not
+// leave the others behind.
+func removeCondemned(dir string, remove, sync func(string) error) error {
+	if err := remove(filepath.Join(dir, MetaFilename)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := sync(dir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, e := range entries {
+		if err := remove(filepath.Join(dir, e.Name())); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return remove(dir)
 }
 
 const tombstoneFilename = "tombstone"
@@ -302,7 +350,7 @@ func CleanCondemned(parent string) (removed []string, err error) {
 		if !e.IsDir() || !Condemned(dir) {
 			continue
 		}
-		if err := os.RemoveAll(dir); err != nil {
+		if err := removeCondemned(dir, os.RemoveAll, syncDir); err != nil {
 			return removed, errors.Join(fmt.Errorf("block: finishing deletion of %s", dir), err)
 		}
 		removed = append(removed, e.Name())
