@@ -1,0 +1,148 @@
+# 2026/11/08 19:25:39.995162 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw segSize: 100
+# 2026/11/08 19:25:40.014708 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw steps: 19
+# 2026/11/08 19:25:40.014721 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 3
+# 2026/11/08 19:25:40.014725 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.018604 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 1
+# 2026/11/08 19:25:40.018607 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.021679 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 1
+# 2026/11/08 19:25:40.021684 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.024611 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 8
+# 2026/11/08 19:25:40.024615 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw consumer: "a"
+# 2026/11/08 19:25:40.024620 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 4
+# 2026/11/08 19:25:40.024621 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw consumer: "b"
+# 2026/11/08 19:25:40.024622 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw max: 2
+# 2026/11/08 19:25:40.024688 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 4
+# 2026/11/08 19:25:40.024690 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw consumer: "a"
+# 2026/11/08 19:25:40.024691 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw max: 4
+# 2026/11/08 19:25:40.024740 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 2
+# 2026/11/08 19:25:40.024742 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.032686 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 1
+# 2026/11/08 19:25:40.032689 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.036681 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 1
+# 2026/11/08 19:25:40.036684 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.040698 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 2
+# 2026/11/08 19:25:40.040702 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.048668 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 8
+# 2026/11/08 19:25:40.048674 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw consumer: "a"
+# 2026/11/08 19:25:40.048678 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw commit: 0
+# 2026/11/08 19:25:40.058731 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 3
+# 2026/11/08 19:25:40.058746 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.062682 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 5
+# 2026/11/08 19:25:40.062691 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw consumer: "b"
+# 2026/11/08 19:25:40.062693 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw max: 1
+# 2026/11/08 19:25:40.062830 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 9
+# 2026/11/08 19:25:40.066677 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw tornRecord: false
+# 2026/11/08 19:25:40.066679 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw tornCommit: false
+# 2026/11/08 19:25:40.067287 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 0
+# 2026/11/08 19:25:40.067289 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.070673 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 0
+# 2026/11/08 19:25:40.070675 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.078627 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 1
+# 2026/11/08 19:25:40.078642 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.081712 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 0
+# 2026/11/08 19:25:40.081716 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.085685 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw op: 1
+# 2026/11/08 19:25:40.085688 [TestProperty_ConsumedSequenceIsTheProducedSequence] [rapid] draw payload: ""
+# 2026/11/08 19:25:40.093648 [TestProperty_ConsumedSequenceIsTheProducedSequence] drain(a)[0] = (0, "p0-"), want (1, "p1-")
+# 
+v0.4.8#655413105061830590
+0x0
+0x103721724ea319
+0x46
+0x16da3358511c41
+0x1ba59103ef97aa
+0x12
+0x138936de7d3844
+0x100b122c8b698d
+0x3
+0x4db41268bd090
+0x87d257a5e4d38
+0x7
+0x1
+0x1
+0x828e74073a897
+0xbc62e2d5dc03
+0x1
+0x202c67b2301d3
+0x113e645930504b
+0x1eab7ad72d7913
+0x8
+0x1be6dfe64f383c
+0x0
+0x1c1a706149fd2e
+0x1ef80616eaf119
+0x4
+0x59beaa1214a2f
+0x1
+0x1c46403b3607c6
+0x9f5de7c9d80e9
+0x1
+0x10444437721dc7
+0x8f98cd4fd7968
+0x4
+0x2d26da88b5edc
+0x0
+0x19bab6cf805602
+0x17b6c40d122d99
+0x3
+0x370dc866b7ce6
+0x178a544a5b6241
+0x2
+0x9
+0x0
+0x0
+0x1
+0x3bf254162ceee
+0x0
+0x39779fd9da5a7
+0x1
+0xbc0e7f700f45
+0x0
+0x69c383d0590f8
+0x2
+0x1502b95eff583
+0x1
+0x1e8ebaec2a1855
+0x8
+0x0
+0x0
+0x0
+0x0
+0x0
+0x3
+0xc49fdf6ba1559
+0x3
+0x3a48ce6ba1b96
+0x2
+0x18c87656ed70b5
+0x5
+0xabe9711866c7
+0x1
+0x176b41669bb2a7
+0x2
+0x0
+0x0
+0x181facba92e6b3
+0x9
+0x0
+0x0
+0x1
+0x4
+0x0
+0x1
+0x1
+0x16e0cc4d78a326
+0x0
+0x1
+0xb
+0x7
+0x1
+0x0
+0x1
+0xda85f1513e45c
+0x0
+0x1
+0x7
+0x0
+0x1
+0x0
