@@ -58,6 +58,10 @@ type Options struct {
 	// afterUnlink runs in a retention pass between deleting the files and
 	// updating the index, so a test can hold that window open.
 	afterUnlink func()
+	// logFn replaces the append, and openSyncFn the fsync Open does on
+	// recovered records, for fault-injection tests.
+	logFn      func(*wal.WAL, wal.Record) error
+	openSyncFn func(*wal.WAL) error
 }
 
 // segInfo is what the topic knows about one segment without reading it.
@@ -65,14 +69,6 @@ type segInfo struct {
 	n     int    // segment number
 	first uint64 // offset of its first record; for an empty segment, the next offset to be written
 	size  int64  // bytes
-}
-
-// syncPoint is the durable prefix of the topic: offsets below next are
-// fsynced, and the last of them ends at byte off of segment seg.
-type syncPoint struct {
-	next uint64
-	seg  int
-	off  int64
 }
 
 // generation is one group commit: everyone who appended before the sync that
@@ -94,19 +90,21 @@ type Topic struct {
 	syncBytes    int64
 	syncFn       func(*wal.WAL) error
 	afterUnlink  func()
+	logFn        func(*wal.WAL, wal.Record) error
 	w            *wal.WAL
 
 	mu       sync.Mutex
-	next     uint64    // next offset to assign
+	next     uint64    // next offset to assign: everything below it is written
 	segs     []segInfo // oldest first; the last is the one being written
 	bytes    int64     // sum of segs[].size
-	written  syncPoint // end of everything appended
-	synced   syncPoint // end of everything durable
+	synced   uint64    // everything below it is durable, and visible to consumers
 	notify   chan struct{}
 	gen      *generation
 	unsynced int64
 	broken   error
 	closed   bool
+	// retainErr is the last retention pass's failure, nil once one succeeds.
+	retainErr error
 	// committed holds every consumer's committed next-offset: the ones
 	// registered in this process and the ones found on disk at Open that have
 	// not registered yet. Both hold back retention.
@@ -120,10 +118,11 @@ type Topic struct {
 	done chan struct{}
 }
 
-// Open opens or creates the topic in opts.Dir, recovering from a crash: the
-// torn tail of the last segment is cut (it was never acknowledged), every
-// record is read once to rebuild the segment index, and the offsets of every
-// consumer that has ever committed are loaded.
+// Open opens or creates the topic in opts.Dir, recovering from a crash: every
+// record is read once to rebuild the segment index, the torn tail of the last
+// segment is cut (it was never acknowledged), the offsets of every consumer
+// that has ever committed are loaded, and the newest segment is fsynced
+// before anything in it is offered to a consumer.
 //
 // Reading the whole topic at startup costs time proportional to its size;
 // that is the price of not keeping a separate index file that could itself
@@ -151,11 +150,14 @@ func Open(opts Options) (*Topic, error) {
 	if opts.syncFn == nil {
 		opts.syncFn = (*wal.WAL).Sync
 	}
+	if opts.openSyncFn == nil {
+		opts.openSyncFn = (*wal.WAL).Sync
+	}
+	if opts.logFn == nil {
+		opts.logFn = func(w *wal.WAL, r wal.Record) error { return w.Log(r) }
+	}
 	if err := os.MkdirAll(filepath.Join(opts.Dir, consumersDir), 0o755); err != nil {
 		return nil, fmt.Errorf("queue: creating %s: %w", opts.Dir, err)
-	}
-	if _, err := wal.Repair(opts.Dir); err != nil {
-		return nil, fmt.Errorf("queue: recovering %s: %w", opts.Dir, err)
 	}
 	segs, last, err := scan(opts.Dir)
 	if err != nil {
@@ -195,6 +197,15 @@ func Open(opts Options) (*Topic, error) {
 	if err != nil {
 		return nil, fmt.Errorf("queue: %w", err)
 	}
+	// The previous run may have died with records written but not synced.
+	// A process crash keeps them in the page cache, so they read back as if
+	// durable — but a power cut now would still lose them, after a consumer
+	// had applied and committed them. Sync before offering them to anyone.
+	// Older segments were synced by the rollover that closed them.
+	if err := opts.openSyncFn(w); err != nil {
+		_ = w.Close()
+		return nil, fmt.Errorf("queue: syncing recovered records: %w", err)
+	}
 	end := w.End()
 	if len(segs) == 0 || segs[len(segs)-1].n != end.Segment {
 		segs = append(segs, segInfo{n: end.Segment, first: next, size: end.Offset})
@@ -207,6 +218,7 @@ func Open(opts Options) (*Topic, error) {
 		syncBytes:    opts.SyncBytes,
 		syncFn:       opts.syncFn,
 		afterUnlink:  opts.afterUnlink,
+		logFn:        opts.logFn,
 		w:            w,
 		next:         next,
 		segs:         segs,
@@ -221,71 +233,96 @@ func Open(opts Options) (*Topic, error) {
 	for _, s := range segs {
 		t.bytes += s.size
 	}
-	// Everything that survived Repair was synced by the run that wrote it
-	// (an unsynced record that happens to survive a crash is durable now, and
-	// its producer was simply never told).
-	t.written = syncPoint{next: next, seg: end.Segment, off: end.Offset}
-	t.synced = t.written
+	// Everything recovered is durable now (an unsynced record that survived
+	// the crash was just synced above; its producer was never told, and will
+	// resend it, which is a duplicate the consumers tolerate).
+	t.synced = next
 	go t.syncLoop()
 	return t, nil
 }
 
-// scan reads every segment once, returning the index and one past the last
-// offset found. Offsets must run consecutively across the whole topic; a gap
-// or a step back is a topic this code did not write.
+// scan is recovery: it reads the topic once, cuts a torn tail off the newest
+// segment, and returns the segment index and one past the last offset.
+//
+// It does Repair's job itself rather than calling it, because Repair is a
+// full read of its own and a topic after a long store outage can be
+// gigabytes: reading it twice at the moment ozyd is trying to come back is
+// the wrong place to spend the time. Only the 16-byte record header is
+// decoded; payloads are not copied.
+//
+// Offsets must run consecutively across the whole topic, and segment numbers
+// too; a gap or a step back is a topic this code did not write.
 func scan(dir string) ([]segInfo, uint64, error) {
+	r, err := wal.NewReader(dir)
+	if err != nil {
+		return nil, 0, fmt.Errorf("queue: %w", err)
+	}
+	firsts := map[int]uint64{}
+	var (
+		next uint64
+		seen bool
+	)
+	for r.Next() {
+		off, err := recordOffset(r.Record())
+		seg := r.End().Segment
+		if err == nil && seg < 0 {
+			err = fmt.Errorf("%w: a WAL checkpoint in a queue topic", ErrCorrupt)
+		}
+		if err == nil && seen && off != next {
+			err = fmt.Errorf("%w: segment %d holds offset %d where %d was expected", ErrCorrupt, seg, off, next)
+		}
+		if err != nil {
+			_ = r.Close()
+			return nil, 0, fmt.Errorf("segment %d: %w", seg, err)
+		}
+		if _, ok := firsts[seg]; !ok {
+			firsts[seg] = off
+		}
+		seen, next = true, off+1
+	}
+	readErr, end := r.Err(), r.End()
+	if err := r.Close(); err != nil {
+		return nil, 0, fmt.Errorf("queue: %w", err)
+	}
+	if readErr != nil {
+		return nil, 0, fmt.Errorf("queue: recovering %s: %w", dir, readErr)
+	}
+	// The reader stops quietly at a torn tail; whatever is past the last
+	// good record was never acknowledged and must go before anything is
+	// appended behind it (wal.Repair explains why).
+	if end.File != "" {
+		info, err := os.Stat(filepath.Join(dir, end.File))
+		if err != nil {
+			return nil, 0, fmt.Errorf("queue: %w", err)
+		}
+		if info.Size() != end.Offset {
+			if err := wal.TruncateTail(dir, end); err != nil {
+				return nil, 0, fmt.Errorf("queue: cutting the torn tail: %w", err)
+			}
+		}
+	}
+
 	nums, err := wal.Segments(dir)
 	if err != nil {
 		return nil, 0, fmt.Errorf("queue: %w", err)
 	}
-	var (
-		segs   []segInfo
-		next   uint64
-		seen   bool
-		lastNo = -1
-	)
-	for _, n := range nums {
-		if lastNo >= 0 && n != lastNo+1 {
-			return nil, 0, fmt.Errorf("%w: segment %d follows segment %d", ErrCorrupt, n, lastNo)
+	segs := make([]segInfo, 0, len(nums))
+	for i, n := range nums {
+		if i > 0 && n != nums[i-1]+1 {
+			return nil, 0, fmt.Errorf("%w: segment %d follows segment %d", ErrCorrupt, n, nums[i-1])
 		}
-		lastNo = n
 		info, err := os.Stat(filepath.Join(dir, wal.SegmentName(n)))
 		if err != nil {
 			return nil, 0, fmt.Errorf("queue: %w", err)
 		}
-		s := segInfo{n: n, size: info.Size()}
-		r := wal.NewSegmentReader(dir, n, 0)
-		empty := true
-		for r.Next() {
-			rec, err := decodeRecord(r.Record())
-			if err != nil {
-				_ = r.Close()
-				return nil, 0, fmt.Errorf("segment %d: %w", n, err)
-			}
-			if seen && rec.Offset != next {
-				_ = r.Close()
-				return nil, 0, fmt.Errorf("%w: segment %d holds offset %d where %d was expected",
-					ErrCorrupt, n, rec.Offset, next)
-			}
-			if empty {
-				s.first = rec.Offset
-				empty = false
-			}
-			seen = true
-			next = rec.Offset + 1
-		}
-		err = r.Err()
-		_ = r.Close()
-		if err != nil {
-			return nil, 0, fmt.Errorf("queue: segment %d: %w", n, err)
-		}
-		if empty && s.size > 0 {
-			return nil, 0, fmt.Errorf("%w: segment %d has %d bytes and no records", ErrCorrupt, n, s.size)
-		}
-		if empty && n != nums[len(nums)-1] {
+		first, has := firsts[n]
+		switch {
+		case !has && info.Size() > 0:
+			return nil, 0, fmt.Errorf("%w: segment %d has %d bytes and no records", ErrCorrupt, n, info.Size())
+		case !has && i != len(nums)-1:
 			return nil, 0, fmt.Errorf("%w: segment %d is empty but is not the newest", ErrCorrupt, n)
 		}
-		segs = append(segs, s)
+		segs = append(segs, segInfo{n: n, first: first, size: info.Size()})
 	}
 	return segs, next, nil
 }
@@ -354,11 +391,19 @@ func (t *Topic) Produce(ctx context.Context, payload []byte) (uint64, error) {
 		return 0, ErrFull
 	}
 	off := t.next
-	if err := t.w.Log(wal.Record{Type: recordType, Data: encodeRecord(off, t.clock.Now(), payload)}); err != nil {
+	if err := t.logFn(t.w, wal.Record{Type: recordType, Data: encodeRecord(off, t.clock.Now(), payload)}); err != nil {
 		// Nothing was appended (the WAL cut any partial record back off),
-		// so the offset is not used up. ENOSPC lands here.
+		// so the offset is not used up. ENOSPC lands here, and is worth
+		// retrying. A failed fsync — the one a rollover does before closing
+		// the old segment — is not: it stops the topic exactly as a failed
+		// group commit does, and fails everyone waiting on one.
+		if errors.Is(err, wal.ErrSync) {
+			err = t.breakLocked(err)
+		} else {
+			err = fmt.Errorf("queue: %w", err)
+		}
 		t.mu.Unlock()
-		return 0, fmt.Errorf("queue: %w", err)
+		return 0, err
 	}
 	end := t.w.End()
 	t.next++
@@ -368,7 +413,6 @@ func (t *Topic) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	last := &t.segs[len(t.segs)-1]
 	t.bytes += end.Offset - last.size
 	last.size = end.Offset
-	t.written = syncPoint{next: t.next, seg: end.Segment, off: end.Offset}
 	g := t.gen
 	t.unsynced += size
 	wake := t.unsynced == size || t.unsynced >= t.syncBytes
@@ -448,7 +492,7 @@ func (t *Topic) syncOnce() {
 		t.mu.Unlock()
 		return
 	}
-	g, target := t.gen, t.written
+	g, target := t.gen, t.next
 	t.gen = newGeneration()
 	t.unsynced = 0
 	t.mu.Unlock()
@@ -456,14 +500,15 @@ func (t *Topic) syncOnce() {
 	err := t.syncFn(t.w)
 
 	t.mu.Lock()
-	if err != nil {
-		t.broken = fmt.Errorf("queue: fsync failed; %s accepts no more records until ozyd restarts: %w", t.dir, err)
+	switch {
+	case err != nil:
+		err = t.breakLocked(err)
+	case t.broken != nil:
+		// A rollover's fsync failed while this one was in flight. This
+		// sync may have run after it, on the same file, and "succeeded"
+		// over pages the kernel had already dropped: it proves nothing.
 		err = t.broken
-		// Anyone who appended during the failed sync is in the next
-		// generation, which will now never be synced.
-		t.gen.err = t.broken
-		close(t.gen.done)
-	} else {
+	default:
 		t.synced = target
 		close(t.notify)
 		t.notify = make(chan struct{})
@@ -471,6 +516,19 @@ func (t *Topic) syncOnce() {
 	t.mu.Unlock()
 	g.err = err
 	close(g.done)
+}
+
+// breakLocked stops the topic after a failed fsync and fails everyone waiting
+// on the current generation, who would otherwise wait for a sync that will
+// never come. It returns the error the topic now reports. The caller holds mu.
+func (t *Topic) breakLocked(cause error) error {
+	if t.broken != nil {
+		return t.broken
+	}
+	t.broken = fmt.Errorf("queue: fsync failed; %s accepts no more records until ozyd restarts: %w", t.dir, cause)
+	t.gen.err = t.broken
+	close(t.gen.done)
+	return t.broken
 }
 
 // Consumer registers (or re-attaches) the consumer called name. A consumer
@@ -484,6 +542,12 @@ func (t *Topic) Consumer(name string) (*Consumer, error) {
 	if !consumerName.MatchString(name) {
 		return nil, fmt.Errorf("queue: consumer name %q must match %s", name, consumerName)
 	}
+	// Registration is serialized with retention. A pass that worked out
+	// what to delete before this consumer existed would otherwise delete
+	// the segment its start offset points into, and its offset file would
+	// then name a record that is gone — which Open refuses for ever after.
+	t.retMu.Lock()
+	defer t.retMu.Unlock()
 	t.mu.Lock()
 	if t.closed {
 		t.mu.Unlock()
@@ -519,14 +583,22 @@ func (t *Topic) Consumer(name string) (*Consumer, error) {
 // retain deletes every segment whose records all sit below every consumer's
 // committed offset. With no consumers it deletes nothing: an unread record
 // is never garbage.
-func (t *Topic) retain() error {
+//
+// A failure is recorded (Stats.RetentionErr) rather than returned, because
+// its caller is Commit, whose own work — the offset file — is already
+// durable by then: reporting the commit as failed would invite the caller
+// to redo it. Whatever happened, the index is reconciled with the files
+// actually left on disk, so a partial failure cannot leave it listing a
+// segment that is gone (a parked consumer would then report it missing)
+// or charging deleted bytes against the cap.
+func (t *Topic) retain() {
 	t.retMu.Lock()
 	defer t.retMu.Unlock()
 
 	t.mu.Lock()
 	if len(t.committed) == 0 {
 		t.mu.Unlock()
-		return nil
+		return
 	}
 	low := ^uint64(0)
 	for _, c := range t.committed {
@@ -540,26 +612,40 @@ func (t *Topic) retain() error {
 	}
 	if k == 0 {
 		t.mu.Unlock()
-		return nil
+		return
 	}
 	before := t.segs[k].n
 	t.mu.Unlock()
 
 	// Only retention removes from the front of segs, and retMu serializes
 	// it, so segs[:k] are still the same segments after this.
-	if err := wal.Truncate(t.dir, before, nil); err != nil {
-		return fmt.Errorf("queue: retention: %w", err)
-	}
+	err := wal.Truncate(t.dir, before, nil)
 	if t.afterUnlink != nil {
 		t.afterUnlink()
 	}
-	t.mu.Lock()
-	for _, s := range t.segs[:k] {
-		t.bytes -= s.size
+	present := map[int]bool{}
+	nums, listErr := wal.Segments(t.dir)
+	for _, n := range nums {
+		present[n] = true
 	}
-	t.segs = append([]segInfo(nil), t.segs[k:]...)
-	t.mu.Unlock()
-	return nil
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if listErr != nil {
+		// Cannot tell what is gone; keep the index as it was.
+		t.retainErr = fmt.Errorf("queue: retention: %w", errors.Join(err, listErr))
+		return
+	}
+	drop := 0
+	for drop < k && !present[t.segs[drop].n] {
+		t.bytes -= t.segs[drop].size
+		drop++
+	}
+	t.segs = append([]segInfo(nil), t.segs[drop:]...)
+	if err != nil {
+		t.retainErr = fmt.Errorf("queue: retention: %w", err)
+	} else {
+		t.retainErr = nil
+	}
 }
 
 // Stats is a snapshot of a topic, for self-metrics and /readyz.
@@ -578,6 +664,9 @@ type Stats struct {
 	Lag map[string]uint64
 	// Broken is the error that stopped the topic, if any.
 	Broken error
+	// RetentionErr is the last retention pass's failure, nil once one
+	// succeeds. Space is not coming back while it is set.
+	RetentionErr error
 }
 
 // Stats returns a snapshot.
@@ -585,12 +674,12 @@ func (t *Topic) Stats() Stats {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	s := Stats{
-		Next: t.next, Durable: t.synced.next, Oldest: t.segs[0].first,
+		Next: t.next, Durable: t.synced, Oldest: t.segs[0].first,
 		Bytes: t.bytes, MaxBytes: t.maxBytes, Segments: len(t.segs),
-		Lag: map[string]uint64{}, Broken: t.broken,
+		Lag: map[string]uint64{}, Broken: t.broken, RetentionErr: t.retainErr,
 	}
 	for name, c := range t.committed {
-		s.Lag[name] = t.synced.next - c
+		s.Lag[name] = t.synced - c
 	}
 	return s
 }

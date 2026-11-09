@@ -36,25 +36,33 @@ func (c *Consumer) Name() string { return c.name }
 // Poll returns up to max durable records starting at the cursor, waiting
 // until at least one exists or ctx ends. The cursor advances past what is
 // returned; nothing is committed.
+//
+// The consumer's lock is not held while waiting, so a Commit from another
+// goroutine (a pipelined apply loop) is never stuck behind an idle Poll.
 func (c *Consumer) Poll(ctx context.Context, max int) ([]Record, error) {
 	if max <= 0 {
 		return nil, fmt.Errorf("queue: Poll max must be positive, got %d", max)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	var durable uint64
+	t := c.t
 	for {
-		t := c.t
+		c.mu.Lock()
+		cursor := c.cursor
+		c.mu.Unlock()
 		t.mu.Lock()
-		closed, notify := t.closed, t.notify
-		durable = t.synced.next
+		closed, notify, durable := t.closed, t.notify, t.synced
 		t.mu.Unlock()
 		if closed {
 			return nil, ErrClosed
 		}
-		if c.cursor < durable {
-			break
+		if cursor < durable {
+			c.mu.Lock()
+			if c.cursor < durable { // another Poll may have got there first
+				out, err := c.readLocked(max, durable)
+				c.mu.Unlock()
+				return out, err
+			}
+			c.mu.Unlock()
+			continue
 		}
 		select {
 		case <-notify:
@@ -62,7 +70,11 @@ func (c *Consumer) Poll(ctx context.Context, max int) ([]Record, error) {
 			return nil, ctx.Err()
 		}
 	}
+}
 
+// readLocked reads up to max records below durable from the cursor on. The
+// caller holds c.mu and has checked that at least one is there.
+func (c *Consumer) readLocked(max int, durable uint64) ([]Record, error) {
 	var out []Record
 	for len(out) < max && c.cursor < durable {
 		got, err := c.readSegment(&out, max, durable)
@@ -127,7 +139,9 @@ func (c *Consumer) readSegment(out *[]Record, max int, durable uint64) (bool, er
 }
 
 // Commit records that every offset up to and including offset has been
-// processed, durably: after it returns, a restart resumes at offset+1.
+// processed, durably: after it returns, a restart resumes at offset+1. It
+// then runs a retention pass; a retention failure is not a commit failure
+// and is reported in [Stats].RetentionErr instead.
 // Committing an offset at or below an earlier commit is a no-op, so a
 // consumer may re-commit after a retry without checking.
 //
@@ -157,7 +171,8 @@ func (c *Consumer) Commit(offset uint64) error {
 	t.mu.Lock()
 	t.committed[c.name] = next
 	t.mu.Unlock()
-	return t.retain()
+	t.retain() // failures surface in Stats.RetentionErr, not here: the commit itself is durable
+	return nil
 }
 
 // retired reports whether retention has deleted segment seg.

@@ -105,14 +105,41 @@ func TestSegmentReader_MissingSegmentAndBadSeekAreErrors(t *testing.T) {
 	if r.Next() || r.Err() == nil {
 		t.Fatalf("missing segment: Next=true or Err=nil (%v)", r.Err())
 	}
-	if err := os.WriteFile(filepath.Join(dir, SegmentName(0)), nil, 0o644); err != nil {
+	w, err := Open(Options{Dir: dir})
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := w.Log(Record{Type: 1, Data: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close()
+	// A negative offset is a caller bug; reading from 0 instead would
+	// silently redeliver the whole segment.
 	r = NewSegmentReader(dir, 0, -5)
-	if r.Next() {
-		t.Fatal("Next on an empty segment = true")
+	if r.Next() || r.Err() == nil {
+		t.Fatalf("negative start offset: Next=true or Err=nil (%v)", r.Err())
 	}
 	_ = r.Close()
+}
+
+// TestLog_AFailedRolloverFsyncIsErrSync: the queue must be able to tell a
+// failed fsync (never retry) from a failed write (retry is fine).
+func TestLog_AFailedRolloverFsyncIsErrSync(t *testing.T) {
+	w, err := Open(Options{Dir: t.TempDir(), SegmentSize: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Log(Record{Type: 1, Data: []byte("fills it")}); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.f.Close() // the rollover's fsync of this segment now fails
+	err = w.Log(Record{Type: 1, Data: []byte("rolls")})
+	if !errors.Is(err, ErrSync) {
+		t.Fatalf("Log over a failing rollover fsync = %v, want ErrSync", err)
+	}
+	if err := w.Sync(); !errors.Is(err, ErrSync) {
+		t.Fatalf("Sync on a failing file = %v, want ErrSync", err)
+	}
 }
 
 func TestSegments_ListsInOrderAndIgnoresOtherFiles(t *testing.T) {

@@ -55,8 +55,9 @@ is not built.
   obligation: at-least-once delivery means every consumer must tolerate
   redelivery (M7 §1; PR 2 of M7).
 - Open reads every retained record once. A topic is normally near-empty;
-  after a long store outage startup is proportional to the backlog. Measured
-  in `docs/notes/M7.md`.
+  after a long store outage startup is proportional to the backlog. Not yet
+  measured; `docs/notes/M7.md` records it when the queue is in the intake
+  path (M7 PR 2).
 - Ack latency gains a floor of the group-commit window on an idle topic;
   `queue.sync_interval` is the knob, and `pipeline.mode: direct` keeps the
   pre-M7 path for comparison.

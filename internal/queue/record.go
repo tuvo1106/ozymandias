@@ -50,15 +50,24 @@ func encodeRecord(off uint64, at time.Time, payload []byte) []byte {
 	return b
 }
 
+// recordOffset validates a WAL record as a queue record and returns its
+// offset, without copying the payload: recovery needs only the offsets.
+func recordOffset(r wal.Record) (uint64, error) {
+	if r.Type != recordType {
+		return 0, fmt.Errorf("%w: record type %d, want %d", ErrCorrupt, r.Type, recordType)
+	}
+	if len(r.Data) < recordHeader {
+		return 0, fmt.Errorf("%w: record of %d bytes is shorter than its %d-byte header",
+			ErrCorrupt, len(r.Data), recordHeader)
+	}
+	return binary.BigEndian.Uint64(r.Data[0:8]), nil
+}
+
 // decodeRecord parses a WAL record into a queue record, copying the payload
 // (the WAL reader reuses its buffer).
 func decodeRecord(r wal.Record) (Record, error) {
-	if r.Type != recordType {
-		return Record{}, fmt.Errorf("%w: record type %d, want %d", ErrCorrupt, r.Type, recordType)
-	}
-	if len(r.Data) < recordHeader {
-		return Record{}, fmt.Errorf("%w: record of %d bytes is shorter than its %d-byte header",
-			ErrCorrupt, len(r.Data), recordHeader)
+	if _, err := recordOffset(r); err != nil {
+		return Record{}, err
 	}
 	payload := make([]byte, len(r.Data)-recordHeader)
 	copy(payload, r.Data[recordHeader:])

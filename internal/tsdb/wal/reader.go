@@ -152,6 +152,11 @@ func (r *Reader) openNext() bool {
 		return false
 	}
 	r.off = 0
+	if r.idx == 0 && r.startOff < 0 {
+		_ = f.Close()
+		r.err = fmt.Errorf("wal: negative start offset %d in %s", r.startOff, name)
+		return false
+	}
 	var src io.Reader = f
 	if r.idx == 0 && r.startOff > 0 {
 		// A section reader rather than a Seek: it starts reading at the

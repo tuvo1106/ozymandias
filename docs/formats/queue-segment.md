@@ -89,24 +89,33 @@ Consumer names match `[a-z0-9][a-z0-9-]*`, so a name can never be a path.
 
 On open, in order:
 
-1. `wal.Repair` cuts a torn record off the newest segment. It was never
+1. Every record is read once, in order, decoding only the 16-byte header.
+   Records must have type 1, be at least 16 bytes, and carry consecutive
+   offsets; anything else is `ErrCorrupt`. The same pass finds a torn record
+   at the end of the newest segment and cuts it off (`wal.TruncateTail`, what
+   `wal.Repair` does, without Repair's second full read). It was never
    fsynced, so its producer was never acknowledged, and its offset is reused.
-2. Every segment is read once. Records must have type 1, be at least 16
-   bytes, and carry consecutive offsets. Anything else is `ErrCorrupt`.
-3. Every offset file is loaded. A consumer whose next offset is below the
+2. Every offset file is loaded. A consumer whose next offset is below the
    oldest retained record would have lost data, so that is `ErrCorrupt` too.
-4. The next offset to assign is one past the last record, **or the highest
+3. The next offset to assign is one past the last record, **or the highest
    committed offset if that is greater**. Retention can delete every record
    (it keeps the newest *segment*, which may be empty); numbering from 0 again
    would give new records offsets a consumer has already committed past.
+4. The newest segment is fsynced before any consumer may read it. A process
+   crash leaves written-but-unsynced records in the page cache, where they
+   read back as if durable; a consumer could apply and commit them, and a
+   power cut afterwards would lose them under a committed offset. (Older
+   segments were synced by the rollover that closed them.)
 
 ## Durability rules (not visible in the bytes)
 
 - `Produce` returns only after the fsync that covers its record.
 - Consumers read only up to the last fsynced record, never the last written.
-- A failed fsync stops the topic until restart: after one, the OS may have
-  dropped the dirty pages and a retry can report success for data that is not
-  on disk.
+- A failed fsync stops the topic until restart — the group commit's, and the
+  one a rollover does before closing a segment (`wal.ErrSync`): after one, the
+  OS may have dropped the dirty pages and a retry can report success for data
+  that is not on disk. A group sync that was in flight when a rollover's fsync
+  failed acknowledges nobody.
 - A segment is deleted only when every offset in it is below every consumer's
   committed offset. A topic at its byte cap refuses new records rather than
   deleting unconsumed ones.

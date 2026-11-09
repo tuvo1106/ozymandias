@@ -948,3 +948,268 @@ func TestRetention_APollInsideARetentionPassWaitsForIt(t *testing.T) {
 		t.Fatal("Poll never returned")
 	}
 }
+
+// TestConsumer_RegisteringDuringRetentionWaitsForThePass: a consumer that
+// read its start offset before a running pass finished would start inside a
+// segment being deleted, and its offset file would then make the topic
+// unopenable. Registration must wait for the pass.
+func TestConsumer_RegisteringDuringRetentionWaitsForThePass(t *testing.T) {
+	dir := t.TempDir()
+	inWindow, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	tp := open(t, dir, func(o *Options) {
+		o.SegmentSize = 30 // one record per segment
+		o.afterUnlink = func() { once.Do(func() { close(inWindow); <-release }) }
+	})
+	a, _ := tp.Consumer("a")
+	produce(t, tp, "aaaa", "bbbb", "cccc")
+	poll(t, a, 2)
+	committed := make(chan error, 1)
+	go func() { committed <- a.Commit(1) }()
+	<-inWindow
+
+	registered := make(chan *Consumer, 1)
+	go func() {
+		c, err := tp.Consumer("late")
+		if err != nil {
+			t.Error(err)
+		}
+		registered <- c
+	}()
+	select {
+	case <-registered:
+		t.Fatal("Consumer registered inside a retention pass")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-committed; err != nil {
+		t.Fatal(err)
+	}
+	late := <-registered
+	if got := poll(t, late, 10); !eq(payloads(got), []string{"cccc"}) {
+		t.Fatalf("late consumer = %q, want [cccc]", payloads(got))
+	}
+	if err := tp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(Options{Dir: dir, SyncInterval: -1, SegmentSize: 30}); err != nil {
+		t.Fatalf("topic does not reopen: %v", err)
+	}
+}
+
+// TestProduce_AFailedRolloverFsyncStopsTheTopic: the fsync a rollover does is
+// as final as a group commit's. It must stop the topic and fail the
+// producers waiting on the current generation, not come back as an ordinary
+// error that the next Produce retries.
+func TestProduce_AFailedRolloverFsyncStopsTheTopic(t *testing.T) {
+	clk := testutil.NewFakeClock(time.Unix(0, 0))
+	var fail sync.Mutex
+	failing := false
+	tp := open(t, t.TempDir(), func(o *Options) {
+		o.Clock = clk
+		o.SyncInterval = time.Hour
+		o.logFn = func(w *wal.WAL, r wal.Record) error {
+			fail.Lock()
+			defer fail.Unlock()
+			if failing {
+				return fmt.Errorf("%w before rollover: injected EIO", wal.ErrSync)
+			}
+			return w.Log(r)
+		}
+	})
+	waiting := make(chan error, 1)
+	go func() { _, err := tp.Produce(context.Background(), []byte("a")); waiting <- err }()
+	testutil.Eventually(t, 5*time.Second, func() bool { return clk.Waiters() == 1 }, "never armed")
+	fail.Lock()
+	failing = true
+	fail.Unlock()
+	if _, err := tp.Produce(context.Background(), []byte("b")); !errors.Is(err, wal.ErrSync) {
+		t.Fatalf("Produce over a failing rollover = %v", err)
+	}
+	select {
+	case err := <-waiting:
+		if !errors.Is(err, wal.ErrSync) {
+			t.Fatalf("producer waiting on the group commit = %v, want the fsync error", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("producer waiting on the group commit was never released")
+	}
+	fail.Lock()
+	failing = false
+	fail.Unlock()
+	if _, err := tp.Produce(context.Background(), []byte("c")); !errors.Is(err, wal.ErrSync) {
+		t.Fatalf("Produce after a failed rollover fsync = %v, want the topic stopped", err)
+	}
+}
+
+// TestProduce_AGroupSyncDuringAFailedRolloverProvesNothing: a group fsync in
+// flight when a rollover's fsync fails may have run after it, on the same
+// file, and "succeeded" over dropped pages. Its waiters must not be acked.
+func TestProduce_AGroupSyncDuringAFailedRolloverProvesNothing(t *testing.T) {
+	entered, gate := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	var fail sync.Mutex
+	failing := false
+	tp := open(t, t.TempDir(), func(o *Options) {
+		o.syncFn = func(w *wal.WAL) error {
+			once.Do(func() { close(entered); <-gate })
+			return w.Sync()
+		}
+		o.logFn = func(w *wal.WAL, r wal.Record) error {
+			fail.Lock()
+			defer fail.Unlock()
+			if failing {
+				return fmt.Errorf("%w before rollover: injected EIO", wal.ErrSync)
+			}
+			return w.Log(r)
+		}
+	})
+	first := make(chan error, 1)
+	go func() { _, err := tp.Produce(context.Background(), []byte("a")); first <- err }()
+	<-entered
+	fail.Lock()
+	failing = true
+	fail.Unlock()
+	if _, err := tp.Produce(context.Background(), []byte("b")); !errors.Is(err, wal.ErrSync) {
+		t.Fatalf("rollover Produce = %v", err)
+	}
+	close(gate) // the group fsync now "succeeds"
+	if err := <-first; !errors.Is(err, wal.ErrSync) {
+		t.Fatalf("producer of the in-flight group sync = %v, want the rollover's fsync error", err)
+	}
+	if s := tp.Stats(); s.Durable != 0 {
+		t.Errorf("durable = %d after a failed rollover fsync, want 0", s.Durable)
+	}
+}
+
+func TestProduce_AnOrdinaryWriteErrorIsRetryable(t *testing.T) {
+	calls := 0
+	tp := open(t, t.TempDir(), func(o *Options) {
+		o.logFn = func(w *wal.WAL, r wal.Record) error {
+			calls++
+			if calls == 1 {
+				return errors.New("injected ENOSPC")
+			}
+			return w.Log(r)
+		}
+	})
+	if _, err := tp.Produce(context.Background(), []byte("a")); err == nil {
+		t.Fatal("first Produce = nil error")
+	}
+	if off, err := tp.Produce(context.Background(), []byte("a")); err != nil || off != 0 {
+		t.Fatalf("retry after a write error = %d, %v; want 0, nil", off, err)
+	}
+}
+
+// TestOpen_SyncsRecoveredRecordsBeforeServingThem: records written but not
+// synced by a crashed run read back from the page cache. Open must make
+// them durable before a consumer can apply and commit them; if it cannot,
+// it must not open.
+func TestOpen_SyncsRecoveredRecordsBeforeServingThem(t *testing.T) {
+	dir := t.TempDir()
+	tp := open(t, dir)
+	produce(t, tp, "a")
+	if err := tp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	synced := 0
+	tp = open(t, dir, func(o *Options) {
+		o.openSyncFn = func(w *wal.WAL) error { synced++; return w.Sync() }
+	})
+	if synced != 1 {
+		t.Errorf("Open fsynced %d times, want once", synced)
+	}
+	_ = tp.Close()
+	boom := errors.New("injected EIO")
+	if tp, err := Open(Options{Dir: dir, openSyncFn: func(*wal.WAL) error { return boom }}); !errors.Is(err, boom) {
+		if tp != nil {
+			_ = tp.Close()
+		}
+		t.Fatalf("Open with a failing fsync = %v, want it refused", err)
+	}
+}
+
+// TestRetention_AFailedPassKeepsTheIndexHonestAndTheCommitDurable: a pass
+// that cannot delete is reported in Stats, not as a failed Commit (the
+// offset file is already durable), and the index keeps listing exactly the
+// files still on disk.
+func TestRetention_AFailedPassKeepsTheIndexHonestAndTheCommitDurable(t *testing.T) {
+	dir := t.TempDir()
+	tp := open(t, dir, func(o *Options) { o.SegmentSize = 30 })
+	c, _ := tp.Consumer("c")
+	produce(t, tp, "aaaa", "bbbb", "cccc")
+	poll(t, c, 3)
+	if err := os.Chmod(dir, 0o555); err != nil { // unlinking now fails
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o755) }()
+	if err := c.Commit(0); err != nil {
+		t.Fatalf("Commit with a failing retention = %v, want nil (the commit is durable)", err)
+	}
+	s := tp.Stats()
+	if s.RetentionErr == nil || s.Segments != 3 || s.Bytes != 3*29 {
+		t.Fatalf("after a failed pass: %+v; want RetentionErr set and all 3 segments still counted", s)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Commit(1); err != nil {
+		t.Fatal(err)
+	}
+	if s := tp.Stats(); s.RetentionErr != nil || s.Segments != 1 || s.Bytes != 29 {
+		t.Fatalf("after a good pass: %+v; want the error cleared and 1 segment", s)
+	}
+}
+
+// TestRetention_IndexFollowsTheFilesAfterAPartialPass: whatever a pass
+// managed to delete is dropped from the index, and whatever it did not is
+// kept. Simulated by putting one segment back before the index is updated.
+func TestRetention_IndexFollowsTheFilesAfterAPartialPass(t *testing.T) {
+	dir := t.TempDir()
+	var saved []byte
+	tp := open(t, dir, func(o *Options) {
+		o.SegmentSize = 30
+		o.afterUnlink = func() {
+			if saved != nil {
+				_ = os.WriteFile(filepath.Join(dir, wal.SegmentName(1)), saved, 0o644)
+			}
+		}
+	})
+	c, _ := tp.Consumer("c")
+	produce(t, tp, "aaaa", "bbbb", "cccc")
+	b, err := os.ReadFile(filepath.Join(dir, wal.SegmentName(1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved = b
+	poll(t, c, 3)
+	if err := c.Commit(1); err != nil { // segments 0 and 1 are due
+		t.Fatal(err)
+	}
+	if s := tp.Stats(); s.Segments != 2 || s.Oldest != 1 || s.Bytes != 2*29 {
+		t.Fatalf("after a partial pass: %+v; want segments 1 and 2 still indexed", s)
+	}
+}
+
+// TestCommit_IsNotStuckBehindAnIdlePoll: Poll must not hold the consumer's
+// lock while it waits, or an apply goroutine's Commit hangs until traffic.
+func TestCommit_IsNotStuckBehindAnIdlePoll(t *testing.T) {
+	tp := open(t, t.TempDir())
+	c, _ := tp.Consumer("c")
+	produce(t, tp, "a")
+	poll(t, c, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _, _ = c.Poll(ctx, 1) }() // parks: nothing more to read
+	time.Sleep(20 * time.Millisecond)
+	done := make(chan error, 1)
+	go func() { done <- c.Commit(0) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Commit blocked behind an idle Poll")
+	}
+}

@@ -44,6 +44,12 @@ var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 // explain as a torn tail. It names the file and offset.
 var ErrCorrupt = errors.New("wal: corrupt record")
 
+// ErrSync wraps every fsync failure the log reports, from Sync and from the
+// sync a rollover does before closing the old segment. A caller that must not
+// retry a failed fsync (M7's queue: see its syncOnce) tells it apart from an
+// ordinary write error, such as ENOSPC, with errors.Is.
+var ErrSync = errors.New("wal: fsync failed")
+
 // Record is one entry. Type is the caller's; 0 is reserved as "unset" so a
 // zero-filled region cannot masquerade as a valid record.
 type Record struct {
@@ -215,7 +221,7 @@ func (w *WAL) undoPartial(cause error) error {
 
 func (w *WAL) roll() error {
 	if err := w.f.Sync(); err != nil {
-		return fmt.Errorf("wal: syncing before rollover: %w", err)
+		return fmt.Errorf("%w before rollover: %w", ErrSync, err)
 	}
 	if err := w.f.Close(); err != nil {
 		return fmt.Errorf("wal: closing segment: %w", err)
@@ -235,7 +241,7 @@ func (w *WAL) Sync() error {
 		return w.broken
 	}
 	if err := w.f.Sync(); err != nil {
-		return fmt.Errorf("wal: sync: %w", err)
+		return fmt.Errorf("%w: %w", ErrSync, err)
 	}
 	return nil
 }
