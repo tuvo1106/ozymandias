@@ -110,9 +110,9 @@ the code (test-first for parsers, encoders and state machines).
 
 ### Before you ask for a review
 
-A review round costs a push and finds, at best, what you did not already look for. Eight kinds of
-bug kept turning up in M2, M3 and M6 (the Python SDK middleware, its dashboard, the apps
-integrated against it, and the monitors shipped for them), and each has a check that is far cheaper *before* the first round than
+A review round costs a push and finds, at best, what you did not already look for. Nine kinds of
+bug kept turning up in M2, M3, M6 and M7 (the Python SDK middleware, its dashboard, the apps
+integrated against it, the monitors shipped for them, and the durable queue), and each has a check that is far cheaper *before* the first round than
 after it. Do these first.
 
 | Bug class | What it looked like | Check before review |
@@ -120,10 +120,11 @@ after it. Do these first.
 | **A value from outside becomes a label** | the `method` tag took any token a scanner sent; a bad status minted `status:0`; an audit event name or a webhook type from input | Every tag value comes from a fixed set, in code. Test it: feed hostile inputs (random methods, paths, statuses) and assert the distinct tag values stay under a bound. A tag is a series. |
 | **Silent emptiness** | a widget filtered on a tag its series lack; every route tagged `unmatched`; a heartbeat that never fired | Nothing errors, the chart is just blank, so look at the *data*, not the logs. After driving real traffic, check that every metric you added appears. For a shipped dashboard, evaluate each widget's query against data and assert it is non-empty. |
 | **A claim nothing tests** | "outermost, times the whole stack", "works for any ASGI app", "verified against a live app" | State a property in a doc or comment only with a test that pins it. Otherwise say "unverified" or cut it. |
-| **A test that pins nothing** | deleting the code under test left the suite green (five times in one PR); a substring search over a datagram that also held a random duration, which failed one run in three | Break each new line, confirm a test fails, and restore with a script (a killed run leaves the file mutated). Assert on parsed values, never on text that contains a measured number. |
+| **A test that pins nothing** | deleting the code under test left the suite green (five times in one PR); a substring search over a datagram that also held a random duration, which failed one run in three | Break each new line, confirm a test fails, and restore with a script (a killed run leaves the file mutated). Assert on parsed values, never on text that contains a measured number. Read *why* each mutant died: a build failure or a test timeout is not a kill (re-run it as code that compiles; give the test a deadline), and a kill by an unrelated test is a lead (one was a real race, M7). |
 | **A fix that causes the next bug** | about half of each review round's findings were regressions from the previous round's fix | Before committing a fix to shared code, list its callers and test the ones you did not mean to change. Decide by what a thing *is*, not by a proxy. Run the mutation pass on the fix itself. |
 | **A seam only the live stack shows** | arq dedupes a cron job across *all* workers by name, so two workers sharing one meant one never ran; the SDK caches DNS for 60s; `uv lock` keeps the old hash for a same-version wheel; a framework reports a different route per version | Run the thing end to end once, through the app's own up script, before the first review. Test against the real framework, not a hand-built stand-in for its scope or request. |
 | **A query checked only where it is healthy** | a monitor's dry run read 0 for 5xx, so `sum(last_5m)` of a ratio (thirty percentages added, M6) looked right; a complement ratio that reads nothing in a total outage; a selector that merged the judge and accounts queues because `queue` was never pinned | Evaluate every monitor or widget query on data that should fire, should not, and sits on an edge (a burst across a bucket boundary, a total outage, a second environment). For each metric selected, list every tag key's *values*: a key the query does not pin is merged. Grep `docs/` for the pattern first; the answer may already be written down. |
+| **A failure rule decided in the wrong layer** | "stop after a failed fsync" enforced by the queue, which heard of the failure only after the WAL had released its lock: each of three review rounds found another ordering in which a sync slipped through the gap; the same rule moved into the shared WAL then made the TSDB fail every write while every health check stayed green (M7, #67) | For each "stop on X" rule, name the lock it is decided under and list every path that can act between X and that decision; decide it under the lock that guards the resource. Classify every error a lower layer returns as retryable or final, each with its own sentinel and test. Before moving a rule into shared code, list the new callers and what each will *report* when it fires. A race claim needs a hook that holds the window open, not repeated `-race` runs. |
 | **One sibling fixed, the others left** | a recovery message fixed on one monitor and left reading like an alert on three others; a doc claim corrected in one file and left in another | Fix the class, not the instance: before committing, grep for the same pattern in its siblings and fix them all, or say why not. |
 
 What is enforced and what is not: the coverage gates, `make ci` and the shipped-dashboards test
@@ -139,7 +140,9 @@ next time an integration or a dashboard is added.
   component takes a `Clock` interface (`Now() time.Time`, `NewTicker`), every
   disk component takes a root dir.
 - Errors wrapped with `%w` and context. No panics outside `main` and tests.
-- Every goroutine has an owner, a `context.Context`, and a shutdown path.
+- Every goroutine has an owner and a shutdown path: a `context.Context`, or a stop
+  channel closed by its owner's `Close` (the storage loops: `tsdb/db`, `logstore`,
+  `queue`), so that the final flush runs on a path the owner controls.
   `ozyd` and `agent` shut down gracefully on SIGTERM (flush, fsync, close).
 - Hot paths (statsd parse, chunk append, WAL write) get benchmarks
   (`go test -bench`), with numbers recorded in the milestone notes.
