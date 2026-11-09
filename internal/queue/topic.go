@@ -203,7 +203,10 @@ func Open(opts Options) (*Topic, error) {
 		}
 	}
 
-	w, err := wal.Open(wal.Options{Dir: opts.Dir, SegmentSize: opts.SegmentSize})
+	// StopOnSyncError: a failed fsync stops the log under its own lock, so
+	// no group Sync can run after a rollover's failed fsync and "succeed"
+	// over dropped pages before this topic hears about it.
+	w, err := wal.Open(wal.Options{Dir: opts.Dir, SegmentSize: opts.SegmentSize, StopOnSyncError: true})
 	if err != nil {
 		return nil, fmt.Errorf("queue: %w", err)
 	}
@@ -302,14 +305,8 @@ func scan(dir string) ([]segInfo, uint64, error) {
 	// good record was never acknowledged and must go before anything is
 	// appended behind it (wal.Repair explains why).
 	if end.File != "" {
-		info, err := os.Stat(filepath.Join(dir, end.File))
-		if err != nil {
-			return nil, 0, fmt.Errorf("queue: %w", err)
-		}
-		if info.Size() != end.Offset {
-			if err := wal.TruncateTail(dir, end); err != nil {
-				return nil, 0, fmt.Errorf("queue: cutting the torn tail: %w", err)
-			}
+		if err := wal.TruncateTail(dir, end); err != nil {
+			return nil, 0, fmt.Errorf("queue: cutting the torn tail: %w", err)
 		}
 	}
 
@@ -398,7 +395,7 @@ func (t *Topic) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	// Encode outside the lock: copying up to 16 MiB under t.mu would stall
 	// every Poll, Commit and Stats behind it. The offset is patched in once
 	// it is known.
-	data := encodeRecord(0, t.clock.Now(), payload)
+	data := encodeRecord(0, time.Time{}, payload)
 
 	// appendMu serializes appends, so offsets are assigned in file order.
 	// t.mu is held only around the bookkeeping on either side of the
@@ -425,7 +422,10 @@ func (t *Topic) Produce(ctx context.Context, payload []byte) (uint64, error) {
 	off := t.next // stable: only appenders change it, and appendMu is held
 	t.mu.Unlock()
 
+	// Both are stamped under appendMu, so times rise with offsets and lag
+	// in seconds is read off a monotonic sequence.
 	putOffset(data, off)
+	putTime(data, t.clock.Now())
 	err := t.logFn(t.w, wal.Record{Type: recordType, Data: data})
 	end := t.w.End()
 
@@ -570,6 +570,11 @@ func (t *Topic) breakLocked(cause error) error {
 	t.broken = fmt.Errorf("queue: %s accepts no more records until ozyd restarts: %w", t.dir, cause)
 	t.gen.err = t.broken
 	close(t.gen.done)
+	// Wake waiting Polls: those that have read everything durable now
+	// learn the topic has stopped instead of waiting for records that will
+	// never come.
+	close(t.notify)
+	t.notify = make(chan struct{})
 	return t.broken
 }
 
@@ -612,7 +617,11 @@ func (t *Topic) Consumer(name string) (*Consumer, error) {
 
 	c := &Consumer{t: t, name: name, path: filepath.Join(t.dir, consumersDir, name+offsetExt),
 		cursor: start, seg: seg, done: make(chan struct{})}
-	if !known {
+	// Write the file for a new name — and for a known one whose file is
+	// missing, which is what a registration that failed before its rename
+	// leaves behind: without the file, a restart forgets this consumer.
+	_, statErr := os.Stat(c.path)
+	if !known || errors.Is(statErr, os.ErrNotExist) {
 		if err := writeOffsetFile(c.path, start); err != nil {
 			// The registration fails, but its committed offset stays: the
 			// write may have failed after its rename (a failed directory

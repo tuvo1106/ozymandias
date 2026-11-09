@@ -77,10 +77,15 @@ func (c *Consumer) Poll(ctx context.Context, max int) ([]Record, error) {
 			return nil, ErrClosed
 		}
 		t.mu.Lock()
-		closed, notify, durable := t.closed, t.notify, t.synced
+		closed, notify, durable, broken := t.closed, t.notify, t.synced, t.broken
 		t.mu.Unlock()
 		if closed {
 			return nil, ErrClosed
+		}
+		if broken != nil && cursor >= durable {
+			// Nothing more will ever become durable; say so rather than
+			// wait like an idle consumer on a healthy topic.
+			return nil, broken
 		}
 		if cursor < durable {
 			c.mu.Lock()
@@ -186,13 +191,28 @@ func (c *Consumer) readSegment(out *[]Record, max int, durable uint64) (bool, er
 // Committing past the cursor is an error — it would skip records nobody
 // read — as is committing on a closed topic.
 func (c *Consumer) Commit(offset uint64) error {
+	advanced, err := c.commit(offset)
+	if err != nil || !advanced {
+		return err
+	}
+	// Outside c.mu: a retention pass unlinks files and lists the
+	// directory, and this consumer's Poll should not wait on that.
+	// Failures surface in Stats.RetentionErr: the commit itself is durable.
+	c.t.retain()
+	return nil
+}
+
+// commit writes the offset file under c.mu, which serializes commits so a
+// slower, older one can never overwrite a newer one. It reports whether the
+// committed offset moved.
+func (c *Consumer) commit(offset uint64) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
-		return ErrClosed
+		return false, ErrClosed
 	}
 	if offset >= c.cursor {
-		return fmt.Errorf("queue: consumer %q cannot commit offset %d: it has only read up to %d",
+		return false, fmt.Errorf("queue: consumer %q cannot commit offset %d: it has only read up to %d",
 			c.name, offset, int64(c.cursor)-1)
 	}
 	t := c.t
@@ -200,20 +220,19 @@ func (c *Consumer) Commit(offset uint64) error {
 	closed, prev := t.closed, t.committed[c.name]
 	t.mu.Unlock()
 	if closed {
-		return ErrClosed
+		return false, ErrClosed
 	}
 	next := offset + 1
 	if next <= prev {
-		return nil
+		return false, nil
 	}
 	if err := writeOffsetFile(c.path, next); err != nil {
-		return err
+		return false, err
 	}
 	t.mu.Lock()
 	t.committed[c.name] = next
 	t.mu.Unlock()
-	t.retain() // failures surface in Stats.RetentionErr, not here: the commit itself is durable
-	return nil
+	return true, nil
 }
 
 // retired reports whether retention has deleted segment seg.

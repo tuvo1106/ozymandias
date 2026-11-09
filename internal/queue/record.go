@@ -42,8 +42,9 @@ type Record struct {
 	Payload []byte
 }
 
-// putOffset writes off into an encoded record's header.
+// putOffset and putTime write into an encoded record's header.
 func putOffset(b []byte, off uint64) { binary.BigEndian.PutUint64(b[0:8], off) }
+func putTime(b []byte, at time.Time) { binary.BigEndian.PutUint64(b[8:16], uint64(at.UnixNano())) }
 
 func encodeRecord(off uint64, at time.Time, payload []byte) []byte {
 	b := make([]byte, recordHeader+len(payload))

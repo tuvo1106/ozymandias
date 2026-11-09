@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/wal"
 )
@@ -1391,6 +1393,15 @@ func TestConsumer_AFailedRegistrationStillHoldsRetention(t *testing.T) {
 	if got := poll(t, b, 10); !eq(payloads(got), []string{"aaaa", "bbbb", "cccc"}) {
 		t.Fatalf("b after a failed first registration = %q", payloads(got))
 	}
+	// The retry must write the file the failed attempt could not, or a
+	// restart forgets b and retention runs past it.
+	raw, err := os.ReadFile(filepath.Join(cdir, "b"+offsetExt))
+	if err != nil {
+		t.Fatalf("offset file after a successful retry: %v", err)
+	}
+	if next, err := decodeOffset(raw); err != nil || next != 0 {
+		t.Fatalf("offset file = %d, %v; want 0", next, err)
+	}
 }
 
 // TestConsumer_CloseWakesAWaitingPoll: a supervisor that closes a consumer to
@@ -1441,6 +1452,142 @@ func TestClose_WaitsForAnAppendInFlight(t *testing.T) {
 		t.Fatalf("append in flight at Close = %v, want it synced and acknowledged", err)
 	}
 	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestOpen_TheQueuesLogStopsOnAFailedFsync: the topic's whole fsyncgate
+// defence rests on its WAL making a failed fsync final under the WAL's own
+// lock (see Open).
+func TestOpen_TheQueuesLogStopsOnAFailedFsync(t *testing.T) {
+	tp := open(t, t.TempDir())
+	if !tp.w.StopOnSyncError() {
+		t.Fatal("the topic's WAL was opened without StopOnSyncError")
+	}
+}
+
+// TestPoll_AStoppedTopicFailsADrainedPollInsteadOfWaiting: once nothing more
+// can become durable, a consumer that has read everything is told so, and
+// one already waiting is woken to be told.
+func TestPoll_AStoppedTopicFailsADrainedPollInsteadOfWaiting(t *testing.T) {
+	boom := errors.New("injected EIO")
+	fail := false
+	var mu sync.Mutex
+	tp := open(t, t.TempDir(), func(o *Options) {
+		o.syncFn = func(w *wal.WAL) error {
+			mu.Lock()
+			defer mu.Unlock()
+			if fail {
+				return boom
+			}
+			return w.Sync()
+		}
+	})
+	c, _ := tp.Consumer("c")
+	produce(t, tp, "a")
+	waiting := make(chan error, 1)
+	go func() {
+		recs, err := c.Poll(context.Background(), 10) // gets "a"
+		if err != nil || len(recs) != 1 {
+			waiting <- fmt.Errorf("first poll = %v: %w", recs, err)
+			return
+		}
+		_, err = c.Poll(context.Background(), 10) // waits: nothing more yet
+		waiting <- err
+	}()
+	time.Sleep(30 * time.Millisecond)
+	mu.Lock()
+	fail = true
+	mu.Unlock()
+	if _, err := tp.Produce(context.Background(), []byte("b")); !errors.Is(err, boom) {
+		t.Fatalf("Produce with a failing fsync = %v", err)
+	}
+	select {
+	case err := <-waiting:
+		if !errors.Is(err, boom) {
+			t.Fatalf("waiting Poll on a stopped topic = %v, want the topic's error", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a waiting Poll was not woken when the topic stopped")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := c.Poll(ctx, 1); !errors.Is(err, boom) {
+		t.Fatalf("new Poll on a drained, stopped topic = %v, want the topic's error", err)
+	}
+}
+
+// tickClock returns a later time on every call, so two calls never agree.
+type tickClock struct {
+	clock.Clock
+	n atomic.Int64
+}
+
+func (c *tickClock) Now() time.Time { return time.Unix(0, c.n.Add(1)) }
+
+// TestProduce_TimesRiseWithOffsets: lag in seconds reads Record.Time in
+// offset order, so a record must never carry an earlier time than the one
+// before it. Stamped outside the append lock, concurrent producers invert.
+func TestProduce_TimesRiseWithOffsets(t *testing.T) {
+	tp := open(t, t.TempDir(), func(o *Options) { o.Clock = &tickClock{Clock: clock.Real()} })
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 20 {
+				if _, err := tp.Produce(context.Background(), []byte("x")); err != nil {
+					t.Error(err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	c, _ := tp.Consumer("c")
+	recs := poll(t, c, 1000)
+	for i := 1; i < len(recs); i++ {
+		if recs[i].Time.Before(recs[i-1].Time) {
+			t.Fatalf("offset %d has time %v, before offset %d's %v", recs[i].Offset, recs[i].Time, recs[i-1].Offset, recs[i-1].Time)
+		}
+	}
+}
+
+// TestCommit_RetentionDoesNotHoldTheConsumer: a retention pass (unlinks, a
+// directory listing) runs after the commit is durable, and this consumer's
+// Poll must not wait for it.
+func TestCommit_RetentionDoesNotHoldTheConsumer(t *testing.T) {
+	inPass, release := make(chan struct{}), make(chan struct{})
+	var once, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	tp := open(t, t.TempDir(), func(o *Options) {
+		o.SegmentSize = 30
+		o.afterUnlink = func() { once.Do(func() { close(inPass); <-release }) }
+	})
+	defer unblock()
+	c, _ := tp.Consumer("c")
+	produce(t, tp, "aaaa", "bbbb", "cccc")
+	poll(t, c, 2) // parked at the end of segment 1
+	committed := make(chan error, 1)
+	// Retires segment 0 only. (Retiring the segment this consumer is parked
+	// on makes its next Poll wait for the pass on purpose: see retired.)
+	go func() { committed <- c.Commit(0) }()
+	<-inPass
+	polled := make(chan []Record, 1)
+	go func() {
+		recs, _ := c.Poll(context.Background(), 1)
+		polled <- recs
+	}()
+	select {
+	case recs := <-polled:
+		if !eq(payloads(recs), []string{"cccc"}) {
+			t.Fatalf("Poll during retention = %q", payloads(recs))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Poll waited on another goroutine's retention pass")
+	}
+	unblock()
+	if err := <-committed; err != nil {
 		t.Fatal(err)
 	}
 }

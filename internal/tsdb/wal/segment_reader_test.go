@@ -204,3 +204,49 @@ func TestLog_ARolloverThatCannotOpenTheNextSegmentStopsTheLog(t *testing.T) {
 		t.Fatalf("Log after a failed rollover = %v, want the log to stay stopped", err)
 	}
 }
+
+// TestStopOnSyncError_MakesAFailedRolloverFsyncFinal: with the option, the
+// decision is made under the log's lock, so no later Sync can "succeed" over
+// the pages the failed one may have lost.
+func TestStopOnSyncError_MakesAFailedRolloverFsyncFinal(t *testing.T) {
+	w, err := Open(Options{Dir: t.TempDir(), SegmentSize: 16, StopOnSyncError: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !w.StopOnSyncError() {
+		t.Fatal("StopOnSyncError() = false")
+	}
+	if err := w.Log(Record{Type: 1, Data: []byte("fills it")}); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.f.Close()
+	if err := w.Log(Record{Type: 1, Data: []byte("rolls")}); !errors.Is(err, ErrSync) || !errors.Is(err, ErrBroken) {
+		t.Fatalf("failed rollover fsync with StopOnSyncError = %v, want ErrSync and ErrBroken", err)
+	}
+	if err := w.Sync(); !errors.Is(err, ErrBroken) {
+		t.Fatalf("Sync after it = %v, want ErrBroken (no second chance)", err)
+	}
+	// Close on a stopped log reports why it stopped, not a fake fsync
+	// failure on the file the rollover already closed.
+	want := w.broken
+	if err := w.Close(); want == nil || !errors.Is(err, want) {
+		t.Fatalf("Close on a stopped log = %v, want the error it stopped with (%v)", err, want)
+	}
+}
+
+func TestStopOnSyncError_AFailedSyncIsFinal(t *testing.T) {
+	w, err := Open(Options{Dir: t.TempDir(), StopOnSyncError: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Log(Record{Type: 1, Data: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.f.Close()
+	if err := w.Sync(); !errors.Is(err, ErrBroken) {
+		t.Fatalf("failed Sync with StopOnSyncError = %v, want ErrBroken", err)
+	}
+	if err := w.Log(Record{Type: 1, Data: []byte("y")}); !errors.Is(err, ErrBroken) {
+		t.Fatalf("Log after it = %v, want ErrBroken", err)
+	}
+}
