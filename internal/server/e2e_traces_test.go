@@ -98,14 +98,39 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 		out["_code"] = float64(rec.Code)
 		return out
 	}
+	// arr and obj read the JSON with a failure that shows the response, not
+	// a type-assertion panic: an error answer ({"status":"error",...}) has
+	// none of the keys a test reads.
+	arr := func(m map[string]any, key string) []any {
+		t.Helper()
+		v, ok := m[key].([]any)
+		if !ok {
+			t.Fatalf("%q is not a list in %v", key, m)
+		}
+		return v
+	}
+	obj := func(v any) map[string]any {
+		t.Helper()
+		m, ok := v.(map[string]any)
+		if !ok {
+			t.Fatalf("not an object: %v", v)
+		}
+		return m
+	}
 	window := fmt.Sprintf("from=%d&to=%d", clk.Now().Add(-time.Minute).UnixMilli(), clk.Now().Add(5*time.Minute).UnixMilli())
 
 	var shop map[string]any
 	deadline := time.Now().Add(10 * time.Second)
 	for shop == nil && time.Now().Before(deadline) {
 		clk.Advance(time.Second)
-		for _, r := range get("/api/v1/services?env=e2e&" + window)["services"].([]any) {
-			if row := r.(map[string]any); row["service"] == "shop" && row["requests"] == float64(total) && row["p50_ms"] != nil && row["p95_ms"] != nil { // sketches travel on their own hop, and each percentile is its own query
+		for _, r := range arr(get("/api/v1/services?env=e2e&"+window), "services") {
+			// Sketches travel on their own hop, and the API reads p50, p95
+			// and p99 with three separate queries, so a sketch landing
+			// between two of them gives a row with some percentiles and
+			// not others. Wait for all three.
+			row := obj(r)
+			if row["service"] == "shop" && row["requests"] == float64(total) &&
+				row["p50_ms"] != nil && row["p95_ms"] != nil && row["p99_ms"] != nil {
 				shop = row
 			}
 		}
@@ -124,8 +149,8 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 		t.Fatalf("services with no env: %v", all)
 	}
 	var everyEnv map[string]any
-	for _, r := range all["services"].([]any) {
-		if row := r.(map[string]any); row["service"] == "shop" {
+	for _, r := range arr(all, "services") {
+		if row := obj(r); row["service"] == "shop" {
 			everyEnv = row
 		}
 	}
@@ -146,8 +171,8 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 	// has its first bucket begin at the start, over the traffic, every run.
 	from := time.Unix(1790000000+500, 0)
 	justAfter := fmt.Sprintf("from=%d&to=%d", from.UnixMilli(), from.Add(30000*time.Second).UnixMilli())
-	for _, r := range get("/api/v1/services?env=e2e&" + justAfter)["services"].([]any) {
-		if row := r.(map[string]any); row["service"] == "shop" {
+	for _, r := range arr(get("/api/v1/services?env=e2e&"+justAfter), "services") {
+		if row := obj(r); row["service"] == "shop" {
 			t.Errorf("shop counts requests from before the window: %v", row)
 		}
 	}
@@ -155,8 +180,8 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 	if idle["_code"] != 200.0 {
 		t.Fatalf("a later window: %v", idle)
 	}
-	for _, r := range idle["services"].([]any) {
-		if row := r.(map[string]any); row["service"] == "shop" {
+	for _, r := range arr(idle, "services") {
+		if row := obj(r); row["service"] == "shop" {
 			t.Errorf("shop has a row in a window with no requests: %v", row)
 		}
 	}
@@ -164,14 +189,15 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 	if shop["errors"] != float64(failing) || shop["error_pct"] != 10.0 {
 		t.Errorf("errors = %v (%v%%), want exactly %d: statistics must not be sampled", shop["errors"], shop["error_pct"], failing)
 	}
-	// Durations were 10..49 ms in equal numbers: the median is about 29 and p95 about 48. A
+	// Durations were 10..49 ms in equal numbers: the median is about 29 and p95 about 48.
 	// This pins the values, not the grid: the data here happens to sit in the first bucket, so
 	// reverting wholeWindow to to-from does NOT fail this test (checked by mutation). The one-bucket
 	// property is by construction: 2^31 seconds exceeds any unix time.
-	p50, ok50 := shop["p50_ms"].(float64)
-	p95, ok95 := shop["p95_ms"].(float64)
-	if !ok50 || !ok95 {
-		t.Fatalf("percentiles missing or not numbers in %v", shop)
+	// The wait above only accepts a row with all three, and JSON numbers
+	// decode as float64, so these assertions cannot fail.
+	p50, p95, p99 := shop["p50_ms"].(float64), shop["p95_ms"].(float64), shop["p99_ms"].(float64)
+	if p99 < p95 || p99 > 52 {
+		t.Errorf("p99 = %v ms: want at least p95 (%v) and at most the slowest request", p99, p95)
 	}
 	if p50 < 25 || p50 > 34 || p95 < 44 || p95 > 52 {
 		t.Errorf("p50 = %v, p95 = %v ms: want about 29 and 48 over the whole window", p50, p95)
@@ -179,26 +205,26 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 
 	// The store holds a sample: far fewer than 200, but every failing request's
 	// trace is a candidate for the error sampler and the first of the resource is rare.
-	list := get("/api/v1/traces?service=shop&env=e2e&" + window)["traces"].([]any)
+	list := arr(get("/api/v1/traces?service=shop&env=e2e&"+window), "traces")
 	if len(list) == 0 || len(list) >= total/2 {
 		t.Errorf("%d shop traces stored of %d sent: want a sample", len(list), total)
 	}
-	errList := get("/api/v1/traces?service=shop&env=e2e&error=true&" + window)["traces"].([]any)
+	errList := arr(get("/api/v1/traces?service=shop&env=e2e&error=true&"+window), "traces")
 	if len(errList) == 0 {
 		t.Error("no error trace kept although 20 requests failed")
 	}
 
 	// The cross-service trace is one trace of two spans, and the map has the edge.
 	tr := get("/api/v1/traces/" + fmt.Sprintf("%032x", 9001))
-	if tr["_code"] != float64(200) || tr["span_count"] != float64(2) || len(tr["orphans"].([]any)) != 0 {
+	if tr["_code"] != float64(200) || tr["span_count"] != float64(2) || len(arr(tr, "orphans")) != 0 {
 		t.Fatalf("trace = %v", tr)
 	}
 	if fmt.Sprint(tr["services"]) != "[billing gateway]" {
 		t.Errorf("services = %v", tr["services"])
 	}
 	sm := get("/api/v1/service-map?env=e2e&" + window)
-	edges := sm["edges"].([]any)
-	if len(edges) != 1 || edges[0].(map[string]any)["parent"] != "gateway" || edges[0].(map[string]any)["child"] != "billing" {
+	edges := arr(sm, "edges")
+	if len(edges) != 1 || obj(edges[0])["parent"] != "gateway" || obj(edges[0])["child"] != "billing" {
 		t.Errorf("edges = %v", edges)
 	}
 	if code := get("/api/v1/traces/" + fmt.Sprintf("%032x", 5))["_code"]; code != float64(404) && code != float64(200) {
@@ -209,8 +235,8 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 	}
 
 	// Resource table for one service.
-	res := get("/api/v1/services/shop/resources?env=e2e&" + window)["services"].([]any)
-	if len(res) != 1 || res[0].(map[string]any)["resource"] != "get /items/:id" || res[0].(map[string]any)["requests"] != float64(total) {
+	res := arr(get("/api/v1/services/shop/resources?env=e2e&"+window), "services")
+	if len(res) != 1 || obj(res[0])["resource"] != "get /items/:id" || obj(res[0])["requests"] != float64(total) {
 		t.Errorf("resources = %v", res)
 	}
 }
