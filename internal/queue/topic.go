@@ -141,6 +141,14 @@ func Open(opts Options) (*Topic, error) {
 	if opts.MaxBytes <= 0 {
 		opts.MaxBytes = DefaultMaxBytes
 	}
+	// Retention frees space only by deleting whole segments other than the
+	// newest. A cap under two segments can fill the newest segment before it
+	// ever rolls, and would then refuse records for good, however far the
+	// consumers get.
+	if opts.MaxBytes < 2*opts.SegmentSize {
+		return nil, fmt.Errorf("queue: MaxBytes (%d) must be at least twice SegmentSize (%d)",
+			opts.MaxBytes, opts.SegmentSize)
+	}
 	if opts.SyncInterval == 0 {
 		opts.SyncInterval = DefaultSyncInterval
 	}
@@ -377,6 +385,10 @@ func (t *Topic) Produce(ctx context.Context, payload []byte) (uint64, error) {
 		return 0, fmt.Errorf("queue: payload of %d bytes exceeds the %d limit", len(payload), MaxPayload)
 	}
 	size := int64(wal.RecordOverhead + recordHeader + len(payload))
+	// Encode outside the lock: copying up to 16 MiB under t.mu would stall
+	// every Poll, Commit and Stats behind it. The offset is patched in once
+	// it is known.
+	data := encodeRecord(0, t.clock.Now(), payload)
 
 	t.mu.Lock()
 	switch {
@@ -391,13 +403,15 @@ func (t *Topic) Produce(ctx context.Context, payload []byte) (uint64, error) {
 		return 0, ErrFull
 	}
 	off := t.next
-	if err := t.logFn(t.w, wal.Record{Type: recordType, Data: encodeRecord(off, t.clock.Now(), payload)}); err != nil {
-		// Nothing was appended (the WAL cut any partial record back off),
-		// so the offset is not used up. ENOSPC lands here, and is worth
-		// retrying. A failed fsync — the one a rollover does before closing
-		// the old segment — is not: it stops the topic exactly as a failed
-		// group commit does, and fails everyone waiting on one.
-		if errors.Is(err, wal.ErrSync) {
+	putOffset(data, off)
+	if err := t.logFn(t.w, wal.Record{Type: recordType, Data: data}); err != nil {
+		// The offset is not used up: nothing was appended. A write error
+		// such as ENOSPC leaves the log usable and is worth retrying. A log
+		// that has stopped (wal.ErrBroken) is not: a rollover's fsync
+		// failed, or a rollover or rollback went wrong partway. That stops
+		// the topic exactly as a failed group commit does, and fails
+		// everyone waiting on one.
+		if errors.Is(err, wal.ErrBroken) {
 			err = t.breakLocked(err)
 		} else {
 			err = fmt.Errorf("queue: %w", err)
@@ -564,6 +578,8 @@ func (t *Topic) Consumer(name string) (*Consumer, error) {
 	t.active[name] = true
 	t.committed[name] = start
 	t.mu.Unlock()
+	// (Registering again after Consumer.Close resumes from the committed
+	// offset kept in t.committed, exactly as a restart would.)
 	seg := t.locate(start)
 
 	c := &Consumer{t: t, name: name, path: filepath.Join(t.dir, consumersDir, name+offsetExt),

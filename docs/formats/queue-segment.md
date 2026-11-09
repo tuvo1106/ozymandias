@@ -17,9 +17,10 @@ from without losing an acknowledged record and without inventing one.
 ```
 
 The segments are plain [WAL](wal.md) segments, reused byte for byte: same
-framing, same CRC, same torn-tail rule, same `Repair` at startup. The queue
-adds nothing to the framing; it defines one record type and what goes inside
-it.
+framing, same CRC, same torn-tail rule. Recovery is the queue's own single
+pass rather than `wal.Repair` followed by a second read (see "Recovery
+rules"). The queue adds nothing to the framing; it defines one record type
+and what goes inside it.
 
 Segment numbers are consecutive. Retention deletes from the front, so the
 oldest segment number grows over time, but a gap in the middle is corruption.

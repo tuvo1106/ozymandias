@@ -28,6 +28,24 @@ type Consumer struct {
 	cursor uint64
 	seg    int
 	off    int64
+	closed bool
+}
+
+// Close releases the registration, so the name can be registered again (by
+// a supervisor restarting a store's consumer loop, say). The committed
+// offset stays behind and keeps holding back retention: a consumer that
+// exists on disk is a consumer, whether or not anything is reading for it.
+// Polls and Commits on a closed Consumer return ErrClosed.
+func (c *Consumer) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return
+	}
+	c.closed = true
+	c.t.mu.Lock()
+	delete(c.t.active, c.name)
+	c.t.mu.Unlock()
 }
 
 // Name is the consumer's name.
@@ -39,6 +57,10 @@ func (c *Consumer) Name() string { return c.name }
 //
 // The consumer's lock is not held while waiting, so a Commit from another
 // goroutine (a pipelined apply loop) is never stuck behind an idle Poll.
+//
+// It returns records or an error, never both: on an error the cursor is put
+// back where this Poll started, so the next Poll reads the same records
+// again rather than starting after ones the caller was never given.
 func (c *Consumer) Poll(ctx context.Context, max int) ([]Record, error) {
 	if max <= 0 {
 		return nil, fmt.Errorf("queue: Poll max must be positive, got %d", max)
@@ -46,8 +68,11 @@ func (c *Consumer) Poll(ctx context.Context, max int) ([]Record, error) {
 	t := c.t
 	for {
 		c.mu.Lock()
-		cursor := c.cursor
+		cursor, cclosed := c.cursor, c.closed
 		c.mu.Unlock()
+		if cclosed {
+			return nil, ErrClosed
+		}
 		t.mu.Lock()
 		closed, notify, durable := t.closed, t.notify, t.synced
 		t.mu.Unlock()
@@ -57,7 +82,12 @@ func (c *Consumer) Poll(ctx context.Context, max int) ([]Record, error) {
 		if cursor < durable {
 			c.mu.Lock()
 			if c.cursor < durable { // another Poll may have got there first
+				cur, seg, off := c.cursor, c.seg, c.off
 				out, err := c.readLocked(max, durable)
+				if err != nil {
+					c.cursor, c.seg, c.off = cur, seg, off
+					out = nil
+				}
 				c.mu.Unlock()
 				return out, err
 			}
@@ -150,6 +180,9 @@ func (c *Consumer) readSegment(out *[]Record, max int, durable uint64) (bool, er
 func (c *Consumer) Commit(offset uint64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return ErrClosed
+	}
 	if offset >= c.cursor {
 		return fmt.Errorf("queue: consumer %q cannot commit offset %d: it has only read up to %d",
 			c.name, offset, int64(c.cursor)-1)

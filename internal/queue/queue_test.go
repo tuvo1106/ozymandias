@@ -330,7 +330,7 @@ func TestRetention_ConsumerParkedOnARetiredSegment(t *testing.T) {
 }
 
 func TestProduce_FullTopicRefusesUntilRetentionFreesSpace(t *testing.T) {
-	tp := open(t, t.TempDir(), func(o *Options) { o.SegmentSize = 64; o.MaxBytes = 3 * 29 })
+	tp := open(t, t.TempDir(), func(o *Options) { o.SegmentSize = 30; o.MaxBytes = 3 * 29 })
 	c, _ := tp.Consumer("c")
 	produce(t, tp, "aaaa", "bbbb", "cccc")
 	if _, err := tp.Produce(context.Background(), []byte("dddd")); !errors.Is(err, ErrFull) {
@@ -1012,7 +1012,7 @@ func TestProduce_AFailedRolloverFsyncStopsTheTopic(t *testing.T) {
 			fail.Lock()
 			defer fail.Unlock()
 			if failing {
-				return fmt.Errorf("%w before rollover: injected EIO", wal.ErrSync)
+				return fmt.Errorf("%w: %w before rollover: injected EIO", wal.ErrBroken, wal.ErrSync)
 			}
 			return w.Log(r)
 		}
@@ -1059,7 +1059,7 @@ func TestProduce_AGroupSyncDuringAFailedRolloverProvesNothing(t *testing.T) {
 			fail.Lock()
 			defer fail.Unlock()
 			if failing {
-				return fmt.Errorf("%w before rollover: injected EIO", wal.ErrSync)
+				return fmt.Errorf("%w: %w before rollover: injected EIO", wal.ErrBroken, wal.ErrSync)
 			}
 			return w.Log(r)
 		}
@@ -1211,5 +1211,94 @@ func TestCommit_IsNotStuckBehindAnIdlePoll(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Commit blocked behind an idle Poll")
+	}
+}
+
+// TestOpen_RefusesACapUnderTwoSegments: the newest segment is never retained
+// away, so a cap it can fill before rolling would refuse records for good.
+func TestOpen_RefusesACapUnderTwoSegments(t *testing.T) {
+	if tp, err := Open(Options{Dir: t.TempDir(), SegmentSize: 64 << 20, MaxBytes: 32 << 20}); err == nil {
+		_ = tp.Close()
+		t.Fatal("Open with MaxBytes < 2×SegmentSize = nil error")
+	}
+	tp := open(t, t.TempDir(), func(o *Options) { o.SegmentSize = 50; o.MaxBytes = 100 })
+	if tp.maxBytes != 100 {
+		t.Fatalf("maxBytes = %d", tp.maxBytes)
+	}
+}
+
+// TestProduce_AStoppedLogStopsTheTopic: the WAL stops for reasons other than
+// a failed fsync (a rollback or rollover gone wrong). Each is as final, and
+// must break the topic rather than come back as a retryable error forever.
+func TestProduce_AStoppedLogStopsTheTopic(t *testing.T) {
+	tp := open(t, t.TempDir(), func(o *Options) {
+		o.logFn = func(*wal.WAL, wal.Record) error {
+			return fmt.Errorf("%w: a partial record could not be removed: injected", wal.ErrBroken)
+		}
+	})
+	if _, err := tp.Produce(context.Background(), []byte("a")); !errors.Is(err, wal.ErrBroken) {
+		t.Fatalf("Produce on a stopped log = %v", err)
+	}
+	if s := tp.Stats(); s.Broken == nil {
+		t.Fatal("a stopped log did not break the topic: Stats.Broken is nil")
+	}
+}
+
+// TestConsumer_CloseLetsTheNameRegisterAgainAndResume: a supervisor that
+// restarts a store's consumer loop must be able to re-register, and the new
+// registration resumes at the committed offset.
+func TestConsumer_CloseLetsTheNameRegisterAgainAndResume(t *testing.T) {
+	tp := open(t, t.TempDir())
+	produce(t, tp, "a", "b", "c")
+	c, _ := tp.Consumer("c")
+	poll(t, c, 3)
+	if err := c.Commit(0); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	c.Close() // idempotent
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := c.Poll(ctx, 1); !errors.Is(err, ErrClosed) {
+		t.Errorf("Poll on a closed consumer = %v, want ErrClosed", err)
+	}
+	if err := c.Commit(1); !errors.Is(err, ErrClosed) {
+		t.Errorf("Commit on a closed consumer = %v", err)
+	}
+	again, err := tp.Consumer("c")
+	if err != nil {
+		t.Fatalf("re-registering after Close: %v", err)
+	}
+	if got := poll(t, again, 10); !eq(payloads(got), []string{"b", "c"}) {
+		t.Fatalf("re-registered consumer = %q, want [b c]", payloads(got))
+	}
+}
+
+// TestPoll_AnErrorReturnsNoRecordsAndRewinds: a Poll that fails partway must
+// not hand back some records with the error after moving past them. A
+// caller that drops results on error would lose them, and its next commit
+// would skip them for good.
+func TestPoll_AnErrorReturnsNoRecordsAndRewinds(t *testing.T) {
+	dir := t.TempDir()
+	tp := open(t, dir, func(o *Options) { o.SegmentSize = 30 }) // one record per segment
+	c, _ := tp.Consumer("c")
+	produce(t, tp, "aaaa", "bbbb", "cccc")
+	seg1 := filepath.Join(dir, wal.SegmentName(1))
+	if err := os.Chmod(seg1, 0); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(seg1, 0o644) }()
+	recs, err := c.Poll(context.Background(), 10)
+	if err == nil {
+		t.Fatalf("Poll over an unreadable segment = %q, nil", payloads(recs))
+	}
+	if recs != nil {
+		t.Fatalf("Poll returned %q with its error", payloads(recs))
+	}
+	if err := os.Chmod(seg1, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := poll(t, c, 10); !eq(payloads(got), []string{"aaaa", "bbbb", "cccc"}) {
+		t.Fatalf("Poll after the error = %q, want it to start again at aaaa", payloads(got))
 	}
 }

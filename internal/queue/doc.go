@@ -48,11 +48,12 @@
 //
 // # Retention and the cap
 //
-// A segment is deleted once every offset in it is at or below every
-// consumer's committed offset. A topic that reaches MaxBytes refuses new
-// records with [ErrFull] instead of deleting unconsumed ones, because a record
-// in the queue has already been acknowledged and dropping it would be exactly
-// the silent loss the queue exists to prevent. The caller (intake) turns
+// A segment is deleted once every offset in it has been committed by every
+// consumer — that is, lies below every consumer's committed next-offset. A
+// topic that reaches MaxBytes refuses new records with [ErrFull] instead of
+// deleting unconsumed ones, because a record in the queue has already been
+// acknowledged and dropping it would be exactly the silent loss the queue
+// exists to prevent. The caller (intake) turns
 // pressure into 429s long before the cap (M7 §2).
 //
 // # On disk

@@ -16,10 +16,19 @@ import (
 )
 
 // TestProperty_ConsumedSequenceIsTheProducedSequence is M7's L2 property for
-// the queue: for any interleaving of produce, poll, commit, crash-with-a-torn-
-// tail and restart, every consumer reads exactly the acknowledged records, in
-// order, resuming after each restart at its committed offset — no gap, no
-// reordering, and no redelivery of anything it committed.
+// the queue: for any interleaving of produce, poll, commit and restart, every
+// consumer reads exactly the records that reached the log, in order, resuming
+// after each restart at its committed offset — no gap, no reordering, and no
+// redelivery of anything it committed.
+//
+// What a "crash" is here, precisely: the topic is closed (so its own final
+// sync runs), then the directory is given what a killed process can leave
+// behind — a whole record written but never acknowledged, a torn record
+// after it, a torn offset-file commit — in any combination. What it does not
+// model is a power cut dropping unsynced pages; an in-process test cannot
+// drop the page cache. The fsync ordering is pinned instead by the
+// fault-injection tests (TestProduce_DoesNotReturnBeforeTheFsync,
+// TestOpen_SyncsRecoveredRecordsBeforeServingThem and their neighbours).
 //
 // The model is two integers per consumer (cursor, committed) over a list of
 // acknowledged payloads, so every Poll's result is checked exactly, not just
@@ -110,6 +119,25 @@ func TestProperty_ConsumedSequenceIsTheProducedSequence(t *testing.T) {
 			case 9: // crash and restart, maybe leaving a torn record or a torn commit
 				if err := tp.Close(); err != nil {
 					rt.Fatalf("Close: %v", err)
+				}
+				if rapid.Bool().Draw(rt, "abandoned") {
+					// A whole record the crashed run wrote but never
+					// acknowledged (its producer was waiting on the fsync).
+					// It survives in the page cache, so the next run must
+					// deliver it under the next offset: at-least-once.
+					p := fmt.Sprintf("abandoned%d", i)
+					w, err := wal.Open(wal.Options{Dir: dir, SegmentSize: segSize})
+					if err != nil {
+						rt.Fatal(err)
+					}
+					rec := wal.Record{Type: recordType, Data: encodeRecord(uint64(len(acked)), time.Unix(0, 0), []byte(p))}
+					if err := w.Log(rec); err != nil {
+						rt.Fatal(err)
+					}
+					if err := w.Close(); err != nil {
+						rt.Fatal(err)
+					}
+					acked = append(acked, p)
 				}
 				if rapid.Bool().Draw(rt, "tornRecord") {
 					rec := wal.Record{Type: recordType, Data: encodeRecord(uint64(len(acked)), time.Unix(0, 0), []byte("unacked"))}

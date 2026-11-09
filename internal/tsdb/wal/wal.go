@@ -44,11 +44,21 @@ var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 // explain as a torn tail. It names the file and offset.
 var ErrCorrupt = errors.New("wal: corrupt record")
 
-// ErrSync wraps every fsync failure the log reports, from Sync and from the
-// sync a rollover does before closing the old segment. A caller that must not
-// retry a failed fsync (M7's queue: see its syncOnce) tells it apart from an
-// ordinary write error, such as ENOSPC, with errors.Is.
+// ErrSync wraps every fsync failure the log reports: Sync, the segment sync
+// and directory sync a rollover does, and Close.
 var ErrSync = errors.New("wal: fsync failed")
+
+// ErrBroken is wrapped by every error from a log that has stopped accepting
+// writes. That happens after any fsync failure, after a rollover that failed
+// partway, and after a partial record that could not be cut back off. The
+// log stays stopped until the process restarts and [Repair] runs.
+//
+// Why a failed fsync is final: after one, Linux may already have dropped the
+// dirty pages, and a later fsync can report success without writing them
+// (PostgreSQL's 2018 "fsyncgate"). Retrying would acknowledge data that is
+// not on disk. A failed write (ENOSPC) is different. The record is cut back
+// off, the log stays usable, and the error does not wrap ErrBroken.
+var ErrBroken = errors.New("wal: log is no longer writable")
 
 // Record is one entry. Type is the caller's; 0 is reserved as "unset" so a
 // zero-filled region cannot masquerade as a valid record.
@@ -77,10 +87,10 @@ type WAL struct {
 	segment int
 	size    int64
 	closed  bool
-	// broken is set when a write failed and the half-written record could not
-	// be cut back off. Everything after it in the file is unreachable, so the
-	// log refuses further writes rather than accepting data it knows will be
-	// lost. See [WAL.Log].
+	// broken is set by breakLocked: after an fsync failure, a failed
+	// rollover, or a half-written record that could not be cut back off.
+	// The log then refuses further writes rather than accepting data it
+	// knows may be lost. See [ErrBroken].
 	broken error
 	hdr    [headerSize]byte // scratch, reused per record under mu
 }
@@ -132,7 +142,7 @@ func (w *WAL) openSegment(n int) error {
 	if info.Size() == 0 {
 		if err := syncDir(w.dir); err != nil {
 			_ = f.Close()
-			return err
+			return fmt.Errorf("%w: %w", ErrSync, err)
 		}
 	}
 	w.f, w.segment, w.size = f, n, info.Size()
@@ -207,26 +217,38 @@ func (w *WAL) Log(recs ...Record) error {
 // a quiet one that keeps taking writes is not.
 func (w *WAL) undoPartial(cause error) error {
 	if err := w.f.Truncate(w.size); err != nil {
-		w.broken = fmt.Errorf("wal: a partial record could not be removed, "+
-			"so the log is no longer writable: %w", errors.Join(cause, err))
-		return w.broken
+		return w.breakLocked(fmt.Errorf("a partial record could not be removed: %w", errors.Join(cause, err)))
 	}
 	if _, err := w.f.Seek(w.size, io.SeekStart); err != nil {
-		w.broken = fmt.Errorf("wal: a partial record was removed but the log "+
-			"could not be repositioned: %w", errors.Join(cause, err))
-		return w.broken
+		return w.breakLocked(fmt.Errorf("a partial record was removed but the log "+
+			"could not be repositioned: %w", errors.Join(cause, err)))
 	}
 	return cause
 }
 
+// breakLocked stops the log for good and returns the error it now reports.
+// The first cause wins. The caller holds mu.
+func (w *WAL) breakLocked(cause error) error {
+	if w.broken == nil {
+		w.broken = fmt.Errorf("%w: %w", ErrBroken, cause)
+	}
+	return w.broken
+}
+
+// roll closes the current segment and opens the next. Any failure stops the
+// log. A failed sync is final (see ErrBroken). A failed close or open leaves
+// w.f pointing at a closed file, which no later write can use.
 func (w *WAL) roll() error {
 	if err := w.f.Sync(); err != nil {
-		return fmt.Errorf("%w before rollover: %w", ErrSync, err)
+		return w.breakLocked(fmt.Errorf("%w before rollover: %w", ErrSync, err))
 	}
 	if err := w.f.Close(); err != nil {
-		return fmt.Errorf("wal: closing segment: %w", err)
+		return w.breakLocked(fmt.Errorf("wal: closing segment: %w", err))
 	}
-	return w.openSegment(w.segment + 1)
+	if err := w.openSegment(w.segment + 1); err != nil {
+		return w.breakLocked(err)
+	}
+	return nil
 }
 
 // Sync flushes the current segment to stable storage. Until it returns, a
@@ -241,7 +263,7 @@ func (w *WAL) Sync() error {
 		return w.broken
 	}
 	if err := w.f.Sync(); err != nil {
-		return fmt.Errorf("%w: %w", ErrSync, err)
+		return w.breakLocked(fmt.Errorf("%w: %w", ErrSync, err))
 	}
 	return nil
 }
@@ -254,7 +276,10 @@ func (w *WAL) Close() error {
 		return nil
 	}
 	w.closed = true
-	err := w.f.Sync()
+	var err error
+	if serr := w.f.Sync(); serr != nil {
+		err = fmt.Errorf("%w: %w", ErrSync, serr)
+	}
 	if cerr := w.f.Close(); err == nil {
 		err = cerr
 	}

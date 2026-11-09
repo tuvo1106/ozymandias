@@ -134,11 +134,8 @@ func TestLog_AFailedRolloverFsyncIsErrSync(t *testing.T) {
 	}
 	_ = w.f.Close() // the rollover's fsync of this segment now fails
 	err = w.Log(Record{Type: 1, Data: []byte("rolls")})
-	if !errors.Is(err, ErrSync) {
-		t.Fatalf("Log over a failing rollover fsync = %v, want ErrSync", err)
-	}
-	if err := w.Sync(); !errors.Is(err, ErrSync) {
-		t.Fatalf("Sync on a failing file = %v, want ErrSync", err)
+	if !errors.Is(err, ErrSync) || !errors.Is(err, ErrBroken) {
+		t.Fatalf("Log over a failing rollover fsync = %v, want ErrSync and ErrBroken", err)
 	}
 }
 
@@ -158,5 +155,51 @@ func TestSegments_ListsInOrderAndIgnoresOtherFiles(t *testing.T) {
 	}
 	if _, err := Segments(filepath.Join(dir, "absent")); err == nil {
 		t.Error("Segments on a missing dir = nil error")
+	}
+}
+
+// TestSync_AFailedFsyncStopsTheLog: after a failed fsync a retry can report
+// success over pages the kernel dropped, so the log must refuse everything
+// after it (ErrBroken), not just report the one failure.
+func TestSync_AFailedFsyncStopsTheLog(t *testing.T) {
+	w, err := Open(Options{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Log(Record{Type: 1, Data: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.f.Close()
+	if err := w.Sync(); !errors.Is(err, ErrSync) || !errors.Is(err, ErrBroken) {
+		t.Fatalf("failed Sync = %v, want ErrSync and ErrBroken", err)
+	}
+	if err := w.Log(Record{Type: 1, Data: []byte("y")}); !errors.Is(err, ErrBroken) {
+		t.Fatalf("Log after a failed Sync = %v, want ErrBroken", err)
+	}
+}
+
+// TestLog_ARolloverThatCannotOpenTheNextSegmentStopsTheLog: the old segment
+// is closed by then, so no later write has anywhere to go.
+func TestLog_ARolloverThatCannotOpenTheNextSegmentStopsTheLog(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(Options{Dir: dir, SegmentSize: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Log(Record{Type: 1, Data: []byte("fills it")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o755) }()
+	if err := w.Log(Record{Type: 1, Data: []byte("rolls")}); !errors.Is(err, ErrBroken) {
+		t.Fatalf("Log over a failed rollover open = %v, want ErrBroken", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Log(Record{Type: 1, Data: []byte("again")}); !errors.Is(err, ErrBroken) {
+		t.Fatalf("Log after a failed rollover = %v, want the log to stay stopped", err)
 	}
 }

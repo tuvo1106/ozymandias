@@ -115,6 +115,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A write-ahead log stops accepting writes after any failed fsync** (M7). This
+  applies to the TSDB, the log store and the new queue. It also stops after a
+  rollover that fails partway. Every later write fails with `wal.ErrBroken`
+  until ozyd restarts, and the restart's recovery reads what is actually on
+  disk. Before, the TSDB logged the failed fsync and tried again on the next
+  tick. After a failed fsync the kernel may have dropped the dirty pages, so a
+  retry can report success for data that never reached the disk ("fsyncgate").
+
 - **The dashboards API answers `created_at` and `updated_at` in UTC.** They were rendered in the
   server's local zone, so the same row read differently on a server in another zone. No change on a
   server already running in UTC, which a container is.
