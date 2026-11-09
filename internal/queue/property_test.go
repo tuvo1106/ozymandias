@@ -37,7 +37,9 @@ import (
 func TestProperty_ConsumedSequenceIsTheProducedSequence(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		dir := t.TempDir()
-		segSize := int64(rapid.IntRange(30, 200).Draw(rt, "segSize"))
+		// The largest record drawn is 9 + 16 + "p59-" + 20 four-byte
+		// runes = 109 bytes, and a segment must hold one.
+		segSize := int64(rapid.IntRange(110, 300).Draw(rt, "segSize"))
 		openTopic := func() *Topic {
 			tp, err := Open(Options{Dir: dir, SyncInterval: -1, SegmentSize: segSize})
 			if err != nil {

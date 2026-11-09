@@ -46,18 +46,22 @@ var ErrCorrupt = errors.New("wal: corrupt record")
 
 // ErrSync wraps every fsync failure the log reports: Sync, the segment sync
 // and directory sync a rollover does, and Close.
+//
+// What to do about one is the caller's policy, not the log's. After a failed
+// fsync Linux may already have dropped the dirty pages, and a later fsync can
+// report success without writing them (PostgreSQL's 2018 "fsyncgate"), so
+// M7's queue treats one as final and stops. The TSDB and the log store still
+// retry on their next sync tick. Making them stop too waits for a readiness
+// signal that can say so (M7, /readyz); until then a stopped store would fail
+// every write while looking healthy.
 var ErrSync = errors.New("wal: fsync failed")
 
-// ErrBroken is wrapped by every error from a log that has stopped accepting
-// writes. That happens after any fsync failure, after a rollover that failed
-// partway, and after a partial record that could not be cut back off. The
-// log stays stopped until the process restarts and [Repair] runs.
-//
-// Why a failed fsync is final: after one, Linux may already have dropped the
-// dirty pages, and a later fsync can report success without writing them
-// (PostgreSQL's 2018 "fsyncgate"). Retrying would acknowledge data that is
-// not on disk. A failed write (ENOSPC) is different. The record is cut back
-// off, the log stays usable, and the error does not wrap ErrBroken.
+// ErrBroken is wrapped by every error from a log that can no longer accept
+// writes, whatever any caller's policy is. That is after a rollover that
+// failed partway (the old segment closed, the next not open), or a partial
+// record that could not be cut back off. The log stays stopped until the
+// process restarts and [Repair] runs. A failed write such as ENOSPC is not
+// this: the record is cut back off and the log stays usable.
 var ErrBroken = errors.New("wal: log is no longer writable")
 
 // Record is one entry. Type is the caller's; 0 is reserved as "unset" so a
@@ -87,10 +91,10 @@ type WAL struct {
 	segment int
 	size    int64
 	closed  bool
-	// broken is set by breakLocked: after an fsync failure, a failed
-	// rollover, or a half-written record that could not be cut back off.
-	// The log then refuses further writes rather than accepting data it
-	// knows may be lost. See [ErrBroken].
+	// broken is set by breakLocked: after a rollover that failed partway,
+	// or a half-written record that could not be cut back off. The log then
+	// refuses further writes rather than accepting data it knows will be
+	// lost. See [ErrBroken].
 	broken error
 	hdr    [headerSize]byte // scratch, reused per record under mu
 }
@@ -150,7 +154,7 @@ func (w *WAL) openSegment(n int) error {
 }
 
 func (w *WAL) segmentPath(n int) string {
-	return filepath.Join(w.dir, fmt.Sprintf("%08d%s", n, segmentExt))
+	return filepath.Join(w.dir, SegmentName(n))
 }
 
 // Log appends records. It buffers in the OS page cache; durability requires
@@ -235,12 +239,13 @@ func (w *WAL) breakLocked(cause error) error {
 	return w.broken
 }
 
-// roll closes the current segment and opens the next. Any failure stops the
-// log. A failed sync is final (see ErrBroken). A failed close or open leaves
-// w.f pointing at a closed file, which no later write can use.
+// roll closes the current segment and opens the next. A failed sync comes
+// first and leaves the log as it was, reported as ErrSync for the caller's
+// policy to judge. A failed close or open stops the log: w.f then points at
+// a closed file, which no later write can use.
 func (w *WAL) roll() error {
 	if err := w.f.Sync(); err != nil {
-		return w.breakLocked(fmt.Errorf("%w before rollover: %w", ErrSync, err))
+		return fmt.Errorf("%w before rollover: %w", ErrSync, err)
 	}
 	if err := w.f.Close(); err != nil {
 		return w.breakLocked(fmt.Errorf("wal: closing segment: %w", err))
@@ -263,7 +268,7 @@ func (w *WAL) Sync() error {
 		return w.broken
 	}
 	if err := w.f.Sync(); err != nil {
-		return w.breakLocked(fmt.Errorf("%w: %w", ErrSync, err))
+		return fmt.Errorf("%w: %w", ErrSync, err)
 	}
 	return nil
 }

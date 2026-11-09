@@ -104,7 +104,7 @@ func NewReader(dir string) (*Reader, error) {
 		r.files = append(r.files, fmt.Sprintf("%s%08d", checkpointPre, n))
 	}
 	for _, n := range segments {
-		r.files = append(r.files, fmt.Sprintf("%08d%s", n, segmentExt))
+		r.files = append(r.files, SegmentName(n))
 	}
 	return r, nil
 }

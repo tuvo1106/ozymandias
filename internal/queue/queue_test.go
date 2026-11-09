@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1012,7 +1013,7 @@ func TestProduce_AFailedRolloverFsyncStopsTheTopic(t *testing.T) {
 			fail.Lock()
 			defer fail.Unlock()
 			if failing {
-				return fmt.Errorf("%w: %w before rollover: injected EIO", wal.ErrBroken, wal.ErrSync)
+				return fmt.Errorf("%w before rollover: injected EIO", wal.ErrSync) // as wal.roll reports it
 			}
 			return w.Log(r)
 		}
@@ -1059,7 +1060,7 @@ func TestProduce_AGroupSyncDuringAFailedRolloverProvesNothing(t *testing.T) {
 			fail.Lock()
 			defer fail.Unlock()
 			if failing {
-				return fmt.Errorf("%w: %w before rollover: injected EIO", wal.ErrBroken, wal.ErrSync)
+				return fmt.Errorf("%w before rollover: injected EIO", wal.ErrSync) // as wal.roll reports it
 			}
 			return w.Log(r)
 		}
@@ -1239,8 +1240,12 @@ func TestProduce_AStoppedLogStopsTheTopic(t *testing.T) {
 	if _, err := tp.Produce(context.Background(), []byte("a")); !errors.Is(err, wal.ErrBroken) {
 		t.Fatalf("Produce on a stopped log = %v", err)
 	}
-	if s := tp.Stats(); s.Broken == nil {
+	s := tp.Stats()
+	if s.Broken == nil {
 		t.Fatal("a stopped log did not break the topic: Stats.Broken is nil")
+	}
+	if strings.Contains(s.Broken.Error(), "fsync") {
+		t.Errorf("Broken = %q: names fsync for a failure that was not one", s.Broken)
 	}
 }
 
@@ -1300,5 +1305,142 @@ func TestPoll_AnErrorReturnsNoRecordsAndRewinds(t *testing.T) {
 	}
 	if got := poll(t, c, 10); !eq(payloads(got), []string{"aaaa", "bbbb", "cccc"}) {
 		t.Fatalf("Poll after the error = %q, want it to start again at aaaa", payloads(got))
+	}
+}
+
+// TestStats_IsNotStuckBehindAnAppend: an append can wait on the WAL for a
+// whole group-commit fsync. Holding the topic lock across it would stall
+// every Poll, Commit and Stats behind the disk.
+func TestStats_IsNotStuckBehindAnAppend(t *testing.T) {
+	inLog, release := make(chan struct{}), make(chan struct{})
+	var once, releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	tp := open(t, t.TempDir(), func(o *Options) {
+		o.logFn = func(w *wal.WAL, r wal.Record) error {
+			once.Do(func() { close(inLog); <-release })
+			return w.Log(r)
+		}
+	})
+	defer unblock() // a failing run must not leave Close stuck behind the append
+	c, _ := tp.Consumer("c")
+	produced := make(chan error, 1)
+	go func() { _, err := tp.Produce(context.Background(), []byte("a")); produced <- err }()
+	<-inLog
+	done := make(chan struct{})
+	go func() {
+		_ = tp.Stats()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		_, _ = c.Poll(ctx, 1)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stats and Poll blocked behind an in-flight append")
+	}
+	unblock()
+	if err := <-produced; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestProduce_RefusesARecordLargerThanASegment: such a record would overfill
+// the newest segment, which retention never deletes, and could wedge the
+// cap for good.
+func TestProduce_RefusesARecordLargerThanASegment(t *testing.T) {
+	tp := open(t, t.TempDir(), func(o *Options) { o.SegmentSize = 64; o.MaxBytes = 128 })
+	if _, err := tp.Produce(context.Background(), make([]byte, 64)); err == nil {
+		t.Fatal("a record larger than a segment was accepted")
+	}
+	if off, err := tp.Produce(context.Background(), []byte("fits")); err != nil || off != 0 {
+		t.Fatalf("Produce after the refusal = %d, %v", off, err)
+	}
+}
+
+// TestConsumer_AFailedRegistrationStillHoldsRetention: the offset file may
+// exist even though writing it reported an error (a failed directory fsync
+// after the rename). Its consumer must keep holding retention, or the next
+// Open finds it resuming below the oldest record.
+func TestConsumer_AFailedRegistrationStillHoldsRetention(t *testing.T) {
+	dir := t.TempDir()
+	tp := open(t, dir, func(o *Options) { o.SegmentSize = 30 })
+	a, _ := tp.Consumer("a")
+	cdir := filepath.Join(dir, consumersDir)
+	if err := os.Chmod(cdir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tp.Consumer("b"); err == nil {
+		t.Fatal("registration with an unwritable offset file = nil error")
+	}
+	if err := os.Chmod(cdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	produce(t, tp, "aaaa", "bbbb", "cccc")
+	poll(t, a, 3)
+	if err := a.Commit(2); err != nil {
+		t.Fatal(err)
+	}
+	if s := tp.Stats(); s.Segments != 3 {
+		t.Fatalf("%d segments after a's commit, want all 3 held back for b", s.Segments)
+	}
+	b, err := tp.Consumer("b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := poll(t, b, 10); !eq(payloads(got), []string{"aaaa", "bbbb", "cccc"}) {
+		t.Fatalf("b after a failed first registration = %q", payloads(got))
+	}
+}
+
+// TestConsumer_CloseWakesAWaitingPoll: a supervisor that closes a consumer to
+// re-register it waits for its loop to exit; the loop is usually parked in
+// Poll on an idle topic.
+func TestConsumer_CloseWakesAWaitingPoll(t *testing.T) {
+	tp := open(t, t.TempDir())
+	c, _ := tp.Consumer("c")
+	errc := make(chan error, 1)
+	go func() { _, err := c.Poll(context.Background(), 1); errc <- err }()
+	time.Sleep(20 * time.Millisecond)
+	c.Close()
+	select {
+	case err := <-errc:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("woken Poll = %v, want ErrClosed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not wake a waiting Poll")
+	}
+}
+
+// TestClose_WaitsForAnAppendInFlight: an append already past the closed
+// check when Close starts must be covered by the final sync and acknowledged,
+// not cut off by the log closing under it.
+func TestClose_WaitsForAnAppendInFlight(t *testing.T) {
+	inLog, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	tp, err := Open(Options{Dir: t.TempDir(), SyncInterval: -1, logFn: func(w *wal.WAL, r wal.Record) error {
+		once.Do(func() { close(inLog); <-release })
+		return w.Log(r)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	produced := make(chan error, 1)
+	go func() { _, err := tp.Produce(context.Background(), []byte("a")); produced <- err }()
+	<-inLog
+	closed := make(chan error, 1)
+	go func() { closed <- tp.Close() }()
+	testutil.Eventually(t, 5*time.Second, func() bool {
+		tp.mu.Lock()
+		defer tp.mu.Unlock()
+		return tp.closed
+	}, "Close never started")
+	close(release)
+	if err := <-produced; err != nil {
+		t.Fatalf("append in flight at Close = %v, want it synced and acknowledged", err)
+	}
+	if err := <-closed; err != nil {
+		t.Fatal(err)
 	}
 }

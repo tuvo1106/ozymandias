@@ -29,6 +29,8 @@ type Consumer struct {
 	seg    int
 	off    int64
 	closed bool
+	// done is closed by Close, to wake a Poll that is waiting for records.
+	done chan struct{}
 }
 
 // Close releases the registration, so the name can be registered again (by
@@ -43,6 +45,7 @@ func (c *Consumer) Close() {
 		return
 	}
 	c.closed = true
+	close(c.done)
 	c.t.mu.Lock()
 	delete(c.t.active, c.name)
 	c.t.mu.Unlock()
@@ -96,6 +99,7 @@ func (c *Consumer) Poll(ctx context.Context, max int) ([]Record, error) {
 		}
 		select {
 		case <-notify:
+		case <-c.done:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -150,17 +154,21 @@ func (c *Consumer) readSegment(out *[]Record, max int, durable uint64) (bool, er
 			}
 			return false, nil
 		}
-		rec, err := decodeRecord(r.Record())
+		off, err := recordOffset(r.Record())
 		if err != nil {
 			return false, fmt.Errorf("consumer %q, segment %d: %w", c.name, c.seg, err)
 		}
 		c.off = r.End().Offset
 		switch {
-		case rec.Offset < c.cursor:
-			continue // positioning after a restart
-		case rec.Offset > c.cursor:
+		case off < c.cursor:
+			continue // positioning after a restart: skipped without copying the payload
+		case off > c.cursor:
 			return false, fmt.Errorf("%w: segment %d jumps from offset %d to %d",
-				ErrCorrupt, c.seg, c.cursor, rec.Offset)
+				ErrCorrupt, c.seg, c.cursor, off)
+		}
+		rec, err := decodeRecord(r.Record())
+		if err != nil {
+			return false, fmt.Errorf("consumer %q, segment %d: %w", c.name, c.seg, err)
 		}
 		*out = append(*out, rec)
 		c.cursor++

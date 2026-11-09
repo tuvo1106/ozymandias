@@ -134,8 +134,8 @@ func TestLog_AFailedRolloverFsyncIsErrSync(t *testing.T) {
 	}
 	_ = w.f.Close() // the rollover's fsync of this segment now fails
 	err = w.Log(Record{Type: 1, Data: []byte("rolls")})
-	if !errors.Is(err, ErrSync) || !errors.Is(err, ErrBroken) {
-		t.Fatalf("Log over a failing rollover fsync = %v, want ErrSync and ErrBroken", err)
+	if !errors.Is(err, ErrSync) || errors.Is(err, ErrBroken) {
+		t.Fatalf("Log over a failing rollover fsync = %v, want ErrSync and not ErrBroken", err)
 	}
 }
 
@@ -158,10 +158,10 @@ func TestSegments_ListsInOrderAndIgnoresOtherFiles(t *testing.T) {
 	}
 }
 
-// TestSync_AFailedFsyncStopsTheLog: after a failed fsync a retry can report
-// success over pages the kernel dropped, so the log must refuse everything
-// after it (ErrBroken), not just report the one failure.
-func TestSync_AFailedFsyncStopsTheLog(t *testing.T) {
+// TestSync_AFailedFsyncIsErrSyncAndLeavesThePolicyToTheCaller: the queue
+// stops on a failed fsync and the TSDB retries, so the log must report it
+// distinctly (ErrSync) and must not stop itself (no ErrBroken).
+func TestSync_AFailedFsyncIsErrSyncAndLeavesThePolicyToTheCaller(t *testing.T) {
 	w, err := Open(Options{Dir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -169,12 +169,13 @@ func TestSync_AFailedFsyncStopsTheLog(t *testing.T) {
 	if err := w.Log(Record{Type: 1, Data: []byte("x")}); err != nil {
 		t.Fatal(err)
 	}
-	_ = w.f.Close()
-	if err := w.Sync(); !errors.Is(err, ErrSync) || !errors.Is(err, ErrBroken) {
-		t.Fatalf("failed Sync = %v, want ErrSync and ErrBroken", err)
+	f := w.f
+	_ = f.Close()
+	if err := w.Sync(); !errors.Is(err, ErrSync) || errors.Is(err, ErrBroken) {
+		t.Fatalf("failed Sync = %v, want ErrSync and not ErrBroken", err)
 	}
-	if err := w.Log(Record{Type: 1, Data: []byte("y")}); !errors.Is(err, ErrBroken) {
-		t.Fatalf("Log after a failed Sync = %v, want ErrBroken", err)
+	if w.broken != nil {
+		t.Fatalf("a failed Sync stopped the log: %v", w.broken)
 	}
 }
 

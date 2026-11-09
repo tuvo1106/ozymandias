@@ -86,6 +86,7 @@ type Topic struct {
 	dir          string
 	clock        clock.Clock
 	maxBytes     int64
+	segmentSize  int64
 	syncInterval time.Duration
 	syncBytes    int64
 	syncFn       func(*wal.WAL) error
@@ -111,7 +112,8 @@ type Topic struct {
 	committed map[string]uint64
 	active    map[string]bool
 
-	retMu sync.Mutex // serializes retention passes
+	retMu    sync.Mutex // serializes retention passes and registration
+	appendMu sync.Mutex // serializes appends; taken before mu, never inside it
 
 	kick chan struct{}
 	stop chan struct{}
@@ -222,6 +224,7 @@ func Open(opts Options) (*Topic, error) {
 		dir:          opts.Dir,
 		clock:        opts.Clock,
 		maxBytes:     opts.MaxBytes,
+		segmentSize:  opts.SegmentSize,
 		syncInterval: opts.SyncInterval,
 		syncBytes:    opts.SyncBytes,
 		syncFn:       opts.syncFn,
@@ -385,52 +388,77 @@ func (t *Topic) Produce(ctx context.Context, payload []byte) (uint64, error) {
 		return 0, fmt.Errorf("queue: payload of %d bytes exceeds the %d limit", len(payload), MaxPayload)
 	}
 	size := int64(wal.RecordOverhead + recordHeader + len(payload))
+	// A record larger than a segment gets one to itself and overfills it.
+	// The newest segment is never retained away, so one such record could
+	// hold more than the cap leaves room for, and the topic would then
+	// refuse records for good.
+	if size > t.segmentSize {
+		return 0, fmt.Errorf("queue: a record of %d bytes does not fit a %d-byte segment", size, t.segmentSize)
+	}
 	// Encode outside the lock: copying up to 16 MiB under t.mu would stall
 	// every Poll, Commit and Stats behind it. The offset is patched in once
 	// it is known.
 	data := encodeRecord(0, t.clock.Now(), payload)
 
+	// appendMu serializes appends, so offsets are assigned in file order.
+	// t.mu is held only around the bookkeeping on either side of the
+	// append, never across it: an append can wait on the WAL's lock for a
+	// whole group-commit fsync (or do a rollover's), and holding t.mu then
+	// would stall every Poll, Commit and Stats behind the disk.
+	t.appendMu.Lock()
 	t.mu.Lock()
 	switch {
 	case t.closed:
 		t.mu.Unlock()
+		t.appendMu.Unlock()
 		return 0, ErrClosed
 	case t.broken != nil:
+		err := t.broken
 		t.mu.Unlock()
-		return 0, t.broken
+		t.appendMu.Unlock()
+		return 0, err
 	case t.bytes+size > t.maxBytes:
 		t.mu.Unlock()
+		t.appendMu.Unlock()
 		return 0, ErrFull
 	}
-	off := t.next
+	off := t.next // stable: only appenders change it, and appendMu is held
+	t.mu.Unlock()
+
 	putOffset(data, off)
-	if err := t.logFn(t.w, wal.Record{Type: recordType, Data: data}); err != nil {
-		// The offset is not used up: nothing was appended. A write error
-		// such as ENOSPC leaves the log usable and is worth retrying. A log
-		// that has stopped (wal.ErrBroken) is not: a rollover's fsync
-		// failed, or a rollover or rollback went wrong partway. That stops
-		// the topic exactly as a failed group commit does, and fails
-		// everyone waiting on one.
-		if errors.Is(err, wal.ErrBroken) {
-			err = t.breakLocked(err)
-		} else {
-			err = fmt.Errorf("queue: %w", err)
-		}
-		t.mu.Unlock()
-		return 0, err
-	}
+	err := t.logFn(t.w, wal.Record{Type: recordType, Data: data})
 	end := t.w.End()
-	t.next++
-	if last := &t.segs[len(t.segs)-1]; last.n != end.Segment {
+
+	t.mu.Lock()
+	// A rollover can succeed and the write into the new segment then fail,
+	// so the index follows the WAL's current segment either way.
+	if last := t.segs[len(t.segs)-1]; last.n != end.Segment {
 		t.segs = append(t.segs, segInfo{n: end.Segment, first: off})
 	}
 	last := &t.segs[len(t.segs)-1]
 	t.bytes += end.Offset - last.size
 	last.size = end.Offset
+	if err != nil {
+		// The offset is not used up: nothing was appended. A write error
+		// such as ENOSPC leaves the log usable and is worth retrying. A
+		// failed fsync (a rollover's: wal.ErrSync) or a log that has
+		// stopped (wal.ErrBroken) is not, and stops the topic exactly as a
+		// failed group commit does, failing everyone waiting on one.
+		if errors.Is(err, wal.ErrSync) || errors.Is(err, wal.ErrBroken) {
+			err = t.breakLocked(err)
+		} else {
+			err = fmt.Errorf("queue: %w", err)
+		}
+		t.mu.Unlock()
+		t.appendMu.Unlock()
+		return 0, err
+	}
+	t.next++
 	g := t.gen
 	t.unsynced += size
 	wake := t.unsynced == size || t.unsynced >= t.syncBytes
 	t.mu.Unlock()
+	t.appendMu.Unlock()
 
 	if wake {
 		select {
@@ -539,7 +567,7 @@ func (t *Topic) breakLocked(cause error) error {
 	if t.broken != nil {
 		return t.broken
 	}
-	t.broken = fmt.Errorf("queue: fsync failed; %s accepts no more records until ozyd restarts: %w", t.dir, cause)
+	t.broken = fmt.Errorf("queue: %s accepts no more records until ozyd restarts: %w", t.dir, cause)
 	t.gen.err = t.broken
 	close(t.gen.done)
 	return t.broken
@@ -583,12 +611,17 @@ func (t *Topic) Consumer(name string) (*Consumer, error) {
 	seg := t.locate(start)
 
 	c := &Consumer{t: t, name: name, path: filepath.Join(t.dir, consumersDir, name+offsetExt),
-		cursor: start, seg: seg}
+		cursor: start, seg: seg, done: make(chan struct{})}
 	if !known {
 		if err := writeOffsetFile(c.path, start); err != nil {
+			// The registration fails, but its committed offset stays: the
+			// write may have failed after its rename (a failed directory
+			// fsync), leaving a file that the next Open will load. Holding
+			// retention back for a consumer that might exist is safe;
+			// retiring records it would resume at makes the topic
+			// unopenable.
 			t.mu.Lock()
 			delete(t.active, name)
-			delete(t.committed, name)
 			t.mu.Unlock()
 			return nil, err
 		}
@@ -713,6 +746,11 @@ func (t *Topic) Close() error {
 	t.notify = make(chan struct{})
 	t.mu.Unlock()
 
+	// Taking appendMu waits for an append already past the closed check,
+	// so the final sync below covers it and releases its producer. Every
+	// later append sees closed and stops.
+	t.appendMu.Lock()
+	defer t.appendMu.Unlock()
 	close(t.stop)
 	<-t.done
 	return t.w.Close()
