@@ -105,7 +105,7 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 	for shop == nil && time.Now().Before(deadline) {
 		clk.Advance(time.Second)
 		for _, r := range get("/api/v1/services?env=e2e&" + window)["services"].([]any) {
-			if row := r.(map[string]any); row["service"] == "shop" && row["requests"] == float64(total) && row["p95_ms"] != nil { // sketches travel on their own hop
+			if row := r.(map[string]any); row["service"] == "shop" && row["requests"] == float64(total) && row["p50_ms"] != nil && row["p95_ms"] != nil { // sketches travel on their own hop, and each percentile is its own query
 				shop = row
 			}
 		}
@@ -168,11 +168,13 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 	// This pins the values, not the grid: the data here happens to sit in the first bucket, so
 	// reverting wholeWindow to to-from does NOT fail this test (checked by mutation). The one-bucket
 	// property is by construction: 2^31 seconds exceeds any unix time.
-	if p50, p95 := shop["p50_ms"].(float64), shop["p95_ms"].(float64); p50 < 25 || p50 > 34 || p95 < 44 || p95 > 52 {
-		t.Errorf("p50 = %v, p95 = %v ms: want about 29 and 48 over the whole window", p50, p95)
+	p50, ok50 := shop["p50_ms"].(float64)
+	p95, ok95 := shop["p95_ms"].(float64)
+	if !ok50 || !ok95 {
+		t.Fatalf("percentiles missing or not numbers in %v", shop)
 	}
-	if shop["p95_ms"] == nil {
-		t.Errorf("no p95 in %v", shop)
+	if p50 < 25 || p50 > 34 || p95 < 44 || p95 > 52 {
+		t.Errorf("p50 = %v, p95 = %v ms: want about 29 and 48 over the whole window", p50, p95)
 	}
 
 	// The store holds a sample: far fewer than 200, but every failing request's
