@@ -38,7 +38,7 @@ func TruncateTail(dir string, pos Position) error {
 	}
 	for _, n := range segs {
 		if pos.Segment >= 0 && n > pos.Segment {
-			if err := os.Remove(filepath.Join(dir, fmt.Sprintf("%08d%s", n, segmentExt))); err != nil {
+			if err := os.Remove(filepath.Join(dir, SegmentName(n))); err != nil {
 				return fmt.Errorf("wal: removing stranded segment %d: %w", n, err)
 			}
 		}
@@ -127,7 +127,7 @@ func Truncate(dir string, before int, keep func(Record) bool) error {
 		}
 	}
 	for _, n := range doomed {
-		if err := os.Remove(filepath.Join(dir, fmt.Sprintf("%08d%s", n, segmentExt))); err != nil {
+		if err := os.Remove(filepath.Join(dir, SegmentName(n))); err != nil {
 			return fmt.Errorf("wal: removing segment %d: %w", n, err)
 		}
 	}
@@ -181,7 +181,7 @@ func writeCheckpoint(dir string, doomed []int, before int, keep func(Record) boo
 		}
 	}
 	for _, n := range doomed {
-		sources = append(sources, fmt.Sprintf("%08d%s", n, segmentExt))
+		sources = append(sources, SegmentName(n))
 	}
 	for _, name := range sources {
 		if err := copyKept(dir, name, w, keep); err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 )
@@ -37,11 +38,42 @@ type Reader struct {
 	// where nothing would ever question it again.
 	strict bool
 
+	// startOff is where reading begins in the first file; non-zero only for
+	// a [NewSegmentReader].
+	startOff int64
+
 	rec Record
 	buf []byte
 	err error
 	end Position
 }
+
+// NewSegmentReader reads one segment starting at byte offset off, which must
+// be the start of a record (an earlier Position.Offset, or 0).
+//
+// It is strict: any damage is ErrCorrupt, never a torn tail. That is right for
+// its one caller, M7's queue, which reads a segment the writer may still be
+// appending to and so must never read past the last *synced* record — and
+// everything before that point is whole by construction. A reader that met a
+// short record there would be looking at lost acknowledged data, not at a
+// crash in progress. Stopping at the synced end is the caller's job: this
+// reader returns false at the end of the bytes it finds.
+func NewSegmentReader(dir string, seg int, off int64) *Reader {
+	return &Reader{
+		dir:      dir,
+		files:    []string{SegmentName(seg)},
+		end:      Position{Segment: -1},
+		strict:   true,
+		startOff: off,
+	}
+}
+
+// SegmentName is the file name of segment n inside a log directory.
+func SegmentName(n int) string { return fmt.Sprintf("%08d%s", n, segmentExt) }
+
+// Segments lists the segment numbers in dir, oldest first. A missing
+// directory is an error, as it is for every other function here.
+func Segments(dir string) ([]int, error) { return listNumbered(dir, "", segmentExt) }
 
 // Position is where the last intact record ended.
 type Position struct {
@@ -72,7 +104,7 @@ func NewReader(dir string) (*Reader, error) {
 		r.files = append(r.files, fmt.Sprintf("%s%08d", checkpointPre, n))
 	}
 	for _, n := range segments {
-		r.files = append(r.files, fmt.Sprintf("%08d%s", n, segmentExt))
+		r.files = append(r.files, SegmentName(n))
 	}
 	return r, nil
 }
@@ -119,11 +151,23 @@ func (r *Reader) openNext() bool {
 		r.err = fmt.Errorf("wal: opening %s: %w", name, err)
 		return false
 	}
-	r.f, r.br = f, bufio.NewReader(f)
 	r.off = 0
+	if r.idx == 0 && r.startOff < 0 {
+		_ = f.Close()
+		r.err = fmt.Errorf("wal: negative start offset %d in %s", r.startOff, name)
+		return false
+	}
+	var src io.Reader = f
+	if r.idx == 0 && r.startOff > 0 {
+		// A section reader rather than a Seek: it starts reading at the
+		// offset without an error path for a seek that cannot fail.
+		src = io.NewSectionReader(f, r.startOff, math.MaxInt64-r.startOff)
+		r.off = r.startOff
+	}
+	r.f, r.br = f, bufio.NewReader(src)
 	r.last = r.idx == len(r.files)-1
 	r.idx++
-	r.end = Position{File: name, Offset: 0, Segment: segmentNumber(name)}
+	r.end = Position{File: name, Offset: r.off, Segment: segmentNumber(name)}
 	return true
 }
 

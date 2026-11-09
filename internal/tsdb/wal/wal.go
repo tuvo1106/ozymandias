@@ -25,6 +25,9 @@ import (
 // failing or by the CRC of whatever it lands on.
 const (
 	headerSize = 4 + 1 + 4
+	// RecordOverhead is the framing each record adds to its payload on disk,
+	// for callers that budget bytes before writing (M7's queue cap).
+	RecordOverhead = headerSize
 	// MaxRecordSize bounds one record, so a corrupt length cannot make the
 	// reader allocate an arbitrary amount of memory. Callers batch below this.
 	MaxRecordSize = 16 << 20
@@ -41,6 +44,26 @@ var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 // explain as a torn tail. It names the file and offset.
 var ErrCorrupt = errors.New("wal: corrupt record")
 
+// ErrSync wraps every fsync failure the log reports: Sync, the segment sync
+// and directory sync a rollover does, and Close.
+//
+// What to do about one is the caller's policy, set by
+// [Options].StopOnSyncError. After a failed fsync Linux may already have
+// dropped the dirty pages, and a later fsync can report success without
+// writing them (PostgreSQL's 2018 "fsyncgate"), so M7's queue stops. The TSDB
+// and the log store still retry on their next sync tick. Making them stop too
+// waits for a readiness signal that can say so (M7, /readyz); until then a
+// stopped store would fail every write while looking healthy.
+var ErrSync = errors.New("wal: fsync failed")
+
+// ErrBroken is wrapped by every error from a log that can no longer accept
+// writes, whatever any caller's policy is. That is after a rollover that
+// failed partway (the old segment closed, the next not open), or a partial
+// record that could not be cut back off. The log stays stopped until the
+// process restarts and [Repair] runs. A failed write such as ENOSPC is not
+// this: the record is cut back off and the log stays usable.
+var ErrBroken = errors.New("wal: log is no longer writable")
+
 // Record is one entry. Type is the caller's; 0 is reserved as "unset" so a
 // zero-filled region cannot masquerade as a valid record.
 type Record struct {
@@ -55,6 +78,17 @@ type Options struct {
 	// SegmentSize is the size at which a new segment starts.
 	// Defaults to DefaultSegmentSize.
 	SegmentSize int64
+	// StopOnSyncError makes a failed fsync final: the log stops (ErrBroken)
+	// and every later Log and Sync fails, until a restart.
+	//
+	// It is an option, not the default, because stopping is only right for
+	// a caller that can say it has stopped. M7's queue turns it on: it must
+	// never acknowledge after a failed fsync (fsyncgate, see ErrSync). The
+	// decision is made here, under the log's own lock, so that no Sync can
+	// slip in between a failed fsync and the caller hearing about it and
+	// "succeed" over pages the kernel has dropped. The TSDB and the log
+	// store leave it off until /readyz can report a stopped store (M7 PR 6).
+	StopOnSyncError bool
 }
 
 // WAL is an append-only log. It is safe for concurrent use; writes are
@@ -62,16 +96,17 @@ type Options struct {
 type WAL struct {
 	dir         string
 	segmentSize int64
+	stopOnSync  bool
 
 	mu      sync.Mutex
 	f       *os.File
 	segment int
 	size    int64
 	closed  bool
-	// broken is set when a write failed and the half-written record could not
-	// be cut back off. Everything after it in the file is unreachable, so the
-	// log refuses further writes rather than accepting data it knows will be
-	// lost. See [WAL.Log].
+	// broken is set by breakLocked: after a rollover that failed partway,
+	// or a half-written record that could not be cut back off. The log then
+	// refuses further writes rather than accepting data it knows will be
+	// lost. See [ErrBroken].
 	broken error
 	hdr    [headerSize]byte // scratch, reused per record under mu
 }
@@ -91,7 +126,7 @@ func Open(opts Options) (*WAL, error) {
 	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return nil, fmt.Errorf("wal: creating %s: %w", opts.Dir, err)
 	}
-	w := &WAL{dir: opts.Dir, segmentSize: opts.SegmentSize}
+	w := &WAL{dir: opts.Dir, segmentSize: opts.SegmentSize, stopOnSync: opts.StopOnSyncError}
 
 	segs, err := w.segments()
 	if err != nil {
@@ -123,7 +158,7 @@ func (w *WAL) openSegment(n int) error {
 	if info.Size() == 0 {
 		if err := syncDir(w.dir); err != nil {
 			_ = f.Close()
-			return err
+			return fmt.Errorf("%w: %w", ErrSync, err)
 		}
 	}
 	w.f, w.segment, w.size = f, n, info.Size()
@@ -131,7 +166,7 @@ func (w *WAL) openSegment(n int) error {
 }
 
 func (w *WAL) segmentPath(n int) string {
-	return filepath.Join(w.dir, fmt.Sprintf("%08d%s", n, segmentExt))
+	return filepath.Join(w.dir, SegmentName(n))
 }
 
 // Log appends records. It buffers in the OS page cache; durability requires
@@ -198,26 +233,39 @@ func (w *WAL) Log(recs ...Record) error {
 // a quiet one that keeps taking writes is not.
 func (w *WAL) undoPartial(cause error) error {
 	if err := w.f.Truncate(w.size); err != nil {
-		w.broken = fmt.Errorf("wal: a partial record could not be removed, "+
-			"so the log is no longer writable: %w", errors.Join(cause, err))
-		return w.broken
+		return w.breakLocked(fmt.Errorf("a partial record could not be removed: %w", errors.Join(cause, err)))
 	}
 	if _, err := w.f.Seek(w.size, io.SeekStart); err != nil {
-		w.broken = fmt.Errorf("wal: a partial record was removed but the log "+
-			"could not be repositioned: %w", errors.Join(cause, err))
-		return w.broken
+		return w.breakLocked(fmt.Errorf("a partial record was removed but the log "+
+			"could not be repositioned: %w", errors.Join(cause, err)))
 	}
 	return cause
 }
 
+// breakLocked stops the log for good and returns the error it now reports.
+// The first cause wins. The caller holds mu.
+func (w *WAL) breakLocked(cause error) error {
+	if w.broken == nil {
+		w.broken = fmt.Errorf("%w: %w", ErrBroken, cause)
+	}
+	return w.broken
+}
+
+// roll closes the current segment and opens the next. A failed sync comes
+// first and leaves the log as it was, reported as ErrSync for the caller's
+// policy to judge. A failed close or open stops the log: w.f then points at
+// a closed file, which no later write can use.
 func (w *WAL) roll() error {
 	if err := w.f.Sync(); err != nil {
-		return fmt.Errorf("wal: syncing before rollover: %w", err)
+		return w.syncFailedLocked(fmt.Errorf("%w before rollover: %w", ErrSync, err))
 	}
 	if err := w.f.Close(); err != nil {
-		return fmt.Errorf("wal: closing segment: %w", err)
+		return w.breakLocked(fmt.Errorf("wal: closing segment: %w", err))
 	}
-	return w.openSegment(w.segment + 1)
+	if err := w.openSegment(w.segment + 1); err != nil {
+		return w.breakLocked(err)
+	}
+	return nil
 }
 
 // Sync flushes the current segment to stable storage. Until it returns, a
@@ -232,9 +280,18 @@ func (w *WAL) Sync() error {
 		return w.broken
 	}
 	if err := w.f.Sync(); err != nil {
-		return fmt.Errorf("wal: sync: %w", err)
+		return w.syncFailedLocked(fmt.Errorf("%w: %w", ErrSync, err))
 	}
 	return nil
+}
+
+// syncFailedLocked applies the StopOnSyncError policy to a failed fsync and
+// returns the error to report. The caller holds mu.
+func (w *WAL) syncFailedLocked(err error) error {
+	if w.stopOnSync {
+		return w.breakLocked(err)
+	}
+	return err
 }
 
 // Close syncs and closes the log.
@@ -245,12 +302,38 @@ func (w *WAL) Close() error {
 		return nil
 	}
 	w.closed = true
-	err := w.f.Sync()
+	if w.broken != nil {
+		// A stopped log may hold a file a failed rollover already closed;
+		// syncing it would report a made-up fsync failure over the real cause.
+		_ = w.f.Close()
+		return w.broken
+	}
+	var err error
+	if serr := w.f.Sync(); serr != nil {
+		err = fmt.Errorf("%w: %w", ErrSync, serr)
+	}
 	if cerr := w.f.Close(); err == nil {
 		err = cerr
 	}
 	return err
 }
+
+// End returns the position just past the last record written, in the
+// segment currently being written. A caller that serializes its own Log calls
+// (M7's queue does) learns from it where each record ended, which is what a
+// later [NewSegmentReader] bounds its reads by.
+//
+// The position is of bytes *written*, not synced: pair it with Sync before
+// treating anything up to it as durable.
+func (w *WAL) End() Position {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return Position{File: SegmentName(w.segment), Offset: w.size, Segment: w.segment}
+}
+
+// StopOnSyncError reports whether this log was opened with
+// [Options].StopOnSyncError.
+func (w *WAL) StopOnSyncError() bool { return w.stopOnSync }
 
 // Segment returns the segment currently being written.
 func (w *WAL) Segment() int {
