@@ -11,6 +11,7 @@ tests happens in the same commit.
 | [block.md](block.md) | `internal/tsdb/block` | queries, compaction |
 | [log-chunk.md](log-chunk.md) | `internal/logstore` | log search, recovery |
 | [tracestore-keys.md](tracestore-keys.md) | `internal/tracestore` | trace lookup, search, service map, retention |
+| [queue-segment.md](queue-segment.md) | `internal/queue` | the stores' consumers, recovery at startup |
 
 Conventions used throughout:
 
@@ -34,6 +35,7 @@ Each format has a small committed example, and a test that reads it:
 | `internal/tsdb/chunkenc/testdata/golden/chunk.bin` | `TestChunk_Golden` |
 | `internal/tsdb/wal/testdata/golden/00000000.wal` | `TestWAL_Golden` |
 | `internal/tsdb/block/testdata/golden/block/` | `TestBlock_Golden` |
+| `internal/queue/testdata/golden/` | `TestTopic_Golden` |
 
 They exist because no ordinary test can catch a format change: a test encodes
 and decodes with the same build, so changing both halves at once looks correct
@@ -51,6 +53,7 @@ Regenerate deliberately, never to make a test pass:
 go test ./internal/tsdb/chunkenc -run Golden -update-golden
 go test ./internal/tsdb/wal      -run Golden -update-golden
 go test ./internal/tsdb/block    -run Golden -update-golden
+go test ./internal/queue         -run Golden -update-golden
 ```
 
 A regenerated golden means the on-disk format changed, so the same commit owes
