@@ -25,6 +25,9 @@ import (
 // failing or by the CRC of whatever it lands on.
 const (
 	headerSize = 4 + 1 + 4
+	// RecordOverhead is the framing each record adds to its payload on disk,
+	// for callers that budget bytes before writing (M7's queue cap).
+	RecordOverhead = headerSize
 	// MaxRecordSize bounds one record, so a corrupt length cannot make the
 	// reader allocate an arbitrary amount of memory. Callers batch below this.
 	MaxRecordSize = 16 << 20
@@ -250,6 +253,19 @@ func (w *WAL) Close() error {
 		err = cerr
 	}
 	return err
+}
+
+// End returns the position just past the last record written, in the
+// segment currently being written. A caller that serializes its own Log calls
+// (M7's queue does) learns from it where each record ended, which is what a
+// later [NewSegmentReader] bounds its reads by.
+//
+// The position is of bytes *written*, not synced: pair it with Sync before
+// treating anything up to it as durable.
+func (w *WAL) End() Position {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return Position{File: filepath.Base(w.segmentPath(w.segment)), Offset: w.size, Segment: w.segment}
 }
 
 // Segment returns the segment currently being written.

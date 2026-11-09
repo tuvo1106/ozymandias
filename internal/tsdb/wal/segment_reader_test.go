@@ -1,0 +1,135 @@
+package wal
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestSegmentReader_StartsMidSegmentAtARecordBoundary pins the one thing a
+// queue consumer needs from the log: resuming at a byte offset the writer
+// reported (via End) yields exactly the records written after it.
+func TestSegmentReader_StartsMidSegmentAtARecordBoundary(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Log(Record{Type: 1, Data: []byte("first")}); err != nil {
+		t.Fatal(err)
+	}
+	mid := w.End()
+	if mid.Segment != 0 || mid.Offset != int64(headerSize+len("first")) || mid.File != SegmentName(0) {
+		t.Fatalf("End() after one record = %+v", mid)
+	}
+	for _, s := range []string{"second", "third"} {
+		if err := w.Log(Record{Type: 2, Data: []byte(s)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewSegmentReader(dir, mid.Segment, mid.Offset)
+	defer func() { _ = r.Close() }()
+	var got []string
+	for r.Next() {
+		got = append(got, string(r.Record().Data))
+	}
+	if r.Err() != nil {
+		t.Fatal(r.Err())
+	}
+	if len(got) != 2 || got[0] != "second" || got[1] != "third" {
+		t.Fatalf("records from mid-segment = %q, want [second third]", got)
+	}
+	if end := r.End(); end.Offset != w.size {
+		t.Errorf("reader End = %d, want the file end %d", end.Offset, w.size)
+	}
+}
+
+// TestSegmentReader_IsStrictAboutATornTail: the queue only reads below the
+// synced end, so a short record there is lost data, not a crash in progress.
+// The ordinary reader forgives it in the last file; this one must not.
+func TestSegmentReader_IsStrictAboutATornTail(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(Options{Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Log(Record{Type: 1, Data: []byte("whole")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Join(dir, SegmentName(0)), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write([]byte{0, 0, 0, 9, 1}); err != nil { // a header cut short
+		t.Fatal(err)
+	}
+	_ = f.Close()
+
+	r := NewSegmentReader(dir, 0, 0)
+	defer func() { _ = r.Close() }()
+	n := 0
+	for r.Next() {
+		n++
+	}
+	if n != 1 {
+		t.Errorf("read %d records before the damage, want 1", n)
+	}
+	if !errors.Is(r.Err(), ErrCorrupt) {
+		t.Errorf("Err() = %v, want ErrCorrupt", r.Err())
+	}
+
+	// The forgiving reader, for contrast, treats the same bytes as a torn tail.
+	lenient, err := NewReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for lenient.Next() {
+	}
+	_ = lenient.Close()
+	if lenient.Err() != nil {
+		t.Errorf("NewReader on a torn tail: Err() = %v, want nil", lenient.Err())
+	}
+}
+
+func TestSegmentReader_MissingSegmentAndBadSeekAreErrors(t *testing.T) {
+	dir := t.TempDir()
+	r := NewSegmentReader(dir, 7, 0)
+	if r.Next() || r.Err() == nil {
+		t.Fatalf("missing segment: Next=true or Err=nil (%v)", r.Err())
+	}
+	if err := os.WriteFile(filepath.Join(dir, SegmentName(0)), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r = NewSegmentReader(dir, 0, -5)
+	if r.Next() {
+		t.Fatal("Next on an empty segment = true")
+	}
+	_ = r.Close()
+}
+
+func TestSegments_ListsInOrderAndIgnoresOtherFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{SegmentName(3), SegmentName(1), "checkpoint.00000001", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, n), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := Segments(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != 1 || got[1] != 3 {
+		t.Fatalf("Segments = %v, want [1 3]", got)
+	}
+	if _, err := Segments(filepath.Join(dir, "absent")); err == nil {
+		t.Error("Segments on a missing dir = nil error")
+	}
+}
