@@ -3,9 +3,11 @@ package intake
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -173,7 +175,6 @@ func TestQueued_AStoreFailureIsRetriedNotSkipped(t *testing.T) {
 	q.logs.mu.Unlock()
 	q.clk.Advance(retryMax)
 	q.caughtUp(t, TopicLogs)
-	waitFor(t, func() bool { return q.pending[TopicLogs].Load() == 0 })
 	q.logs.mu.Lock()
 	defer q.logs.mu.Unlock()
 	if len(q.logs.logs) != 1 || len(q.hub.got) != 1 {
@@ -264,4 +265,33 @@ func TestQueued_RetryBacksOff(t *testing.T) {
 	}
 	q.clk.Advance(retryMin)
 	waitFor(t, func() bool { return calls() == 3 })
+}
+
+// The queue round trip must not change what the log store receives: attrs keep
+// numbers exact (wire.DecodeLogs uses UseNumber), so the consumer must too.
+func TestQueued_LogAttrsKeepBigNumbersExact(t *testing.T) {
+	q := newQueuedEnv(t)
+	body := `{"logs":[{"ts":` + strconv.FormatInt(now.UnixMilli(), 10) +
+		`,"message":"m","status":"info","service":"s","attrs":{"order_id":9007199254740993,"price":1.50}}]}`
+	if rec, _ := q.postLogs(body, false); rec.Code != http.StatusAccepted {
+		t.Fatalf("%d", rec.Code)
+	}
+	q.start(t, TopicLogs)
+	q.caughtUp(t, TopicLogs)
+	q.logs.mu.Lock()
+	defer q.logs.mu.Unlock()
+	if len(q.logs.logs) != 1 {
+		t.Fatalf("%d logs", len(q.logs.logs))
+	}
+	a := q.logs.logs[0].Attrs
+	if fmt.Sprint(a["order_id"]) != "9007199254740993" || fmt.Sprint(a["price"]) != "1.50" {
+		t.Fatalf("attrs changed in the queue: %v", a)
+	}
+}
+
+func TestQueued_AMissingTopicIs503NotAPanic(t *testing.T) {
+	e := newEnv(t, Options{Queue: map[string]Producer{}})
+	if rec, _ := e.post([]byte(payload(good)), false); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("%d, want 503", rec.Code)
+	}
 }

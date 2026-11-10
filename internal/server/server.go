@@ -176,10 +176,12 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close())
 	}
 	ls, err := logstore.Open(logstore.Options{
-		Dir:        filepath.Join(cfg.DataDir, logDir),
-		Clock:      s.clock,
-		Retention:  cfg.Logs.Retention,
-		NoSync:     cfg.Logs.NoSync,
+		Dir:       filepath.Join(cfg.DataDir, logDir),
+		Clock:     s.clock,
+		Retention: cfg.Logs.Retention,
+		NoSync:    cfg.Logs.NoSync,
+		// Only a queue consumer redelivers; see logstore.Options.DedupeHead.
+		DedupeHead: cfg.Pipeline.Mode == config.PipelineQueued,
 		MaxStreams: cfg.Logs.MaxStreams,
 		Logger:     s.log.With("component", "logstore"),
 	})

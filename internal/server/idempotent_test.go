@@ -11,6 +11,7 @@ import (
 
 	"pgregory.net/rapid"
 
+	"github.com/tuvo1106/ozymandias/internal/config"
 	"github.com/tuvo1106/ozymandias/internal/intake"
 	"github.com/tuvo1106/ozymandias/internal/logstore"
 	"github.com/tuvo1106/ozymandias/internal/query/logql"
@@ -70,6 +71,8 @@ func TestIdempotent_RedeliveryLeavesStoresAsApplyingOnce(t *testing.T) {
 		run := func(redeliver bool) (series []string, logs []string) {
 			cfg := testConfig(t)
 			cfg.Storage.MetricStore = "tsdb"
+			cfg.Pipeline.Mode = config.PipelineQueued // enables the log store's redelivery dedupe
+			cfg.Pipeline.Queue.SyncInterval = -1
 			srv, err := New(cfg, Options{Logger: quiet, Clock: testutil.NewFakeClock(time.Unix(base+1000, 0))})
 			if err != nil {
 				rt.Fatal(err)

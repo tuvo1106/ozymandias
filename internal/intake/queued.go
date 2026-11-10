@@ -1,6 +1,7 @@
 package intake
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -53,15 +54,25 @@ func (in *Intake) enqueue(w http.ResponseWriter, r *http.Request, topic string, 
 		writeError(w, http.StatusInternalServerError, "encoding the request")
 		return false
 	}
-	if _, err := in.opts.Queue[topic].Produce(r.Context(), payload); err != nil {
+	prod := in.opts.Queue[topic]
+	if prod == nil {
+		in.opts.Logger.Error("intake: no queue for topic", "topic", topic)
+		writeError(w, http.StatusServiceUnavailable, "the "+topic+" queue is not configured")
+		return false
+	}
+	if _, err := prod.Produce(r.Context(), payload); err != nil {
 		switch {
 		case errors.Is(err, queue.ErrFull):
 			// Not a failure to retry blindly: the queue is full of data we
 			// already acknowledged and will not drop. Tell the sender to back off.
 			w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter/time.Second)))
 			writeError(w, http.StatusTooManyRequests, "the "+topic+" queue is full")
-		case errors.Is(err, queue.ErrClosed), errors.Is(err, context.Canceled):
+		case errors.Is(err, queue.ErrClosed):
 			writeError(w, http.StatusServiceUnavailable, "the server is shutting down")
+		case errors.Is(err, context.Canceled):
+			// The sender went away. Not counted as a fault; if the record became
+			// durable first, its retry is a redelivery the stores absorb.
+			writeError(w, http.StatusServiceUnavailable, "request cancelled")
 		default:
 			in.opts.Logger.Error("intake: queueing", "topic", topic, "err", err)
 			writeError(w, http.StatusServiceUnavailable, "the "+topic+" queue is unavailable")
@@ -166,7 +177,11 @@ func (in *Intake) Apply(ctx context.Context, topic string, payload []byte) error
 		return err
 	case TopicLogs:
 		var v []wire.Log
-		if err := json.Unmarshal(payload, &v); err != nil {
+		// UseNumber, as wire.DecodeLogs does: attrs must keep numbers exact
+		// (ids above 2^53, 1.50 vs 1.5), or the two modes store different bytes.
+		dec := json.NewDecoder(bytes.NewReader(payload))
+		dec.UseNumber()
+		if err := dec.Decode(&v); err != nil {
 			return fmt.Errorf("%w: %w", errPoison, err)
 		}
 		if err := in.opts.Logs.Append(ctx, v); err != nil {

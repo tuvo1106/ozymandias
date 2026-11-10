@@ -851,7 +851,7 @@ idempotency argument:
 | TSDB (series; sketch scalars) | no change | a repeated `(t, v)` on a series is a no-op; an older point is counted as rejected, not stored |
 | Sketch store | no change | last-write-wins by `(series, bucket)` |
 | Trace store | no change | a span overwrites by key; edge rows are claimed once |
-| Log store | no change **while the first delivery is still in the stream's head** | `Append` drops an entry whose `(ts, hash)` the head holds; a batch already sealed into a block is stored again (a pinned, documented gap) |
+| Log store (queued mode) | no change **while the first delivery is still in the stream's head** | `Append` drops an entry whose `(ts, hash)` the head holds; a batch already sealed into a block is stored again (a pinned, documented gap) |
 | Live tail | a line may show twice | the hub is told after the store and tracks no offsets |
 
 **Delivery, per signal, end to end:**

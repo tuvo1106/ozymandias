@@ -70,6 +70,12 @@ type Options struct {
 	// the catalog). A crash can then lose batches the store acknowledged: for
 	// benchmarks and tests of everything but durability, never for production.
 	NoSync bool
+	// DedupeHead makes Append drop a log that the stream's head already holds
+	// (same timestamp and encoded body), so a queue consumer's redelivered batch
+	// is stored once. Off by default: with it a sender's two genuine, identical
+	// lines in one millisecond arriving in separate requests would collapse into
+	// one, and in direct mode nothing redelivers.
+	DedupeHead bool
 	// MaxStreams bounds the distinct (service, source, host, env, status)
 	// combinations. A stream costs a catalog row, a head and an open chunk file,
 	// and its labels come from whoever posts logs, so without a bound one app that
@@ -103,6 +109,7 @@ type stream struct {
 	headBytes int
 	headSince time.Time // when the head became non-empty
 	headSeg   int       // WAL segment holding the oldest unsealed entry
+	dedupe    bool
 	open      *chunkState
 }
 
@@ -295,7 +302,7 @@ func (s *Store) recover() error {
 		return fmt.Errorf("logstore: loading streams: %w", err)
 	}
 	for _, r := range rows {
-		st := &stream{id: r.id, labels: r.labels}
+		st := &stream{id: r.id, labels: r.labels, dedupe: s.opts.DedupeHead}
 		s.streams[r.labels.key()], s.byID[r.id] = st, st
 	}
 
@@ -382,7 +389,11 @@ func (s *Store) recover() error {
 			}
 			// The reader reuses its buffer for the next record, and the body
 			// is a slice of it: keep a copy.
-			st.add(rawEntry{Ts: l.Ts, Seq: seq, Body: bytes.Clone(body)}, now, seg)
+			e := rawEntry{Ts: l.Ts, Seq: seq, Body: bytes.Clone(body)}
+			if st.dedupe {
+				e.key = keyOf(e.Ts, e.Body)
+			}
+			st.add(e, now, seg)
 		}
 	}
 	return r.Err()
@@ -439,7 +450,7 @@ func (s *Store) streamFor(l *wire.Log) (*stream, error) {
 	if err != nil {
 		return nil, err
 	}
-	st = &stream{id: id, labels: ls}
+	st = &stream{id: id, labels: ls, dedupe: s.opts.DedupeHead}
 	s.smu.Lock()
 	s.streams[key], s.byID[id] = st, st
 	s.smu.Unlock()
@@ -452,10 +463,12 @@ func (st *stream) add(e rawEntry, now time.Time, seg int) {
 	}
 	st.head = append(st.head, e)
 	st.headBytes += len(e.Body) + 16
-	if st.seen == nil {
-		st.seen = map[headKey]struct{}{}
+	if st.dedupe {
+		if st.seen == nil {
+			st.seen = map[headKey]struct{}{}
+		}
+		st.seen[e.key] = struct{}{}
 	}
-	st.seen[keyOf(e.Ts, e.Body)] = struct{}{}
 }
 
 func encodeLog(l *wire.Log) ([]byte, error) { return json.Marshal(l) }
@@ -555,20 +568,26 @@ func (s *Store) Append(ctx context.Context, batch []wire.Log) error {
 	// the same message in one millisecond) while the same batch twice does
 	// not. The limit is the head: a batch whose first delivery was already
 	// sealed into a block is not recognized (docs/notes/M7.md).
-	// Fresh slices: batch is the caller's, who may publish it to live tail
-	// afterwards and must see it as it passed it.
-	fresh := make([]wire.Log, 0, len(batch))
-	freshBodies := make([][]byte, 0, len(batch))
-	freshStreams := make([]*stream, 0, len(batch))
-	for i := range batch {
-		if _, dup := streams[i].seen[keyOf(batch[i].Ts, bodies[i])]; dup {
-			continue
+	keys := make([]headKey, len(batch))
+	if s.opts.DedupeHead {
+		// Fresh slices: batch is the caller's, who may publish it to live tail
+		// afterwards and must see it as it passed it.
+		fresh := make([]wire.Log, 0, len(batch))
+		freshBodies := make([][]byte, 0, len(batch))
+		freshStreams := make([]*stream, 0, len(batch))
+		freshKeys := make([]headKey, 0, len(batch))
+		for i := range batch {
+			k := keyOf(batch[i].Ts, bodies[i])
+			if _, dup := streams[i].seen[k]; dup {
+				continue
+			}
+			fresh = append(fresh, batch[i])
+			freshBodies = append(freshBodies, bodies[i])
+			freshStreams = append(freshStreams, streams[i])
+			freshKeys = append(freshKeys, k)
 		}
-		fresh = append(fresh, batch[i])
-		freshBodies = append(freshBodies, bodies[i])
-		freshStreams = append(freshStreams, streams[i])
+		batch, bodies, streams, keys = fresh, freshBodies, freshStreams, freshKeys
 	}
-	batch, bodies, streams = fresh, freshBodies, freshStreams
 	if len(batch) == 0 {
 		return nil
 	}
@@ -605,7 +624,7 @@ func (s *Store) Append(ctx context.Context, batch []wire.Log) error {
 
 	s.smu.Lock()
 	for i := range batch {
-		streams[i].add(rawEntry{Ts: batch[i].Ts, Seq: base + uint64(i), Body: bodies[i]}, now, seg)
+		streams[i].add(rawEntry{Ts: batch[i].Ts, Seq: base + uint64(i), Body: bodies[i], key: keys[i]}, now, seg)
 	}
 	s.smu.Unlock()
 
@@ -693,13 +712,11 @@ func (s *Store) sealDay(st *stream, day string, group []rawEntry) error {
 		if dayOf(e.Ts) != day {
 			rest = append(rest, e)
 			bytes += len(e.Body) + 16
+		} else if st.dedupe {
+			delete(st.seen, e.key)
 		}
 	}
 	st.head, st.headBytes = rest, bytes
-	st.seen = make(map[headKey]struct{}, len(rest))
-	for _, e := range rest {
-		st.seen[keyOf(e.Ts, e.Body)] = struct{}{}
-	}
 	s.smu.Unlock()
 	if s.afterBlock != nil {
 		s.afterBlock()

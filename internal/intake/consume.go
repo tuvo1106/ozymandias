@@ -31,9 +31,8 @@ func ConsumerName(topic string) string { return consumerPrefix + "-" + topic }
 // them redelivers the batch (at-least-once) and idempotent stores make that
 // invisible; commit-before-apply would turn the same crash into silent loss.
 //
-// pending is set to the produce time of the oldest uncommitted record while a
-// batch is in flight and to zero between batches; the server reads it for
-// ozy.queue.lag_seconds.
+// pending is set to the produce time of each batch's first record; the server
+// reads it for ozy.queue.lag_seconds, which is 0 when nothing is uncommitted.
 //
 // A store error is not the record's fault, so the consumer does not skip: it
 // retries the same record with backoff and the topic backs up behind it. That
@@ -43,14 +42,38 @@ func ConsumerName(topic string) string { return consumerPrefix + "-" + topic }
 // even decode is counted and committed past (errPoison), not retried.
 func (in *Intake) RunConsumer(ctx context.Context, topic string, c *queue.Consumer, pending *atomic.Int64) error {
 	poisoned := in.opts.Metrics.Counter("ozy.consumer.poison_records", "topic:"+topic)
+	failures := in.opts.Metrics.Counter("ozy.consumer.queue_errors", "topic:"+topic)
+	// pause waits out a queue-side failure (a Poll read error, a Commit fsync
+	// error). Giving up would leave intake answering 202 for a store nobody
+	// feeds, with every health signal green until the topic fills.
+	delay := retryMin
+	pause := func(op string, err error) bool {
+		failures.Add(1)
+		in.opts.Logger.Warn("consumer: queue "+op+" failed; retrying", "topic", topic, "err", err, "after", delay)
+		t := in.opts.Clock.NewTimer(delay)
+		defer t.Stop()
+		select {
+		case <-ctx.Done():
+			return false
+		case <-t.C():
+		}
+		delay = min(delay*2, retryMax)
+		return true
+	}
 	for {
 		recs, err := c.Poll(ctx, consumeBatch)
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, queue.ErrClosed) {
 				return nil
 			}
-			return err
+			// A broken topic never recovers until restart; polling it again is
+			// harmless and keeps the failure counted.
+			if !pause("poll", err) {
+				return nil
+			}
+			continue
 		}
+		delay = retryMin
 		pending.Store(recs[0].Time.UnixNano())
 		for _, rec := range recs {
 			if err := in.applyWithRetry(ctx, topic, rec.Payload); err != nil {
@@ -63,13 +86,22 @@ func (in *Intake) RunConsumer(ctx context.Context, topic string, c *queue.Consum
 				return nil // ctx ended mid-retry: nothing of this batch is committed
 			}
 		}
-		if err := c.Commit(recs[len(recs)-1].Offset); err != nil {
-			if errors.Is(err, queue.ErrClosed) {
+		for {
+			err := c.Commit(recs[len(recs)-1].Offset)
+			if err == nil {
+				break
+			}
+			if errors.Is(err, queue.ErrClosed) || ctx.Err() != nil {
 				return nil
 			}
-			return err
+			if !pause("commit", err) {
+				return nil
+			}
 		}
-		pending.Store(0)
+		delay = retryMin
+		// pending is left as is: the lag_seconds gauge reads 0 on its own when
+		// nothing is uncommitted, and between batches of a backlog the last
+		// batch's age is the best available answer, where 0 would be wrong.
 	}
 }
 

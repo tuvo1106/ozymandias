@@ -16,7 +16,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   counted (`ozy.consumer.*`) rather than answered. A full topic answers `429` with `Retry-After: 5`.
   New self-metrics: `ozy.queue.{lag_records,lag_seconds,bytes,broken}` per topic and
   `ozy.consumer.*`. ADR-0056; DESIGN.md §17.
-- **Log store drops a redelivered batch.** `Append` skips an entry the stream's head already
+- **Log store drops a redelivered batch** (queued mode only, `DedupeHead`). `Append` skips an entry the stream's head already
   holds (same timestamp and encoded log), so a queue redelivery does not show a line twice.
   Identical lines inside one batch are kept.
 

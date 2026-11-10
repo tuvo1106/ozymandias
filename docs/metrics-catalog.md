@@ -113,6 +113,7 @@ interval's increase.
 | `ozy.consumer.logs_rejected` | counter | logs | — | ozyd (queued mode) | Reserved: logs are validated at intake, so this stays 0 today |
 | `ozy.consumer.spans_stored` | counter | spans | — | ozyd (queued mode) | Spans a consumer handed to the trace store |
 | `ozy.consumer.spans_rejected` | counter | spans | — | ozyd (queued mode) | Reserved: spans are validated at intake, so this stays 0 today |
+| `ozy.consumer.queue_errors` | counter | errors | `topic` | ozyd (queued mode) | Poll or commit failures the consumer retried. Rising with lag means the queue's disk, not the store, is the problem |
 | `ozy.consumer.poison_records` | counter | records | `topic` | ozyd (queued mode) | Queue records that did not decode and were skipped. Anything above 0 is a bug |
 | `ozy.logstore.streams` | gauge | streams | — | ozyd | Distinct label sets (service, source, host, env, status) the log store holds |
 | `ozy.logstore.chunks` | gauge | files | — | ozyd | Chunk files: one per stream per UTC day |

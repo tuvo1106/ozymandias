@@ -35,8 +35,8 @@ itself should not stall behind a backlog it is reporting on.
 needs every store to apply a record twice as it applies it once. The TSDB already
 did (a repeated `(t, v)` is a no-op; an older point is counted, not an error), the
 sketch store is last-write-wins by bucket, the trace store overwrites a span by key.
-The log store had no such property, so `Append` now drops an entry the stream's
-head already holds, keyed by `(timestamp, 64-bit hash of the encoded log)`. Two
+The log store had no such property, so `Append` can drop an entry the stream's
+head already holds (`logstore.Options.DedupeHead`, on only in queued mode: in direct mode nothing redelivers, and two genuine identical lines in separate requests must both stay), keyed by `(timestamp, 64-bit hash of the encoded log)`. Two
 choices inside that:
 
 - The check is against the head *as it was before the batch*, so identical lines
