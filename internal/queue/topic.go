@@ -15,11 +15,13 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/tsdb/wal"
 )
 
-// Defaults, from the M7 spec. The sync pair is measured in docs/notes/M7.md.
+// Defaults, from the M7 spec except DefaultSyncInterval: the spec's 5 ms lost
+// to 1 ms on Linux at every concurrency above one producer (docs/notes/M7.md,
+// docs/adr/0056).
 const (
 	DefaultSegmentSize  = 32 << 20
 	DefaultMaxBytes     = 2 << 30
-	DefaultSyncInterval = 5 * time.Millisecond
+	DefaultSyncInterval = time.Millisecond
 	DefaultSyncBytes    = 1 << 20
 )
 
