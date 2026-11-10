@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -95,11 +96,28 @@ type stream struct {
 	id     int64
 	labels labelSet
 
-	head      []rawEntry // arrival order; sealed when big or old
+	head []rawEntry // arrival order; sealed when big or old
+	// seen holds a key per entry in head, to drop a redelivered batch (see
+	// Append). It is exactly head's contents: add fills it, seal rebuilds it.
+	seen      map[headKey]struct{}
 	headBytes int
 	headSince time.Time // when the head became non-empty
 	headSeg   int       // WAL segment holding the oldest unsealed entry
 	open      *chunkState
+}
+
+// headKey identifies an entry in a stream's head: its timestamp and a 64-bit
+// hash of its encoded body. Two different logs colliding needs the same
+// millisecond and a 2^-64 hash accident.
+type headKey struct {
+	ts int64
+	h  uint64
+}
+
+func keyOf(ts int64, body []byte) headKey {
+	h := fnv.New64a()
+	_, _ = h.Write(body)
+	return headKey{ts, h.Sum64()}
 }
 
 type chunkKey struct {
@@ -434,6 +452,10 @@ func (st *stream) add(e rawEntry, now time.Time, seg int) {
 	}
 	st.head = append(st.head, e)
 	st.headBytes += len(e.Body) + 16
+	if st.seen == nil {
+		st.seen = map[headKey]struct{}{}
+	}
+	st.seen[keyOf(e.Ts, e.Body)] = struct{}{}
 }
 
 func encodeLog(l *wire.Log) ([]byte, error) { return json.Marshal(l) }
@@ -524,6 +546,31 @@ func (s *Store) Append(ctx context.Context, batch []wire.Log) error {
 			return err
 		}
 		streams[i] = st
+	}
+
+	// Drop what the head already holds. A queue consumer applies a batch, may
+	// crash before committing it, and applies it again: that must not show a
+	// line twice. The check is against the head as it was before this batch,
+	// so two identical lines inside one batch both survive (a real burst of
+	// the same message in one millisecond) while the same batch twice does
+	// not. The limit is the head: a batch whose first delivery was already
+	// sealed into a block is not recognized (docs/notes/M7.md).
+	// Fresh slices: batch is the caller's, who may publish it to live tail
+	// afterwards and must see it as it passed it.
+	fresh := make([]wire.Log, 0, len(batch))
+	freshBodies := make([][]byte, 0, len(batch))
+	freshStreams := make([]*stream, 0, len(batch))
+	for i := range batch {
+		if _, dup := streams[i].seen[keyOf(batch[i].Ts, bodies[i])]; dup {
+			continue
+		}
+		fresh = append(fresh, batch[i])
+		freshBodies = append(freshBodies, bodies[i])
+		freshStreams = append(freshStreams, streams[i])
+	}
+	batch, bodies, streams = fresh, freshBodies, freshStreams
+	if len(batch) == 0 {
+		return nil
 	}
 
 	// One WAL record per ~8 MiB of bodies, numbered consecutively from the
@@ -649,6 +696,10 @@ func (s *Store) sealDay(st *stream, day string, group []rawEntry) error {
 		}
 	}
 	st.head, st.headBytes = rest, bytes
+	st.seen = make(map[headKey]struct{}, len(rest))
+	for _, e := range rest {
+		st.seen[keyOf(e.Ts, e.Body)] = struct{}{}
+	}
 	s.smu.Unlock()
 	if s.afterBlock != nil {
 		s.afterBlock()
