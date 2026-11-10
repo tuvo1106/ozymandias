@@ -55,6 +55,9 @@ type Options struct {
 type Intake struct {
 	opts Options
 
+	// cons is the same code with the consumers' counters (see newConsumer).
+	cons *Intake
+
 	accepted, rejected, points   *selfmetrics.Counter
 	sketchPoints                 *selfmetrics.Counter
 	logsAccepted, logsRejected   *selfmetrics.Counter
@@ -72,7 +75,7 @@ func New(opts Options) *Intake {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	return &Intake{
+	in := &Intake{
 		opts:     opts,
 		accepted: opts.Metrics.Counter("ozy.intake.series_accepted"),
 		rejected: opts.Metrics.Counter("ozy.intake.series_rejected"),
@@ -86,6 +89,8 @@ func New(opts Options) *Intake {
 		spansAccepted: opts.Metrics.Counter("ozy.intake.spans_accepted"),
 		spansRejected: opts.Metrics.Counter("ozy.intake.spans_rejected"),
 	}
+	in.cons = in.newConsumer()
+	return in
 }
 
 // Register mounts the intake endpoints on mux.

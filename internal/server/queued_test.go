@@ -124,9 +124,17 @@ func TestQueued_LagIsReportedPerTopic(t *testing.T) {
 		t.Fatal(err)
 	}
 	lag := map[string]float64{}
+	present := map[string]bool{}
 	for _, m := range vars.Metrics {
+		present[m.Name] = true
 		if m.Name == "ozy.queue.lag_records" && len(m.Tags) == 1 {
 			lag[m.Tags[0]] = m.Value
+		}
+	}
+	for _, name := range []string{"series_stored", "series_rejected", "points_stored", "sketch_points_stored",
+		"logs_stored", "logs_rejected", "spans_stored", "spans_rejected"} {
+		if !present["ozy.consumer."+name] {
+			t.Errorf("ozy.consumer.%s is not in /debug/vars: a counter that is never registered reads as health", name)
 		}
 	}
 	want := map[string]float64{"topic:series": 1, "topic:sketches": 0, "topic:logs": 0, "topic:traces": 0}

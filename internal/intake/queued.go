@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/queue"
+	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/internal/sketchstore"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
@@ -94,18 +95,28 @@ func queuedResponse(accepted int, errs []string) wire.IntakeResponse {
 // "stored by a consumer" are different events and must not share a series: in
 // queued mode they are seconds apart, and after a crash they differ by the
 // records redelivered.
-func (in *Intake) consumer() *Intake {
-	c := *in
+func (in *Intake) consumer() *Intake { return in.cons }
+
+// newConsumer registers the consumer counters only when there is a queue:
+// in direct mode nothing consumes, and a counter that can never move would
+// sit in /debug/vars as a zero that reads like health. (Apply still works
+// there, for tests, on counters nobody reads.)
+func (in *Intake) newConsumer() *Intake {
 	reg := in.opts.Metrics
-	c.accepted = reg.Counter("ozy.consumer.series_stored")
-	c.rejected = reg.Counter("ozy.consumer.series_rejected")
-	c.points = reg.Counter("ozy.consumer.points_stored")
-	c.sketchPoints = reg.Counter("ozy.consumer.sketch_points_stored")
-	c.logsAccepted = reg.Counter("ozy.consumer.logs_stored")
-	c.logsRejected = reg.Counter("ozy.consumer.logs_rejected")
-	c.spansAccepted = reg.Counter("ozy.consumer.spans_stored")
-	c.spansRejected = reg.Counter("ozy.consumer.spans_rejected")
-	return &c
+	if in.opts.Queue == nil {
+		reg = selfmetrics.NewRegistry()
+	}
+	return &Intake{
+		opts:          in.opts,
+		accepted:      reg.Counter("ozy.consumer.series_stored"),
+		rejected:      reg.Counter("ozy.consumer.series_rejected"),
+		points:        reg.Counter("ozy.consumer.points_stored"),
+		sketchPoints:  reg.Counter("ozy.consumer.sketch_points_stored"),
+		logsAccepted:  reg.Counter("ozy.consumer.logs_stored"),
+		logsRejected:  reg.Counter("ozy.consumer.logs_rejected"),
+		spansAccepted: reg.Counter("ozy.consumer.spans_stored"),
+		spansRejected: reg.Counter("ozy.consumer.spans_rejected"),
+	}
 }
 
 // errPoison marks a record that no retry can apply: it decoded to nothing the

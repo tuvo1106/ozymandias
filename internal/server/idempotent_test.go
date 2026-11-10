@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"sort"
 	"testing"
@@ -28,6 +29,12 @@ import (
 // was; so the model applies records in order and, at random points, re-applies
 // the last k.
 func TestIdempotent_RedeliveryLeavesStoresAsApplyingOnce(t *testing.T) {
+	// Each iteration opens two whole servers, so the default 100 would be most
+	// of this package's run time; 20 find the log mutant on the first seeds.
+	// An explicit -rapid.checks still wins.
+	if f := flag.Lookup("rapid.checks"); f != nil && f.Value.String() == f.DefValue {
+		_ = f.Value.Set("20")
+	}
 	rapid.Check(t, func(rt *rapid.T) {
 		const base = int64(1790000000)
 		nRecords := rapid.IntRange(1, 12).Draw(rt, "records")
