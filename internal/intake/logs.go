@@ -54,6 +54,15 @@ func (in *Intake) logs(w http.ResponseWriter, r *http.Request) {
 		}
 		errs = append(errs, rj.String())
 	}
+	if in.queued() {
+		if len(valid) > 0 && !in.enqueue(w, r, TopicLogs, valid) {
+			return
+		}
+		in.logsAccepted.Add(int64(len(valid)))
+		in.logsRejected.Add(int64(len(rejects)))
+		writeJSON(w, http.StatusAccepted, wire.IntakeResponse{Status: "ok", Accepted: len(valid), Rejected: len(rejects), Errors: errs})
+		return
+	}
 	if len(valid) > 0 {
 		if err := in.opts.Logs.Append(r.Context(), valid); err != nil {
 			in.opts.Logger.Error("intake: storing logs", "err", err, "logs", len(valid))

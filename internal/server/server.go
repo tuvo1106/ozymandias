@@ -101,7 +101,9 @@ type Server struct {
 	logHub   *loghub.Hub
 	meta     *meta.DB
 	intake   *intake.Intake
-	self     *selfmetrics.Reporter
+	// pipe is nil in direct mode.
+	pipe *pipeline
+	self *selfmetrics.Reporter
 	// monitors and dispatch are nil when monitors.enabled is off.
 	monitors *monitor.Scheduler
 	dispatch *notify.Dispatcher
@@ -196,10 +198,23 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close(), sk.Close(), ls.Close())
 	}
 	s.meta, s.store, s.sketches, s.logs, s.logHub, s.traces = md, store, sk, ls, loghub.New(0), ts
+	var producers map[string]intake.Producer
+	if cfg.Pipeline.Mode == config.PipelineQueued {
+		// After the stores, so a queue that cannot open does not leave them
+		// half-started; Close shuts it first for the opposite reason.
+		if s.pipe, err = s.openPipeline(); err != nil {
+			return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close(), sk.Close(), ls.Close(), ts.Close())
+		}
+		producers = s.pipe.producers()
+	}
 	s.intake = intake.New(intake.Options{
 		Store: store, Sketches: sk, Registry: md, Logs: ls, LogHub: s.logHub, Traces: ts,
+		Queue: producers,
 		Clock: s.clock, Metrics: s.reg, Logger: s.log,
 	})
+	if s.pipe != nil {
+		s.registerQueueMetrics()
+	}
 
 	s.self = selfmetrics.NewReporter(s.reg, selfReportInterval, hostTag)
 
@@ -385,7 +400,12 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 // Close releases the stores. Run calls it on the way out.
 func (s *Server) Close() error {
-	return errors.Join(s.traces.Close(), s.logs.Close(), s.store.Close(), s.sketches.Close(), s.meta.Close())
+	var qerr error
+	if s.pipe != nil {
+		// Before the stores: a consumer mid-apply must not find its store closed.
+		qerr = s.pipe.close()
+	}
+	return errors.Join(qerr, s.traces.Close(), s.logs.Close(), s.store.Close(), s.sketches.Close(), s.meta.Close())
 }
 
 // Run serves on ln (or on the configured address if ln is nil) until ctx is
@@ -410,11 +430,17 @@ func (s *Server) Run(ctx context.Context, ln net.Listener) error {
 	// they must outlive the cancellation that begins the shutdown, so an
 	// in-flight request is not racing a store that is already closing.
 	bgCtx, stopBG := context.WithCancel(context.Background())
-	bgDone := make(chan struct{}, 5)
+	bgDone := make(chan struct{}, 5+len(intake.Topics))
 	loops := 3
 	go func() { s.reportSelf(bgCtx); bgDone <- struct{}{} }()
 	go func() { s.sweepSketches(bgCtx); bgDone <- struct{}{} }()
 	go func() { s.traces.Run(bgCtx, traceSweepInterval); bgDone <- struct{}{} }()
+	if s.pipe != nil {
+		// Consumers outlive the HTTP server for the same reason the loops
+		// above do: a request answered 202 is in the queue, and the stores it
+		// feeds must still be open until the consumer has stopped.
+		loops += s.runConsumers(bgCtx, bgDone)
+	}
 	if s.monitors != nil {
 		// The dispatcher and the scheduler are two loops with one lifetime:
 		// both stop with the background context, after the HTTP server, so
