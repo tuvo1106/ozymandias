@@ -29,6 +29,7 @@ func TestLogs_StressAppendersSearchersAndTails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	feedStores(t, srv)
 	ts := httptest.NewServer(srv.Handler())
 	defer func() { ts.Close(); _ = srv.Close() }()
 	client := &http.Client{}
@@ -170,14 +171,19 @@ func TestLogs_StoreSelfMetricsAreReported(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = srv.Close() }()
+	feedStores(t, srv)
 	body, _ := json.Marshal(wire.LogsPayload{Logs: []wire.Log{{Ts: time.Now().UnixMilli(), Message: "x", Status: "info", Service: "s"}}})
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/logs", bytes.NewReader(body)))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
 	}
-	rec = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/debug/vars", nil))
+	// In queued mode the log reaches the store a moment after the 202.
+	testutil.Eventually(t, 5*time.Second, func() bool {
+		rec = httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest("GET", "/debug/vars", nil))
+		return regexpHeadOne(rec.Body.String())
+	}, "head_entries never counted the log")
 	for _, name := range []string{"streams", "chunks", "entries", "head_entries", "head_bytes", "raw_bytes", "compressed_bytes", "bloom_bytes"} {
 		if !strings.Contains(rec.Body.String(), `"ozy.logstore.`+name+`"`) {
 			t.Errorf("ozy.logstore.%s is not in /debug/vars", name)

@@ -34,6 +34,14 @@ agent ──(F) POST :9400/v1/traces ───► ozyd
   on success (partial acceptance is success). `400` malformed body, `401` bad
   key, `413` body > limit, `429` backpressure (with `Retry-After` seconds),
   `5xx` server fault.
+- **What `202` means.** With the default `pipeline.mode: direct` the data has been
+  stored when `202` is sent, and `rejected`/`errors` include what the stores refused.
+  With `pipeline.mode: queued` it has been made *durable in the queue* and will be
+  applied: `rejected`/`errors` still report what decoding, validation and the
+  metric-type check refused, but not what a store later refuses (a point too old for
+  the TSDB). That is counted server-side (`ozy.consumer.*_rejected`). A sender must
+  not read `202` as "queryable". Delivery is at-least-once end to end; the stores
+  apply a repeated record as they apply it once (DESIGN.md §17).
 - **Retry contract:** the sender retries on network error, `408`, `429`, `5xx`;
   never on other `4xx`.
 - **Limits:** request body ≤ 4 MiB compressed, ≤ 16 MiB decompressed (guard

@@ -108,6 +108,8 @@ jobs:
       - run: scripts/check-no-app-coupling.sh
       - run: make docs-check
       - run: make test
+      # The server end-to-end suite once more with intake in front of the queue.
+      - run: make test-queued
       # Five targets at 10s each, same as `make ci` does locally.
       - run: make fuzz FUZZTIME=10s
       - run: make sdk-check

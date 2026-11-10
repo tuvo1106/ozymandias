@@ -72,6 +72,7 @@ func TestEndToEnd_MonitorFiresAndRecovers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	feedStores(t, srv)
 	ln, _ := httpserve.Listen("127.0.0.1:0")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

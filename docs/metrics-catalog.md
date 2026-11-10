@@ -101,6 +101,19 @@ interval's increase.
 | `ozy.intake.logs_rejected` | counter | logs | — | ozyd | Logs refused, per reason in the response's `errors` |
 | `ozy.intake.spans_accepted` | counter | spans | — | ozyd | Spans stored by POST /v1/traces |
 | `ozy.intake.spans_rejected` | counter | spans | — | ozyd | Spans refused one by one (bad ids, negative duration, start not in microseconds, …) |
+| `ozy.queue.lag_records` | gauge | records | `topic` | ozyd (queued mode) | Durable records the store's consumer has not committed. Grows while a store is down or slow |
+| `ozy.queue.lag_seconds` | gauge | seconds | `topic` | ozyd (queued mode) | Age of the oldest record the consumer holds uncommitted; 0 when caught up |
+| `ozy.queue.bytes` | gauge | bytes | `topic` | ozyd (queued mode) | A topic's size on disk; at `pipeline.queue.max_bytes` intake answers 429 |
+| `ozy.queue.broken` | gauge | 0/1 | `topic` | ozyd (queued mode) | 1 after a failed fsync stopped the topic: intake answers 503 until restart |
+| `ozy.consumer.series_stored` | counter | series | — | ozyd (queued mode) | Series a consumer stored (intake's `series_accepted` counts the same request earlier) |
+| `ozy.consumer.series_rejected` | counter | series | — | ozyd (queued mode) | Series a store refused after the sender was answered (e.g. too old) |
+| `ozy.consumer.points_stored` | counter | points | — | ozyd (queued mode) | Points a consumer stored |
+| `ozy.consumer.sketch_points_stored` | counter | points | — | ozyd (queued mode) | Sketch buckets a consumer stored |
+| `ozy.consumer.logs_stored` | counter | logs | — | ozyd (queued mode) | Logs a consumer handed to the log store (repeats of a redelivered batch included) |
+| `ozy.consumer.logs_rejected` | counter | logs | — | ozyd (queued mode) | Reserved: logs are validated at intake, so this stays 0 today |
+| `ozy.consumer.spans_stored` | counter | spans | — | ozyd (queued mode) | Spans a consumer handed to the trace store |
+| `ozy.consumer.spans_rejected` | counter | spans | — | ozyd (queued mode) | Reserved: spans are validated at intake, so this stays 0 today |
+| `ozy.consumer.poison_records` | counter | records | `topic` | ozyd (queued mode) | Queue records that did not decode and were skipped. Anything above 0 is a bug |
 | `ozy.logstore.streams` | gauge | streams | — | ozyd | Distinct label sets (service, source, host, env, status) the log store holds |
 | `ozy.logstore.chunks` | gauge | files | — | ozyd | Chunk files: one per stream per UTC day |
 | `ozy.logstore.entries` | gauge | logs | — | ozyd | Logs in sealed blocks |

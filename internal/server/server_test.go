@@ -17,6 +17,7 @@ import (
 
 	"github.com/tuvo1106/ozymandias/internal/config"
 	"github.com/tuvo1106/ozymandias/internal/httpserve"
+	"github.com/tuvo1106/ozymandias/internal/intake"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 )
@@ -27,7 +28,33 @@ func testConfig(t *testing.T) config.Ozyd {
 	cfg := config.DefaultOzyd()
 	cfg.DataDir = filepath.Join(t.TempDir(), "nested", "data")
 	cfg.HTTP.ShutdownTimeout = 2 * time.Second
+	if os.Getenv("OZY_TEST_PIPELINE") == config.PipelineQueued {
+		// The whole suite again with intake in front of a queue (`make test-queued`):
+		// the same end-to-end assertions are the evidence that the two modes
+		// answer alike. Negative sync: the group-commit timer runs on the server
+		// clock, which most of these tests fake.
+		cfg.Pipeline.Mode = config.PipelineQueued
+		cfg.Pipeline.Queue.SyncInterval = -1
+	}
 	return cfg
+}
+
+// feedStores starts the queue consumers of a server that the test serves with
+// httptest rather than Run. It does nothing in direct mode.
+func feedStores(t *testing.T, s *Server) {
+	t.Helper()
+	if s.pipe == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{}, len(intake.Topics))
+	n := s.runConsumers(ctx, done)
+	t.Cleanup(func() {
+		cancel()
+		for range n {
+			<-done
+		}
+	})
 }
 
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
@@ -198,7 +225,15 @@ func TestNew_BothStoreEnginesServeTheSameRoundTrip(t *testing.T) {
 				t.Fatalf("intake returned %d: %s", rec.Code, rec.Body)
 			}
 
-			got := get(t, s.Handler(), "/api/v1/query?metric=http.request.count"+
+			feedStores(t, s)
+			var got *httptest.ResponseRecorder
+			testutil.Eventually(t, 5*time.Second, func() bool {
+				got = get(t, s.Handler(), "/api/v1/query?metric=http.request.count"+
+					"&from=1758371000&to=1758373000&aggregator=sum")
+				names := get(t, s.Handler(), "/api/v1/metrics")
+				return strings.Contains(names.Body.String(), "http.request.count")
+			}, "the metric never appeared")
+			got = get(t, s.Handler(), "/api/v1/query?metric=http.request.count"+
 				"&from=1758371000&to=1758373000&aggregator=sum")
 			if got.Code != http.StatusOK {
 				t.Fatalf("query returned %d: %s", got.Code, got.Body)

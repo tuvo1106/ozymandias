@@ -31,6 +31,7 @@ func TestEndToEnd_FileToSearchAndTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	feedStores(t, srv)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	defer func() { _ = srv.Close() }()
