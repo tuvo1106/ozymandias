@@ -39,6 +39,11 @@ type Options struct {
 	LogHub LogPublisher
 	// Traces stores the spans POST /v1/traces carries; nil answers 503.
 	Traces SpanStore
+	// Queue, if set, switches intake to queued mode: a request is validated,
+	// made durable on its signal's topic and answered 202, and the stores are
+	// fed by Run. Nil is direct mode, the pre-M7 path. It must hold every
+	// topic in Topics.
+	Queue map[string]Producer
 	// MaxAge rejects points older than this; 0 accepts any age.
 	MaxAge  time.Duration
 	Clock   clock.Clock           // default clock.Real()
@@ -49,6 +54,9 @@ type Options struct {
 // Intake serves the /v1/* endpoints.
 type Intake struct {
 	opts Options
+
+	// cons is the same code with the consumers' counters (see newConsumer).
+	cons *Intake
 
 	accepted, rejected, points   *selfmetrics.Counter
 	sketchPoints                 *selfmetrics.Counter
@@ -67,7 +75,7 @@ func New(opts Options) *Intake {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	return &Intake{
+	in := &Intake{
 		opts:     opts,
 		accepted: opts.Metrics.Counter("ozy.intake.series_accepted"),
 		rejected: opts.Metrics.Counter("ozy.intake.series_rejected"),
@@ -81,6 +89,8 @@ func New(opts Options) *Intake {
 		spansAccepted: opts.Metrics.Counter("ozy.intake.spans_accepted"),
 		spansRejected: opts.Metrics.Counter("ozy.intake.spans_rejected"),
 	}
+	in.cons = in.newConsumer()
+	return in
 }
 
 // Register mounts the intake endpoints on mux.
@@ -148,6 +158,20 @@ func (in *Intake) series(w http.ResponseWriter, r *http.Request) {
 	for _, rj := range rejects {
 		errs = append(errs, rj.String())
 	}
+	if in.queued() {
+		kept, errs, err := in.admitSeries(r.Context(), valid, now, errs)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		if len(kept) > 0 && !in.enqueue(w, r, TopicSeries, kept) {
+			return
+		}
+		in.accepted.Add(int64(len(kept)))
+		in.rejected.Add(int64(len(errs)))
+		writeJSON(w, http.StatusAccepted, queuedResponse(len(kept), errs))
+		return
+	}
 	resp, err := in.ingest(r.Context(), valid, now, errs)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -177,16 +201,38 @@ func (in *Intake) Ingest(ctx context.Context, series []wire.Series) (wire.Intake
 // survives. An error means a storage failure (retryable, 503), never a bad
 // series — those are counted in the response.
 func (in *Intake) ingest(ctx context.Context, valid []wire.Series, now time.Time, errs []string) (wire.IntakeResponse, error) {
-	batch := make([]tsdb.SeriesSamples, 0, len(valid))
+	kept, errs, err := in.admitSeries(ctx, valid, now, errs)
+	if err != nil {
+		return wire.IntakeResponse{}, err
+	}
+	return in.storeSeries(ctx, kept, errs)
+}
+
+// admitSeries is the part of a series request that needs only the metadata
+// registry: a type conflict is the sender's mistake and is answered now, in
+// both modes. What it keeps is what queued mode puts on the queue.
+func (in *Intake) admitSeries(ctx context.Context, valid []wire.Series, now time.Time, errs []string) ([]wire.Series, []string, error) {
+	kept := make([]wire.Series, 0, len(valid))
 	for _, s := range valid {
 		if err := in.opts.Registry.Observe(ctx, s.Metric, s.Type, s.Interval, now); err != nil {
 			if !errors.Is(err, meta.ErrTypeConflict) {
 				in.opts.Logger.Error("intake: metadata", "err", err)
-				return wire.IntakeResponse{}, errors.New("metadata store unavailable")
+				return nil, nil, errors.New("metadata store unavailable")
 			}
 			errs = append(errs, fmt.Sprintf("%q: %v", s.Metric, err))
 			continue
 		}
+		kept = append(kept, s)
+	}
+	return kept, errs, nil
+}
+
+// storeSeries appends admitted series to the metric store. It is idempotent,
+// which is what lets the queue deliver a record twice: the TSDB no-ops a
+// repeated (t, v) and counts an older point as rejected, not as an error.
+func (in *Intake) storeSeries(ctx context.Context, valid []wire.Series, errs []string) (wire.IntakeResponse, error) {
+	batch := make([]tsdb.SeriesSamples, 0, len(valid))
+	for _, s := range valid {
 		samples := make([]tsdb.Sample, len(s.Points))
 		for i, p := range s.Points {
 			samples[i] = tsdb.Sample{T: p.Timestamp * 1000, V: p.Value}

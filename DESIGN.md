@@ -821,3 +821,61 @@ same replay with the transitions that were *recorded*, so a gap between the two 
 edit since) is visible. A monitor with no status is shown as *why* (no data yet, disabled, not
 running), never as OK.
 
+
+## 17. The queued pipeline and delivery semantics (M7)
+
+`pipeline.mode: queued` puts a durable queue (`internal/queue`, [ADR-0055](docs/adr/0055-own-queue-not-kafka-or-nats.md))
+between intake and the stores; `direct` is the pre-M7 path, kept for comparison and as the default
+until the smoke and e2e suites run queued ([ADR-0056](docs/adr/0056-queued-intake-answers-on-durability.md)).
+
+```
+agent ─POST─▶ intake: decode · validate · registry type check
+                 │  Produce (group-commit fsync)         202 = durable, not stored
+                 ▼
+        queue topics  series │ sketches │ logs │ traces        (data_dir/queue/<topic>/)
+                 │  Poll below the synced end
+                 ▼
+        one consumer per topic: Apply → store, then Commit(offset)
+                 ▼
+        TSDB │ sketch store (+TSDB scalars) │ log store (+live tail) │ trace store
+```
+
+**Order is the whole design.** Intake answers after `Produce` returns, which is after the fsync. A
+consumer commits after `Apply` returns, never before. So a crash can repeat work (a batch applied
+but not yet committed is delivered again) but cannot lose acknowledged work. At-least-once delivery
+is only safe if applying twice equals applying once, which is why each store carries its own
+idempotency argument:
+
+| Store | Applying a record twice | Why |
+|---|---|---|
+| TSDB (series; sketch scalars) | no change | a repeated `(t, v)` on a series is a no-op; an older point is counted as rejected, not stored |
+| Sketch store | no change | last-write-wins by `(series, bucket)` |
+| Trace store | no change | a span overwrites by key; edge rows are claimed once |
+| Log store (queued mode) | no change **while the first delivery is still in the stream's head** | `Append` drops an entry whose `(ts, hash)` the head holds; a batch already sealed into a block is stored again (a pinned, documented gap) |
+| Live tail | a line may show twice | the hub is told after the store and tracks no offsets |
+
+**Delivery, per signal, end to end:**
+
+| Hop | Guarantee | Where data can be lost, and why that is acceptable |
+|---|---|---|
+| App → agent (statsd UDP, trace POST) | at-most-once | UDP drops under load; the SDK must never slow the app |
+| Agent aggregation → forwarder | at-least-once while the agent lives | a crash loses the open 10 s bucket; the agent's retry queue is in memory until PR 4 gives it a disk buffer |
+| Agent → intake | at-least-once (retry on 408/429/5xx) | the agent drops oldest at its queue cap, counted |
+| Log files → agent | at-least-once | offsets commit after a `2xx`; the file is its own buffer |
+| Intake → queue | acknowledged only after fsync | a failed fsync stops the topic until restart; senders see 503, never a false 202 |
+| Queue → store | at-least-once | none: a full topic refuses (429), it never evicts |
+| Store → disk | per store (WAL fsync, then blocks) | as before M7 |
+
+**Backpressure today** is the cap alone: a topic at `pipeline.queue.max_bytes` answers `429` with
+`Retry-After: 5` and the agent backs off. Shedding the expensive signals first (logs and traces at
+80%, metrics at 95%) and isolating queries from ingest are PR 3.
+
+**What a consumer does on failure.** A store error is retried, same record, with backoff from 100 ms
+to 5 s; the topic backs up behind it and intake turns the backlog into `429`. A record that does not
+decode is counted (`ozy.consumer.poison_records`), logged and committed past. Lag is
+`ozy.queue.lag_records` and `ozy.queue.lag_seconds` per topic: a stalled consumer shows as lag
+growing while `ozy.queue.bytes` climbs towards the cap.
+
+**Shutdown order** matters: the HTTP server stops first (no more `Produce`), then the consumers
+(they stop at a record boundary and commit nothing for the batch in flight, which is redelivered),
+then the queue, then the stores. The stores must outlive the consumers.

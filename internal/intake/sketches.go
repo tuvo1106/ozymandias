@@ -52,6 +52,20 @@ func (in *Intake) sketches(w http.ResponseWriter, r *http.Request) {
 	for _, rj := range rejects {
 		errs = append(errs, rj.String())
 	}
+	if in.queued() {
+		accepted, _, errs, err := in.admitSketches(r.Context(), valid, now, errs)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		if len(accepted) > 0 && !in.enqueue(w, r, TopicSketches, accepted) {
+			return
+		}
+		in.accepted.Add(int64(len(accepted)))
+		in.rejected.Add(int64(len(errs)))
+		writeJSON(w, http.StatusAccepted, queuedResponse(len(accepted), errs))
+		return
+	}
 	resp, err := in.ingestSketches(r.Context(), valid, now, errs)
 	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
@@ -78,16 +92,23 @@ var scalars = [...]scalar{
 }
 
 func (in *Intake) ingestSketches(ctx context.Context, valid []wire.SketchSeries, now time.Time, errs []string) (wire.IntakeResponse, error) {
-	// decoded[i] is the sketches of accepted[i]; the two are built together
-	// so a series refused by the metadata registry never reaches either store.
-	var accepted []wire.SketchSeries
-	var decoded [][]sketchstore.Point
-	batch := make([]tsdb.SeriesSamples, 0, len(valid)*len(scalars))
+	accepted, decoded, errs, err := in.admitSketches(ctx, valid, now, errs)
+	if err != nil {
+		return wire.IntakeResponse{}, err
+	}
+	return in.storeSketches(ctx, accepted, decoded, errs)
+}
 
+// admitSketches is the part of a sketch request that needs only the metadata
+// registry: the type check and the payload decode. What it keeps is exactly
+// what queued mode puts on the queue. decoded[i] is the sketches of
+// accepted[i]; the two are built together so a series refused by the registry
+// never reaches either store.
+func (in *Intake) admitSketches(ctx context.Context, valid []wire.SketchSeries, now time.Time, errs []string) (accepted []wire.SketchSeries, decoded [][]sketchstore.Point, _ []string, _ error) {
 	for _, s := range valid {
 		reason, err := in.observeSketch(ctx, s, now)
 		if err != nil {
-			return wire.IntakeResponse{}, err
+			return nil, nil, nil, err
 		}
 		if reason != "" {
 			errs = append(errs, fmt.Sprintf("%q: %s", s.Metric, reason))
@@ -98,9 +119,19 @@ func (in *Intake) ingestSketches(ctx context.Context, valid []wire.SketchSeries,
 			errs = append(errs, fmt.Sprintf("%q: %s", s.Metric, reason))
 			continue
 		}
-		batch = append(batch, scalarSeries(s)...)
 		accepted = append(accepted, s)
 		decoded = append(decoded, points)
+	}
+	return accepted, decoded, errs, nil
+}
+
+// storeSketches writes admitted sketches to both stores. It is idempotent:
+// the TSDB no-ops a repeated (t, v) and the sketch store is last-write-wins by
+// bucket, so a queue redelivery repeats nothing visible.
+func (in *Intake) storeSketches(ctx context.Context, accepted []wire.SketchSeries, decoded [][]sketchstore.Point, errs []string) (wire.IntakeResponse, error) {
+	batch := make([]tsdb.SeriesSamples, 0, len(accepted)*len(scalars))
+	for _, s := range accepted {
+		batch = append(batch, scalarSeries(s)...)
 	}
 
 	res, err := in.opts.Store.Append(ctx, batch)

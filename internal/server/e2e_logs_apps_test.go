@@ -37,6 +37,7 @@ func startLogStack(t *testing.T, sources func(dir string) []agentconfig.LogSourc
 	if err != nil {
 		t.Fatal(err)
 	}
+	feedStores(t, srv)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(func() { ts.Close(); _ = srv.Close() })
 	dir := t.TempDir()

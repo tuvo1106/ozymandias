@@ -17,14 +17,16 @@ import (
 )
 
 type fakeLogs struct {
-	mu   sync.Mutex
-	logs []wire.Log
-	err  error
+	mu    sync.Mutex
+	logs  []wire.Log
+	err   error
+	calls int
 }
 
 func (f *fakeLogs) Append(_ context.Context, l []wire.Log) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls++
 	if f.err != nil {
 		return f.err
 	}

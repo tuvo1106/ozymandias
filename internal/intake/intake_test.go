@@ -31,6 +31,8 @@ type env struct {
 	store *naive.Store
 	meta  *meta.DB
 	reg   *selfmetrics.Registry
+	in    *Intake
+	clk   *testutil.FakeClock
 }
 
 func newEnv(t *testing.T, opts Options) *env {
@@ -53,11 +55,13 @@ func newEnv(t *testing.T, opts Options) *env {
 		t.Cleanup(func() { _ = m.Close() })
 		e.meta, opts.Registry = m, m
 	}
-	opts.Clock = testutil.NewFakeClock(now)
+	e.clk = testutil.NewFakeClock(now)
+	opts.Clock = e.clk
 	opts.Metrics = e.reg
 	opts.Logger = slog.New(slog.DiscardHandler)
 	mux := http.NewServeMux()
-	New(opts).Register(mux)
+	e.in = New(opts)
+	e.in.Register(mux)
 	e.h = mux
 	return e
 }

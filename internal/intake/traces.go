@@ -59,6 +59,15 @@ func (in *Intake) traces(w http.ResponseWriter, r *http.Request) {
 		}
 		errs = append(errs, rj.String())
 	}
+	if in.queued() {
+		if len(p.Spans) > 0 && !in.enqueue(w, r, TopicTraces, p.Spans) {
+			return
+		}
+		in.spansAccepted.Add(int64(len(p.Spans)))
+		in.spansRejected.Add(int64(len(rejects)))
+		writeJSON(w, http.StatusAccepted, wire.IntakeResponse{Status: "ok", Accepted: len(p.Spans), Rejected: len(rejects), Errors: errs})
+		return
+	}
 	if len(p.Spans) > 0 {
 		if err := in.opts.Traces.Append(r.Context(), p.Spans); err != nil {
 			in.opts.Logger.Error("intake: storing spans", "err", err, "spans", len(p.Spans))

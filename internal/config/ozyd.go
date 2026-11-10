@@ -197,6 +197,50 @@ func (t Traces) Validate() error {
 	return nil
 }
 
+// Pipeline modes.
+const (
+	// PipelineDirect stores an intake request's contents before answering it:
+	// the pre-M7 path, kept for tests and for comparing against the queue.
+	PipelineDirect = "direct"
+	// PipelineQueued makes the request durable in the queue and answers; the
+	// stores are fed from the queue by consumers (M7).
+	PipelineQueued = "queued"
+)
+
+// Pipeline configures how intake reaches the stores.
+type Pipeline struct {
+	// Mode is "direct" or "queued".
+	Mode string `yaml:"mode"`
+	// Queue configures the durable queue; read only in queued mode.
+	Queue Queue `yaml:"queue"`
+}
+
+// Queue configures the intake queue (internal/queue), one topic per signal.
+type Queue struct {
+	// MaxBytes caps each topic on disk; past it intake refuses with 429
+	// rather than dropping what it already acknowledged. Zero is the queue's
+	// default (2 GiB).
+	MaxBytes int64 `yaml:"max_bytes"`
+	// SyncInterval is the group-commit window: how long a topic waits after
+	// the first unsynced record before fsyncing. Zero is the queue's default;
+	// negative syncs as soon as the syncer wakes, with no batching.
+	SyncInterval time.Duration `yaml:"sync_interval"`
+}
+
+// Validate checks the pipeline settings.
+func (p Pipeline) Validate() error {
+	var errs []error
+	switch p.Mode {
+	case PipelineDirect, PipelineQueued:
+	default:
+		errs = append(errs, fmt.Errorf("pipeline.mode %q: want direct or queued", p.Mode))
+	}
+	if p.Queue.MaxBytes < 0 {
+		errs = append(errs, fmt.Errorf("pipeline.queue.max_bytes must not be negative, got %d", p.Queue.MaxBytes))
+	}
+	return errors.Join(errs...)
+}
+
 // Monitors configures the monitor scheduler (M6).
 type Monitors struct {
 	// Enabled runs the scheduler. Off, monitors can still be defined and
@@ -329,6 +373,7 @@ type Ozyd struct {
 	Storage      Storage      `yaml:"storage"`
 	Logs         Logs         `yaml:"logs"`
 	Traces       Traces       `yaml:"traces"`
+	Pipeline     Pipeline     `yaml:"pipeline"`
 	Provisioning Provisioning `yaml:"provisioning"`
 	Monitors     Monitors     `yaml:"monitors"`
 	// Notifiers are where monitor notifications go, by name.
@@ -343,6 +388,10 @@ func DefaultOzyd() Ozyd {
 		Log:     Log{Level: "info", Format: "text"},
 		Logs:    Logs{Retention: 7 * 24 * time.Hour},
 		Traces:  Traces{Retention: 7 * 24 * time.Hour},
+		// Direct until the smoke and e2e suites run queued (M7 PR 7): a 202 in
+		// queued mode no longer means "queryable", and tests that assume it
+		// would need to wait for the consumers.
+		Pipeline: Pipeline{Mode: PipelineDirect},
 		Monitors: Monitors{
 			Enabled: true, Workers: 4, EventRetention: 30 * 24 * time.Hour,
 			BaseURL: "http://localhost:9400",
@@ -365,7 +414,7 @@ func DefaultOzyd() Ozyd {
 // Validate checks every section.
 func (c *Ozyd) Validate() error {
 	var errs []error
-	errs = append(errs, c.HTTP.Validate(), c.Log.Validate(), c.Storage.Validate(), c.Logs.Validate(), c.Traces.Validate(), ValidateHostname(c.Hostname),
+	errs = append(errs, c.HTTP.Validate(), c.Log.Validate(), c.Storage.Validate(), c.Logs.Validate(), c.Traces.Validate(), c.Pipeline.Validate(), ValidateHostname(c.Hostname),
 		c.Monitors.Validate(), validateNotifiers(c.Notifiers))
 	if c.DataDir == "" {
 		errs = append(errs, errors.New("data_dir must be set"))

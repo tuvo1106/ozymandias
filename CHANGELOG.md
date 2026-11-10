@@ -9,6 +9,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Queued intake** (M7). `pipeline.mode: queued` makes `/v1/series`, `/v1/sketches`, `/v1/logs`
+  and `/v1/traces` answer `202` once the request is durable in a per-signal queue; one consumer per
+  store applies it and commits afterwards, so a crash redelivers rather than loses. The default stays
+  `direct`. In queued mode `202` means *durable*, not *queryable*, and what a store later refuses is
+  counted (`ozy.consumer.*`) rather than answered. A full topic answers `429` with `Retry-After: 5`.
+  New self-metrics: `ozy.queue.{lag_records,lag_seconds,bytes,broken}` per topic and
+  `ozy.consumer.*`. ADR-0056; DESIGN.md §17.
+- **Log store drops a redelivered batch** (queued mode only, `DedupeHead`). `Append` skips an entry the stream's head already
+  holds (same timestamp and encoded log), so a queue redelivery does not show a line twice.
+  Identical lines inside one batch are kept.
+
 - **Monitor and service widgets, and a Home that shows them** (M6). Three dashboard
   widget types that draw from their own API rather than metric queries:
   `monitor_summary` (the monitors a tag, status set and name select, worst first),
@@ -115,6 +126,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The queue's default group-commit window is 1 ms, not 5 ms: measured on Linux it was faster at
+  every concurrency above one producer (ADR-0056).
 - **The dashboards API answers `created_at` and `updated_at` in UTC.** They were rendered in the
   server's local zone, so the same row read differently on a server in another zone. No change on a
   server already running in UTC, which a container is.

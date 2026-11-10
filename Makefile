@@ -65,6 +65,10 @@ web: ## Build the web UI into the Go embed dir
 test: ## go test -race + coverage gates
 	scripts/check-coverage.sh
 
+.PHONY: test-queued
+test-queued: ## The server end-to-end suite again with intake in front of the queue (M7)
+	OZY_TEST_PIPELINE=queued go test -race -count=1 ./internal/server
+
 .PHONY: test-short
 test-short: ## go test without race/coverage (fast inner loop)
 	go test ./...
@@ -112,7 +116,7 @@ ci: ## The full gate by hand, at background priority (Actions runs it on every P
 	$(CI_NICE) $(MAKE) ci-gate
 
 .PHONY: ci-gate
-ci-gate: lint test docs-check web-check sdk-check
+ci-gate: lint test test-queued docs-check web-check sdk-check
 	$(MAKE) fuzz FUZZTIME=$(CI_FUZZTIME)
 
 # --- run ---------------------------------------------------------------------

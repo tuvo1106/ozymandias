@@ -117,6 +117,8 @@ type rawEntry struct {
 	Ts   int64
 	Seq  uint64
 	Body []byte
+	// key is set only on head entries of a store with DedupeHead.
+	key headKey
 }
 
 var (
