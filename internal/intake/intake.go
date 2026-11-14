@@ -90,6 +90,11 @@ func New(opts Options) *Intake {
 		spansRejected: opts.Metrics.Counter("ozy.intake.spans_rejected"),
 	}
 	in.cons = in.newConsumer()
+	for _, t := range Topics {
+		if opts.Queue != nil {
+			in.shed(t) // registered up front: a counter that appears only after the first shed reads as no shedding
+		}
+	}
 	return in
 }
 

@@ -16,6 +16,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   counted (`ozy.consumer.*`) rather than answered. A full topic answers `429` with `Retry-After: 5`.
   New self-metrics: `ozy.queue.{lag_records,lag_seconds,bytes,broken}` per topic and
   `ozy.consumer.*`. ADR-0056; DESIGN.md §17.
+- **Load shedding and a query limit** (M7). In queued mode a topic at 80% of its cap refuses logs and
+  traces with `429` (`Retry-After: 5`); series and sketches follow at 95% (ADR-0057). `GET /api/*`
+  runs at most `query.max_concurrent` (8) at a time, queues `query.max_queue` (32) for `query.queue_wait`
+  (2 s) and answers `503` beyond that; the live tail is exempt. New: `ozy.intake.shed{topic}`,
+  `ozy.query.{in_flight,queued,rejected}`.
 - **Log store drops a redelivered batch** (queued mode only, `DedupeHead`). `Append` skips an entry the stream's head already
   holds (same timestamp and encoded log), so a queue redelivery does not show a line twice.
   Identical lines inside one batch are kept.

@@ -295,3 +295,61 @@ func TestQueued_AMissingTopicIs503NotAPanic(t *testing.T) {
 		t.Fatalf("%d, want 503", rec.Code)
 	}
 }
+
+type fillProducer struct {
+	fill  float64
+	calls int
+}
+
+func (f *fillProducer) Produce(context.Context, []byte) (uint64, error) { f.calls++; return 0, nil }
+func (f *fillProducer) Fullness() float64                               { return f.fill }
+
+// Shed order (M7 §2): logs and traces at 80%, series and sketches only at 95%.
+func TestQueued_ExpensiveSignalsAreShedBeforeMetrics(t *testing.T) {
+	post := func(e *env, path, body string) int {
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+		return rec.Code
+	}
+	logBody := `{"logs":[` + logJSON("x") + `]}`
+	spanBody := `{"spans":[{"trace_id":"0123456789abcdef0123456789abcdef","span_id":"0123456789abcdef","service":"s","name":"n","resource":"r","start":1790000000000000,"duration":10}]}`
+	for _, c := range []struct {
+		fill                   float64
+		series, logs, tracesOK bool
+	}{
+		{0.50, true, true, true},
+		{0.85, true, false, false},
+		{0.97, false, false, false},
+	} {
+		prod := map[string]Producer{}
+		ps := map[string]*fillProducer{}
+		for _, n := range Topics {
+			ps[n] = &fillProducer{fill: c.fill}
+			prod[n] = ps[n]
+		}
+		e := newEnv(t, Options{Queue: prod, Logs: &fakeLogs{}, Traces: &fakeSpans{}})
+		if got := post(e, "/v1/series", payload(good)) == http.StatusAccepted; got != c.series {
+			t.Errorf("fill %.2f: series accepted=%v, want %v", c.fill, got, c.series)
+		}
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/logs", strings.NewReader(logBody)))
+		if got := rec.Code == http.StatusAccepted; got != c.logs {
+			t.Errorf("fill %.2f: logs accepted=%v, want %v", c.fill, got, c.logs)
+		}
+		if !c.logs && (rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "5") {
+			t.Errorf("fill %.2f: shed logs answered %d, Retry-After %q", c.fill, rec.Code, rec.Header().Get("Retry-After"))
+		}
+		if got := post(e, "/v1/traces", spanBody) == http.StatusAccepted; got != c.tracesOK {
+			t.Errorf("fill %.2f: traces accepted=%v, want %v", c.fill, got, c.tracesOK)
+		}
+		if !c.logs && ps[TopicLogs].calls != 0 {
+			t.Errorf("fill %.2f: a shed request still reached the queue", c.fill)
+		}
+		if !c.logs {
+			want := int64(1)
+			if got := e.reg.Counter("ozy.intake.shed", "topic:logs").Value(); got != want {
+				t.Errorf("fill %.2f: ozy.intake.shed{topic:logs} = %v, want %v", c.fill, got, want)
+			}
+		}
+	}
+}

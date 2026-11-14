@@ -866,9 +866,10 @@ idempotency argument:
 | Queue → store | at-least-once | none: a full topic refuses (429), it never evicts |
 | Store → disk | per store (WAL fsync, then blocks) | as before M7 |
 
-**Backpressure today** is the cap alone: a topic at `pipeline.queue.max_bytes` answers `429` with
-`Retry-After: 5` and the agent backs off. Shedding the expensive signals first (logs and traces at
-80%, metrics at 95%) and isolating queries from ingest are PR 3.
+**Backpressure.** A topic at 80% of `pipeline.queue.max_bytes` refuses logs and traces with `429` and
+`Retry-After: 5`; series and sketches hold on until 95%; at 100% every signal is refused and nothing
+is evicted ([ADR-0057](docs/adr/0057-shed-order-and-query-limit.md)). Reads are bounded separately: 8
+concurrent `GET /api/*` (the live tail excepted), 32 more queued for up to 2 s, then `503`.
 
 **What a consumer does on failure.** A store error is retried, same record, with backoff from 100 ms
 to 5 s; the topic backs up behind it and intake turns the backlog into `429`. A record that does not

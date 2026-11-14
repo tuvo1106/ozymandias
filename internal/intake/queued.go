@@ -35,6 +35,27 @@ type Producer interface {
 	Produce(ctx context.Context, payload []byte) (uint64, error)
 }
 
+// Shed thresholds, as a fraction of a topic's cap (M7 §2). Logs and traces are
+// the expensive signals and the ones whose loss hurts least, so they go first;
+// metrics are the cheapest per byte and the most valuable, so they hold on
+// until the queue is nearly full. The gap between the two is the room the
+// metrics have to keep flowing while the others are refused.
+const (
+	ShedExpensiveAt = 0.80
+	ShedCheapAt     = 0.95
+)
+
+// shedAt is the fullness at which a topic starts refusing.
+func shedAt(topic string) float64 {
+	if topic == TopicSeries || topic == TopicSketches {
+		return ShedCheapAt
+	}
+	return ShedExpensiveAt
+}
+
+// Fuller is implemented by producers that can say how full they are.
+type Fuller interface{ Fullness() float64 }
+
 // retryAfter is what a sender is told to wait when the queue refuses. Fixed
 // rather than computed: the queue cannot know when a consumer will catch up,
 // and a constant is something a client can reason about.
@@ -48,6 +69,12 @@ const retryAfter = 5 * time.Second
 //
 // It reports whether the record is durable; if not it has already answered.
 func (in *Intake) enqueue(w http.ResponseWriter, r *http.Request, topic string, v any) bool {
+	if f, ok := in.opts.Queue[topic].(Fuller); ok && f.Fullness() >= shedAt(topic) {
+		in.shed(topic).Add(1)
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter/time.Second)))
+		writeError(w, http.StatusTooManyRequests, "shedding "+topic+": the queue is nearly full")
+		return false
+	}
 	payload, err := json.Marshal(v)
 	if err != nil {
 		in.opts.Logger.Error("intake: encoding queue record", "topic", topic, "err", err)
@@ -80,6 +107,11 @@ func (in *Intake) enqueue(w http.ResponseWriter, r *http.Request, topic string, 
 		return false
 	}
 	return true
+}
+
+// shed counts requests refused ahead of the cap, per topic.
+func (in *Intake) shed(topic string) *selfmetrics.Counter {
+	return in.opts.Metrics.Counter("ozy.intake.shed", "topic:"+topic)
 }
 
 // queued reports whether handlers hand off to the queue.
