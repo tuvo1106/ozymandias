@@ -96,6 +96,7 @@ type Server struct {
 	handler http.Handler
 	auth    *auth.Auth
 	ready   *readiness
+	bk      backupState
 
 	store    tsdb.MetricStore
 	sketches *sketchstore.Store
@@ -292,6 +293,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	// mounted directory must not be an outage for everybody's monitoring.
 	dashboard.Provision(context.Background(), api.ProvisionStore{DB: md},
 		cfg.Provisioning.Paths, s.clock.Now(), s.log.With("component", "dashboards"))
+	s.registerBackup(mux)
 	s.registerMonitors(mux, opts)
 	if opts.UI != nil {
 		mux.Handle("GET /", opts.UI)

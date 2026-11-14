@@ -115,6 +115,8 @@ interval's increase.
 | `ozy.intake.rejected` | counter | requests | `reason` | ozyd (auth on) | Intake requests refused for an API key problem or a key's limit. `reason` is one of `unauthorized`, `requests`, `bytes`, `spans`, `log_bytes_day`; all five exist from startup |
 | `ozy.agent.forwarder.unauthorized` | counter | requests | — | agent | Payload sends ozyd answered 401 (missing, wrong or revoked key). The data is kept and retried |
 | `ozy.agent.logs.unauthorized` | counter | batches | — | agent | Log batches ozyd answered 401. The tailer keeps its offset and sends them again once the key is fixed |
+| `ozy.backup.runs` | counter | backups | `result` | ozyd | Backups attempted: `ok` or `error` (one that was refused because another was running does not start and is not counted). Both series exist from startup |
+| `ozy.backup.last_success_timestamp` | gauge | unix seconds | — | ozyd | When the last successful backup started; 0 means none since this ozyd started. A monitor on `now - this` is the way to be told backups stopped |
 | `ozy.query.in_flight` | gauge | requests | — | ozyd | Read-API requests holding a slot (limit `query.max_concurrent`) |
 | `ozy.query.queued` | gauge | requests | — | ozyd | Read-API requests waiting for a slot |
 | `ozy.query.rejected` | counter | requests | — | ozyd | Read-API requests answered 503 because every slot and queue place was taken |

@@ -87,9 +87,12 @@ func TestShippedDashboards(t *testing.T) {
 	}
 }
 
-// selfMetric matches the ozy.* names in the emitting code, which is the same
-// pattern scripts/check-docs.sh uses against the catalogue.
-var selfMetric = regexp.MustCompile(`(?:Counter|Gauge|GaugeFunc)\("(ozy\.[a-z0-9_.]+)"`)
+// selfMetric matches the ozy.* names in the emitting code: a registration call
+// (Counter, CounterFunc, Gauge, GaugeFunc), or a name that is a key of a table of
+// gauge functions, which is how the log store's gauges are registered. Both
+// forms must be here, or a dashboard of ozyd's own metrics is "checked" against
+// a list that is missing the ones registered the other way.
+var selfMetric = regexp.MustCompile(`(?:Counter|CounterFunc|Gauge|GaugeFunc)\("(ozy\.[a-z0-9_.]+)"|"(ozy\.[a-z0-9_.]+)":\s+func\(`)
 
 // assertMetricsExist checks that a shipped dashboard asks for metrics this
 // build actually emits.
@@ -148,7 +151,7 @@ func emittedSelfMetrics(t *testing.T) map[string]bool {
 				return nil
 			}
 			for _, m := range selfMetric.FindAllStringSubmatch(string(data), -1) {
-				out[m[1]] = true
+				out[m[1]+m[2]] = true // exactly one of the two groups matched
 			}
 			return nil
 		})

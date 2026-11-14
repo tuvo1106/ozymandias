@@ -1,0 +1,459 @@
+{
+  "uid": "self",
+  "title": "ozymandias self",
+  "description": "Every stage of the pipeline watched from inside: throughput, queue lag, what the stores applied, what was refused, and disk by component.",
+  "widgets": [
+    {
+      "id": "intro",
+      "type": "note",
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 2
+      },
+      "markdown": "ozymandias watching itself, stage by stage: what arrives, what waits in the queue, what the stores have taken, what was refused, and how much disk each part uses. Queue and consumer widgets are empty when ozyd runs `pipeline.mode: direct` (there is no queue then); everything else is always there. These series arrive through the same intake as an agent's, so if the whole dashboard is empty the pipeline is down, not the dashboard."
+    },
+    {
+      "id": "pts",
+      "type": "timeseries",
+      "layout": {
+        "x": 0,
+        "y": 2,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Points accepted",
+      "queries": [
+        {
+          "q": "sum:ozy.intake.points_accepted{*}.as_rate()",
+          "display": "area"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "points/s"
+      }
+    },
+    {
+      "id": "logs",
+      "type": "timeseries",
+      "layout": {
+        "x": 4,
+        "y": 2,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Logs accepted",
+      "queries": [
+        {
+          "q": "sum:ozy.intake.logs_accepted{*}.as_rate()",
+          "display": "area"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "logs/s"
+      }
+    },
+    {
+      "id": "spans",
+      "type": "timeseries",
+      "layout": {
+        "x": 8,
+        "y": 2,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Spans accepted",
+      "queries": [
+        {
+          "q": "sum:ozy.intake.spans_accepted{*}.as_rate()",
+          "display": "area"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "spans/s"
+      }
+    },
+    {
+      "id": "lag_s",
+      "type": "timeseries",
+      "layout": {
+        "x": 0,
+        "y": 5,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Queue lag by topic (queued mode)",
+      "queries": [
+        {
+          "q": "max:ozy.queue.lag_seconds{*} by {topic}",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "lag_r",
+      "type": "timeseries",
+      "layout": {
+        "x": 4,
+        "y": 5,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Records waiting by topic (queued mode)",
+      "queries": [
+        {
+          "q": "max:ozy.queue.lag_records{*} by {topic}",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "records"
+      }
+    },
+    {
+      "id": "qbytes",
+      "type": "timeseries",
+      "layout": {
+        "x": 8,
+        "y": 5,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Queue size by topic (queued mode)",
+      "queries": [
+        {
+          "q": "max:ozy.queue.bytes{*} by {topic}",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "bytes"
+      }
+    },
+    {
+      "id": "applied",
+      "type": "timeseries",
+      "layout": {
+        "x": 0,
+        "y": 8,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Consumers: points stored",
+      "queries": [
+        {
+          "q": "sum:ozy.consumer.points_stored{*}.as_rate()",
+          "display": "area"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "points/s"
+      }
+    },
+    {
+      "id": "qerr",
+      "type": "timeseries",
+      "layout": {
+        "x": 4,
+        "y": 8,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Consumer errors by topic",
+      "queries": [
+        {
+          "q": "sum:ozy.consumer.queue_errors{*} by {topic}.as_rate()",
+          "display": "bars"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "errors/s"
+      }
+    },
+    {
+      "id": "poison",
+      "type": "timeseries",
+      "layout": {
+        "x": 8,
+        "y": 8,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Poison records by topic",
+      "queries": [
+        {
+          "q": "sum:ozy.consumer.poison_records{*} by {topic}.as_rate()",
+          "display": "bars"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "records/s"
+      }
+    },
+    {
+      "id": "shed",
+      "type": "timeseries",
+      "layout": {
+        "x": 0,
+        "y": 11,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Shed by topic (429 ahead of the cap)",
+      "queries": [
+        {
+          "q": "sum:ozy.intake.shed{*} by {topic}.as_rate()",
+          "display": "bars"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "requests/s"
+      }
+    },
+    {
+      "id": "rej",
+      "type": "timeseries",
+      "layout": {
+        "x": 4,
+        "y": 11,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Refused by reason (auth on)",
+      "queries": [
+        {
+          "q": "sum:ozy.intake.rejected{*} by {reason}.as_rate()",
+          "display": "bars"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "requests/s"
+      }
+    },
+    {
+      "id": "qrej",
+      "type": "timeseries",
+      "layout": {
+        "x": 8,
+        "y": 11,
+        "w": 4,
+        "h": 3
+      },
+      "title": "Queries turned away",
+      "queries": [
+        {
+          "q": "sum:ozy.query.rejected{*}.as_rate()",
+          "display": "bars"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "queries/s"
+      }
+    },
+    {
+      "id": "disk",
+      "type": "timeseries",
+      "layout": {
+        "x": 0,
+        "y": 14,
+        "w": 8,
+        "h": 4
+      },
+      "title": "Disk by component",
+      "queries": [
+        {
+          "q": "max:ozy.tsdb.disk_bytes{*}",
+          "name": "metrics",
+          "display": "line"
+        },
+        {
+          "q": "max:ozy.logstore.compressed_bytes{*}",
+          "name": "logs",
+          "display": "line"
+        },
+        {
+          "q": "max:ozy.tracestore.disk_bytes{*}",
+          "name": "traces",
+          "display": "line"
+        },
+        {
+          "q": "max:ozy.sketchstore.disk_bytes{*}",
+          "name": "sketches",
+          "display": "line"
+        },
+        {
+          "q": "sum:ozy.queue.bytes{*}",
+          "name": "queue",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "bytes"
+      }
+    },
+    {
+      "id": "inflight",
+      "type": "timeseries",
+      "layout": {
+        "x": 8,
+        "y": 14,
+        "w": 4,
+        "h": 4
+      },
+      "title": "Queries running and waiting",
+      "queries": [
+        {
+          "q": "max:ozy.query.in_flight{*}",
+          "name": "running",
+          "display": "line"
+        },
+        {
+          "q": "max:ozy.query.queued{*}",
+          "name": "waiting",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "queries"
+      }
+    },
+    {
+      "id": "stores",
+      "type": "query_value",
+      "layout": {
+        "x": 0,
+        "y": 18,
+        "w": 3,
+        "h": 2
+      },
+      "title": "Stores stopped (0 is good)",
+      "queries": [
+        {
+          "q": "max:ozy.store.broken{*}",
+          "reducer": "max"
+        }
+      ],
+      "precision": 0
+    },
+    {
+      "id": "queues",
+      "type": "query_value",
+      "layout": {
+        "x": 3,
+        "y": 18,
+        "w": 3,
+        "h": 2
+      },
+      "title": "Queues stopped (0 is good, queued mode)",
+      "queries": [
+        {
+          "q": "max:ozy.queue.broken{*}",
+          "reducer": "max"
+        }
+      ],
+      "precision": 0
+    },
+    {
+      "id": "series",
+      "type": "query_value",
+      "layout": {
+        "x": 6,
+        "y": 18,
+        "w": 3,
+        "h": 2
+      },
+      "title": "Series in the store",
+      "queries": [
+        {
+          "q": "max:ozy.store.series{*}",
+          "reducer": "last"
+        }
+      ],
+      "precision": 0
+    },
+    {
+      "id": "streams",
+      "type": "query_value",
+      "layout": {
+        "x": 9,
+        "y": 18,
+        "w": 3,
+        "h": 2
+      },
+      "title": "Log streams",
+      "queries": [
+        {
+          "q": "max:ozy.logstore.streams{*}",
+          "reducer": "last"
+        }
+      ],
+      "precision": 0
+    },
+    {
+      "id": "http",
+      "type": "timeseries",
+      "layout": {
+        "x": 0,
+        "y": 20,
+        "w": 6,
+        "h": 3
+      },
+      "title": "ozyd requests by status class",
+      "queries": [
+        {
+          "q": "sum:ozy.http.requests{component:ozyd} by {status_class}.as_rate()",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "requests/s"
+      }
+    },
+    {
+      "id": "heads",
+      "type": "timeseries",
+      "layout": {
+        "x": 6,
+        "y": 20,
+        "w": 6,
+        "h": 3
+      },
+      "title": "In memory: log head and series head",
+      "queries": [
+        {
+          "q": "max:ozy.logstore.head_entries{*}",
+          "name": "log entries in heads",
+          "display": "line"
+        },
+        {
+          "q": "max:ozy.tsdb.head.series{*}",
+          "name": "series in the TSDB head",
+          "display": "line"
+        }
+      ],
+      "yaxis": {
+        "min": 0,
+        "unit": "count"
+      }
+    }
+  ]
+}

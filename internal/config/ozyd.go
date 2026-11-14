@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -260,6 +262,36 @@ type Query struct {
 	QueueWait time.Duration `yaml:"queue_wait"`
 }
 
+// Backup configures online backups (M7 §5, ADR-0060). Off by default: with no
+// root the endpoint does not exist, because an endpoint that writes a tree of
+// files wherever a request names is not one to leave open.
+type Backup struct {
+	// Root is the directory backups are made under, one subdirectory per backup.
+	// It must be an absolute path outside data_dir, and should be on another
+	// volume if the backup is to survive the loss of the disk (a backup of hard
+	// links is not that). Empty turns the endpoint off.
+	Root string `yaml:"root"`
+}
+
+// Validate checks the backup settings against the data directory.
+func (b Backup) Validate(dataDir string) error {
+	if b.Root == "" {
+		return nil
+	}
+	if !filepath.IsAbs(b.Root) {
+		return fmt.Errorf("backup.root must be an absolute path, got %q", b.Root)
+	}
+	root, err1 := filepath.Abs(filepath.Clean(b.Root))
+	data, err2 := filepath.Abs(filepath.Clean(dataDir))
+	if err1 != nil || err2 != nil {
+		return nil // data_dir's own validation reports it
+	}
+	if root == data || strings.HasPrefix(root, data+string(filepath.Separator)) || strings.HasPrefix(data, root+string(filepath.Separator)) {
+		return fmt.Errorf("backup.root %q and data_dir %q must not contain one another", b.Root, dataDir)
+	}
+	return nil
+}
+
 // Auth configures who may talk to ozyd (M7 §5, ADR-0059). Off by default: with
 // enabled false nothing is checked and ozyd behaves as it did before auth existed.
 type Auth struct {
@@ -446,6 +478,7 @@ type Ozyd struct {
 	Pipeline     Pipeline     `yaml:"pipeline"`
 	Query        Query        `yaml:"query"`
 	Auth         Auth         `yaml:"auth"`
+	Backup       Backup       `yaml:"backup"`
 	Provisioning Provisioning `yaml:"provisioning"`
 	Monitors     Monitors     `yaml:"monitors"`
 	// Notifiers are where monitor notifications go, by name.
@@ -486,7 +519,7 @@ func DefaultOzyd() Ozyd {
 // Validate checks every section.
 func (c *Ozyd) Validate() error {
 	var errs []error
-	errs = append(errs, c.HTTP.Validate(), c.Log.Validate(), c.Storage.Validate(), c.Logs.Validate(), c.Traces.Validate(), c.Pipeline.Validate(), c.Query.Validate(), c.Auth.Validate(), ValidateHostname(c.Hostname),
+	errs = append(errs, c.HTTP.Validate(), c.Log.Validate(), c.Storage.Validate(), c.Logs.Validate(), c.Traces.Validate(), c.Pipeline.Validate(), c.Query.Validate(), c.Auth.Validate(), c.Backup.Validate(c.DataDir), ValidateHostname(c.Hostname),
 		c.Monitors.Validate(), validateNotifiers(c.Notifiers))
 	if c.DataDir == "" {
 		errs = append(errs, errors.New("data_dir must be set"))

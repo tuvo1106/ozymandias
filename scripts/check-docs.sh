@@ -46,8 +46,15 @@ check_config internal/agent/config deploy/agent.yaml
 # rename that outran it (ozymandias.* -> ozy.*) left this check matching
 # nothing and still printing ✓, for documented and undocumented metrics
 # alike. The emptiness guard is what makes that failure loud.
-metrics=$(grep -rhoE '(Counter|Gauge|GaugeFunc)\("ozy\.[a-z0-9_.]+"' cmd internal --include='*.go' --exclude='*_test.go' 2>/dev/null |
-  sed -E 's/.*\("([^"]+)"/\1/' | sort -u)
+# Registration calls (Counter, CounterFunc, Gauge, GaugeFunc), and names that are keys of a
+# table of gauge functions ("ozy.x": func(...)), the log store's way. A pattern that
+# knew only the first form let a CounterFunc metric ship undocumented.
+metrics=$( {
+  grep -rhoE '(Counter|CounterFunc|Gauge|GaugeFunc)\("ozy\.[a-z0-9_.]+"' cmd internal --include='*.go' --exclude='*_test.go' 2>/dev/null |
+    sed -E 's/.*\("([^"]+)"/\1/'
+  grep -rhoE '"ozy\.[a-z0-9_.]+":[[:space:]]+func\(' cmd internal --include='*.go' --exclude='*_test.go' 2>/dev/null |
+    sed -E 's/^"([^"]+)".*/\1/'
+} | sort -u)
 if [[ -z "$metrics" ]]; then
   err "no self-metrics matched: this check's pattern has drifted from the code"
 else

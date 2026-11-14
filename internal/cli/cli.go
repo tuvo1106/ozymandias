@@ -46,6 +46,14 @@ type command struct {
 // Ozyd runs the ozyd command line. ui serves the web UI at / (nil
 // for none); cmd/ozyd passes the embedded build.
 func Ozyd(ctx context.Context, args, environ []string, stdout, stderr io.Writer, ui http.Handler) int {
+	if len(args) > 0 {
+		switch args[0] {
+		case "backup":
+			return ozydBackup(ctx, args[1:], environ, stdout, stderr)
+		case "restore":
+			return ozydRestore(args[1:], environ, stdout, stderr)
+		}
+	}
 	return command{
 		name: "ozyd",
 		load: func(path string, environ []string) (loaded, []string, error) {
@@ -97,7 +105,7 @@ func (c command) main(ctx context.Context, args, environ []string, stdout, stder
 	configPath := fs.String("config", "", "YAML config file (default: built-in defaults)")
 	version := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "usage: %s [-config FILE] | -version | healthcheck [-config FILE]\n", c.name)
+		fmt.Fprintf(stderr, "usage: %s [-config FILE] | -version | healthcheck [-config FILE]  (ozyd also: backup, restore)\n", c.name)
 		fs.PrintDefaults()
 	}
 	if err := fs.Parse(args); err != nil {
