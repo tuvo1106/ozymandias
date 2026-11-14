@@ -79,6 +79,17 @@ describe("openTail", () => {
     close();
     expect(src.closed).toBe(true);
   });
+  it("asks whether the session ended when the stream errors, so an expired login is not mistaken for a dropped connection", async () => {
+    const { src } = fake();
+    const seen = vi.fn();
+    window.addEventListener("ozy:unauthorized", seen);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ enabled: true, authenticated: false }))));
+    openTail("", { onLog() {}, onDropped() {}, onOpen() {}, onError() {} }, () => src);
+    src.onerror!(new Event("error"));
+    await vi.waitFor(() => expect(seen).toHaveBeenCalledTimes(1));
+    window.removeEventListener("ozy:unauthorized", seen);
+    vi.unstubAllGlobals();
+  });
   it("omits q when there is no filter", () => {
     const { src } = fake();
     let url = "";

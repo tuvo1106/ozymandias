@@ -43,8 +43,7 @@ func (in *Intake) traces(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if ok, retry := auth.FromContext(r.Context()).AllowSpans(len(p.Spans)); !ok {
-		auth.Refuse(w, retry)
+	if auth.DeniedSpans(w, r, len(p.Spans)) {
 		return
 	}
 	for i := range p.Spans {

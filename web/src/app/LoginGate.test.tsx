@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ApiError } from "../lib/metricsApi";
 import { createQueryClient } from "../lib/queryClient";
-import { UNAUTHORIZED_EVENT } from "../lib/authApi";
+import { notifyIfLoggedOut, UNAUTHORIZED_EVENT } from "../lib/authApi";
 import { LoginGate } from "./LoginGate";
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -91,6 +91,39 @@ describe("query client", () => {
     expect(seen).not.toHaveBeenCalled();
     await run(new ApiError("login required", 401));
     expect(seen).toHaveBeenCalledTimes(1);
+    window.removeEventListener(UNAUTHORIZED_EVENT, seen);
+  });
+});
+
+describe("401 from a mutation, and from a cut-off stream", () => {
+  it("a mutation answered 401 tells the gate, as a query does", async () => {
+    const seen = vi.fn();
+    window.addEventListener(UNAUTHORIZED_EVENT, seen);
+    const client = createQueryClient();
+    await client.getMutationCache().build(client, { mutationFn: () => Promise.reject(new ApiError("login required", 401)) }).execute(undefined).catch(() => {});
+    expect(seen).toHaveBeenCalledTimes(1);
+    await client.getMutationCache().build(client, { mutationFn: () => Promise.reject(new ApiError("bad", 400)) }).execute(undefined).catch(() => {});
+    expect(seen).toHaveBeenCalledTimes(1);
+    window.removeEventListener(UNAUTHORIZED_EVENT, seen);
+  });
+
+  it("notifyIfLoggedOut tells the gate only when auth is on and the session is gone", async () => {
+    const seen = vi.fn();
+    window.addEventListener(UNAUTHORIZED_EVENT, seen);
+    for (const [body, want] of [
+      [{ enabled: true, authenticated: true }, 0],
+      [{ enabled: false, authenticated: false }, 0],
+      [{ enabled: true, authenticated: false }, 1],
+    ] as const) {
+      seen.mockClear();
+      vi.stubGlobal("fetch", vi.fn(async () => json(body)));
+      await notifyIfLoggedOut();
+      expect(seen).toHaveBeenCalledTimes(want);
+    }
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("offline"))));
+    seen.mockClear();
+    await notifyIfLoggedOut();
+    expect(seen).not.toHaveBeenCalled();
     window.removeEventListener(UNAUTHORIZED_EVENT, seen);
   });
 });

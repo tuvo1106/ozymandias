@@ -364,11 +364,15 @@ $ OZYMANDIAS_API_KEY=ozy_... agent -config deploy/agent.yaml
 - `/v1/*` needs the key in `X-Ozy-Key`. `/api/*` and `/debug/*` need the admin login: the UI
   shows a password form, scripts send the password as `Authorization: Bearer`. `/healthz`
   and the UI's static files stay public. An ingest key does not open `/api`.
+- A wrong password, from the login form or as a bearer token, costs the attacker 300 ms at a
+  single gate, so guessing is limited to a few per second. During a flood of wrong guesses a
+  *new* login can answer 429; a logged-in session keeps working.
 - Enabled with no password set is a startup error, so a missing variable cannot leave it open.
 - Revoke with `DELETE /api/v1/keys/{id}`; it takes effect at once. `GET /api/v1/keys` lists
   keys with their last use and limits, never a secret. A lost key cannot be recovered: make a new one.
 - A key's limits (`requests_per_sec`, `bytes_per_sec`, `spans_per_sec`, `log_bytes_per_day`)
-  refuse with `429` and `Retry-After`; zero fields take `auth.defaults`. Watch
+  refuse with `429` and `Retry-After`. In a key, zero takes `auth.defaults` and a negative value
+  (`-1`) means unlimited, to opt out of a default. Watch
   `ozy.intake.rejected{reason}`.
 - What the limits count: `requests_per_sec` one per request; `bytes_per_sec` the bytes on the wire
   (the gzip'd body, or the largest body when no length is declared); `spans_per_sec` the spans that

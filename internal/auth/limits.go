@@ -8,7 +8,9 @@ import (
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
-// Limits are per-key ceilings. Zero is unlimited.
+// Limits are per-key ceilings. In a key's own limits zero means "take the
+// server's default" and a negative value means unlimited, so a key can opt out of
+// a default; in the defaults themselves zero is unlimited.
 type Limits struct {
 	RequestsPerSec float64 `json:"requests_per_sec"`
 	BytesPerSec    float64 `json:"bytes_per_sec"`
@@ -16,7 +18,8 @@ type Limits struct {
 	LogBytesPerDay int64   `json:"log_bytes_per_day"`
 }
 
-// withDefaults fills l's zero fields from d.
+// withDefaults fills l's zero fields from d, and turns a negative field into
+// "unlimited" (zero), which the buckets read as no limit.
 func (l Limits) withDefaults(d Limits) Limits {
 	if l.RequestsPerSec == 0 {
 		l.RequestsPerSec = d.RequestsPerSec
@@ -30,6 +33,10 @@ func (l Limits) withDefaults(d Limits) Limits {
 	if l.LogBytesPerDay == 0 {
 		l.LogBytesPerDay = d.LogBytesPerDay
 	}
+	l.RequestsPerSec = max(l.RequestsPerSec, 0)
+	l.BytesPerSec = max(l.BytesPerSec, 0)
+	l.SpansPerSec = max(l.SpansPerSec, 0)
+	l.LogBytesPerDay = max(l.LogBytesPerDay, 0)
 	return l
 }
 
@@ -170,6 +177,13 @@ func (p *Principal) Allow(size int64) (ok bool, reason string, retry time.Durati
 		return false, ReasonBytes, w
 	}
 	return true, "", 0
+}
+
+// refund returns what a request that was refused after being admitted had spent,
+// so that its retry is not charged twice.
+func (p *Principal) refund(size int64) {
+	p.requests.give(1)
+	p.bytes.give(float64(min(size, wire.MaxBodyBytes)))
 }
 
 // AllowSpans charges n spans.

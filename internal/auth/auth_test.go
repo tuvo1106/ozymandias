@@ -47,6 +47,18 @@ func newEnv(t *testing.T, defaults Limits) *env {
 		e.seen = FromContext(r.Context())
 		w.WriteHeader(http.StatusAccepted)
 	})
+	mux.HandleFunc("POST /v1/traces", func(w http.ResponseWriter, r *http.Request) {
+		if DeniedSpans(w, r, 5000) {
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("POST /v1/logs", func(w http.ResponseWriter, r *http.Request) {
+		if DeniedLogBytes(w, r, 900) {
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
 	mux.HandleFunc("GET /api/v1/things", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -391,8 +403,8 @@ func TestKeyAPI_CreateListRevoke(t *testing.T) {
 	if w := e.do("POST", "/api/v1/keys", `{"name":""}`, admin); w.Code != 400 {
 		t.Fatalf("nameless key: %d", w.Code)
 	}
-	if w := e.do("POST", "/api/v1/keys", `{"name":"x","limits":{"requests_per_sec":-1}}`, admin); w.Code != 400 {
-		t.Fatalf("negative limit: %d", w.Code)
+	if w := e.do("POST", "/api/v1/keys", `{"name":"x","limits":{"requests_per_sec":-1}}`, admin); w.Code != 201 {
+		t.Fatalf("a negative limit means unlimited and must be accepted: %d", w.Code)
 	}
 }
 
@@ -489,21 +501,19 @@ func TestKeys_LastUsedIsWrittenAtMostOncePerMinute(t *testing.T) {
 		rows, _ := e.keys.List(context.Background())
 		return rows[len(rows)-1].LastUsedAt
 	}
+	// The write happens off the request path, so wait for it.
 	e.keys.Authenticate(key)
+	testutil.Eventually(t, 2*time.Second, func() bool { return !used().IsZero() }, "last_used_at was never written")
 	first := used()
-	if first.IsZero() {
-		t.Fatal("last_used_at was never written")
-	}
 	e.clk.Advance(10 * time.Second)
 	e.keys.Authenticate(key)
+	time.Sleep(100 * time.Millisecond) // a write that should not happen has had its chance
 	if !used().Equal(first) {
 		t.Fatal("last_used_at was rewritten inside the minute: a commit per request")
 	}
 	e.clk.Advance(2 * time.Minute)
 	e.keys.Authenticate(key)
-	if !used().After(first) {
-		t.Fatal("last_used_at never advanced")
-	}
+	testutil.Eventually(t, 2*time.Second, func() bool { return used().After(first) }, "last_used_at never advanced")
 }
 
 func TestKeyAPI_ListShowsUsageAndRevocation(t *testing.T) {
@@ -511,6 +521,10 @@ func TestKeyAPI_ListShowsUsageAndRevocation(t *testing.T) {
 	admin := map[string]string{"Authorization": "Bearer hunter2"}
 	key := e.newKey(t, Limits{BytesPerSec: 7})
 	e.keys.Authenticate(key)
+	testutil.Eventually(t, 2*time.Second, func() bool {
+		rows, _ := e.keys.List(context.Background())
+		return !rows[0].LastUsedAt.IsZero()
+	}, "last_used_at was never written")
 	e.do("DELETE", "/api/v1/keys/1", "", admin)
 	w := e.do("GET", "/api/v1/keys", "", admin)
 	for _, want := range []string{`"last_used_at":"`, `"revoked_at":"`, `"bytes_per_sec":7`} {
@@ -563,4 +577,163 @@ func TestIngest_AnUndeclaredLengthIsChargedAsTheLargestBody(t *testing.T) {
 		t.Fatalf("a second chunked request straight after: %d, want 429 (the first was charged a whole body)", c)
 	}
 	_ = hdr
+}
+
+// A bearer password is a guess like any other: it goes through the login gate,
+// and the public session probe never answers for it.
+func TestAdmin_BearerGuessesAreBoundedAndTheProbeIsNoOracle(t *testing.T) {
+	e := newEnv(t, Limits{})
+	e.a.opts.LoginDelay = 50 * time.Millisecond
+	const n = 40
+	codes := make(chan int, n)
+	for range n {
+		go func() {
+			codes <- e.do("GET", "/api/v1/things", "", map[string]string{"Authorization": "Bearer wrong"}).Code
+		}()
+	}
+	got := map[int]int{}
+	for range n {
+		got[<-codes]++
+	}
+	if got[429] == 0 || got[401] > loginWaiters+2 {
+		t.Fatalf("%d parallel wrong bearer guesses: %v, want them bounded like login's", n, got)
+	}
+	w := e.do("GET", "/api/v1/auth/session", "", map[string]string{"Authorization": "Bearer hunter2"})
+	if !strings.Contains(w.Body.String(), `"authenticated":false`) {
+		t.Fatalf("the public probe answered for a bearer password: %s", w.Body)
+	}
+	if w := e.do("GET", "/api/v1/things", "", map[string]string{"Authorization": "Bearer hunter2"}); w.Code != 200 {
+		t.Fatalf("the right bearer was refused: %d", w.Code)
+	}
+}
+
+// What a flood of wrong guesses can and cannot do, said as a test so the claim in
+// ADR-0059 is the one that holds: it can make a *new* login busy, and it cannot
+// touch a session that already exists.
+func TestLogin_AFloodMakesNewLoginsBusyButNotHeldSessions(t *testing.T) {
+	e := newEnv(t, Limits{})
+	w := e.do("POST", "/api/v1/auth/login", `{"password":"hunter2"}`, nil)
+	c := w.Result().Cookies()[0]
+	e.a.opts.LoginDelay = 300 * time.Millisecond
+	stop := make(chan struct{})
+	defer close(stop)
+	for range loginWaiters + 4 {
+		go func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					e.do("POST", "/api/v1/auth/login", `{"password":"x"}`, nil)
+				}
+			}
+		}()
+	}
+	time.Sleep(200 * time.Millisecond)
+	r := httptest.NewRequest("GET", "/api/v1/things", nil)
+	r.AddCookie(c)
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, r)
+	if rec.Code != 200 {
+		t.Fatalf("a held session was affected by the flood: %d", rec.Code)
+	}
+}
+
+func TestLogout_NeedsNoSessionAndClearsTheCookie(t *testing.T) {
+	e := newEnv(t, Limits{})
+	r := httptest.NewRequest("POST", "/api/v1/auth/logout", nil)
+	r.AddCookie(&http.Cookie{Name: SessionCookie, Value: "stale"})
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, r)
+	if rec.Code != 204 {
+		t.Fatalf("logout with a stale cookie: %d, want 204", rec.Code)
+	}
+	cleared := false
+	for _, c := range rec.Result().Cookies() {
+		cleared = cleared || (c.Name == SessionCookie && c.MaxAge < 0)
+	}
+	if !cleared {
+		t.Fatal("the stale cookie was not cleared")
+	}
+}
+
+// A request refused for its spans or its log bytes gives back what the gate took,
+// so the sender's retries run into that limit again, not into the request and byte
+// limits (whose rejections would hide the cause).
+func TestIngest_ASpansOrLogRefusalDoesNotDrainTheOtherBuckets(t *testing.T) {
+	e := newEnv(t, Limits{})
+	key := e.newKey(t, Limits{RequestsPerSec: 3, SpansPerSec: 1, LogBytesPerDay: 1000})
+	hdr := map[string]string{wire.HeaderKey: key}
+	if w := e.do("POST", "/v1/traces", "{}", hdr); w.Code != 202 {
+		t.Fatalf("first: %d", w.Code)
+	}
+	for i := range 10 {
+		e.clk.Advance(time.Second / 4) // some refill, never three requests' worth between tries
+		w := e.do("POST", "/v1/traces", "{}", hdr)
+		if w.Code != 429 {
+			t.Fatalf("try %d: %d", i, w.Code)
+		}
+	}
+	if got := e.counter(ReasonRequests); got != 0 {
+		t.Fatalf("%d requests-limit refusals: spans refusals were charged as requests", got)
+	}
+	if got := e.counter(ReasonSpans); got != 10 {
+		t.Fatalf("spans refusals = %d, want 10", got)
+	}
+	// Same for the day's log bytes.
+	if w := e.do("POST", "/v1/logs", "{}", hdr); w.Code != 202 {
+		t.Fatalf("first logs: %d", w.Code)
+	}
+	for i := range 10 {
+		e.clk.Advance(time.Second / 4)
+		if w := e.do("POST", "/v1/logs", "{}", hdr); w.Code != 429 {
+			t.Fatalf("logs try %d: %d", i, w.Code)
+		}
+	}
+	if got := e.counter(ReasonRequests); got != 0 {
+		t.Fatalf("%d requests-limit refusals after log refusals", got)
+	}
+}
+
+func TestLimits_ANegativeKeyLimitOptsOutOfADefault(t *testing.T) {
+	e := newEnv(t, Limits{RequestsPerSec: 1})
+	key := e.newKey(t, Limits{RequestsPerSec: -1})
+	hdr := map[string]string{wire.HeaderKey: key}
+	for i := range 50 {
+		if w := e.do("POST", "/v1/series", "{}", hdr); w.Code != 202 {
+			t.Fatalf("request %d: %d; the key asked for unlimited", i, w.Code)
+		}
+	}
+}
+
+func TestKeys_ALiveKeyIsFoundAmongManyRevokedOnes(t *testing.T) {
+	e := newEnv(t, Limits{})
+	for range 300 {
+		_, row, _ := e.keys.Create(context.Background(), "old", Limits{})
+		_ = e.keys.Revoke(context.Background(), row.ID)
+	}
+	live := e.newKey(t, Limits{})
+	if _, ok := e.keys.Authenticate(live); !ok {
+		t.Fatal("a live key was not found among revoked ones")
+	}
+	// The lookup is by hash, so its cost does not grow with the revoked keys; that
+	// is by construction (a map), not something this test measures.
+}
+
+func TestIngest_ASpansRefusalGivesBackTheBytesToo(t *testing.T) {
+	e := newEnv(t, Limits{})
+	key := e.newKey(t, Limits{SpansPerSec: 1, BytesPerSec: 1000})
+	hdr := map[string]string{wire.HeaderKey: key}
+	body := strings.Repeat("x", 500)
+	if w := e.do("POST", "/v1/traces", body, hdr); w.Code != 202 {
+		t.Fatalf("first: %d", w.Code)
+	}
+	p, _ := e.keys.Authenticate(key)
+	before := p.bytes.tokens
+	if w := e.do("POST", "/v1/traces", body, hdr); w.Code != 429 {
+		t.Fatalf("second: %d", w.Code)
+	}
+	if p.bytes.tokens < before {
+		t.Fatalf("the refused request kept its 500 bytes: %v -> %v", before, p.bytes.tokens)
+	}
 }

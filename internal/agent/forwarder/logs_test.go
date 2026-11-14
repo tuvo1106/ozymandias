@@ -108,3 +108,28 @@ func TestLogSink_NetworkErrorsAndEmptyBatches(t *testing.T) {
 		t.Fatal("a cancelled context must fail the send")
 	}
 }
+
+// The key is sent, and a 401 is an error (so the tailer keeps its offset) that is
+// counted apart from other failures.
+func TestLogSink_SendsTheKeyAndCountsA401(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get(wire.HeaderKey)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	reg := selfmetrics.NewRegistry()
+	s := NewLogSink(LogSinkOptions{URL: srv.URL, Key: "ozy_k", Registry: reg, Logger: slog.New(slog.DiscardHandler)})
+	if err := s.Send(context.Background(), oneLog); err == nil {
+		t.Fatal("a 401 must be an error: the batch has to be sent again")
+	}
+	if got != "ozy_k" {
+		t.Fatalf("X-Ozy-Key = %q", got)
+	}
+	if v := counterValue(reg, "ozy.agent.logs.unauthorized"); v != 1 {
+		t.Fatalf("unauthorized = %v", v)
+	}
+	if v := counterValue(reg, "ozy.agent.logs.send_errors"); v != 0 {
+		t.Fatalf("a 401 was also counted as a generic send error: %v", v)
+	}
+}

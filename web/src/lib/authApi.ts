@@ -34,6 +34,17 @@ export async function fetchSession(): Promise<Session | null> {
   }
 }
 
+/**
+ * Asks the server whether the session is still good and, if not, tells the login
+ * gate. For failures that carry no status: an EventSource error is just an
+ * event, so a tail cut off by an expired session looks like a dropped connection
+ * until something asks.
+ */
+export async function notifyIfLoggedOut(): Promise<void> {
+  const s = await fetchSession();
+  if (s?.enabled && !s.authenticated) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+}
+
 /** Logs in; resolves to an error message, or null on success. */
 export async function login(password: string): Promise<string | null> {
   let res: Response;

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
@@ -48,7 +47,6 @@ type KeyStore interface {
 const touchEvery = time.Minute
 
 type entry struct {
-	hash      []byte // raw SHA-256
 	principal *Principal
 	revoked   bool
 	touched   time.Time
@@ -62,9 +60,9 @@ type Keyring struct {
 	clk      clock.Clock
 	defaults Limits
 
-	mu      sync.RWMutex
-	entries []*entry
-	rej     *Rejections
+	mu     sync.RWMutex
+	byHash map[[sha256.Size]byte]*entry
+	rej    *Rejections
 }
 
 // SetRejections gives every principal, present and future, the counters its
@@ -73,14 +71,14 @@ func (k *Keyring) SetRejections(r *Rejections) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	k.rej = r
-	for _, e := range k.entries {
+	for _, e := range k.byHash {
 		e.principal.rej = r
 	}
 }
 
 // NewKeyring loads the stored keys.
 func NewKeyring(ctx context.Context, store KeyStore, clk clock.Clock, defaults Limits) (*Keyring, error) {
-	k := &Keyring{store: store, clk: clk, defaults: defaults}
+	k := &Keyring{store: store, clk: clk, defaults: defaults, byHash: map[[sha256.Size]byte]*entry{}}
 	rows, err := store.APIKeys(ctx)
 	if err != nil {
 		return nil, err
@@ -102,28 +100,26 @@ func (k *Keyring) add(r meta.APIKey) {
 	defer k.mu.Unlock()
 	p := newPrincipal(r.ID, r.Name, l.withDefaults(k.defaults), k.clk)
 	p.rej = k.rej
-	k.entries = append(k.entries, &entry{hash: raw, revoked: !r.Active(), touched: r.LastUsedAt, principal: p})
+	var h [sha256.Size]byte
+	copy(h[:], raw)
+	k.byHash[h] = &entry{revoked: !r.Active(), touched: r.LastUsedAt, principal: p}
 }
 
 // Authenticate returns the principal for a presented key.
 //
-// It compares the presented key's hash with every stored hash, in constant time
-// each, rather than looking the hash up: the comparison then takes the same time
-// whichever key (or none) matches. (A hash of a random 256-bit secret leaks
-// nothing useful through timing; this is the cheap, obviously-right form.)
+// It looks the key's SHA-256 up in a map. A lookup that returns early on a
+// near match would leak timing if it were keyed by the secret; keyed by the hash
+// of a random 256-bit secret it leaks nothing an attacker can use (a prefix of
+// the hash says nothing about the key), and it costs one hash however many keys,
+// revoked ones included, have ever been made.
 func (k *Keyring) Authenticate(presented string) (*Principal, bool) {
 	if !strings.HasPrefix(presented, keyPrefix) {
 		return nil, false
 	}
 	sum := sha256.Sum256([]byte(presented))
 	k.mu.RLock()
-	var hit *entry
-	revoked := false
-	for _, e := range k.entries {
-		if subtle.ConstantTimeCompare(sum[:], e.hash) == 1 {
-			hit, revoked = e, e.revoked
-		}
-	}
+	hit := k.byHash[sum]
+	revoked := hit != nil && hit.revoked
 	k.mu.RUnlock()
 	if hit == nil || revoked {
 		return nil, false
@@ -141,9 +137,11 @@ func (k *Keyring) touch(e *entry) {
 	}
 	k.mu.Unlock()
 	if due {
-		// Best effort: last_used_at is for people, and a failed write must not
-		// refuse a request that is otherwise fine.
-		_ = k.store.TouchAPIKey(context.Background(), e.principal.ID, now)
+		// Off the request path: the write takes the metadata database's writer
+		// lock, which a dashboard save or a monitor evaluation may hold, and an
+		// ingest request must not wait on that. Once a minute per key, so there is
+		// no pile-up; best effort, since last_used_at is for people.
+		go func() { _ = k.store.TouchAPIKey(context.Background(), e.principal.ID, now) }()
 	}
 }
 
@@ -151,9 +149,6 @@ func (k *Keyring) touch(e *entry) {
 func (k *Keyring) Create(ctx context.Context, name string, limits Limits) (secret string, row meta.APIKey, err error) {
 	if strings.TrimSpace(name) == "" {
 		return "", meta.APIKey{}, fmt.Errorf("auth: a key needs a name")
-	}
-	if limits.RequestsPerSec < 0 || limits.BytesPerSec < 0 || limits.SpansPerSec < 0 || limits.LogBytesPerDay < 0 {
-		return "", meta.APIKey{}, fmt.Errorf("auth: limits must not be negative")
 	}
 	secret, hash, err := GenerateKey()
 	if err != nil {
@@ -175,7 +170,7 @@ func (k *Keyring) Revoke(ctx context.Context, id int64) error {
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	for _, e := range k.entries {
+	for _, e := range k.byHash {
 		if e.principal.ID == id {
 			e.revoked = true
 		}

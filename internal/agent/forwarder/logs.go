@@ -28,8 +28,8 @@ type LogSink struct {
 	url, host, version, key string
 	client                  *http.Client
 
-	sent, rejected, refused, failed *selfmetrics.Counter
-	log                             *slog.Logger
+	sent, rejected, refused, failed, unauthorized *selfmetrics.Counter
+	log                                           *slog.Logger
 }
 
 // LogSinkOptions configures a LogSink.
@@ -63,10 +63,11 @@ func NewLogSink(opts LogSinkOptions) *LogSink {
 	}
 	return &LogSink{
 		url: opts.URL + "/v1/logs", host: opts.Hostname, version: opts.Version, key: opts.Key, client: opts.Client, log: opts.Logger,
-		sent:     opts.Registry.Counter("ozy.agent.logs.sent"),
-		rejected: opts.Registry.Counter("ozy.agent.logs.rejected"),
-		refused:  opts.Registry.Counter("ozy.agent.logs.batches_refused"),
-		failed:   opts.Registry.Counter("ozy.agent.logs.send_errors"),
+		sent:         opts.Registry.Counter("ozy.agent.logs.sent"),
+		rejected:     opts.Registry.Counter("ozy.agent.logs.rejected"),
+		refused:      opts.Registry.Counter("ozy.agent.logs.batches_refused"),
+		failed:       opts.Registry.Counter("ozy.agent.logs.send_errors"),
+		unauthorized: opts.Registry.Counter("ozy.agent.logs.unauthorized"),
 	}
 }
 
@@ -124,6 +125,11 @@ func (s *LogSink) Send(ctx context.Context, logs []wire.Log) error {
 		s.refused.Inc()
 		s.log.Error("logs: ozyd refused a batch; dropping it", "status", resp.StatusCode, "logs", len(logs), "body", string(bytes.TrimSpace(b)))
 		return nil
+	case resp.StatusCode == http.StatusUnauthorized:
+		// Kept, not dropped: the tailer leaves its offset and sends it again once
+		// the key is fixed. Counted apart so the cause is visible.
+		s.unauthorized.Inc()
+		return fmt.Errorf("ozyd refused the API key (intake.key_env): %s", bytes.TrimSpace(b))
 	default:
 		s.failed.Inc()
 		return fmt.Errorf("ozyd answered %d: %s", resp.StatusCode, bytes.TrimSpace(b))

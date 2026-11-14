@@ -87,6 +87,9 @@ func (a *Auth) Rejected() *Rejections { return a.rej }
 
 type ctxKey struct{}
 
+// sizeKey carries what the gate charged for the request's bytes, for a refund.
+type sizeKey struct{}
+
 // FromContext returns the key that authenticated the request, or nil (auth off,
 // or a path that takes no key). Every Principal method is safe on nil.
 func FromContext(ctx context.Context) *Principal {
@@ -110,7 +113,7 @@ func classify(r *http.Request) route {
 	switch {
 	case p == "/healthz" || p == "/readyz":
 		return public
-	case p == "/api/v1/auth/login" || p == "/api/v1/auth/session":
+	case p == "/api/v1/auth/login" || p == "/api/v1/auth/logout" || p == "/api/v1/auth/session":
 		return public
 	case strings.HasPrefix(p, "/v1/"):
 		return ingest
@@ -127,7 +130,14 @@ func (a *Auth) Wrap(next http.Handler) http.Handler {
 		case ingest:
 			a.serveIngest(w, r, next)
 		case admin:
-			if !a.isAdmin(r) {
+			switch a.adminStatus(r) {
+			case http.StatusOK:
+			case http.StatusTooManyRequests:
+				r.Pattern = "auth-reject"
+				w.Header().Set("Retry-After", "1")
+				writeError(w, http.StatusTooManyRequests, "too many password attempts")
+				return
+			default:
 				a.refuse(w, r, http.StatusUnauthorized, "login required")
 				return
 			}
@@ -155,7 +165,8 @@ func (a *Auth) serveIngest(w http.ResponseWriter, r *http.Request, next http.Han
 		Refuse(w, retry)
 		return
 	}
-	r2 := r.WithContext(context.WithValue(r.Context(), ctxKey{}, p))
+	ctx := context.WithValue(r.Context(), ctxKey{}, p)
+	r2 := r.WithContext(context.WithValue(ctx, sizeKey{}, size))
 	next.ServeHTTP(w, r2)
 	// The mux names the route on the copy it was given; the request counter
 	// reads the original, and would file every authenticated request as
@@ -182,16 +193,77 @@ func Refuse(w http.ResponseWriter, retry time.Duration) {
 	_ = json.NewEncoder(w).Encode(wire.ErrorResponse{Status: "error", Error: "rate limit exceeded"})
 }
 
-// isAdmin accepts a live session cookie, or the admin password as a bearer
-// token (for scripts that have no cookie jar).
-func (a *Auth) isAdmin(r *http.Request) bool {
-	if c, err := r.Cookie(SessionCookie); err == nil && a.validSession(c.Value) {
-		return true
+// hasSession reports whether the request carries a live session cookie.
+func (a *Auth) hasSession(r *http.Request) bool {
+	c, err := r.Cookie(SessionCookie)
+	return err == nil && a.validSession(c.Value)
+}
+
+// adminStatus decides an admin request: 200 for a live session cookie or the
+// right password as a bearer token (for scripts with no cookie jar), 429 when
+// too many password guesses are already in flight, 401 otherwise. A bearer
+// password is a guess like any other and goes through the same gate as the login
+// form; if it did not, the login's throttling would guard nothing, since any
+// admin route would answer guesses at full speed.
+func (a *Auth) adminStatus(r *http.Request) int {
+	if a.hasSession(r) {
+		return http.StatusOK
 	}
-	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-		return a.passwordOK(strings.TrimPrefix(h, "Bearer "))
+	h := r.Header.Get("Authorization")
+	if !strings.HasPrefix(h, "Bearer ") {
+		return http.StatusUnauthorized
 	}
-	return false
+	switch a.tryPassword(r.Context(), strings.TrimPrefix(h, "Bearer ")) {
+	case guessRight:
+		return http.StatusOK
+	case guessBusy:
+		return http.StatusTooManyRequests
+	}
+	return http.StatusUnauthorized
+}
+
+type guess int
+
+const (
+	guessRight guess = iota
+	guessWrong
+	guessBusy
+)
+
+// tryPassword checks one password guess. Wrong guesses go through a gate that
+// admits one at a time and holds each for LoginDelay, with at most loginWaiters
+// waiting: guessing is bounded to a few per second whatever the attacker does
+// in parallel, and a correct password does not wait for the delay.
+//
+// The cost of that bound is that a sustained flood of wrong guesses keeps the
+// waiting places full, and a correct login then answers busy (429) until the
+// flood eases. A session already held keeps working, since it never reaches
+// the gate. A per-address limit would avoid that, but behind a proxy every
+// client has the proxy's address.
+func (a *Auth) tryPassword(ctx context.Context, pw string) guess {
+	select {
+	case a.queue <- struct{}{}:
+	default:
+		return guessBusy
+	}
+	defer func() { <-a.queue }()
+	select {
+	case a.gate <- struct{}{}:
+	case <-ctx.Done():
+		return guessBusy
+	}
+	if a.passwordOK(pw) {
+		<-a.gate
+		return guessRight
+	}
+	t := time.NewTimer(a.opts.LoginDelay)
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	t.Stop()
+	<-a.gate
+	return guessWrong
 }
 
 func (a *Auth) passwordOK(pw string) bool {
@@ -250,7 +322,9 @@ func (a *Auth) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/login", a.login)
 	mux.HandleFunc("POST /api/v1/auth/logout", a.logout)
 	mux.HandleFunc("GET /api/v1/auth/session", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "authenticated": a.isAdmin(r)})
+		// Cookie only: answering for a bearer password would make this public
+		// endpoint a free oracle for guesses.
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": true, "authenticated": a.hasSession(r)})
 	})
 	(&keyAPI{keys: a.opts.Keys}).register(mux)
 }
@@ -263,23 +337,12 @@ func (a *Auth) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "expected {\"password\": ...}")
 		return
 	}
-	// Take a place at the gate before comparing, so the number of guesses in
-	// flight is bounded whatever the attacker does in parallel.
-	select {
-	case a.queue <- struct{}{}:
-	default:
+	switch a.tryPassword(r.Context(), body.Password) {
+	case guessBusy:
 		w.Header().Set("Retry-After", "1")
 		writeError(w, http.StatusTooManyRequests, "too many login attempts")
 		return
-	}
-	defer func() { <-a.queue }()
-	select {
-	case a.gate <- struct{}{}:
-	case <-r.Context().Done():
-		return
-	}
-	if a.passwordOK(body.Password) {
-		<-a.gate
+	case guessRight:
 		tok, exp, err := a.newSession()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not start a session")
@@ -292,15 +355,6 @@ func (a *Auth) login(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"authenticated": true})
 		return
 	}
-	// A wrong password holds the gate for the delay, so guesses run one at a
-	// time, a few per second at most, without locking the owner out.
-	t := time.NewTimer(a.opts.LoginDelay)
-	select {
-	case <-t.C:
-	case <-r.Context().Done():
-	}
-	t.Stop()
-	<-a.gate
 	writeError(w, http.StatusUnauthorized, "wrong password")
 }
 

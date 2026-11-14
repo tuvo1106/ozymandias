@@ -51,8 +51,7 @@ func (in *Intake) logs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if ok, retry := auth.FromContext(r.Context()).AllowLogBytes(len(data)); !ok {
-		auth.Refuse(w, retry)
+	if auth.DeniedLogBytes(w, r, len(data)) {
 		return
 	}
 	errs := make([]string, 0, min(len(rejects), wire.MaxResponseErrors))
