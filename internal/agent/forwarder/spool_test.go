@@ -334,3 +334,61 @@ func mustGzip(t *testing.T, s string) []byte {
 	}
 	return b
 }
+
+// A spool that has stopped still holds its payloads and ozyd is up: the memory
+// payloads are sent at shutdown, not dropped for want of a place to put them.
+func TestForwarder_ShutdownSendsMemoryPayloadsWhenTheSpoolIsStopped(t *testing.T) {
+	e := newSpoolEnv(t)
+	f := e.forwarder(t, t.TempDir(), 1)
+	f.Submit(one("onDisk")) // spooled, and the spool then stops
+	f.spools["series"].Break(errors.New("injected"))
+	e.in.up.Store(true)
+	f.mu.Lock()
+	f.queue = append(f.queue, &payload{ep: "series", url: f.series.url, body: mustGzip(t, `{"series":[{"metric":"inMemory"}]}`), series: 1})
+	f.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := f.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown = %v: the memory payload could have been delivered", err)
+	}
+	found := false
+	for _, g := range e.in.got() {
+		found = found || g == "/v1/series inMemory"
+	}
+	if !found {
+		t.Fatalf("the memory payload was not sent: %v", e.in.got())
+	}
+}
+
+// What the cap has dropped from the spool is not sent from the forwarder's cached copy.
+func TestForwarder_ADiskHeadTheCapDroppedIsNotSent(t *testing.T) {
+	e := newSpoolEnv(t)
+	// Not started: loadDiskHead is the send loop's alone, and a second caller
+	// would race it for the cache.
+	f := New(Options{
+		URL: e.url, Clock: e.clk, Registry: selfmetrics.NewRegistry(), Logger: slog.New(slog.DiscardHandler),
+		BufferDir: t.TempDir(), MaxQueueBytes: 1, MaxDiskBytes: 8 << 20,
+	})
+	defer func() { // Shutdown waits for a loop that was never started
+		for _, sp := range f.spools {
+			_ = sp.Close()
+		}
+	}()
+	f.Submit(one("head"))
+	h, failed := f.loadDiskHead("series") // cached for sending
+	if h == nil || failed {
+		t.Fatal("head not loaded")
+	}
+	sp := f.spools["series"]
+	for i := range 200 { // past the 8 MiB cap: the head's segment is dropped
+		if _, err := sp.Put(1, make([]byte, 60000+i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sp.Holds(*h.item) {
+		t.Fatal("the head's segment was not dropped; the test does not exercise the cap")
+	}
+	if h2, _ := f.loadDiskHead("series"); h2 == h {
+		t.Fatal("the stale cached head was reused after the cap dropped its payload")
+	}
+}

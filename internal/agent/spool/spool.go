@@ -42,6 +42,8 @@ type Options struct {
 
 	// syncFn replaces the segment fsync, for tests.
 	syncFn func(*wal.WAL) error
+	// logFn replaces the append, for tests.
+	logFn func(*wal.WAL, wal.Record) error
 }
 
 // Item is one payload read back from the spool.
@@ -192,7 +194,7 @@ func decodeSeries(r wal.Record) (int, bool) {
 // Put appends a payload and fsyncs it. If the spool is then over its cap the
 // oldest segments are dropped; dropped is how many series that lost.
 func (s *Spool) Put(series int, body []byte) (dropped int, err error) {
-	if int64(headerLen+len(body)) > s.opts.SegmentSize {
+	if int64(wal.RecordOverhead+headerLen+len(body)) > s.opts.SegmentSize {
 		// A record bigger than a segment would sit alone in one, and the cap can
 		// never evict the newest segment, so the spool could stay over its cap.
 		return 0, fmt.Errorf("spool: a payload of %d bytes does not fit a %d-byte segment", len(body), s.opts.SegmentSize)
@@ -209,7 +211,18 @@ func (s *Spool) Put(series int, body []byte) (dropped int, err error) {
 	if s.broken != nil {
 		return 0, s.broken
 	}
-	if err := s.w.Log(wal.Record{Type: recordType, Data: rec}); err != nil {
+	logf := s.opts.logFn
+	if logf == nil {
+		logf = func(w *wal.WAL, r wal.Record) error { return w.Log(r) }
+	}
+	if err := logf(s.w, wal.Record{Type: recordType, Data: rec}); err != nil {
+		if errors.Is(err, wal.ErrSync) || errors.Is(err, wal.ErrBroken) {
+			// The log has stopped itself (a rollover's fsync failed, or a
+			// partial write could not be cut back). Say so, so that Broken()
+			// and spool_enabled stop reporting a healthy buffer.
+			s.broken = fmt.Errorf("spool: the log has stopped: %w", err)
+			return 0, s.broken
+		}
 		return 0, fmt.Errorf("spool: %w", err)
 	}
 	sync := s.opts.syncFn
@@ -262,17 +275,21 @@ func (s *Spool) dropOldestLocked() int {
 // Peek returns the oldest undelivered payload without removing it, or false if
 // there is none. Peeking again before Ack returns the same item. skipped is how
 // many series were lost to damage found on the way.
-func (s *Spool) Peek() (it Item, ok bool, skipped int) {
+//
+// err is a read that failed for a reason other than damage (no file
+// descriptors, an I/O error). Nothing was changed; the caller should wait and
+// ask again, and must not treat the spool as empty.
+func (s *Spool) Peek() (it Item, ok bool, skipped int, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.peeked != nil {
-		return *s.peeked, true, 0
+		return *s.peeked, true, 0, nil
 	}
 	for {
 		sg := s.segs[0]
 		if s.off >= sg.goodEnd {
 			if len(s.segs) == 1 {
-				return Item{}, false, skipped // the active segment, fully delivered
+				return Item{}, false, skipped, nil // the active segment, fully delivered
 			}
 			skipped += s.dropOldestLocked() // a finished or damaged segment, nothing left in it
 			continue
@@ -286,7 +303,7 @@ func (s *Spool) Peek() (it Item, ok bool, skipped int) {
 				// I/O error) says nothing about the record. Leave everything as
 				// it is and try again on the next call.
 				s.log.Warn("spool: cannot read the next payload; will retry", "segment", sg.n, "err", err)
-				return Item{}, false, skipped
+				return Item{}, false, skipped, err
 			}
 			s.log.Error("spool: damaged record; skipping the rest of its segment", "segment", sg.n, "err", err)
 			skipped += s.skipDamagedLocked()
@@ -303,8 +320,17 @@ func (s *Spool) Peek() (it Item, ok bool, skipped int) {
 			continue
 		}
 		s.peeked = &Item{Series: ser, Body: body, seg: sg.n, end: end}
-		return *s.peeked, true, skipped
+		return *s.peeked, true, skipped, nil
 	}
+}
+
+// Holds reports whether it is still the payload Peek would return: false once
+// the cap has dropped the segment it came from, after which delivering it would
+// count it both as lost and as sent.
+func (s *Spool) Holds(it Item) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peeked != nil && s.peeked.seg == it.seg && s.peeked.end == it.end
 }
 
 // skipDamagedLocked gives up the rest of segs[0] from the cursor on, and
@@ -324,6 +350,9 @@ func (s *Spool) skipDamagedLocked() int {
 	_ = s.w.Close()
 	path := filepath.Join(s.opts.Dir, wal.SegmentName(sg.n))
 	if err := os.Truncate(path, s.off); err != nil {
+		// The damage is still in the file, so anything appended behind it would
+		// be lost at the next restart. Stop rather than pretend.
+		s.broken = fmt.Errorf("spool: cutting a damaged segment: %w", err)
 		s.log.Error("spool: cutting a damaged segment", "err", err)
 	}
 	w, err := wal.Open(wal.Options{Dir: s.opts.Dir, SegmentSize: s.opts.SegmentSize, StopOnSyncError: true})

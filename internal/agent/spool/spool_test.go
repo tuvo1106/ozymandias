@@ -36,7 +36,7 @@ func body(i int) []byte { return bytes.Repeat([]byte{byte('a' + i%26)}, 100+i) }
 func drain(t tb, s *Spool) (out [][]byte) {
 	t.Helper()
 	for {
-		it, ok, _ := s.Peek()
+		it, ok, _, _ := s.Peek()
 		if !ok {
 			return out
 		}
@@ -58,7 +58,7 @@ func TestSpool_IsFIFOAcrossSegmentsAndReopens(t *testing.T) {
 	}
 	// Deliver ten, restart, deliver the rest: the cursor must survive.
 	for i := range 10 {
-		it, ok, _ := s.Peek()
+		it, ok, _, _ := s.Peek()
 		if !ok || !bytes.Equal(it.Body, body(i)) || it.Series != i+1 {
 			t.Fatalf("item %d: ok=%v series=%d", i, ok, it.Series)
 		}
@@ -117,7 +117,7 @@ func TestSpool_OverTheCapDropsTheOldestAndCountsIt(t *testing.T) {
 		t.Fatalf("dropped %d + held %d != 200 put: every payload must be delivered, held or counted", dropped, st.Series)
 	}
 	// What is left is the newest, in order.
-	first, _, _ := s.Peek()
+	first, _, _, _ := s.Peek()
 	if bytes.Equal(first.Body, body(0)) {
 		t.Fatal("the oldest payload survived a drop-oldest")
 	}
@@ -181,7 +181,7 @@ func TestSpool_ABadCursorMeansStartAgainNotLoss(t *testing.T) {
 	for i := range 5 {
 		_, _ = s.Put(1, body(i))
 	}
-	it, _, _ := s.Peek()
+	it, _, _, _ := s.Peek()
 	s.Ack(it)
 	_ = s.Close()
 	for _, junk := range []string{"garbage", "1 2 3\n", "0 99999999 1\n"} {
@@ -195,7 +195,7 @@ func TestSpool_ABadCursorMeansStartAgainNotLoss(t *testing.T) {
 		for i := range 5 {
 			_, _ = s.Put(1, body(i))
 		}
-		it, _, _ := s.Peek()
+		it, _, _, _ := s.Peek()
 		s.Ack(it)
 		_ = s.Close()
 	}
@@ -225,7 +225,7 @@ func TestSpool_PutDeliverRestartDeliversEverythingOnceInOrder(t *testing.T) {
 				put = append(put, next)
 				next++
 			case 2:
-				if it, ok, _ := s.Peek(); ok {
+				if it, ok, _, _ := s.Peek(); ok {
 					var n int
 					_, _ = fmt.Sscanf(string(it.Body), "payload-%d", &n)
 					got = append(got, n)
@@ -237,7 +237,7 @@ func TestSpool_PutDeliverRestartDeliversEverythingOnceInOrder(t *testing.T) {
 			}
 		}
 		for {
-			it, ok, _ := s.Peek()
+			it, ok, _, _ := s.Peek()
 			if !ok {
 				break
 			}
@@ -268,7 +268,7 @@ func FuzzSpool_OpenAndDrainArbitrarySegmentBytes(f *testing.F) {
 		}
 		defer func() { _ = s.Close() }()
 		for range 10_000 {
-			it, ok, _ := s.Peek()
+			it, ok, _, _ := s.Peek()
 			if !ok {
 				return
 			}
@@ -394,7 +394,7 @@ func TestSpool_AckOfADroppedPayloadChangesNothing(t *testing.T) {
 	if _, err := s.Put(1, body(0)); err != nil {
 		t.Fatal(err)
 	}
-	first, _, _ := s.Peek()
+	first, _, _, _ := s.Peek()
 	for i := range 200 { // roll over and drop the segment the item came from
 		if _, err := s.Put(1, body(i%50)); err != nil {
 			t.Fatal(err)
@@ -418,7 +418,7 @@ func TestSpool_ACursorThatCannotBeWrittenOnlyCostsRepeats(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, headFile+".tmp"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	it, _, _ := s.Peek()
+	it, _, _, _ := s.Peek()
 	s.Ack(it) // must not panic or lose the in-memory state
 	if st := s.Stats(); st.Payloads != 0 {
 		t.Fatalf("%+v: the delivery was not recorded in memory", st)
@@ -477,7 +477,7 @@ func TestSpool_DamageInTheActiveSegmentIsSkippedAndAppendingContinues(t *testing
 		}
 	}
 	for range 2 { // deliver two, then damage the third
-		it, _, _ := s.Peek()
+		it, _, _, _ := s.Peek()
 		s.Ack(it)
 	}
 	segs, _ := wal.Segments(dir)
@@ -488,7 +488,7 @@ func TestSpool_DamageInTheActiveSegmentIsSkippedAndAppendingContinues(t *testing
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, ok, skipped := s.Peek()
+	_, ok, skipped, _ := s.Peek()
 	if ok || skipped != 4 {
 		t.Fatalf("ok=%v skipped=%d: want the four undelivered series counted and no item", ok, skipped)
 	}
@@ -524,7 +524,7 @@ func TestSpool_ATransientReadErrorDropsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := s.Stats()
-	if _, ok, skipped := s.Peek(); ok || skipped != 0 {
+	if _, ok, skipped, _ := s.Peek(); ok || skipped != 0 {
 		t.Fatalf("ok=%v skipped=%d with the file missing", ok, skipped)
 	}
 	if after := s.Stats(); after != before {
@@ -557,7 +557,7 @@ func TestSpool_AKillBetweenCursorWritesRepeatsAtMostAFewPayloads(t *testing.T) {
 		}
 	}
 	for range 20 {
-		it, _, _ := s.Peek()
+		it, _, _, _ := s.Peek()
 		s.Ack(it)
 	}
 	// No Close: a kill. A second spool reads the directory as it is.
@@ -569,5 +569,94 @@ func TestSpool_AKillBetweenCursorWritesRepeatsAtMostAFewPayloads(t *testing.T) {
 	}
 	if !bytes.Equal(got[len(got)-1], body(29)) {
 		t.Fatal("the newest payload was lost")
+	}
+}
+
+// A log that has stopped itself (a rollover's fsync failed, a partial write that
+// could not be cut back) is a stopped spool: Broken() and spool_enabled say so.
+func TestSpool_AStoppedLogStopsTheSpool(t *testing.T) {
+	stop := false
+	s, err := Open(Options{Dir: t.TempDir(), SegmentSize: 1 << 20, MaxBytes: 8 << 20, Logger: quiet,
+		logFn: func(w *wal.WAL, r wal.Record) error {
+			if stop {
+				return fmt.Errorf("%w: injected", wal.ErrBroken)
+			}
+			return w.Log(r)
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, err := s.Put(1, body(0)); err != nil || s.Broken() {
+		t.Fatalf("err=%v broken=%v", err, s.Broken())
+	}
+	stop = true
+	if _, err := s.Put(1, body(1)); err == nil || !s.Broken() {
+		t.Fatalf("err=%v broken=%v: a stopped log must stop the spool", err, s.Broken())
+	}
+}
+
+// The segment must hold the record with its framing, not just the body.
+func TestSpool_TheSizeGuardCountsTheFraming(t *testing.T) {
+	s := open(t, t.TempDir(), 1024, 1<<20)
+	defer func() { _ = s.Close() }()
+	fits := 1024 - wal.RecordOverhead - headerLen
+	if _, err := s.Put(1, make([]byte, fits)); err != nil {
+		t.Fatalf("a payload that exactly fills a segment was refused: %v", err)
+	}
+	if _, err := s.Put(1, make([]byte, fits+1)); err == nil {
+		t.Fatal("a payload one byte too big for its segment was accepted")
+	}
+}
+
+// Holds is how the forwarder learns that the cap dropped what it was about to send.
+func TestSpool_HoldsIsFalseOnceTheCapDropsThePayload(t *testing.T) {
+	s := open(t, t.TempDir(), 1024, 8*1024)
+	defer func() { _ = s.Close() }()
+	if _, err := s.Put(1, body(0)); err != nil {
+		t.Fatal(err)
+	}
+	it, _, _, _ := s.Peek()
+	if !s.Holds(it) {
+		t.Fatal("a freshly peeked item is not held")
+	}
+	for i := range 200 {
+		if _, err := s.Put(1, body(i%50)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.Holds(it) {
+		t.Fatal("the payload's segment was dropped, but Holds still says yes: it would be sent and counted lost")
+	}
+}
+
+// BenchmarkOpen measures the startup scan: every segment is read and CRC-checked
+// to rebuild the index. Reported as MB/s of spool, so a 512 MiB spool's start-up
+// is 512 / that.
+func BenchmarkOpen(b *testing.B) {
+	dir := b.TempDir()
+	s, err := Open(Options{Dir: dir, SegmentSize: 8 << 20, MaxBytes: 1 << 30, Logger: quiet})
+	if err != nil {
+		b.Fatal(err)
+	}
+	payload := make([]byte, 100<<10)
+	for i := range payload {
+		payload[i] = byte(i * 7)
+	}
+	for range 1300 { // about 130 MB
+		if _, err := s.Put(100, payload); err != nil {
+			b.Fatal(err)
+		}
+	}
+	size := s.Stats().Bytes
+	_ = s.Close()
+	b.SetBytes(size)
+	b.ResetTimer()
+	for range b.N {
+		s2, err := Open(Options{Dir: dir, SegmentSize: 8 << 20, MaxBytes: 1 << 30, Logger: quiet})
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = s2.Close()
 	}
 }
