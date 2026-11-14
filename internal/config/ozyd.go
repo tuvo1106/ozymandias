@@ -22,6 +22,10 @@ type HTTP struct {
 	// ShutdownTimeout bounds graceful shutdown: in-flight requests get this
 	// long to finish after SIGTERM before connections are cut.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	// DrainDelay is how long ozyd keeps serving after SIGTERM with /readyz
+	// already answering 503, so a load balancer that polls it stops sending
+	// before the listener closes. Zero (the default) shuts down at once.
+	DrainDelay time.Duration `yaml:"drain_delay"`
 }
 
 // Validate checks the listener settings.
@@ -32,6 +36,9 @@ func (h HTTP) Validate() error {
 	}
 	if h.ShutdownTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("http.shutdown_timeout must be positive, got %v", h.ShutdownTimeout))
+	}
+	if h.DrainDelay < 0 {
+		errs = append(errs, fmt.Errorf("http.drain_delay must not be negative, got %v", h.DrainDelay))
 	}
 	return errors.Join(errs...)
 }

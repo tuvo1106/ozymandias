@@ -106,6 +106,7 @@ interval's increase.
 | `ozy.agent.forwarder.spool_enabled` | gauge | 0/1 | — | agent | 1 when all three endpoint spools are open; 0 is memory only, whether by config or because one could not be opened |
 | `ozy.agent.forwarder.spool_bytes` | gauge | bytes | `endpoint` | agent | A spool's size on disk |
 | `ozy.agent.forwarder.spool_payloads` | gauge | payloads | `endpoint` | agent | Payloads waiting in a spool. Grows during an ozyd outage, drains after |
+| `ozy.store.broken` | gauge | 0/1 | `store` | ozyd | 1 after a failed fsync stopped the store's write-ahead log (`store` is `tsdb` or `logstore`): it refuses every write until ozyd restarts, and `/readyz` says 503. Both series exist from startup |
 | `ozy.queue.lag_records` | gauge | records | `topic` | ozyd (queued mode) | Durable records the store's consumer has not committed. Grows while a store is down or slow |
 | `ozy.queue.lag_seconds` | gauge | seconds | `topic` | ozyd (queued mode) | Age of the oldest record the consumer holds uncommitted; 0 when caught up |
 | `ozy.queue.bytes` | gauge | bytes | `topic` | ozyd (queued mode) | A topic's size on disk; at `pipeline.queue.max_bytes` intake answers 429 |

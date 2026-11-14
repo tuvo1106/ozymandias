@@ -79,6 +79,8 @@ type Options struct {
 	// Lowering it in production trades replay time for finer-grained
 	// truncation; there is no reason to.
 	WALSegmentSize int64
+	// walSyncFile replaces the WAL's file fsync, for tests of a failed fsync.
+	walSyncFile func(*os.File) error
 	// SyncOnAppend fsyncs the WAL before Append returns, trading throughput
 	// for a zero-length window of acknowledged-but-unsynced data.
 	SyncOnAppend bool
@@ -190,7 +192,7 @@ func Open(opts Options) (*DB, error) {
 			"dir", walDir)
 	}
 
-	w, err := wal.Open(wal.Options{Dir: walDir, SegmentSize: opts.WALSegmentSize})
+	w, err := wal.Open(wal.Options{Dir: walDir, SegmentSize: opts.WALSegmentSize, StopOnSyncError: true, SyncFile: opts.walSyncFile})
 	if err != nil {
 		closeBlocks(blocks)
 		return nil, err
@@ -409,6 +411,11 @@ func (db *DB) Stats() tsdb.StoreStats {
 	}
 	return out
 }
+
+// Broken returns why the store stopped accepting writes (a failed fsync of the
+// write-ahead log, which cannot be retried safely), or nil. It stays set until
+// the process restarts and replays the log.
+func (db *DB) Broken() error { return db.wal.Broken() }
 
 // HeadStats exposes the head's own counters for self-metrics.
 func (db *DB) HeadStats() head.Stats { return db.head.Stats() }

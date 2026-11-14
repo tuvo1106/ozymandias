@@ -66,6 +66,8 @@ type Options struct {
 	// WALSegmentSize is the WAL's segment size; zero means the WAL's default.
 	// Smaller segments are truncated sooner, which tests use to see it happen.
 	WALSegmentSize int64
+	// walSyncFile replaces the WAL's file fsync, for tests of a failed fsync.
+	walSyncFile func(*os.File) error
 	// NoSync skips every fsync (the WAL after each Append, each sealed block,
 	// the catalog). A crash can then lose batches the store acknowledged: for
 	// benchmarks and tests of everything but durability, never for production.
@@ -280,7 +282,7 @@ func Open(opts Options) (*Store, error) {
 		_ = cat.close()
 		return nil, err
 	}
-	w, err := wal.Open(wal.Options{Dir: s.walDir, SegmentSize: opts.WALSegmentSize})
+	w, err := wal.Open(wal.Options{Dir: s.walDir, SegmentSize: opts.WALSegmentSize, StopOnSyncError: true, SyncFile: opts.walSyncFile})
 	if err != nil {
 		_ = cat.close()
 		return nil, fmt.Errorf("logstore: opening WAL: %w", err)
@@ -872,6 +874,11 @@ func (s *Store) expire(now time.Time) error {
 	}
 	return errors.Join(errs...)
 }
+
+// Broken returns why the store stopped accepting writes (a failed fsync of the
+// write-ahead log, which cannot be retried safely), or nil. It stays set until
+// the process restarts and replays the log.
+func (s *Store) Broken() error { return s.wal.Broken() }
 
 // Close seals every head, writes every footer and closes the WAL and catalog.
 func (s *Store) Close() error {

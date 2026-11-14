@@ -50,10 +50,10 @@ var ErrCorrupt = errors.New("wal: corrupt record")
 // What to do about one is the caller's policy, set by
 // [Options].StopOnSyncError. After a failed fsync Linux may already have
 // dropped the dirty pages, and a later fsync can report success without
-// writing them (PostgreSQL's 2018 "fsyncgate"), so M7's queue stops. The TSDB
-// and the log store still retry on their next sync tick. Making them stop too
-// waits for a readiness signal that can say so (M7, /readyz); until then a
-// stopped store would fail every write while looking healthy.
+// writing them (PostgreSQL's 2018 "fsyncgate"), so every log ozyd writes
+// stops: the queue, the TSDB and the log store. A stopped store fails every
+// write, and says so on /readyz, in a gauge and in the log, so that it does not
+// do it while looking healthy.
 var ErrSync = errors.New("wal: fsync failed")
 
 // ErrBroken is wrapped by every error from a log that can no longer accept
@@ -82,13 +82,17 @@ type Options struct {
 	// and every later Log and Sync fails, until a restart.
 	//
 	// It is an option, not the default, because stopping is only right for
-	// a caller that can say it has stopped. M7's queue turns it on: it must
-	// never acknowledge after a failed fsync (fsyncgate, see ErrSync). The
-	// decision is made here, under the log's own lock, so that no Sync can
-	// slip in between a failed fsync and the caller hearing about it and
-	// "succeed" over pages the kernel has dropped. The TSDB and the log
-	// store leave it off until /readyz can report a stopped store (M7 PR 6).
+	// a caller that can say it has stopped (see [WAL.Broken]). Every log
+	// ozyd writes turns it on: none may acknowledge after a failed fsync
+	// (fsyncgate, see ErrSync). The decision is made here, under the log's
+	// own lock, so that no Sync can slip in between a failed fsync and the
+	// caller hearing about it and "succeed" over pages the kernel has
+	// dropped.
 	StopOnSyncError bool
+	// SyncFile replaces the file fsync. It exists so that a package that owns a
+	// log (the TSDB, the log store) can test what it does when an fsync fails,
+	// which no test can otherwise make a disk do. Nil means (*os.File).Sync.
+	SyncFile func(*os.File) error
 }
 
 // WAL is an append-only log. It is safe for concurrent use; writes are
@@ -97,6 +101,7 @@ type WAL struct {
 	dir         string
 	segmentSize int64
 	stopOnSync  bool
+	syncFile    func(*os.File) error
 
 	mu      sync.Mutex
 	f       *os.File
@@ -126,7 +131,10 @@ func Open(opts Options) (*WAL, error) {
 	if err := os.MkdirAll(opts.Dir, 0o755); err != nil {
 		return nil, fmt.Errorf("wal: creating %s: %w", opts.Dir, err)
 	}
-	w := &WAL{dir: opts.Dir, segmentSize: opts.SegmentSize, stopOnSync: opts.StopOnSyncError}
+	if opts.SyncFile == nil {
+		opts.SyncFile = (*os.File).Sync
+	}
+	w := &WAL{dir: opts.Dir, segmentSize: opts.SegmentSize, stopOnSync: opts.StopOnSyncError, syncFile: opts.SyncFile}
 
 	segs, err := w.segments()
 	if err != nil {
@@ -256,7 +264,7 @@ func (w *WAL) breakLocked(cause error) error {
 // policy to judge. A failed close or open stops the log: w.f then points at
 // a closed file, which no later write can use.
 func (w *WAL) roll() error {
-	if err := w.f.Sync(); err != nil {
+	if err := w.syncFile(w.f); err != nil {
 		return w.syncFailedLocked(fmt.Errorf("%w before rollover: %w", ErrSync, err))
 	}
 	if err := w.f.Close(); err != nil {
@@ -266,6 +274,14 @@ func (w *WAL) roll() error {
 		return w.breakLocked(err)
 	}
 	return nil
+}
+
+// Broken returns why the log stopped, or nil while it is writable. It is how a
+// store that owns a log reports that it has stopped (readiness, a gauge).
+func (w *WAL) Broken() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.broken
 }
 
 // Sync flushes the current segment to stable storage. Until it returns, a
@@ -279,7 +295,7 @@ func (w *WAL) Sync() error {
 	if w.broken != nil {
 		return w.broken
 	}
-	if err := w.f.Sync(); err != nil {
+	if err := w.syncFile(w.f); err != nil {
 		return w.syncFailedLocked(fmt.Errorf("%w: %w", ErrSync, err))
 	}
 	return nil
@@ -309,7 +325,7 @@ func (w *WAL) Close() error {
 		return w.broken
 	}
 	var err error
-	if serr := w.f.Sync(); serr != nil {
+	if serr := w.syncFile(w.f); serr != nil {
 		err = fmt.Errorf("%w: %w", ErrSync, serr)
 	}
 	if cerr := w.f.Close(); err == nil {

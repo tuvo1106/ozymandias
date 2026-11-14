@@ -3,12 +3,14 @@ package logstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 
 	"github.com/tuvo1106/ozymandias/internal/query/logql"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
+	"github.com/tuvo1106/ozymandias/internal/tsdb/wal"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
@@ -452,4 +455,38 @@ func TestStore_StreamsAreBoundedWhateverServicesArrive(t *testing.T) {
 	}
 	// And a restart keeps them where they were.
 	_ = s.Flush()
+}
+
+// See the TSDB's twin of this test: a failed WAL fsync is final, and the store
+// reports that it has stopped instead of retrying over dropped pages.
+func TestStore_AFailedFsyncStopsTheStoreAndSaysSo(t *testing.T) {
+	var failing atomic.Bool
+	s, _ := openStore(t, t.TempDir(), func(o *Options) {
+		o.NoSync = false
+		o.walSyncFile = func(f *os.File) error {
+			if failing.Load() {
+				return errors.New("injected EIO")
+			}
+			return f.Sync()
+		}
+	})
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+	if err := s.Append(ctx, batchOf("a", 0, 3, t0.UnixMilli())); err != nil {
+		t.Fatal(err)
+	}
+	if s.Broken() != nil {
+		t.Fatalf("broken before any failure: %v", s.Broken())
+	}
+	failing.Store(true)
+	if err := s.Append(ctx, batchOf("b", 0, 3, t0.UnixMilli())); !errors.Is(err, wal.ErrSync) {
+		t.Fatalf("an append over a failing fsync = %v, want wal.ErrSync", err)
+	}
+	if !errors.Is(s.Broken(), wal.ErrBroken) {
+		t.Fatalf("Broken() = %v", s.Broken())
+	}
+	failing.Store(false)
+	if err := s.Append(ctx, batchOf("c", 0, 3, t0.UnixMilli())); !errors.Is(err, wal.ErrBroken) {
+		t.Fatalf("an append after the fsync recovered = %v, want it refused", err)
+	}
 }

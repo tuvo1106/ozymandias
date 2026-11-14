@@ -131,5 +131,8 @@ func (d *DB) Metric(name string) (Metric, bool) {
 	return m, ok
 }
 
+// Ping reports whether the database answers. It is what /readyz asks.
+func (d *DB) Ping(ctx context.Context) error { return d.db.PingContext(ctx) }
+
 // Close closes the database.
 func (d *DB) Close() error { return d.db.Close() }

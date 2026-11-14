@@ -20,6 +20,10 @@ http:
   # How long in-flight requests get to finish after SIGTERM before the
   # remaining connections are cut. Must be positive.
   shutdown_timeout: 10s
+  # How long ozyd keeps serving after SIGTERM with /readyz already answering 503,
+  # so a load balancer that polls it takes this instance out before the listener
+  # closes. Zero shuts down at once. Must not be negative.
+  # drain_delay: 0s
 
 # Root of all on-disk state: meta.db (metric types; later dashboards and
 # monitors), tsdb/ (the metric store: wal/ and blocks/), and later the log

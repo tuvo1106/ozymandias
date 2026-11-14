@@ -95,6 +95,7 @@ type Server struct {
 	started time.Time
 	handler http.Handler
 	auth    *auth.Auth
+	ready   *readiness
 
 	store    tsdb.MetricStore
 	sketches *sketchstore.Store
@@ -226,6 +227,11 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	s.reg.GaugeFunc("ozy.process.uptime_seconds", func() float64 {
 		return s.clock.Now().Sub(s.started).Seconds()
 	}, "component:"+Component)
+	s.ready = &readiness{s: s, stores: []namedStore{{"logstore", ls}}}
+	if b, ok := store.(brokenStore); ok {
+		s.ready.stores = append([]namedStore{{"tsdb", b}}, s.ready.stores...)
+	}
+	s.registerBrokenGauges()
 	s.reg.GaugeFunc("ozy.store.series", func() float64 { return float64(store.Stats().Series) }, "store:"+engine)
 	s.reg.GaugeFunc("ozy.store.samples", func() float64 { return float64(store.Stats().Samples) }, "store:"+engine)
 	s.registerStoreMetrics(engine)
@@ -261,6 +267,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", httpserve.Health(Component, s.started, s.clock.Now, nil))
+	mux.Handle("GET /readyz", s.ready)
 	mux.Handle("GET /debug/vars", s.reg.Handler())
 	s.intake.Register(mux)
 	(&api.Metrics{
@@ -475,7 +482,24 @@ func (s *Server) Run(ctx context.Context, ln net.Listener) error {
 		}()
 	}
 
-	err := httpserve.Serve(ctx, srv, ln, s.cfg.HTTP.ShutdownTimeout)
+	// Shutdown begins with the readiness probe, not the listener: /readyz goes
+	// 503 at SIGTERM, the listener stays up for DrainDelay so a balancer that
+	// polls it can take this instance out, and only then does Serve shut down.
+	serveCtx, stopServe := context.WithCancel(context.Background())
+	defer stopServe()
+	go func() {
+		<-ctx.Done()
+		s.ready.draining.Store(true)
+		if d := s.cfg.HTTP.DrainDelay; d > 0 {
+			s.log.Info("draining: /readyz is 503, still serving", "component", Component, "delay", d)
+			select {
+			case <-time.After(d):
+			case <-serveCtx.Done():
+			}
+		}
+		stopServe()
+	}()
+	err := httpserve.Serve(serveCtx, srv, ln, s.cfg.HTTP.ShutdownTimeout)
 	stopBG()
 	for range loops {
 		<-bgDone

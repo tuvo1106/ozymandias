@@ -107,7 +107,9 @@ func (s *Server) registerQueueMetrics() {
 // runConsumers starts one loop per topic and returns how many it started.
 func (s *Server) runConsumers(ctx context.Context, done chan<- struct{}) int {
 	for _, name := range intake.Topics {
+		s.ready.consumers.Add(1)
 		go func() {
+			defer s.ready.consumers.Add(-1)
 			err := s.intake.RunConsumer(ctx, name, s.pipe.consumers[name], s.pipe.pending[name])
 			if err != nil {
 				s.log.Error("consumer stopped; the "+name+" store is no longer being fed", "topic", name, "err", err)

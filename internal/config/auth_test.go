@@ -29,3 +29,15 @@ func TestAuth_DefaultsOffAndValidates(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTP_DrainDelayMustNotBeNegative(t *testing.T) {
+	c := DefaultOzyd()
+	c.HTTP.DrainDelay = -time.Second
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "drain_delay") {
+		t.Fatalf("err = %v", err)
+	}
+	c.HTTP.DrainDelay = 0
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}

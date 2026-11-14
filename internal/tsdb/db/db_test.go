@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/block"
+	"github.com/tuvo1106/ozymandias/internal/tsdb/wal"
 )
 
 var ctx = context.Background()
@@ -1019,3 +1021,38 @@ type handDriven struct {
 }
 
 func (c handDriven) NewTicker(d time.Duration) clock.Ticker { return c.idle.NewTicker(d) }
+
+// A failed fsync of the write-ahead log is final (fsyncgate: the kernel may have
+// dropped the pages, and a later fsync can say yes over nothing). The store must
+// stop, say so, and keep refusing, rather than retry on its next tick and
+// acknowledge samples it never wrote.
+func TestDB_AFailedFsyncStopsTheStoreAndSaysSo(t *testing.T) {
+	var failing atomic.Bool
+	db, _, _ := open(t, Options{SyncOnAppend: true, walSyncFile: func(f *os.File) error {
+		if failing.Load() {
+			return errors.New("injected EIO")
+		}
+		return f.Sync()
+	}})
+	ctx := context.Background()
+	if _, err := db.Append(ctx, []tsdb.SeriesSamples{ss("m", nil, sm(1, 1))}); err != nil {
+		t.Fatal(err)
+	}
+	if db.Broken() != nil {
+		t.Fatalf("broken before any failure: %v", db.Broken())
+	}
+	failing.Store(true)
+	if _, err := db.Append(ctx, []tsdb.SeriesSamples{ss("m", nil, sm(2, 2))}); !errors.Is(err, wal.ErrSync) {
+		t.Fatalf("an append over a failing fsync = %v, want wal.ErrSync", err)
+	}
+	if !errors.Is(db.Broken(), wal.ErrBroken) {
+		t.Fatalf("Broken() = %v, want wal.ErrBroken", db.Broken())
+	}
+	failing.Store(false) // the disk "recovers"; the store must not
+	if _, err := db.Append(ctx, []tsdb.SeriesSamples{ss("m", nil, sm(3, 3))}); !errors.Is(err, wal.ErrBroken) {
+		t.Fatalf("an append after the fsync recovered = %v, want it refused (wal.ErrBroken)", err)
+	}
+	if err := db.Sync(); !errors.Is(err, wal.ErrBroken) {
+		t.Fatalf("Sync after a failed fsync = %v", err)
+	}
+}
