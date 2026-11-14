@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sync"
@@ -30,7 +31,8 @@ type backuper interface{ Backup(dst string) error }
 // backupState is the server's backup bookkeeping: one at a time, and what the
 // last one did, as self-metrics registered from the start.
 type backupState struct {
-	mu sync.Mutex
+	mu     sync.Mutex
+	closed bool // set by Close, under mu: no backup starts on closed stores
 	// lastOK is the unix time the last successful backup started; 0 is never.
 	lastOK atomic.Int64
 }
@@ -48,6 +50,9 @@ func (s *Server) Backup(ctx context.Context, dir string) (m backup.Manifest, err
 		return m, ErrBackupRunning
 	}
 	defer s.bk.mu.Unlock()
+	if s.bk.closed {
+		return m, errors.New("backup: the server is shutting down")
+	}
 	start := s.clock.Now()
 	defer func() {
 		result := "ok"
@@ -62,6 +67,15 @@ func (s *Server) Backup(ctx context.Context, dir string) (m backup.Manifest, err
 	if err = backup.PrepareDir(dir); err != nil {
 		return m, err
 	}
+	// PrepareDir made sure dir was empty or absent, so everything in it from here
+	// is this run's. A run that fails leaves no half-backup behind: a retry under
+	// the same name would otherwise be told the name is taken, and the partial copy
+	// (links and checkpoints included) would sit on the disk until someone found it.
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(dir)
+		}
+	}()
 	s.log.Info("backup: starting", "component", Component, "dir", dir)
 
 	if s.pipe != nil {

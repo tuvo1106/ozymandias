@@ -81,6 +81,9 @@ func (db *DB) syncLoop() {
 			}
 			return
 		case <-sync.C():
+			if db.wal.Broken() != nil {
+				continue // already reported when it broke; once per tick would bury that line
+			}
 			if err := db.Sync(); err != nil {
 				db.opts.Logger.Error("log sync failed", "error", err)
 			}

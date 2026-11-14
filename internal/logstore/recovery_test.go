@@ -519,3 +519,32 @@ func TestBackup_CopiesAnOpenChunkOnlyUpToItsLastBlock(t *testing.T) {
 		}
 	}
 }
+
+// A chunk that holds blocks and whose file has gone is damage, and a backup that
+// skipped it would verify cleanly while missing that day's logs.
+func TestBackup_AMissingChunkThatHoldsBlocksIsAnError(t *testing.T) {
+	s := openSynced(t, t.TempDir())
+	defer func() { _ = s.Close() }()
+	base := t0.UnixMilli()
+	if err := s.Append(context.Background(), batchOf("m", 0, 30, base)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Flush(); err != nil { // seal into a chunk
+		t.Fatal(err)
+	}
+	s.smu.RLock()
+	n := 0
+	for _, cs := range s.chunks {
+		if len(cs.blocks) > 0 {
+			_ = os.Remove(cs.path)
+			n++
+		}
+	}
+	s.smu.RUnlock()
+	if n == 0 {
+		t.Fatal("no chunk held a block; the test did not reach what it checks")
+	}
+	if err := s.Backup(filepath.Join(t.TempDir(), "logs")); err == nil {
+		t.Fatal("a backup succeeded with a chunk file missing")
+	}
+}

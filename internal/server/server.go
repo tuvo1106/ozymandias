@@ -426,6 +426,12 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 // Close releases the stores. Run calls it on the way out.
 func (s *Server) Close() error {
+	// A backup in progress is using every store; closing them under it would
+	// crash Pebble (a checkpoint of a closed database panics). Wait for it. A
+	// backup that starts after this is refused: closed is set before the wait ends.
+	s.bk.mu.Lock()
+	defer s.bk.mu.Unlock()
+	s.bk.closed = true
 	var qerr error
 	if s.pipe != nil {
 		// Before the stores: a consumer mid-apply must not find its store closed.
@@ -490,7 +496,11 @@ func (s *Server) Run(ctx context.Context, ln net.Listener) error {
 	serveCtx, stopServe := context.WithCancel(context.Background())
 	defer stopServe()
 	go func() {
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-serveCtx.Done():
+			return // Serve ended on its own: there is nothing to drain
+		}
 		s.ready.draining.Store(true)
 		if d := s.cfg.HTTP.DrainDelay; d > 0 {
 			s.log.Info("draining: /readyz is 503, still serving", "component", Component, "delay", d)

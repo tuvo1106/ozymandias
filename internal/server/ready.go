@@ -52,6 +52,10 @@ type namedStore struct {
 	b    brokenStore
 }
 
+// pingTimeout bounds the metadata check: a wedged database must make the probe
+// answer 503 with a reason, not hang until the orchestrator gives up with none.
+const pingTimeout = 2 * time.Second
+
 // check is one named condition and why it fails, or nil.
 type check struct {
 	name string
@@ -61,7 +65,11 @@ type check struct {
 func (r *readiness) checks() []check {
 	s := r.s
 	cs := []check{
-		{"meta", func() error { return s.meta.Ping(context.Background()) }},
+		{"meta", func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), pingTimeout)
+			defer cancel()
+			return s.meta.Ping(ctx)
+		}},
 		{"draining", func() error {
 			if r.draining.Load() {
 				return errDraining

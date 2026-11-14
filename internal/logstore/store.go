@@ -920,8 +920,11 @@ func (s *Store) Backup(dst string) error {
 			n = cs.w.end
 		}
 		if err := backup.CopyPrefix(cs.path, filepath.Join(dst, rel), n); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue // the file was never created: no block has been written to this chunk
+			// Missing is fine only for a chunk that has never had a block: its file is
+			// created by the first write. A chunk the catalog says holds blocks and whose
+			// file is gone is damage, and a backup that skipped it would pass verification.
+			if errors.Is(err, os.ErrNotExist) && len(cs.blocks) == 0 {
+				continue
 			}
 			return fmt.Errorf("logstore: backup: chunk: %w", err)
 		}

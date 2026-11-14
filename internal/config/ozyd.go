@@ -292,6 +292,18 @@ func (b Backup) Validate(dataDir string) error {
 	return nil
 }
 
+// DefaultAdminPasswordEnv is where the admin password is read from when
+// auth.admin_password_env is empty.
+const DefaultAdminPasswordEnv = "OZYMANDIAS_ADMIN_PASSWORD"
+
+// PasswordEnv is the variable the admin password is read from.
+func (a Auth) PasswordEnv() string {
+	if a.AdminPasswordEnv != "" {
+		return a.AdminPasswordEnv
+	}
+	return DefaultAdminPasswordEnv
+}
+
 // Auth configures who may talk to ozyd (M7 §5, ADR-0059). Off by default: with
 // enabled false nothing is checked and ozyd behaves as it did before auth existed.
 type Auth struct {

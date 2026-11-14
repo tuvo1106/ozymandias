@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -215,5 +216,54 @@ func TestBackup_OneAtATimeAndCounted(t *testing.T) {
 	}
 	if got["result:ok"] != 1 || got["result:error"] != 1 {
 		t.Errorf("runs = %v, want 1 ok and 1 error (the one over an existing backup; the busy one never ran)", got)
+	}
+}
+
+// A backup that fails leaves nothing behind, so the same name works on retry.
+func TestBackup_AFailedRunLeavesNoPartialDirectory(t *testing.T) {
+	cfg := backupConfig(t)
+	s, err := New(cfg, Options{Logger: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	dir := filepath.Join(cfg.Backup.Root, "retry")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // fails after PrepareDir and the queue step, before the stores
+	if _, err := s.Backup(ctx, dir); err == nil {
+		t.Fatal("a cancelled backup succeeded")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("the failed backup left %s behind (%v)", dir, err)
+	}
+	if _, err := s.Backup(context.Background(), dir); err != nil {
+		t.Fatalf("the retry under the same name: %v", err)
+	}
+}
+
+// Close waits for a running backup, and a backup after Close is refused: the
+// stores a backup reads must not be closed under it.
+func TestBackup_CloseWaitsForARunningBackupAndRefusesNewOnes(t *testing.T) {
+	cfg := backupConfig(t)
+	s, err := New(cfg, Options{Logger: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.bk.mu.Lock() // a backup in progress
+	closed := make(chan struct{})
+	go func() { _ = s.Close(); close(closed) }()
+	select {
+	case <-closed:
+		t.Fatal("Close returned while a backup held the stores")
+	case <-time.After(150 * time.Millisecond):
+	}
+	s.bk.mu.Unlock()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Close never returned once the backup finished")
+	}
+	if _, err := s.Backup(context.Background(), filepath.Join(cfg.Backup.Root, "late")); err == nil || !strings.Contains(err.Error(), "shutting down") {
+		t.Fatalf("a backup after Close: %v, want it refused as shutting down", err)
 	}
 }

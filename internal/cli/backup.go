@@ -22,10 +22,6 @@ import (
 // that decides when it is done.
 const backupTimeout = 30 * time.Minute
 
-// defaultAdminPasswordEnv matches internal/server: the variable the admin
-// password is read from when the config does not name one.
-const defaultAdminPasswordEnv = "OZYMANDIAS_ADMIN_PASSWORD"
-
 // ozydBackup is `ozyd backup [-config FILE] [-name NAME]`: it asks the running
 // ozyd on this host to make a backup under backup.root and prints where it is.
 //
@@ -65,10 +61,7 @@ func ozydBackup(ctx context.Context, args, environ []string, stdout, stderr io.W
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if cfg.Auth.Enabled {
-		env := cfg.Auth.AdminPasswordEnv
-		if env == "" {
-			env = defaultAdminPasswordEnv
-		}
+		env := cfg.Auth.PasswordEnv()
 		pw := lookupEnv(environ, env)
 		if pw == "" {
 			fmt.Fprintf(stderr, "ozyd backup: auth is on and $%s is empty\n", env)

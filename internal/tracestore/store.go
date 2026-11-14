@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/tuvo1106/ozymandias/internal/backup"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/klauspost/compress/zstd"
@@ -196,10 +196,7 @@ func (s *Store) Backup(dst string) error {
 	if s.closed.Load() {
 		return errors.New("tracestore: backup of a closed store")
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	if err := s.db.Checkpoint(dst, pebble.WithFlushedWAL()); err != nil {
+	if err := backup.PebbleCheckpoint(s.db, dst); err != nil {
 		return fmt.Errorf("tracestore: backup: %w", err)
 	}
 	return nil

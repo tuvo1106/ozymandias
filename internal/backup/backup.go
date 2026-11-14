@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 // ManifestName is the manifest's file name at the backup's root.
@@ -125,6 +127,19 @@ func LinkTree(src, dst string) error {
 	})
 }
 
+// PebbleCheckpoint writes a consistent copy of a live Pebble database to dst, which
+// must not exist. The log is flushed first (WithFlushedWAL): without it, writes
+// acknowledged without an fsync are missing from the copy. A checkpoint hard-links
+// the immutable tables (copying across filesystems) and takes the log and manifest
+// at one instant, which a plain copy of a live directory cannot, because background
+// compactions rewrite files while it runs.
+func PebbleCheckpoint(db *pebble.DB, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return db.Checkpoint(dst, pebble.WithFlushedWAL())
+}
+
 // Finish walks dir, hashes every file and writes the manifest. It is the last
 // step, so the manifest describes exactly what is there.
 func Finish(dir, version string, now time.Time) (Manifest, error) {
@@ -155,7 +170,10 @@ func Finish(dir, version string, now time.Time) (Manifest, error) {
 	if err := os.WriteFile(filepath.Join(dir, ManifestName), append(b, '\n'), 0o644); err != nil {
 		return m, fmt.Errorf("backup: %w", err)
 	}
-	return m, syncDir(dir)
+	if err := syncTree(dir); err != nil {
+		return m, err
+	}
+	return m, nil
 }
 
 func hashFile(path string) (string, int64, error) {
@@ -200,7 +218,7 @@ func Verify(dir string) (Manifest, error) {
 			errs = append(errs, fmt.Errorf("%s: changed since the backup was made (size %d, want %d)", f.Path, size, f.Size))
 		}
 	}
-	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
@@ -210,7 +228,9 @@ func Verify(dir string) (Manifest, error) {
 			errs = append(errs, fmt.Errorf("%s: not in the manifest", rel))
 		}
 		return nil
-	})
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("scanning for files the manifest does not list: %w", err))
+	}
 	if len(errs) > 0 {
 		return m, fmt.Errorf("backup: %s does not match its manifest: %w", dir, errors.Join(errs...))
 	}

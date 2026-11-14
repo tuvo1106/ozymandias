@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cockroachdb/pebble"
 )
 
 func write(t *testing.T, dir, rel, body string) {
@@ -212,5 +214,58 @@ func TestRestore_AnEmptyBackupRestoresNothingButStillMakesTheDirectory(t *testin
 func TestLinkTree_ErrorsOnAMissingSource(t *testing.T) {
 	if err := LinkTree(filepath.Join(t.TempDir(), "nope"), t.TempDir()); err == nil {
 		t.Fatal("linking a tree that does not exist")
+	}
+}
+
+// A subtree Verify cannot read is a failure, not a pass: the extra-file scan
+// would otherwise skip whatever is in it.
+func TestVerify_AnUnreadableSubtreeFails(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	src := t.TempDir()
+	write(t, src, "sub/f", "x")
+	if _, err := Finish(src, "v", time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	// The manifest lists sub/f, whose hash is read before the scan; make the
+	// directory unreadable only for the scan by adding an unreadable sibling.
+	if err := os.MkdirAll(filepath.Join(src, "locked"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(filepath.Join(src, "locked"), 0o755) }()
+	if _, err := Verify(src); err == nil {
+		t.Fatal("Verify passed with a directory it could not read")
+	}
+}
+
+// A write made without an fsync is in the checkpoint: the reason for
+// WithFlushedWAL, and what the first trace-store backup test found missing.
+func TestPebbleCheckpoint_HoldsAnUnsyncedWrite(t *testing.T) {
+	src := t.TempDir()
+	db, err := pebble.Open(src, &pebble.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := db.Set([]byte("k"), []byte("v"), pebble.NoSync); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "sub", "cp")
+	if err := PebbleCheckpoint(db, dst); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := pebble.Open(dst, &pebble.Options{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cp.Close() }()
+	v, c, err := cp.Get([]byte("k"))
+	if err != nil || string(v) != "v" {
+		t.Fatalf("the unsynced write is not in the checkpoint: %q %v", v, err)
+	}
+	_ = c.Close()
+	if err := PebbleCheckpoint(db, dst); err == nil {
+		t.Fatal("a checkpoint over an existing directory succeeded")
 	}
 }
