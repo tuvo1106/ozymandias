@@ -1,4 +1,5 @@
-import { QueryClient } from "@tanstack/react-query";
+import { QueryCache, QueryClient } from "@tanstack/react-query";
+import { UNAUTHORIZED_EVENT } from "./authApi";
 import { ApiError } from "./metricsApi";
 
 /**
@@ -22,6 +23,13 @@ export function shouldRetry(failureCount: number, error: unknown): boolean {
  */
 export function createQueryClient(): QueryClient {
   return new QueryClient({
+    // A 401 from any query means the session is gone: tell the login gate, which
+    // is the one place that knows how to ask for a password again.
+    queryCache: new QueryCache({
+      onError: (error) => {
+        if (error instanceof ApiError && error.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+      },
+    }),
     defaultOptions: {
       queries: { retry: shouldRetry, refetchOnWindowFocus: false, staleTime: 5_000 },
     },
