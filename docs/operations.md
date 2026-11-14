@@ -361,7 +361,7 @@ $ curl -s localhost:9400/readyz        # when it is not
 `/readyz` is 503 while any of these fails: `meta` (the SQLite database does not answer), `tsdb`
 and `logstore` (the store stopped itself after a failed fsync), `queue:<topic>` (a topic
 stopped the same way, queued mode), `consumers` (queued mode: fewer consumers running than
-topics), `draining` (shutdown has begun). It is public, like `/healthz`.
+topics), `draining` (shutdown has begun). It is public, like `/healthz`. With `auth.enabled`, only a caller on this host sees the reason for a failure (it can name paths under `data_dir`); anyone else gets `"failed"`, and the reason is logged once per change.
 
 **A stopped store.** When an fsync of a store's write-ahead log fails, the kernel may already
 have dropped the pages, and a later fsync can report success without writing them, so ozyd does
@@ -388,6 +388,7 @@ $ ozyd restore -verify /var/backups/ozymandias/nightly      # check it against i
 $ ozyd restore -config deploy/ozyd.yaml /var/backups/ozymandias/nightly   # offline, into an EMPTY data_dir
 ```
 
+- With auth off, `/api/v1/admin/backup` answers only requests from this host (which is what `ozyd backup` is); with auth on it needs the admin login from anywhere. A failed backup removes what it wrote, and shutdown waits for a running one.
 - It is online: ozyd keeps serving. Each store is snapshotted consistently under its own locks
   (blocks hard-linked, logs cut to a length, SQLite by `VACUUM INTO`, Pebble by checkpoint). Ingest into the
   log store waits for the copy of the log store (its write lock is held); the others take brief locks.

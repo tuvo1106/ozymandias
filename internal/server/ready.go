@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,6 +46,22 @@ type readiness struct {
 	// lookup of s.store at request time, so that a test can put a store that
 	// has stopped in place of a real one: no test can make a disk fail an fsync.
 	stores []namedStore
+
+	logMu sync.Mutex
+	last  map[string]string // each check's last logged failure, so a probe every 5s logs a change, not 17,000 lines a day
+}
+
+func (r *readiness) logChange(name string, err error) {
+	r.logMu.Lock()
+	defer r.logMu.Unlock()
+	if r.last == nil {
+		r.last = map[string]string{}
+	}
+	if r.last[name] == err.Error() {
+		return
+	}
+	r.last[name] = err.Error()
+	r.s.log.Warn("not ready", "component", Component, "check", name, "err", err)
 }
 
 type namedStore struct {
@@ -107,12 +124,21 @@ const (
 // ServeHTTP answers /readyz: 200 when every check passes, else 503, with the
 // reason for each failing check. The body says which, because "not ready" with
 // no reason sends an operator to the logs to find out what the endpoint knew.
-func (r *readiness) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+func (r *readiness) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// /readyz is public so that a balancer can poll it. A failure's reason can name
+	// paths under data_dir, so with auth on only this host gets the reason; anyone
+	// else gets "failed", and the reason is in the log.
+	detail := !r.s.cfg.Auth.Enabled || fromLoopback(req)
 	out := map[string]string{}
 	ready := true
 	for _, c := range r.checks() {
 		if err := c.err(); err != nil {
-			out[c.name] = err.Error()
+			if detail {
+				out[c.name] = err.Error()
+			} else {
+				out[c.name] = "failed"
+			}
+			r.logChange(c.name, err)
 			ready = false
 		} else {
 			out[c.name] = "ok"
@@ -130,7 +156,7 @@ func (r *readiness) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "checks": out, "checked_at": time.Now().UTC().Format(time.RFC3339)})
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": status, "checks": out, "checked_at": r.s.clock.Now().UTC().Format(time.RFC3339)})
 }
 
 // registerBrokenGauges exposes each store's stopped state as 0/1, registered up

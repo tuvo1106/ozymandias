@@ -16,6 +16,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/backup"
 	"github.com/tuvo1106/ozymandias/internal/config"
 	"github.com/tuvo1106/ozymandias/internal/testutil"
+	"github.com/tuvo1106/ozymandias/internal/tsdb"
 )
 
 const (
@@ -36,7 +37,9 @@ func startBackup(t *testing.T, h http.Handler, name string) *httptest.ResponseRe
 		body = `{"name":"` + name + `"}`
 	}
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/v1/admin/backup", strings.NewReader(body)))
+	req := httptest.NewRequest("POST", "/api/v1/admin/backup", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:50000"
+	h.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -157,7 +160,11 @@ func TestBackup_EndpointRefusesWhatItShould(t *testing.T) {
 	if rec := startBackup(t, s.Handler(), "dup"); rec.Code != http.StatusConflict {
 		t.Errorf("a second backup under the same name: %d, want 409", rec.Code)
 	}
-	if rec := post(t, s.Handler(), "/api/v1/admin/backup", `not json`); rec.Code != http.StatusBadRequest {
+	garbage := httptest.NewRequest("POST", "/api/v1/admin/backup", strings.NewReader(`not json`))
+	garbage.RemoteAddr = "127.0.0.1:1"
+	gr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(gr, garbage)
+	if rec := gr; rec.Code != http.StatusBadRequest {
 		t.Errorf("garbage body: %d", rec.Code)
 	}
 }
@@ -265,5 +272,46 @@ func TestBackup_CloseWaitsForARunningBackupAndRefusesNewOnes(t *testing.T) {
 	}
 	if _, err := s.Backup(context.Background(), filepath.Join(cfg.Backup.Root, "late")); err == nil || !strings.Contains(err.Error(), "shutting down") {
 		t.Fatalf("a backup after Close: %v, want it refused as shutting down", err)
+	}
+}
+
+// With auth off the endpoint answers only this host: it is the one open request
+// that holds the stores' locks for the length of a copy.
+func TestBackup_WithoutAuthOnlyThisHostMayAsk(t *testing.T) {
+	cfg := backupConfig(t)
+	s, err := New(cfg, Options{Logger: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/admin/backup", strings.NewReader(`{"name":"remote"}`))
+	req.RemoteAddr = "203.0.113.9:4000"
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("a remote client with auth off: %d, want 403", rec.Code)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Backup.Root, "remote")); err == nil {
+		t.Fatal("a refused request still made a backup")
+	}
+}
+
+// A store that cannot be backed up is refused before anything is copied.
+type noBackup struct{ tsdb.MetricStore }
+
+func TestBackup_AStoreThatCannotBeBackedUpIsRefusedBeforeAnyCopy(t *testing.T) {
+	cfg := backupConfig(t)
+	s, err := New(cfg, Options{Logger: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	s.store = noBackup{s.store}
+	dir := filepath.Join(cfg.Backup.Root, "n")
+	if _, err := s.Backup(context.Background(), dir); err == nil || !strings.Contains(err.Error(), "cannot be backed up online") {
+		t.Fatalf("%v", err)
+	}
+	if _, err := os.Stat(dir); err == nil {
+		t.Fatal("the refusal came after the directory was made")
 	}
 }

@@ -139,8 +139,9 @@ func (d *DB) Ping(ctx context.Context) error { return d.db.PingContext(ctx) }
 // file, without the -wal and -shm files a plain copy of a live SQLite database
 // would need and could get wrong.
 func (d *DB) Backup(ctx context.Context, path string) error {
-	d.txMu.Lock() // no writer between the snapshot and now; VACUUM INTO itself is read-only
-	defer d.txMu.Unlock()
+	// No txMu: VACUUM INTO reads one transaction's snapshot by itself, and holding
+	// the writers' lock around it would stall every dashboard save, key change and
+	// type registration for the length of the copy for no consistency gain.
 	if _, err := d.db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
 		return fmt.Errorf("meta: backup: %w", err)
 	}

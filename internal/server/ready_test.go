@@ -167,3 +167,34 @@ func TestReadyz_GoesUnreadyBeforeTheListenerCloses(t *testing.T) {
 		t.Fatal("never stopped")
 	}
 }
+
+// With auth on, a remote caller learns that a check failed and not why: the reason
+// can carry a path under data_dir. The same request from this host gets the reason.
+func TestReadyz_WithAuthOnlyThisHostSeesTheReason(t *testing.T) {
+	s, err := New(testConfig(t), Options{Logger: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	s.cfg.Auth.Enabled = true
+	s.ready.stores[0].b = stoppedStore{}
+	name := s.ready.stores[0].name
+	ask := func(addr string) string {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest("GET", "/readyz", nil)
+		req.RemoteAddr = addr
+		s.Handler().ServeHTTP(w, req)
+		var body map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &body)
+		if w.Code != 503 {
+			t.Fatalf("%d", w.Code)
+		}
+		return checkOf(body, name)
+	}
+	if got := ask("203.0.113.9:1"); got != "failed" {
+		t.Errorf("remote saw %q, want just \"failed\"", got)
+	}
+	if got := ask("127.0.0.1:1"); !strings.Contains(got, "no longer writable") {
+		t.Errorf("this host saw %q, want the reason", got)
+	}
+}

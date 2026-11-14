@@ -745,7 +745,15 @@ func (t *Topic) Backup(dst string) error {
 	t.mu.Unlock()
 	// Sizes were read before the sync, and nothing is appended while appendMu
 	// is held, so the sync makes every byte of every size durable.
-	err := t.w.Sync()
+	err := t.syncFn(t.w)
+	if err != nil {
+		// The same rule as the sync loop's: a failed fsync stops the topic and says
+		// so (Stats, /readyz, the gauge), whoever asked for the sync. Deciding it only
+		// in the sync loop left an idle topic reporting ok after a backup broke its log.
+		t.mu.Lock()
+		err = t.breakLocked(err)
+		t.mu.Unlock()
+	}
 	t.appendMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("queue: backup: %w", err)

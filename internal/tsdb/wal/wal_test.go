@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -1274,4 +1275,27 @@ func TestCut_RefusesABrokenOrClosedLog(t *testing.T) {
 	if _, err := w.Cut(); err == nil {
 		t.Fatal("Cut on a closed log")
 	}
+}
+
+// Broken answers while the log's lock is held across a stalled fsync: readiness
+// and the gauge ask exactly then, and must not wait behind the stall.
+func TestBroken_DoesNotWaitForTheLock(t *testing.T) {
+	w, err := Open(Options{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+	w.mu.Lock()
+	_ = w.breakLocked(errors.New("boom"))
+	got := make(chan error, 1)
+	go func() { got <- w.Broken() }()
+	select {
+	case err := <-got:
+		if !errors.Is(err, ErrBroken) {
+			t.Errorf("Broken() = %v, want ErrBroken", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("Broken() waited for the log's lock")
+	}
+	w.mu.Unlock()
 }

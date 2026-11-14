@@ -504,10 +504,12 @@ func (s *Server) Run(ctx context.Context, ln net.Listener) error {
 		s.ready.draining.Store(true)
 		if d := s.cfg.HTTP.DrainDelay; d > 0 {
 			s.log.Info("draining: /readyz is 503, still serving", "component", Component, "delay", d)
+			tm := s.clock.NewTimer(d)
 			select {
-			case <-time.After(d):
+			case <-tm.C():
 			case <-serveCtx.Done():
 			}
+			tm.Stop()
 		}
 		stopServe()
 	}()

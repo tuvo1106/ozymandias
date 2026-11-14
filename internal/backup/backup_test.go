@@ -269,3 +269,83 @@ func TestPebbleCheckpoint_HoldsAnUnsyncedWrite(t *testing.T) {
 		t.Fatal("a checkpoint over an existing directory succeeded")
 	}
 }
+
+// A source that changes after Verify is caught by the hash of what was written,
+// and the restore that fails on it leaves the directory empty, so the retry is not
+// refused as "not empty".
+func TestRestore_ASourceThatChangesAfterVerifyFailsAndLeavesNothing(t *testing.T) {
+	src := t.TempDir()
+	write(t, src, "a", "1111")
+	write(t, src, "z", "2222")
+	if _, err := Finish(src, "v", time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	afterVerify = func() { write(t, src, "z", "9999") } // same size, different bytes
+	defer func() { afterVerify = func() {} }()
+	dst := filepath.Join(t.TempDir(), "data")
+	if _, err := Restore(src, dst); err == nil || !strings.Contains(err.Error(), "changed while it was being restored") {
+		t.Fatalf("restore of a source that changed: %v", err)
+	}
+	if es, _ := os.ReadDir(dst); len(es) != 0 {
+		t.Fatalf("the failed restore left %d entries behind (a was copied before z failed)", len(es))
+	}
+}
+
+func TestWriteFileSynced_ReportsAnUnwritablePath(t *testing.T) {
+	if err := writeFileSynced(filepath.Join(t.TempDir(), "no", "such", "dir", "f"), []byte("x")); err == nil {
+		t.Fatal("wrote into a directory that does not exist")
+	}
+}
+
+func TestRestore_ASourceThatVanishesAfterVerifyFailsAndLeavesNothing(t *testing.T) {
+	src := t.TempDir()
+	write(t, src, "a", "1")
+	write(t, src, "z", "2")
+	if _, err := Finish(src, "v", time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	afterVerify = func() { _ = os.Remove(filepath.Join(src, "z")) }
+	defer func() { afterVerify = func() {} }()
+	dst := filepath.Join(t.TempDir(), "data")
+	if _, err := Restore(src, dst); err == nil {
+		t.Fatal("restore of a vanished file succeeded")
+	}
+	if es, _ := os.ReadDir(dst); len(es) != 0 {
+		t.Fatalf("left %d entries behind", len(es))
+	}
+}
+
+func TestFinish_AnUnreadableFileFails(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads everything")
+	}
+	src := t.TempDir()
+	write(t, src, "f", "x")
+	if err := os.Chmod(filepath.Join(src, "f"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(filepath.Join(src, "f"), 0o644) }()
+	if _, err := Finish(src, "v", time.Unix(1, 0)); err == nil {
+		t.Fatal("a manifest was written over a file that could not be read")
+	}
+}
+
+func TestPebbleCheckpoint_ReportsAnUnwritableParent(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "file")
+	write(t, filepath.Dir(f), "file", "x")
+	db, err := pebble.Open(t.TempDir(), &pebble.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := PebbleCheckpoint(db, filepath.Join(f, "cp")); err == nil { // parent is a file
+		t.Fatal("checkpointed under a regular file")
+	}
+}
+
+func TestSyncHelpers_ReportAMissingTarget(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	if syncDir(gone) == nil || syncTree(gone) == nil || syncFile(gone) == nil {
+		t.Fatal("a sync of a path that does not exist reported success")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -64,6 +65,13 @@ func (s *Server) Backup(ctx context.Context, dir string) (m backup.Manifest, err
 			s.bk.lastOK.Store(start.Unix())
 		}
 	}()
+	// Checked before anything is copied: finding out after the queue and the log
+	// store were copied (and their locks held) would make every call do that work and
+	// then throw it away.
+	mb, ok := s.store.(backuper)
+	if !ok {
+		return m, errors.New("the configured metric store (metric_store: naive) cannot be backed up online")
+	}
 	if err = backup.PrepareDir(dir); err != nil {
 		return m, err
 	}
@@ -91,11 +99,7 @@ func (s *Server) Backup(ctx context.Context, dir string) (m backup.Manifest, err
 	}{
 		{"logs", func() error { return s.logs.Backup(filepath.Join(dir, logDir)) }},
 		{"tsdb", func() error {
-			b, ok := s.store.(backuper)
-			if !ok {
-				return errors.New("the configured metric store (metric_store: naive) cannot be backed up online")
-			}
-			return b.Backup(filepath.Join(dir, tsdbDir))
+			return mb.Backup(filepath.Join(dir, tsdbDir))
 		}},
 		{"sketches", func() error { return s.sketches.Backup(filepath.Join(dir, sketchDir)) }},
 		{"traces", func() error { return s.traces.Backup(filepath.Join(dir, traceDir)) }},
@@ -136,6 +140,14 @@ type backupRequest struct {
 }
 
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
+	// Without auth there is nobody to ask, and one request holds the log store's write
+	// lock and the queue's retention lock for the length of a copy of everything. So
+	// with auth off only this host may ask (which is what `ozyd backup` is); with auth
+	// on, the admin login is the gate.
+	if !s.cfg.Auth.Enabled && !fromLoopback(r) {
+		writeAdminError(w, http.StatusForbidden, "backups are only accepted from this host unless auth.enabled is set")
+		return
+	}
 	var req backupRequest
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
@@ -173,4 +185,14 @@ func writeAdminError(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(wire.ErrorResponse{Status: "error", Error: msg})
+}
+
+// fromLoopback reports whether the request's peer is on this host.
+func fromLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

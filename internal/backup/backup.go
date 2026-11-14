@@ -152,6 +152,12 @@ func Finish(dir, version string, now time.Time) (Manifest, error) {
 		if rel == ManifestName {
 			return nil
 		}
+		// Made durable here, not trusted to whoever wrote it: some files (VACUUM INTO's
+		// output) were never fsynced by us, and a manifest that vouches for bytes still
+		// in the page cache vouches for what a power cut can take.
+		if err := syncFile(path); err != nil {
+			return err
+		}
 		sum, size, err := hashFile(path)
 		if err != nil {
 			return err
@@ -167,13 +173,38 @@ func Finish(dir, version string, now time.Time) (Manifest, error) {
 	if err != nil {
 		return m, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, ManifestName), append(b, '\n'), 0o644); err != nil {
+	if err := writeFileSynced(filepath.Join(dir, ManifestName), append(b, '\n')); err != nil {
 		return m, fmt.Errorf("backup: %w", err)
 	}
 	if err := syncTree(dir); err != nil {
 		return m, err
 	}
 	return m, nil
+}
+
+func syncFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	return f.Sync()
+}
+
+func writeFileSynced(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func hashFile(path string) (string, int64, error) {
@@ -237,26 +268,54 @@ func Verify(dir string) (Manifest, error) {
 	return m, nil
 }
 
+// afterVerify runs between Verify and the copy. A test hook: the window in which a
+// source can change is otherwise not reachable from a test.
+var afterVerify = func() {}
+
 // Restore verifies the backup in src and copies it into dataDir, which must be
 // empty (or absent). It copies, never links: a restored data_dir that shared
 // files with the backup would modify the backup the first time ozyd wrote to it.
-func Restore(src, dataDir string) (Manifest, error) {
-	m, err := Verify(src)
-	if err != nil {
+func Restore(src, dataDir string) (m Manifest, err error) {
+	if m, err = Verify(src); err != nil {
 		return m, err
 	}
-	if err := PrepareDir(dataDir); err != nil {
+	afterVerify()
+	if err = PrepareDir(dataDir); err != nil {
 		return m, err
 	}
+	// dataDir was empty, so everything in it is this run's: a restore that fails
+	// partway must not leave a data_dir that the retry then refuses as not empty.
+	defer func() {
+		if err != nil {
+			if es, rerr := os.ReadDir(dataDir); rerr == nil {
+				for _, e := range es {
+					_ = os.RemoveAll(filepath.Join(dataDir, e.Name()))
+				}
+			}
+		}
+	}()
 	for _, f := range m.Files {
-		if err := CopyPrefix(filepath.Join(src, filepath.FromSlash(f.Path)),
-			filepath.Join(dataDir, filepath.FromSlash(f.Path)), -1); err != nil {
+		to := filepath.Join(dataDir, filepath.FromSlash(f.Path))
+		if err = CopyPrefix(filepath.Join(src, filepath.FromSlash(f.Path)), to, -1); err != nil {
+			return m, err
+		}
+		// What was written, not what was verified a moment ago: a source that changed
+		// between Verify and the copy must not be restored on the strength of a hash
+		// of what it used to be.
+		sum, _, herr := hashFile(to)
+		if herr != nil {
+			err = fmt.Errorf("backup: %s: reading back what was restored: %w", f.Path, herr)
+			return m, err
+		}
+		if sum != f.SHA256 {
+			err = fmt.Errorf("backup: %s changed while it was being restored", f.Path)
 			return m, err
 		}
 	}
 	// Directories that exist only as structure (an empty chunk dir) are not in
 	// the manifest and are recreated by the stores that need them.
-	return m, syncTree(dataDir)
+	err = syncTree(dataDir)
+	return m, err
 }
 
 func syncDir(dir string) error {

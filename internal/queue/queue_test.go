@@ -1717,3 +1717,26 @@ func TestBackup_WaitsForRetention(t *testing.T) {
 		t.Fatal("Backup never ran once retention finished")
 	}
 }
+
+// A failed fsync in a backup's cut stops the topic like any other failed fsync,
+// even though no producer was waiting: an idle topic must not report ok after its
+// log has broken.
+func TestBackup_AFailedFsyncStopsTheTopic(t *testing.T) {
+	var fail atomic.Bool
+	tp := open(t, t.TempDir(), func(o *Options) {
+		o.syncFn = func(w *wal.WAL) error {
+			if fail.Load() {
+				return errors.New("injected EIO")
+			}
+			return w.Sync()
+		}
+	})
+	produce(t, tp, "a")
+	fail.Store(true)
+	if err := tp.Backup(filepath.Join(t.TempDir(), "b")); err == nil {
+		t.Fatal("a backup whose fsync failed succeeded")
+	}
+	if tp.Stats().Broken == nil {
+		t.Fatal("the topic still reports ok after its log's fsync failed")
+	}
+}

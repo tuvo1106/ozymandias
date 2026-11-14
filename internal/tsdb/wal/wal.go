@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 // Record framing (docs/formats/wal.md):
@@ -113,7 +114,11 @@ type WAL struct {
 	// refuses further writes rather than accepting data it knows will be
 	// lost. See [ErrBroken].
 	broken error
-	hdr    [headerSize]byte // scratch, reused per record under mu
+	// brokenView is broken, published for Broken(): readiness and a gauge ask
+	// whether the log stopped, and they must get an answer while mu is held across a
+	// stalled fsync, which is exactly when it matters.
+	brokenView atomic.Pointer[error]
+	hdr        [headerSize]byte // scratch, reused per record under mu
 }
 
 // Open opens or creates the log in opts.Dir, appending to the newest segment.
@@ -255,6 +260,8 @@ func (w *WAL) undoPartial(cause error) error {
 func (w *WAL) breakLocked(cause error) error {
 	if w.broken == nil {
 		w.broken = fmt.Errorf("%w: %w", ErrBroken, cause)
+		e := w.broken
+		w.brokenView.Store(&e)
 	}
 	return w.broken
 }
@@ -279,9 +286,10 @@ func (w *WAL) roll() error {
 // Broken returns why the log stopped, or nil while it is writable. It is how a
 // store that owns a log reports that it has stopped (readiness, a gauge).
 func (w *WAL) Broken() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.broken
+	if p := w.brokenView.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // Mark is a file in the log's directory and how many of its bytes are good.

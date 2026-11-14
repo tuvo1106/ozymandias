@@ -831,7 +831,7 @@ Present only when `backup.root` is set (ADR-0060); otherwise 404.
 
 | Route | Needs | Does |
 |---|---|---|
-| `POST /api/v1/admin/backup` `{"name"}` | admin (when auth is on) | Makes a backup under `backup.root/<name>` while ozyd keeps serving; `name` defaults to the UTC time. `200 {"status","name","dir","files","summary"}`; `409` if the name is taken or a backup is running (`Retry-After`); `400` for a name that is not 1-64 of letters, digits, `.`, `_`, `-`; `500` with the reason if a store failed. |
+| `POST /api/v1/admin/backup` `{"name"}` | admin (when auth is on) | Makes a backup under `backup.root/<name>` while ozyd keeps serving; `name` defaults to the UTC time. `200 {"status","name","dir","files","summary"}`; `409` if the name is taken or a backup is running (`Retry-After`); `400` for a name that is not 1-64 of letters, digits, `.`, `_`, `-`; `500` with the reason if a store failed; `403` when auth is off and the caller is not on this host. |
 
 Use `ozyd backup` rather than calling it by hand. `GET /readyz` is not under `/api`: see
 docs/operations.md#readiness.
