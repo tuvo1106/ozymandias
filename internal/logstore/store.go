@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/backup"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/query/logql"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/wal"
@@ -873,6 +874,59 @@ func (s *Store) expire(now time.Time) error {
 		_ = os.Remove(filepath.Dir(cs.path)) // only succeeds once the day is empty
 	}
 	return errors.Join(errs...)
+}
+
+// Backup writes a consistent copy of the store into dst, which must be empty or
+// absent. It holds the write lock for the copy, so ingest into this store waits
+// for it; reads do not.
+//
+// The copy is what a crash would leave, which is a state Open recovers from: the
+// WAL is cut under its lock and copied to that length, each chunk that is still
+// being appended to is copied up to its last whole block (a chunk without a
+// footer is valid, its blocks are found by walking), the stream catalog is
+// written with VACUUM INTO, and a chunk whose footer is written is copied whole.
+// Chunk files are copied and never hard-linked: reopening a closed chunk for
+// appending cuts its footer off in place, which would change a linked file.
+func (s *Store) Backup(dst string) error {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	if s.closed {
+		return errors.New("logstore: backup of a closed store")
+	}
+	marks, err := s.wal.Cut()
+	if err != nil {
+		return fmt.Errorf("logstore: backup: %w", err)
+	}
+	if err := backup.PrepareDir(dst); err != nil {
+		return err
+	}
+	if err := s.cat.backupTo(filepath.Join(dst, "catalog.db")); err != nil {
+		return fmt.Errorf("logstore: backup: catalog: %w", err)
+	}
+	for _, m := range marks {
+		if err := backup.CopyPrefix(filepath.Join(s.walDir, m.Name), filepath.Join(dst, "wal", m.Name), m.Size); err != nil {
+			return fmt.Errorf("logstore: backup: wal: %w", err)
+		}
+	}
+	s.smu.RLock()
+	defer s.smu.RUnlock()
+	for _, cs := range s.chunks {
+		rel, err := filepath.Rel(s.dir, cs.path)
+		if err != nil {
+			return fmt.Errorf("logstore: backup: %w", err)
+		}
+		n := int64(-1)
+		if cs.w != nil {
+			n = cs.w.end
+		}
+		if err := backup.CopyPrefix(cs.path, filepath.Join(dst, rel), n); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue // the file was never created: no block has been written to this chunk
+			}
+			return fmt.Errorf("logstore: backup: chunk: %w", err)
+		}
+	}
+	return nil
 }
 
 // Broken returns why the store stopped accepting writes (a failed fsync of the

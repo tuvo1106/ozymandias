@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/backup"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/wal"
 )
@@ -706,6 +707,67 @@ func (t *Topic) retain() {
 	} else {
 		t.retainErr = nil
 	}
+}
+
+// Backup writes a consistent copy of the topic into dst, which must be empty or
+// absent, while producers and consumers carry on.
+//
+// The cut is taken with appends held off: the log is made durable and each
+// segment's size noted, then appends resume while the segments are copied to
+// those sizes. The consumers' committed offsets are written from what they were
+// at the cut, not copied later from their files: a consumer that commits while
+// the copy runs would otherwise leave an offset past the records the copy holds,
+// and a topic whose consumer offset names a record that is not there does not
+// open. Retention is held off for the duration, so no segment the copy needs is
+// deleted from under it (a Commit waits for it, and retries nothing).
+func (t *Topic) Backup(dst string) error {
+	t.retMu.Lock()
+	defer t.retMu.Unlock()
+
+	t.appendMu.Lock()
+	t.mu.Lock()
+	switch {
+	case t.closed:
+		t.mu.Unlock()
+		t.appendMu.Unlock()
+		return ErrClosed
+	case t.broken != nil:
+		err := t.broken
+		t.mu.Unlock()
+		t.appendMu.Unlock()
+		return err
+	}
+	segs := append([]segInfo(nil), t.segs...)
+	offsets := make(map[string]uint64, len(t.committed))
+	for name, off := range t.committed {
+		offsets[name] = off
+	}
+	t.mu.Unlock()
+	// Sizes were read before the sync, and nothing is appended while appendMu
+	// is held, so the sync makes every byte of every size durable.
+	err := t.w.Sync()
+	t.appendMu.Unlock()
+	if err != nil {
+		return fmt.Errorf("queue: backup: %w", err)
+	}
+	if err := backup.PrepareDir(dst); err != nil {
+		return err
+	}
+	for _, sg := range segs {
+		name := wal.SegmentName(sg.n)
+		if err := backup.CopyPrefix(filepath.Join(t.dir, name), filepath.Join(dst, name), sg.size); err != nil {
+			return fmt.Errorf("queue: backup: %w", err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dst, consumersDir), 0o755); err != nil {
+		return err
+	}
+	for name, off := range offsets {
+		if err := writeOffsetFile(filepath.Join(dst, consumersDir, name+offsetExt), off); err != nil {
+			return fmt.Errorf("queue: backup: %w", err)
+		}
+	}
+	return nil
 }
 
 // Stats is a snapshot of a topic, for self-metrics and /readyz.

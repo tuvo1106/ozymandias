@@ -284,6 +284,48 @@ func (w *WAL) Broken() error {
 	return w.broken
 }
 
+// Mark is a file in the log's directory and how many of its bytes are good.
+type Mark struct {
+	Name string
+	Size int64
+}
+
+// Cut makes everything logged so far durable and returns each file's size at
+// that moment, under the log's lock, so no record is half in it. Copying each
+// file's first Size bytes yields a log that replays to exactly the state at the
+// cut, however much is appended while the copy runs: a log only grows at its
+// tail, and truncation (which rewrites files) is the caller's to hold off.
+// It is how a backup takes a consistent copy of a log that is being written.
+func (w *WAL) Cut() ([]Mark, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil, errors.New("wal: log is closed")
+	}
+	if w.broken != nil {
+		return nil, w.broken
+	}
+	if err := w.syncFile(w.f); err != nil {
+		return nil, w.syncFailedLocked(fmt.Errorf("%w: %w", ErrSync, err))
+	}
+	es, err := os.ReadDir(w.dir)
+	if err != nil {
+		return nil, fmt.Errorf("wal: %w", err)
+	}
+	var out []Mark
+	for _, e := range es {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			return nil, fmt.Errorf("wal: %w", err)
+		}
+		out = append(out, Mark{Name: e.Name(), Size: info.Size()})
+	}
+	return out, nil
+}
+
 // Sync flushes the current segment to stable storage. Until it returns, a
 // power cut can lose anything Log has written.
 func (w *WAL) Sync() error {

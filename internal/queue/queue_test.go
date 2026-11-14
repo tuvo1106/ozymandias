@@ -1610,3 +1610,110 @@ func TestFullness_TracksBytesAgainstTheCap(t *testing.T) {
 		t.Fatalf("fullness %v after filling past half", f)
 	}
 }
+
+// A backup of a topic in use opens to a topic whose consumer resumes exactly
+// where it had committed at the cut and sees every record from there, in order,
+// even though producers and the consumer carried on during the copy.
+func TestBackup_ResumesTheConsumerWhereItWasAtTheCut(t *testing.T) {
+	tp := open(t, t.TempDir(), func(o *Options) { o.SegmentSize = 256 }) // many segments
+	c, err := tp.Consumer("store")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for i := range 60 {
+		want = append(want, fmt.Sprintf("r%03d", i))
+	}
+	produce(t, tp, want...)
+	recs := poll(t, c, 25)
+	if err := c.Commit(recs[len(recs)-1].Offset); err != nil {
+		t.Fatal(err)
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() { // keep producing, and keep consuming and committing, through the backup
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = tp.Produce(context.Background(), []byte(fmt.Sprintf("late%05d", i)))
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			rs, _ := c.Poll(ctx, 10)
+			cancel()
+			if len(rs) > 0 {
+				_ = c.Commit(rs[len(rs)-1].Offset)
+			}
+		}
+	}()
+	dst := filepath.Join(t.TempDir(), "topic")
+	err = tp.Backup(dst)
+	close(stop)
+	<-done
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := open(t, dst)
+	rc, err := r.Consumer("store")
+	if err != nil {
+		t.Fatalf("the consumer did not register on the backup: %v", err)
+	}
+	var got []string
+	next := uint64(0)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		rs, _ := rc.Poll(ctx, 50)
+		cancel()
+		if len(rs) == 0 {
+			break
+		}
+		for _, x := range rs {
+			if next != 0 && x.Offset != next {
+				t.Fatalf("offsets are not consecutive: %d after %d", x.Offset, next-1)
+			}
+			next = x.Offset + 1
+			got = append(got, string(x.Payload))
+		}
+	}
+	if len(got) < 35 {
+		t.Fatalf("restored consumer saw %d records; it had committed 25 of at least 60 before the cut", len(got))
+	}
+	// It resumes at or after its offset at the first moment of the cut, never
+	// earlier: what it had committed is not redelivered, and nothing after it is lost.
+	if got[0] < want[25] {
+		t.Fatalf("restored consumer starts at %q, before what had been committed (%q)", got[0], want[25])
+	}
+	for i, w := range want[25:] {
+		if i < len(got) && got[i] != w && got[0] == want[25] {
+			t.Fatalf("record %d after the committed offset = %q, want %q", i, got[i], w)
+		}
+	}
+}
+
+// A backup holds retention off: a pass that deletes segments between the cut and
+// the copy would take a file the copy is about to read.
+func TestBackup_WaitsForRetention(t *testing.T) {
+	tp := open(t, t.TempDir())
+	produce(t, tp, "a", "b")
+	tp.retMu.Lock() // a retention pass in progress
+	done := make(chan error, 1)
+	go func() { done <- tp.Backup(filepath.Join(t.TempDir(), "b")) }()
+	select {
+	case err := <-done:
+		t.Fatalf("Backup finished (%v) while retention was running", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	tp.retMu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Backup never ran once retention finished")
+	}
+}

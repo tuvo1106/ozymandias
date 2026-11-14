@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/backup"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/block"
@@ -410,6 +411,36 @@ func (db *DB) Stats() tsdb.StoreStats {
 		out.Samples += int64(m.Stats.Samples)
 	}
 	return out
+}
+
+// Backup writes a consistent copy of the store into dst, which must be empty
+// or absent, while the store keeps accepting writes.
+//
+// Blocks are immutable, so they are hard-linked (copied across filesystems).
+// The write-ahead log grows, so it is cut under its lock and each file copied
+// to the length it had then: that prefix replays to every sample acknowledged
+// before the cut. The block-cut lock is held throughout, so no compaction or
+// retention pass deletes a block between the two steps, and no cut truncates
+// the log under the copy.
+func (db *DB) Backup(dst string) error {
+	db.cutMu.Lock()
+	defer db.cutMu.Unlock()
+	marks, err := db.wal.Cut()
+	if err != nil {
+		return fmt.Errorf("tsdb: backup: %w", err)
+	}
+	if err := backup.PrepareDir(dst); err != nil {
+		return err
+	}
+	if err := backup.LinkTree(filepath.Join(db.dir, blocksDirName), filepath.Join(dst, blocksDirName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("tsdb: backup: blocks: %w", err)
+	}
+	for _, m := range marks {
+		if err := backup.CopyPrefix(filepath.Join(db.dir, walDirName, m.Name), filepath.Join(dst, walDirName, m.Name), m.Size); err != nil {
+			return fmt.Errorf("tsdb: backup: wal: %w", err)
+		}
+	}
+	return nil
 }
 
 // Broken returns why the store stopped accepting writes (a failed fsync of the

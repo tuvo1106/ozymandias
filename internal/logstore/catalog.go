@@ -78,6 +78,13 @@ func openCatalog(path string, noSync bool) (*catalog, error) {
 
 func (c *catalog) close() error { return c.db.Close() }
 
+// backupTo writes a consistent copy of the catalog to path (VACUUM INTO: one
+// transaction's view, without the -wal and -shm files a file copy would need).
+func (c *catalog) backupTo(path string) error {
+	_, err := c.db.Exec(`VACUUM INTO ?`, path)
+	return err
+}
+
 type streamRow struct {
 	id     int64
 	labels labelSet

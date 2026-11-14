@@ -700,3 +700,24 @@ func TestStore_ABadPointWritesNoneOfItsSeries(t *testing.T) {
 		t.Errorf("indexed %d series for a batch that stored nothing", n)
 	}
 }
+
+func TestStore_ABackupOpensAndHoldsWhatWasAcknowledged(t *testing.T) {
+	s := open(t, Options{})
+	r := ref("lat", "service:a")
+	orig := sketchOf(t, 1, 2, 3, 50, 900)
+	mustAppend(t, s, Entry{Series: r, Points: []Point{{TimeMs: 1_700_000_000_000, Sketch: orig}}})
+	dst := filepath.Join(t.TempDir(), "sketches")
+	if err := s.Backup(dst); err != nil {
+		t.Fatal(err)
+	}
+	mustAppend(t, s, Entry{Series: r, Points: []Point{{TimeMs: 1_700_000_060_000, Sketch: orig}}})
+	b := open(t, Options{Dir: dst})
+	got, err := b.Read(context.Background(), r, 0, 1_800_000_000_000)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("backup holds %d points (%v), want the 1 taken before it", len(got), err)
+	}
+	assertSameSketch(t, got[0].Sketch, orig)
+	if err := s.Backup(dst); err == nil {
+		t.Fatal("a backup over an existing checkpoint was allowed")
+	}
+}

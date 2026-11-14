@@ -1056,3 +1056,92 @@ func TestDB_AFailedFsyncStopsTheStoreAndSaysSo(t *testing.T) {
 		t.Fatalf("Sync after a failed fsync = %v", err)
 	}
 }
+
+// A backup taken while the store is being written to opens as a store holding
+// every sample acknowledged before the backup began, in blocks and in the log,
+// and nothing torn, however much is appended while it is copied.
+func TestDB_ABackupTakenDuringWritesRestoresWhatWasAcknowledged(t *testing.T) {
+	db, _, _ := open(t, Options{BlockRange: time.Minute, SyncOnAppend: true})
+	r := ref("m", "env:prod")
+	fill(t, db, r, 0, 1000, 95) // 95 s: a block's worth, then some
+	if err := db.CutBlock(); err != nil {
+		t.Fatal(err)
+	}
+	fill(t, db, r, 96_000, 1000, 10) // in the log only
+	sel := tsdb.Selector{Metric: "m"}
+	set, err := db.Select(ctx, sel, 0, 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := dump(t, set)
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() { // writers carry on through the backup
+		defer close(done)
+		for ts := int64(200_000); ; ts += 1000 {
+			select {
+			case <-stop:
+				return
+			default:
+				_, _ = db.Append(ctx, []tsdb.SeriesSamples{ss("m2", nil, sm(ts, 1))})
+			}
+		}
+	}()
+	dst := filepath.Join(t.TempDir(), "tsdb")
+	err = db.Backup(dst)
+	close(stop)
+	<-done
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := Open(Options{Dir: dst, Clock: testutil.NewFakeClock(epoch), BlockRange: time.Minute, SyncOnAppend: true})
+	if err != nil {
+		t.Fatalf("the backup did not open: %v", err)
+	}
+	defer func() { _ = restored.Close() }()
+	got, err := restored.Select(ctx, sel, 0, 1_000_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := dump(t, got); g != want {
+		t.Fatalf("restored series differ:\n got %s\nwant %s", g, want)
+	}
+}
+
+func TestDB_ABackupRefusesANonEmptyDestination(t *testing.T) {
+	db, _, _ := open(t, Options{})
+	dst := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dst, "x"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Backup(dst); err == nil {
+		t.Fatal("a backup was made into a directory that already had a file in it")
+	}
+}
+
+// A backup waits for a block cut, compaction or retention pass that is running:
+// those delete and rewrite the blocks it is about to link, and truncate the log
+// it is about to copy.
+func TestDB_ABackupWaitsForMaintenance(t *testing.T) {
+	db, _, _ := open(t, Options{})
+	mustAppend(t, db, ss("m", nil, sm(1, 1)))
+	db.cutMu.Lock() // a pass in progress
+	done := make(chan error, 1)
+	go func() { done <- db.Backup(filepath.Join(t.TempDir(), "b")) }()
+	select {
+	case err := <-done:
+		t.Fatalf("Backup finished (%v) while maintenance held the block-cut lock", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	db.cutMu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Backup never ran once maintenance finished")
+	}
+}
