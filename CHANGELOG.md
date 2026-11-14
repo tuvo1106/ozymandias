@@ -16,6 +16,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   counted (`ozy.consumer.*`) rather than answered. A full topic answers `429` with `Retry-After: 5`.
   New self-metrics: `ozy.queue.{lag_records,lag_seconds,bytes,broken}` per topic and
   `ozy.consumer.*`. ADR-0056; DESIGN.md §17.
+- **Agent disk buffer** (M7). With `forwarder.buffer_path` set, payloads that do not fit the agent's
+  memory queue while ozyd is unreachable, and those still queued at shutdown, are kept on disk (one
+  spool per endpoint, CRC'd, `max_disk_bytes` each, default 512 MiB) and sent oldest first, series
+  before sketches before spans, after an outage or a restart. Past the cap the oldest segment is
+  dropped and counted. Off by default; on in the compose stack. Log lines never use it (the file is
+  their buffer). `ozy.agent.forwarder.{spooled,spool_errors,spool_enabled,spool_bytes,spool_payloads}`.
+  ADR-0058, docs/formats/agent-buffer.md.
 - **Load shedding and a query limit** (M7). In queued mode a topic at 80% of its cap refuses logs and
   traces with `429` (`Retry-After: 5`); series and sketches follow at 95% (ADR-0057). read requests under `/api/` (GETs and the query/backtest POSTs)
   run at most `query.max_concurrent` (8) at a time, queues `query.max_queue` (32; negative for none) for

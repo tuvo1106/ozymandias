@@ -90,6 +90,15 @@ type Forwarder struct {
 	MaxQueueBytes int `yaml:"max_queue_bytes"`
 	// ShutdownTimeout bounds the final delivery attempt on shutdown.
 	ShutdownTimeout time.Duration `yaml:"shutdown_timeout"`
+	// BufferPath, if set, is a directory where payloads that do not fit in the
+	// memory queue are kept on disk, and where those still queued at shutdown
+	// are kept for the next start. Empty is memory only. (Logs never use it:
+	// the log file is their buffer.)
+	BufferPath string `yaml:"buffer_path"`
+	// MaxDiskBytes caps each of the buffer's three endpoint spools (series,
+	// sketches, spans); past it the oldest data is dropped and counted. Zero is
+	// the default, 512 MiB.
+	MaxDiskBytes int64 `yaml:"max_disk_bytes"`
 }
 
 // Logs configures log collection (docs/plan/M4-logs.md §1). It is off by
@@ -476,6 +485,9 @@ func (a *Agent) Validate() error {
 	}
 	if a.Forwarder.Timeout <= 0 || a.Forwarder.ShutdownTimeout <= 0 || a.Forwarder.MaxQueueBytes < 1 {
 		errs = append(errs, errors.New("forwarder: timeout, shutdown_timeout and max_queue_bytes must be positive"))
+	}
+	if d := a.Forwarder.MaxDiskBytes; d != 0 && d < 1<<20 {
+		errs = append(errs, fmt.Errorf("forwarder.max_disk_bytes must be zero (the default) or at least 1 MiB, got %d", d))
 	}
 	if t := a.Traces; t.Enabled && (t.MaxTracesPerSecond <= 0 || t.ErrorTracesPerSecond <= 0 || t.RareTracesPerSecond <= 0 || t.MaxResourcesPerService < 1 || t.MaxBodyBytes < 1) {
 		errs = append(errs, errors.New("traces: the per-second limits, max_resources_per_service and max_body_bytes must be positive"))

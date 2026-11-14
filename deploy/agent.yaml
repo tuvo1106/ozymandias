@@ -83,6 +83,14 @@ forwarder:
   # Compressed payloads held for retry while ozyd is unreachable. When
   # full, the oldest are dropped (ozy.agent.forwarder.dropped). 64 MiB.
   max_queue_bytes: 67108864
+  # Where payloads that do not fit in the memory queue are kept on disk, and
+  # where those still queued at SIGTERM are kept for the next start. Empty is
+  # memory only. One directory per endpoint under it; see
+  # docs/formats/agent-buffer.md. (Logs never use it: the log file is their buffer.)
+  # buffer_path: /var/lib/ozymandias-agent/buffer
+  # Cap per endpoint spool; past it the oldest data is dropped and counted
+  # (ozy.agent.forwarder.dropped). 0 is the default, 512 MiB; otherwise at least 1 MiB.
+  # max_disk_bytes: 0
   # The final delivery attempt on SIGTERM. Keep http.shutdown_timeout plus
   # this under the container's stop grace period.
   shutdown_timeout: 5s

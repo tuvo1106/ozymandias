@@ -5,15 +5,18 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/agent/spool"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
@@ -37,6 +40,15 @@ type Options struct {
 	// MaxQueueBytes bounds the compressed payloads held for retry. When a
 	// new payload doesn't fit, the oldest are dropped. Default 64 MiB.
 	MaxQueueBytes int
+	// BufferDir, if set, is where payloads that do not fit in memory are
+	// spilled, and where the ones still queued at shutdown are kept for the
+	// next start: one spool per endpoint under it. Empty is memory only, the
+	// pre-M7 behaviour. A buffer that cannot be opened is logged and the agent
+	// carries on without it (ozy.agent.forwarder.spool_enabled reads 0).
+	BufferDir string
+	// MaxDiskBytes caps each endpoint's spool; past it the oldest segments are
+	// dropped. Default 512 MiB.
+	MaxDiskBytes int64
 	// BackoffMin and BackoffMax bound the retry delay. Defaults 1s and 60s.
 	BackoffMin, BackoffMax time.Duration
 	Clock                  clock.Clock           // default clock.Real()
@@ -54,6 +66,11 @@ type Forwarder struct {
 	opts Options
 	// The two intake hops. See [endpoint] on why they share a queue.
 	series, sketches, spans endpoint
+	// spools is the disk buffer by endpoint key, nil entries if disabled.
+	// diskHead is each spool's oldest payload, loaded for sending: it carries
+	// the retry state a record on disk cannot.
+	spools   map[string]*spool.Spool
+	diskHead map[string]*payload
 
 	mu     sync.Mutex
 	queue  []*payload // FIFO by enqueue order
@@ -69,17 +86,27 @@ type Forwarder struct {
 	sent, dropped, rejected, retries *selfmetrics.Counter
 	seriesSent, seriesRejected       *selfmetrics.Counter
 	queueBytes                       *selfmetrics.Gauge
+	spooled, spoolErrors             *selfmetrics.Counter
 }
 
 // payload is one gzip'd request body, the endpoint it belongs to, and its
 // retry state.
 type payload struct {
+	ep       string // endpoint key: series, sketches or spans
 	url      string
 	body     []byte
 	series   int
 	attempts int
 	notUntil time.Time // earliest next attempt
+	// item is set for the payload at the head of a spool: it is delivered or
+	// refused by acknowledging it there, not by leaving the memory queue.
+	item *spool.Item
 }
+
+// priority is the order endpoints are drained in after an outage: metrics are
+// the cheapest and most valuable (M7 §3). Logs are not here: they never queue
+// in the agent, the file they came from is their buffer.
+var priority = [...]string{"series", "sketches", "spans"}
 
 // endpoint is one intake hop: where it posts, and what the JSON envelope
 // around its items is called.
@@ -127,7 +154,7 @@ func New(opts Options) *Forwarder {
 	}
 	reg := opts.Registry
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Forwarder{
+	f := &Forwarder{
 		opts:     opts,
 		series:   endpoint{url: opts.URL + "/v1/series", key: "series"},
 		sketches: endpoint{url: opts.URL + "/v1/sketches", key: "sketches"},
@@ -144,7 +171,43 @@ func New(opts Options) *Forwarder {
 		seriesSent:     reg.Counter("ozy.agent.forwarder.series_sent"),
 		seriesRejected: reg.Counter("ozy.agent.forwarder.series_rejected"),
 		queueBytes:     reg.Gauge("ozy.agent.forwarder.queue_bytes"),
+		spooled:        reg.Counter("ozy.agent.forwarder.spooled"),
+		spoolErrors:    reg.Counter("ozy.agent.forwarder.spool_errors"),
+		spools:         map[string]*spool.Spool{},
+		diskHead:       map[string]*payload{},
 	}
+	f.openSpools()
+	return f
+}
+
+// openSpools opens one spool per endpoint under BufferDir, if configured.
+func (f *Forwarder) openSpools() {
+	enabled := 0.0
+	reg := f.opts.Registry
+	if f.opts.BufferDir != "" {
+		for _, ep := range priority {
+			sp, err := spool.Open(spool.Options{
+				Dir: filepath.Join(f.opts.BufferDir, ep), MaxBytes: f.opts.MaxDiskBytes,
+				Logger: f.opts.Logger.With("endpoint", ep),
+			})
+			if err != nil {
+				// An unusable buffer must not stop an agent that otherwise
+				// works; it must also not look like a working one.
+				f.opts.Logger.Error("forwarder: disk buffer unavailable for this endpoint; it is memory only",
+					"endpoint", ep, "dir", f.opts.BufferDir, "err", err)
+				f.spoolErrors.Inc()
+				continue
+			}
+			f.spools[ep] = sp
+			tag := "endpoint:" + ep
+			reg.GaugeFunc("ozy.agent.forwarder.spool_bytes", func() float64 { return float64(sp.Stats().Bytes) }, tag)
+			reg.GaugeFunc("ozy.agent.forwarder.spool_payloads", func() float64 { return float64(sp.Stats().Payloads) }, tag)
+		}
+		if len(f.spools) == len(priority) {
+			enabled = 1
+		}
+	}
+	reg.Gauge("ozy.agent.forwarder.spool_enabled").Set(enabled)
 }
 
 // Submit encodes series into payloads and queues them. It never blocks on
@@ -196,18 +259,21 @@ func (f *Forwarder) enqueue(payloads []*payload) {
 	f.signal()
 }
 
-// enqueueLocked appends p, first dropping the oldest payloads until it fits.
-// Drop-oldest rather than drop-newest: after an outage, the recent past is
-// what someone looking at a dashboard wants to see.
+// enqueueLocked appends p, first moving the oldest payloads out of memory
+// until it fits: to the disk buffer if there is one, else dropped. Oldest
+// first, so each endpoint's spool holds older data than its memory queue and
+// delivery order stays oldest-first. Without a buffer it is drop-oldest rather
+// than drop-newest: after an outage, the recent past is what someone looking
+// at a dashboard wants to see.
 func (f *Forwarder) enqueueLocked(p *payload) {
 	for len(f.queue) > 0 && f.bytes+len(p.body) > f.opts.MaxQueueBytes {
 		old := f.queue[0]
 		f.queue = f.queue[1:]
 		f.bytes -= len(old.body)
-		f.dropped.Add(int64(old.series))
+		f.spillLocked(old)
 	}
 	if len(p.body) > f.opts.MaxQueueBytes {
-		f.dropped.Add(int64(p.series))
+		f.spillLocked(p)
 		return
 	}
 	f.queue = append(f.queue, p)
@@ -241,7 +307,7 @@ func encode[T any](f *Forwarder, ep endpoint, items []T, name func(*T) string) (
 		if err != nil {
 			return err
 		}
-		out = append(out, &payload{url: ep.url, body: body, series: len(parts)})
+		out = append(out, &payload{ep: ep.key, url: ep.url, body: body, series: len(parts)})
 		parts, size = nil, envelope
 		return nil
 	}
@@ -331,25 +397,76 @@ func (f *Forwarder) loop() {
 	}
 }
 
-// next returns the oldest payload whose backoff has elapsed, or how long
-// until one will be ready (0 if the queue is empty).
+// next returns the payload to send now, or how long until one will be ready
+// (0 if there is none). Endpoints are tried in priority order. Within one, the
+// disk buffer's oldest payload goes first, and while it is backing off nothing
+// newer of that endpoint overtakes it; without a buffer backlog, the first
+// ready payload in the memory queue goes, and one waiting out its backoff does
+// not hold back the ones behind it.
 func (f *Forwarder) next() (*payload, time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	now := f.opts.Clock.Now()
 	var soonest time.Time
-	for _, p := range f.queue {
-		if !p.notUntil.After(now) {
-			return p, 0
+	later := func(t time.Time) {
+		if soonest.IsZero() || t.Before(soonest) {
+			soonest = t
 		}
-		if soonest.IsZero() || p.notUntil.Before(soonest) {
-			soonest = p.notUntil
+	}
+	for _, ep := range priority {
+		if h := f.diskHeadLocked(ep); h != nil {
+			if !h.notUntil.After(now) {
+				return h, 0
+			}
+			later(h.notUntil)
+			continue
+		}
+		for _, p := range f.queue {
+			if p.ep != ep {
+				continue
+			}
+			if !p.notUntil.After(now) {
+				return p, 0
+			}
+			later(p.notUntil)
 		}
 	}
 	if soonest.IsZero() {
 		return nil, 0
 	}
 	return nil, soonest.Sub(now)
+}
+
+// diskHeadLocked loads the oldest payload of ep's spool for sending, once, and
+// keeps it (with its retry state) until it is acknowledged.
+func (f *Forwarder) diskHeadLocked(ep string) *payload {
+	if h := f.diskHead[ep]; h != nil {
+		return h
+	}
+	sp := f.spools[ep]
+	if sp == nil {
+		return nil
+	}
+	it, ok, skipped := sp.Peek()
+	if skipped > 0 {
+		f.dropped.Add(int64(skipped))
+	}
+	if !ok {
+		return nil
+	}
+	h := &payload{ep: ep, url: f.endpointURL(ep), body: it.Body, series: it.Series, item: &it}
+	f.diskHead[ep] = h
+	return h
+}
+
+func (f *Forwarder) endpointURL(ep string) string {
+	switch ep {
+	case "series":
+		return f.series.url
+	case "sketches":
+		return f.sketches.url
+	}
+	return f.spans.url
 }
 
 // outcome of one delivery attempt.
@@ -369,10 +486,10 @@ func (f *Forwarder) attempt(ctx context.Context, p *payload) {
 	defer f.mu.Unlock()
 	switch res {
 	case delivered:
-		f.removeLocked(p)
+		f.settleLocked(p)
 		f.sent.Inc()
 	case giveUp:
-		f.removeLocked(p)
+		f.settleLocked(p)
 		f.rejected.Inc()
 		f.dropped.Add(int64(p.series))
 		f.opts.Logger.Error("forwarder: payload refused, not retrying", "err", err, "series", p.series)
@@ -384,6 +501,41 @@ func (f *Forwarder) attempt(ctx context.Context, p *payload) {
 		f.opts.Logger.Warn("forwarder: send failed, will retry", "err", err, "attempt", p.attempts, "in", delay)
 	}
 	f.queueBytes.Set(float64(f.bytes))
+}
+
+// spillLocked moves p out of memory: to its endpoint's spool, or, with none or
+// when the write fails, to the dropped count. Writing the spool is a disk write
+// and fsync under the queue lock; it happens only on overflow and at shutdown,
+// where the alternative is losing the payload.
+func (f *Forwarder) spillLocked(p *payload) bool {
+	sp := f.spools[p.ep]
+	if sp == nil {
+		f.dropped.Add(int64(p.series))
+		return false
+	}
+	lost, err := sp.Put(p.series, p.body)
+	if err != nil {
+		f.opts.Logger.Error("forwarder: writing the disk buffer", "endpoint", p.ep, "err", err)
+		f.spoolErrors.Inc()
+		f.dropped.Add(int64(p.series))
+		return false
+	}
+	f.spooled.Inc()
+	// lost is older data the spool dropped to make room, not this payload.
+	f.dropped.Add(int64(lost))
+	return true
+}
+
+// settleLocked takes a delivered or refused payload out of wherever it is.
+func (f *Forwarder) settleLocked(p *payload) {
+	if p.item != nil {
+		f.spools[p.ep].Ack(*p.item)
+		if f.diskHead[p.ep] == p {
+			delete(f.diskHead, p.ep)
+		}
+		return
+	}
+	f.removeLocked(p)
 }
 
 func (f *Forwarder) removeLocked(p *payload) {
@@ -476,18 +628,24 @@ func (f *Forwarder) Shutdown(ctx context.Context) error {
 		}
 		f.mu.Lock()
 		if f.containsLocked(p) {
-			// Failed (or never tried): no time left for backoff.
+			// Failed (or never tried): no time left for backoff. With a disk
+			// buffer it is kept for the next start rather than dropped.
 			f.removeLocked(p)
-			f.dropped.Add(int64(p.series))
-			lost += p.series
+			if !f.spillLocked(p) {
+				lost += p.series
+			}
 		}
 		f.queueBytes.Set(float64(f.bytes))
 		f.mu.Unlock()
 	}
-	if lost > 0 {
-		return fmt.Errorf("forwarder: %d series not delivered before shutdown", lost)
+	var closeErr error
+	for _, sp := range f.spools {
+		closeErr = errors.Join(closeErr, sp.Close())
 	}
-	return nil
+	if lost > 0 {
+		return errors.Join(fmt.Errorf("forwarder: %d series not delivered before shutdown", lost), closeErr)
+	}
+	return closeErr
 }
 
 func (f *Forwarder) containsLocked(p *payload) bool {
@@ -499,9 +657,16 @@ func (f *Forwarder) containsLocked(p *payload) bool {
 	return false
 }
 
-// Queued returns the number of payloads waiting and their compressed bytes.
+// Queued returns the number of payloads waiting, in memory and in the disk
+// buffer, and their compressed bytes.
 func (f *Forwarder) Queued() (payloads, bytes int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.queue), f.bytes
+	payloads, bytes = len(f.queue), f.bytes
+	for _, sp := range f.spools {
+		st := sp.Stats()
+		payloads += st.Payloads
+		bytes += int(st.Bytes)
+	}
+	return payloads, bytes
 }
