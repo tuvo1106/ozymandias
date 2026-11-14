@@ -11,11 +11,13 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/query/metricql"
 	"github.com/tuvo1106/ozymandias/internal/query/metricql/eval"
+	"github.com/tuvo1106/ozymandias/internal/sketchstore"
 	"github.com/tuvo1106/ozymandias/internal/tracestore"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
@@ -43,8 +45,6 @@ type APM struct {
 	Types    eval.MetricTypes
 	Clock    clock.Clock
 	Logger   *slog.Logger
-
-	eval *eval.Evaluator
 }
 
 const (
@@ -67,7 +67,6 @@ func (a *APM) Register(mux *http.ServeMux) {
 	if a.Logger == nil {
 		a.Logger = slog.New(slog.DiscardHandler)
 	}
-	a.eval = &eval.Evaluator{Store: a.Store, Sketches: a.Sketches, Types: a.Types}
 	mux.HandleFunc("GET /api/v1/traces", a.search)
 	mux.HandleFunc("GET /api/v1/traces/{trace_id}", a.trace)
 	mux.HandleFunc("GET /api/v1/service-map", a.serviceMap)
@@ -402,12 +401,20 @@ func (a *APM) red(ctx context.Context, env, service string, by []string, from, t
 	// whole buckets like one: clamped, its first bucket would be cut short and
 	// every service would show a dip at the window's start. It only draws on
 	// rows the numbers made, so traffic before the window makes no row.
+	// One evaluator per request, over a snapshot of the sketch store: p50, p95 and
+	// p99 below are three queries, and a bucket landing between two of them
+	// would give a row a p95 with no p50 (or a p50 from fewer buckets than the
+	// p99). Replaying the first read to the other two makes them one read.
+	ev := &eval.Evaluator{Store: a.Store, Types: a.Types}
+	if a.Sketches != nil {
+		ev.Sketches = &snapshotSketches{inner: a.Sketches}
+	}
 	run := func(q string, interval int64, clamp bool) (eval.Result, error) {
 		node, err := metricql.Parse(q)
 		if err != nil {
 			return eval.Result{}, err
 		}
-		return a.eval.Eval(ctx, eval.Request{Expr: node, From: from, To: to, Interval: interval, ClampToWindow: clamp})
+		return ev.Eval(ctx, eval.Request{Expr: node, From: from, To: to, Interval: interval, ClampToWindow: clamp})
 	}
 	sum := func(s eval.Series) (n float64) {
 		for _, p := range s.Points {
@@ -515,4 +522,46 @@ func (a *APM) fail(w http.ResponseWriter, r *http.Request, what string, err erro
 	}
 	a.Logger.Error("apm: "+what, "err", err)
 	writeError(w, http.StatusInternalServerError, errors.New(what+" failed"))
+}
+
+// snapshotSketches serves a request's repeated reads of one series from the
+// first read. The points are handed out as stored; the evaluator clones before
+// it merges (percentile.go), so replaying them is safe.
+type snapshotSketches struct {
+	inner eval.SketchReader
+	mu    sync.Mutex
+	got   map[snapKey][]sketchstore.Point
+}
+
+type snapKey struct {
+	series   string
+	from, to int64
+}
+
+func (s *snapshotSketches) ReadEach(ctx context.Context, ref tsdb.SeriesRef, from, to int64, fn func(sketchstore.Point) error) error {
+	k := snapKey{ref.Key(), from, to}
+	s.mu.Lock()
+	pts, ok := s.got[k]
+	s.mu.Unlock()
+	if !ok {
+		err := s.inner.ReadEach(ctx, ref, from, to, func(p sketchstore.Point) error {
+			pts = append(pts, p)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		s.mu.Lock()
+		if s.got == nil {
+			s.got = map[snapKey][]sketchstore.Point{}
+		}
+		s.got[k] = pts
+		s.mu.Unlock()
+	}
+	for _, p := range pts {
+		if err := fn(p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
