@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -101,6 +102,10 @@ type payload struct {
 	// item is set for the payload at the head of a spool: it is delivered or
 	// refused by acknowledging it there, not by leaving the memory queue.
 	item *spool.Item
+	// inflight is set while a request for it is running (the lock is not held
+	// then). The memory cap must not move such a payload to disk: it would be
+	// delivered and still be spooled, and sent again.
+	inflight bool
 }
 
 // priority is the order endpoints are drained in after an outage: metrics are
@@ -182,7 +187,6 @@ func New(opts Options) *Forwarder {
 
 // openSpools opens one spool per endpoint under BufferDir, if configured.
 func (f *Forwarder) openSpools() {
-	enabled := 0.0
 	reg := f.opts.Registry
 	if f.opts.BufferDir != "" {
 		for _, ep := range priority {
@@ -203,11 +207,20 @@ func (f *Forwarder) openSpools() {
 			reg.GaugeFunc("ozy.agent.forwarder.spool_bytes", func() float64 { return float64(sp.Stats().Bytes) }, tag)
 			reg.GaugeFunc("ozy.agent.forwarder.spool_payloads", func() float64 { return float64(sp.Stats().Payloads) }, tag)
 		}
-		if len(f.spools) == len(priority) {
-			enabled = 1
-		}
 	}
-	reg.Gauge("ozy.agent.forwarder.spool_enabled").Set(enabled)
+	reg.GaugeFunc("ozy.agent.forwarder.spool_enabled", func() float64 {
+		// 1 only while every endpoint has a working spool: an opened one that a
+		// failed fsync has stopped is as good as none.
+		if len(f.spools) != len(priority) {
+			return 0
+		}
+		for _, sp := range f.spools {
+			if sp.Broken() {
+				return 0
+			}
+		}
+		return 1
+	})
 }
 
 // Submit encodes series into payloads and queues them. It never blocks on
@@ -266,13 +279,18 @@ func (f *Forwarder) enqueue(payloads []*payload) {
 // than drop-newest: after an outage, the recent past is what someone looking
 // at a dashboard wants to see.
 func (f *Forwarder) enqueueLocked(p *payload) {
-	for len(f.queue) > 0 && f.bytes+len(p.body) > f.opts.MaxQueueBytes {
-		old := f.queue[0]
-		f.queue = f.queue[1:]
+	for f.bytes+len(p.body) > f.opts.MaxQueueBytes {
+		i := f.oldestIdleLocked()
+		if i < 0 {
+			break
+		}
+		old := f.queue[i]
+		f.queue = append(f.queue[:i], f.queue[i+1:]...)
 		f.bytes -= len(old.body)
 		f.spillLocked(old)
 	}
-	if len(p.body) > f.opts.MaxQueueBytes {
+	if f.bytes+len(p.body) > f.opts.MaxQueueBytes {
+		// Nothing left to move out but payloads in flight, or p alone is too big.
 		f.spillLocked(p)
 		return
 	}
@@ -400,13 +418,13 @@ func (f *Forwarder) loop() {
 // next returns the payload to send now, or how long until one will be ready
 // (0 if there is none). Endpoints are tried in priority order. Within one, the
 // disk buffer's oldest payload goes first, and while it is backing off nothing
-// newer of that endpoint overtakes it; without a buffer backlog, the first
-// ready payload in the memory queue goes, and one waiting out its backoff does
-// not hold back the ones behind it.
+// newer of that endpoint overtakes it. Payloads still in memory are different:
+// the first ready one goes, and one waiting out its backoff does not hold back
+// the ones behind it.
+//
+// Only the send loop calls this, which is what lets it read the disk buffer
+// without the lock: Submit waits on f.mu, and must not wait on a disk.
 func (f *Forwarder) next() (*payload, time.Duration) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	now := f.opts.Clock.Now()
 	var soonest time.Time
 	later := func(t time.Time) {
 		if soonest.IsZero() || t.Before(soonest) {
@@ -414,11 +432,20 @@ func (f *Forwarder) next() (*payload, time.Duration) {
 		}
 	}
 	for _, ep := range priority {
-		if h := f.diskHeadLocked(ep); h != nil {
-			if !h.notUntil.After(now) {
+		h := f.loadDiskHead(ep)
+		f.mu.Lock()
+		now := f.opts.Clock.Now()
+		if h != nil {
+			ready := !h.notUntil.After(now)
+			if ready {
+				h.inflight = true
+			} else {
+				later(h.notUntil)
+			}
+			f.mu.Unlock()
+			if ready {
 				return h, 0
 			}
-			later(h.notUntil)
 			continue
 		}
 		for _, p := range f.queue {
@@ -426,26 +453,29 @@ func (f *Forwarder) next() (*payload, time.Duration) {
 				continue
 			}
 			if !p.notUntil.After(now) {
+				p.inflight = true
+				f.mu.Unlock()
 				return p, 0
 			}
 			later(p.notUntil)
 		}
+		f.mu.Unlock()
 	}
 	if soonest.IsZero() {
 		return nil, 0
 	}
-	return nil, soonest.Sub(now)
+	return nil, soonest.Sub(f.opts.Clock.Now())
 }
 
-// diskHeadLocked loads the oldest payload of ep's spool for sending, once, and
-// keeps it (with its retry state) until it is acknowledged.
-func (f *Forwarder) diskHeadLocked(ep string) *payload {
-	if h := f.diskHead[ep]; h != nil {
+// loadDiskHead returns ep's oldest spooled payload, reading it from disk the
+// first time and keeping it, with its retry state, until it is settled. Called
+// without f.mu.
+func (f *Forwarder) loadDiskHead(ep string) *payload {
+	f.mu.Lock()
+	h, sp := f.diskHead[ep], f.spools[ep]
+	f.mu.Unlock()
+	if h != nil || sp == nil {
 		return h
-	}
-	sp := f.spools[ep]
-	if sp == nil {
-		return nil
 	}
 	it, ok, skipped := sp.Peek()
 	if skipped > 0 {
@@ -454,8 +484,10 @@ func (f *Forwarder) diskHeadLocked(ep string) *payload {
 	if !ok {
 		return nil
 	}
-	h := &payload{ep: ep, url: f.endpointURL(ep), body: it.Body, series: it.Series, item: &it}
+	h = &payload{ep: ep, url: f.endpointURL(ep), body: it.Body, series: it.Series, item: &it}
+	f.mu.Lock()
 	f.diskHead[ep] = h
+	f.mu.Unlock()
 	return h
 }
 
@@ -483,13 +515,14 @@ const (
 func (f *Forwarder) attempt(ctx context.Context, p *payload) {
 	res, retryAfter, err := f.post(ctx, p)
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	var ack *spool.Item
+	p.inflight = false
 	switch res {
 	case delivered:
-		f.settleLocked(p)
+		ack = f.settleLocked(p)
 		f.sent.Inc()
 	case giveUp:
-		f.settleLocked(p)
+		ack = f.settleLocked(p)
 		f.rejected.Inc()
 		f.dropped.Add(int64(p.series))
 		f.opts.Logger.Error("forwarder: payload refused, not retrying", "err", err, "series", p.series)
@@ -501,15 +534,24 @@ func (f *Forwarder) attempt(ctx context.Context, p *payload) {
 		f.opts.Logger.Warn("forwarder: send failed, will retry", "err", err, "attempt", p.attempts, "in", delay)
 	}
 	f.queueBytes.Set(float64(f.bytes))
+	f.mu.Unlock()
+	if ack != nil {
+		// Moving the cursor is disk work, so it is done after the lock is
+		// released. The payload has already left diskHead, so the next call
+		// to next would load the following one only after this returns: the
+		// send loop is the only caller of both.
+		f.spools[p.ep].Ack(*ack)
+	}
 }
 
-// spillLocked moves p out of memory: to its endpoint's spool, or, with none or
-// when the write fails, to the dropped count. Writing the spool is a disk write
-// and fsync under the queue lock; it happens only on overflow and at shutdown,
-// where the alternative is losing the payload.
+// spillLocked moves p out of memory: to its endpoint's spool, or, with none, a
+// stopped one, or when the write fails, to the dropped count. Writing the spool
+// is a disk write and fsync under the queue lock; it happens only on overflow
+// and at shutdown, where the alternative is losing the payload. It reports
+// whether the payload is now on disk.
 func (f *Forwarder) spillLocked(p *payload) bool {
 	sp := f.spools[p.ep]
-	if sp == nil {
+	if sp == nil || sp.Broken() {
 		f.dropped.Add(int64(p.series))
 		return false
 	}
@@ -527,15 +569,27 @@ func (f *Forwarder) spillLocked(p *payload) bool {
 }
 
 // settleLocked takes a delivered or refused payload out of wherever it is.
-func (f *Forwarder) settleLocked(p *payload) {
+// It returns the spool item to acknowledge, if the payload came from a spool.
+func (f *Forwarder) settleLocked(p *payload) *spool.Item {
 	if p.item != nil {
-		f.spools[p.ep].Ack(*p.item)
 		if f.diskHead[p.ep] == p {
 			delete(f.diskHead, p.ep)
 		}
-		return
+		return p.item
 	}
 	f.removeLocked(p)
+	return nil
+}
+
+// oldestIdleLocked is the index of the oldest queued payload with no request in
+// flight, or -1.
+func (f *Forwarder) oldestIdleLocked() int {
+	for i, q := range f.queue {
+		if !q.inflight {
+			return i
+		}
+	}
+	return -1
 }
 
 func (f *Forwarder) removeLocked(p *payload) {
@@ -620,10 +674,25 @@ func (f *Forwarder) Shutdown(ctx context.Context) error {
 	f.mu.Lock()
 	pending := append([]*payload(nil), f.queue...)
 	f.mu.Unlock()
+	// The same order as the send loop: series first, so a short deadline is
+	// spent on the most valuable signal. Stable, so each endpoint stays oldest
+	// first.
+	rank := func(ep string) int {
+		for i, e := range priority {
+			if e == ep {
+				return i
+			}
+		}
+		return len(priority)
+	}
+	sort.SliceStable(pending, func(i, j int) bool { return rank(pending[i].ep) < rank(pending[j].ep) })
 
 	var lost int
 	for _, p := range pending {
-		if ctx.Err() == nil {
+		// An endpoint with older payloads on disk is not sent from memory: that
+		// would put newer data on the wire ahead of older. It goes to the disk
+		// behind them instead.
+		if sp := f.spools[p.ep]; ctx.Err() == nil && (sp == nil || sp.Stats().Payloads == 0) {
 			f.attempt(ctx, p)
 		}
 		f.mu.Lock()

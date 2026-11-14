@@ -486,8 +486,8 @@ func (a *Agent) Validate() error {
 	if a.Forwarder.Timeout <= 0 || a.Forwarder.ShutdownTimeout <= 0 || a.Forwarder.MaxQueueBytes < 1 {
 		errs = append(errs, errors.New("forwarder: timeout, shutdown_timeout and max_queue_bytes must be positive"))
 	}
-	if d := a.Forwarder.MaxDiskBytes; d != 0 && d < 1<<20 {
-		errs = append(errs, fmt.Errorf("forwarder.max_disk_bytes must be zero (the default) or at least 1 MiB, got %d", d))
+	if d := a.Forwarder.MaxDiskBytes; d != 0 && d < 16<<20 {
+		errs = append(errs, fmt.Errorf("forwarder.max_disk_bytes must be zero (the default) or at least 16 MiB, got %d: a segment is an eighth of it, and a payload must fit one", d))
 	}
 	if t := a.Traces; t.Enabled && (t.MaxTracesPerSecond <= 0 || t.ErrorTracesPerSecond <= 0 || t.RareTracesPerSecond <= 0 || t.MaxResourcesPerService < 1 || t.MaxBodyBytes < 1) {
 		errs = append(errs, errors.New("traces: the per-second limits, max_resources_per_service and max_body_bytes must be positive"))

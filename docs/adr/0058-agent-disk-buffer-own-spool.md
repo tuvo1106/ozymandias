@@ -50,8 +50,13 @@ the spool's oldest payload goes first.
   sketches and spans overwrite by key, queued intake dedupes in its stores).
 - A payload in backoff at the head of an endpoint's spool holds back the newer
   ones of that endpoint. During an outage that is moot (everything is failing),
-  and it keeps order.
+  and it keeps order. Payloads still in memory keep the old rule: a payload in
+  backoff does not hold back the ones behind it.
+- A failed fsync stops a spool for good until restart (fsyncgate); the forwarder
+  then treats that endpoint as memory only and `spool_enabled` reads 0.
 - The spool's cap is per endpoint, so the three together can use 3 × `max_disk_bytes`.
-- Disk writes with fsync happen under the forwarder's lock, only on overflow and at
-  shutdown. A slow disk slows the aggregator's flush, which is bounded by its own
-  flush interval; moving the write off the lock is a later change if it shows.
+- Spill writes (with fsync) happen under the forwarder's lock, only on overflow and
+  at shutdown, so a stalled disk can stall `Submit` then. Reading the spool and
+  moving its cursor, the drain side, happen outside the lock. Moving the spill write
+  off the lock is a later change if it shows.
+- The cursor is written every 8 deliveries, not every one: a kill repeats at most 8.

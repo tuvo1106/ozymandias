@@ -408,11 +408,11 @@ func TestShippedDeployConfigLoadsWithLogsOn(t *testing.T) {
 }
 
 func TestForwarderBuffer_FromTheEnvironmentAndValidated(t *testing.T) {
-	cfg, _, err := Load("", []string{"OZY_AGENT_FORWARDER_BUFFER_PATH=/var/buf", "OZY_AGENT_FORWARDER_MAX_DISK_BYTES=2097152"})
+	cfg, _, err := Load("", []string{"OZY_AGENT_FORWARDER_BUFFER_PATH=/var/buf", "OZY_AGENT_FORWARDER_MAX_DISK_BYTES=33554432"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Forwarder.BufferPath != "/var/buf" || cfg.Forwarder.MaxDiskBytes != 2<<20 {
+	if cfg.Forwarder.BufferPath != "/var/buf" || cfg.Forwarder.MaxDiskBytes != 32<<20 {
 		t.Fatalf("%+v", cfg.Forwarder)
 	}
 	if Default().Forwarder.BufferPath != "" {

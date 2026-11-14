@@ -20,6 +20,8 @@ const (
 	// headerLen is the series count that prefixes every payload.
 	headerLen = 4
 	headFile  = "head"
+	// headEvery is how many deliveries pass between cursor writes.
+	headEvery = 8
 
 	// DefaultMaxBytes is the spec's 512 MiB.
 	DefaultMaxBytes = 512 << 20
@@ -87,6 +89,11 @@ type Spool struct {
 	items, series    int
 	peeked           *Item
 	closed           bool
+	// broken is set by a failed fsync and is final until restart: after it the
+	// kernel may have dropped the pages (fsyncgate), so nothing more is accepted.
+	broken error
+	// sinceHead counts deliveries since the cursor was last written.
+	sinceHead int
 }
 
 // Open opens the spool in opts.Dir, rebuilding its index from the segments.
@@ -115,7 +122,7 @@ func Open(opts Options) (*Spool, error) {
 	if err := s.scan(); err != nil {
 		return nil, err
 	}
-	w, err := wal.Open(wal.Options{Dir: opts.Dir, SegmentSize: opts.SegmentSize})
+	w, err := wal.Open(wal.Options{Dir: opts.Dir, SegmentSize: opts.SegmentSize, StopOnSyncError: true})
 	if err != nil {
 		return nil, fmt.Errorf("spool: %w", err)
 	}
@@ -185,6 +192,11 @@ func decodeSeries(r wal.Record) (int, bool) {
 // Put appends a payload and fsyncs it. If the spool is then over its cap the
 // oldest segments are dropped; dropped is how many series that lost.
 func (s *Spool) Put(series int, body []byte) (dropped int, err error) {
+	if int64(headerLen+len(body)) > s.opts.SegmentSize {
+		// A record bigger than a segment would sit alone in one, and the cap can
+		// never evict the newest segment, so the spool could stay over its cap.
+		return 0, fmt.Errorf("spool: a payload of %d bytes does not fit a %d-byte segment", len(body), s.opts.SegmentSize)
+	}
 	rec := make([]byte, headerLen+len(body))
 	binary.BigEndian.PutUint32(rec, uint32(series))
 	copy(rec[headerLen:], body)
@@ -194,6 +206,9 @@ func (s *Spool) Put(series int, body []byte) (dropped int, err error) {
 	if s.closed {
 		return 0, errors.New("spool: closed")
 	}
+	if s.broken != nil {
+		return 0, s.broken
+	}
 	if err := s.w.Log(wal.Record{Type: recordType, Data: rec}); err != nil {
 		return 0, fmt.Errorf("spool: %w", err)
 	}
@@ -202,7 +217,12 @@ func (s *Spool) Put(series int, body []byte) (dropped int, err error) {
 		sync = (*wal.WAL).Sync
 	}
 	if err := sync(s.w); err != nil {
-		return 0, fmt.Errorf("spool: %w", err)
+		// The record is in the file but not in the index, and the WAL has
+		// stopped (StopOnSyncError), so no later Put can make it reachable. A
+		// restart will find it and deliver it; the caller was told it failed, so
+		// that is a repeat, never a loss.
+		s.broken = fmt.Errorf("spool: stopped after a failed fsync: %w", err)
+		return 0, s.broken
 	}
 	end := s.w.End()
 	if last := s.segs[len(s.segs)-1]; last.n != end.Segment {
@@ -261,8 +281,15 @@ func (s *Spool) Peek() (it Item, ok bool, skipped int) {
 		if !r.Next() {
 			err := r.Err()
 			_ = r.Close()
-			s.log.Error("spool: unreadable record; skipping the rest of its segment", "segment", sg.n, "err", err)
-			s.segs[0].goodEnd = s.off
+			if !errors.Is(err, wal.ErrCorrupt) {
+				// A read that failed for another reason (no file descriptors, an
+				// I/O error) says nothing about the record. Leave everything as
+				// it is and try again on the next call.
+				s.log.Warn("spool: cannot read the next payload; will retry", "segment", sg.n, "err", err)
+				return Item{}, false, skipped
+			}
+			s.log.Error("spool: damaged record; skipping the rest of its segment", "segment", sg.n, "err", err)
+			skipped += s.skipDamagedLocked()
 			continue
 		}
 		rec := r.Record()
@@ -272,12 +299,46 @@ func (s *Spool) Peek() (it Item, ok bool, skipped int) {
 		_ = r.Close()
 		if !good {
 			s.log.Error("spool: malformed record; skipping the rest of its segment", "segment", sg.n)
-			s.segs[0].goodEnd = s.off
+			skipped += s.skipDamagedLocked()
 			continue
 		}
 		s.peeked = &Item{Series: ser, Body: body, seg: sg.n, end: end}
 		return *s.peeked, true, skipped
 	}
+}
+
+// skipDamagedLocked gives up the rest of segs[0] from the cursor on, and
+// returns the undelivered series that held.
+//
+// An older segment is simply marked finished and the caller drops it. The
+// active segment cannot be: later Puts would append behind the damage and raise
+// its good end again, and Peek would hit the same record for ever. So it is cut
+// at the cursor and the log reopened, which starts appending after the cut.
+func (s *Spool) skipDamagedLocked() int {
+	if len(s.segs) > 1 {
+		s.segs[0].goodEnd = s.off // the caller's next pass drops it, and dropOldestLocked counts what it held
+		return 0
+	}
+	sg := &s.segs[0]
+	lostRec, lostSer := sg.records-s.doneRec, sg.series-s.doneSer
+	_ = s.w.Close()
+	path := filepath.Join(s.opts.Dir, wal.SegmentName(sg.n))
+	if err := os.Truncate(path, s.off); err != nil {
+		s.log.Error("spool: cutting a damaged segment", "err", err)
+	}
+	w, err := wal.Open(wal.Options{Dir: s.opts.Dir, SegmentSize: s.opts.SegmentSize, StopOnSyncError: true})
+	if err != nil {
+		s.broken = fmt.Errorf("spool: reopening after damage: %w", err)
+		s.log.Error("spool: reopening after damage", "err", err)
+	} else {
+		s.w = w
+	}
+	s.bytes -= sg.size - s.off
+	sg.size, sg.goodEnd = s.off, s.off
+	sg.records, sg.series = s.doneRec, s.doneSer
+	s.items -= lostRec
+	s.series -= lostSer
+	return lostSer
 }
 
 // Ack records that the item Peek returned was delivered (or refused for good).
@@ -297,7 +358,27 @@ func (s *Spool) Ack(it Item) {
 		_ = s.dropOldestLocked() // nothing undelivered left, so nothing lost
 		return
 	}
-	s.writeHead()
+	// The cursor is a file write and a rename; the next restart would repeat at
+	// most headEvery payloads without it, which the intake absorbs.
+	if s.sinceHead++; s.sinceHead >= headEvery {
+		s.writeHead()
+	}
+}
+
+// Broken reports whether a failed fsync has stopped the spool. It still serves
+// what it holds; it accepts nothing more until a restart.
+func (s *Spool) Broken() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.broken != nil
+}
+
+// Break stops the spool as a failed fsync does. Exported for the forwarder's
+// tests, which need a stopped spool without a failing disk.
+func (s *Spool) Break(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.broken = err
 }
 
 // Stats returns a snapshot.
@@ -315,6 +396,7 @@ func (s *Spool) Close() error {
 		return nil
 	}
 	s.closed = true
+	s.writeHead() // so a clean stop repeats nothing
 	return s.w.Close()
 }
 
@@ -322,6 +404,7 @@ func (s *Spool) Close() error {
 // not fsynced (see the package comment). Failing to write it only means more
 // is re-sent after a restart, so it is logged, not returned.
 func (s *Spool) writeHead() {
+	s.sinceHead = 0
 	body := fmt.Sprintf("%d %d", s.segs[0].n, s.off)
 	line := fmt.Sprintf("%s %d\n", body, crc32.ChecksumIEEE([]byte(body)))
 	tmp := filepath.Join(s.opts.Dir, headFile+".tmp")

@@ -424,3 +424,150 @@ func TestSpool_ACursorThatCannotBeWrittenOnlyCostsRepeats(t *testing.T) {
 		t.Fatalf("%+v: the delivery was not recorded in memory", st)
 	}
 }
+
+// A failed fsync stops the spool (fsyncgate): the record that was written but
+// not synced is not indexed, nothing more is accepted, and the counts stay
+// true. Before, the next Put raised the good end over it and Peek delivered a
+// payload the caller had been told was dropped.
+func TestSpool_AFailedFsyncStopsTheSpoolAndKeepsTheCountsTrue(t *testing.T) {
+	fail := false
+	s, err := Open(Options{Dir: t.TempDir(), SegmentSize: 1 << 20, MaxBytes: 8 << 20, Logger: quiet,
+		syncFn: func(w *wal.WAL) error {
+			if fail {
+				return fmt.Errorf("%w: injected", wal.ErrSync)
+			}
+			return w.Sync()
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if _, err := s.Put(1, body(0)); err != nil {
+		t.Fatal(err)
+	}
+	fail = true
+	if _, err := s.Put(1, body(1)); err == nil {
+		t.Fatal("a failed fsync was reported as success")
+	}
+	fail = false
+	if _, err := s.Put(1, body(2)); err == nil {
+		t.Fatal("the spool kept accepting writes after a failed fsync")
+	}
+	if !s.Broken() {
+		t.Fatal("Broken() = false after a failed fsync")
+	}
+	got := drain(t, s)
+	if len(got) != 1 || !bytes.Equal(got[0], body(0)) {
+		t.Fatalf("%d payloads delivered, want only the one that was synced", len(got))
+	}
+	if st := s.Stats(); st.Payloads != 0 || st.Series != 0 {
+		t.Fatalf("counts went wrong: %+v", st)
+	}
+}
+
+// Damage in the segment being appended to must be skipped for good, not
+// re-found at the same record after every later Put.
+func TestSpool_DamageInTheActiveSegmentIsSkippedAndAppendingContinues(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, 1<<20, 8<<20) // one segment holds everything
+	defer func() { _ = s.Close() }()
+	for i := range 6 {
+		if _, err := s.Put(1, body(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 { // deliver two, then damage the third
+		it, _, _ := s.Peek()
+		s.Ack(it)
+	}
+	segs, _ := wal.Segments(dir)
+	path := filepath.Join(dir, wal.SegmentName(segs[0]))
+	b, _ := os.ReadFile(path)
+	third := 2 * (len(b) / 6)
+	b[third+20] ^= 0xff
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, skipped := s.Peek()
+	if ok || skipped != 4 {
+		t.Fatalf("ok=%v skipped=%d: want the four undelivered series counted and no item", ok, skipped)
+	}
+	for i := 10; i < 13; i++ {
+		if _, err := s.Put(1, body(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := drain(t, s)
+	if len(got) != 3 || !bytes.Equal(got[0], body(10)) {
+		t.Fatalf("%d payloads after the damage, want the 3 written after it", len(got))
+	}
+	if st := s.Stats(); st.Payloads != 0 || st.Series != 0 || st.Bytes < 0 {
+		t.Fatalf("stats %+v", st)
+	}
+}
+
+// A read that fails for a reason that is not damage (here: the segment file is
+// gone for a moment) must leave the spool as it was.
+func TestSpool_ATransientReadErrorDropsNothing(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, 1024, 1<<20)
+	defer func() { _ = s.Close() }()
+	for i := range 20 {
+		if _, err := s.Put(1, body(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	segs, _ := wal.Segments(dir)
+	path := filepath.Join(dir, wal.SegmentName(segs[0]))
+	hidden := path + ".hidden"
+	if err := os.Rename(path, hidden); err != nil {
+		t.Fatal(err)
+	}
+	before := s.Stats()
+	if _, ok, skipped := s.Peek(); ok || skipped != 0 {
+		t.Fatalf("ok=%v skipped=%d with the file missing", ok, skipped)
+	}
+	if after := s.Stats(); after != before {
+		t.Fatalf("a failed read changed the spool: %+v -> %+v", before, after)
+	}
+	if err := os.Rename(hidden, path); err != nil {
+		t.Fatal(err)
+	}
+	if got := drain(t, s); len(got) != 20 {
+		t.Fatalf("%d payloads once the file was back, want all 20", len(got))
+	}
+}
+
+func TestSpool_APayloadLargerThanASegmentIsRefused(t *testing.T) {
+	s := open(t, t.TempDir(), 1024, 1<<20)
+	defer func() { _ = s.Close() }()
+	if _, err := s.Put(1, make([]byte, 2048)); err == nil {
+		t.Fatal("a payload bigger than a segment was accepted: the cap could never evict it")
+	}
+}
+
+// The cursor is written every few deliveries and on Close; a kill between
+// writes repeats at most those few, and never loses one.
+func TestSpool_AKillBetweenCursorWritesRepeatsAtMostAFewPayloads(t *testing.T) {
+	dir := t.TempDir()
+	s := open(t, dir, 1<<20, 8<<20)
+	for i := range 30 {
+		if _, err := s.Put(1, body(i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 20 {
+		it, _, _ := s.Peek()
+		s.Ack(it)
+	}
+	// No Close: a kill. A second spool reads the directory as it is.
+	s2 := open(t, dir, 1<<20, 8<<20)
+	defer func() { _ = s2.Close(); _ = s.Close() }()
+	got := drain(t, s2)
+	if len(got) < 10 || len(got) > 10+headEvery {
+		t.Fatalf("%d payloads after a kill with 10 undelivered: want 10 to %d", len(got), 10+headEvery)
+	}
+	if !bytes.Equal(got[len(got)-1], body(29)) {
+		t.Fatal("the newest payload was lost")
+	}
+}

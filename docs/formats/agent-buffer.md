@@ -44,7 +44,9 @@ dropping a payload can be counted without decompressing it. `body` is the reques
 body exactly as it would be POSTed: gzip'd JSON, sent with `Content-Encoding: gzip`.
 
 A segment is rolled at `min(max_disk_bytes / 8, 8 MiB)`. The segment is the unit
-of deletion (see below), so it is also the granularity of dropping.
+of deletion (see below), so it is also the granularity of dropping. `max_disk_bytes`
+is at least 16 MiB, so a segment (2 MiB at the least) holds any payload the
+forwarder builds.
 
 ## The cursor
 
@@ -52,15 +54,22 @@ of deletion (see below), so it is also the granularity of dropping.
 past the last payload delivered, and the IEEE CRC32 of the first two fields as
 text. It is replaced atomically (write a temp file, rename) and **not fsynced**.
 
-A missing or invalid cursor, a cursor naming a segment that is gone, or an offset
-that is not the end of a record, means: start at the beginning of the oldest
-segment. That re-sends payloads that were already delivered, never loses any,
-and is harmless because every intake path is idempotent for a repeated payload.
+The cursor is written every 8 deliveries, when a segment is finished, and on a
+clean stop, so a kill repeats at most 8 payloads. A missing or invalid cursor, or
+one naming a segment that is gone, means: start at the beginning of the oldest
+segment. An offset that is not the end of a record resumes at the last record end
+at or before it. Either way payloads already delivered may be sent again, none is
+lost, and that is harmless because every intake path is idempotent for a repeated
+payload.
 
 ## Rules
 
 - **Write:** append the record, fsync, then count it. The payload is on disk
-  before the forwarder forgets it.
+  before the forwarder forgets it. A payload larger than a segment is refused (the
+  cap could never evict it). A failed fsync stops the spool for good until a
+  restart (`ozy.agent.forwarder.spool_enabled` reads 0): the record may be in the
+  file but is not counted, and a restart will find and deliver it, a repeat of
+  something the caller was told had failed.
 - **Read:** strictly oldest first from the cursor. One payload is read at a time.
 - **Deliver:** when ozyd accepts a payload, or refuses it for good (a 4xx other
   than 408/429), the cursor moves past it. A segment whose last payload is
@@ -71,7 +80,10 @@ and is harmless because every intake path is idempotent for a repeated payload.
 - **Open:** every segment is scanned to rebuild the counts. A torn tail on the
   newest segment is cut. A record that fails its CRC, or is malformed, ends its
   segment at the last good record; what follows in that segment is skipped and
-  counted as dropped, and later segments are used as normal.
+  counted as dropped, and later segments are used as normal. If the damaged segment
+  is the one being appended to, it is cut at the cursor and appending resumes after
+  the cut. A read that fails for another reason (no file descriptors, an I/O error)
+  is not damage: nothing is skipped and the read is tried again.
 
 ## What the forwarder does with it
 
@@ -81,9 +93,14 @@ always holds older data than the memory queue and delivery stays oldest-first.
 At shutdown, payloads still in memory after the final delivery attempt are moved
 to the spool instead of being dropped.
 
-Sending order is by endpoint priority, series, then sketches, then spans; within
-an endpoint the spool's oldest payload is sent before anything newer, and a
-payload in backoff holds back the ones behind it in its endpoint.
+Sending order is by endpoint priority, series, then sketches, then spans. Within
+an endpoint the spool's oldest payload is sent before anything newer, and while
+that payload is in backoff nothing newer of the endpoint is sent. Payloads still in
+memory are not strictly ordered: one waiting out its backoff does not hold back the
+ones behind it. A payload being sent when the memory queue overflows stays in
+memory (it would otherwise be delivered and still spooled). At shutdown, an
+endpoint with older payloads on disk is not sent from memory at all: its memory
+payloads go to the disk behind them.
 
 Format changes are breaking: a different `type`, or a changed `data` prefix, would
 be read as damage and skipped, so the buffer must be emptied (or deleted) across

@@ -3,6 +3,7 @@ package forwarder
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -102,6 +103,16 @@ func (e *spoolEnv) drain(t *testing.T, want int) {
 
 func (e *spoolEnv) counter(name string) int64 { return e.reg.Counter(name).Value() }
 
+// gauge reads a gauge by name from a snapshot, so function gauges count too.
+func (e *spoolEnv) gauge(name string) float64 {
+	for _, p := range e.reg.Snapshot() {
+		if p.Name == name {
+			return p.Value
+		}
+	}
+	return -1
+}
+
 // Memory first, then disk: an outage longer than the memory queue loses nothing
 // while the disk has room, and what arrives is oldest first.
 func TestForwarder_OverflowSpillsToDiskAndDeliversInOrder(t *testing.T) {
@@ -179,21 +190,23 @@ func TestForwarder_ADiskBufferAtItsCapDropsAndCounts(t *testing.T) {
 	e := newSpoolEnv(t)
 	f := New(Options{
 		URL: e.url, Clock: e.clk, Registry: e.reg, Logger: slog.New(slog.DiscardHandler), Rand: rand.New(rand.NewPCG(1, 2)),
-		BufferDir: t.TempDir(), MaxQueueBytes: 1, MaxDiskBytes: 1 << 20, // the smallest cap the config allows
+		BufferDir: t.TempDir(), MaxQueueBytes: 1, MaxDiskBytes: 16 << 20, // the smallest cap the config allows
 	})
 	f.Start()
 	defer func() { _ = f.Shutdown(context.Background()) }()
-	big := make([]wire.Series, 0, 3000)
-	for i := range 3000 {
-		big = append(big, wire.Series{Metric: fmt.Sprintf("m.%06d.%x", i, rand.Uint64()), Type: wire.KindGauge,
-			Tags: []string{"host:h"}, Points: []wire.Point{{Timestamp: 1790000000, Value: rand.Float64()}}})
+	// Random tags do not compress, so a few payloads are a real size.
+	big := make([]wire.Series, 0, 1500)
+	for i := range 1500 {
+		tag := fmt.Sprintf("k:%016x%016x%016x%016x", rand.Uint64(), rand.Uint64(), rand.Uint64(), rand.Uint64())
+		big = append(big, wire.Series{Metric: fmt.Sprintf("m.%06d", i), Type: wire.KindGauge,
+			Tags: []string{tag, fmt.Sprintf("j:%016x%016x", rand.Uint64(), rand.Uint64())}, Points: []wire.Point{{Timestamp: 1790000000, Value: rand.Float64()}}})
 	}
-	for range 40 {
-		f.Submit(big) // incompressible-ish: random names and values
+	for range 260 {
+		f.Submit(big)
 	}
 	st := f.spools["series"].Stats()
-	if st.Bytes > 1<<20+(1<<17) {
-		t.Fatalf("spool holds %d bytes against a 1 MiB cap", st.Bytes)
+	if st.Bytes > 16<<20+(2<<20) {
+		t.Fatalf("spool holds %d bytes against a 16 MiB cap", st.Bytes)
 	}
 	if e.counter("ozy.agent.forwarder.dropped") == 0 {
 		t.Fatal("the cap dropped data and nothing was counted")
@@ -208,7 +221,7 @@ func TestForwarder_AnUnusableBufferDirIsMemoryOnlyAndSaysSo(t *testing.T) {
 	e.in.up.Store(true)
 	f.Submit(one("m"))
 	e.drain(t, 1)
-	if v := e.reg.Gauge("ozy.agent.forwarder.spool_enabled").Value(); v != 0 {
+	if v := e.gauge("ozy.agent.forwarder.spool_enabled"); v != 0 {
 		t.Fatalf("spool_enabled = %v with no buffer", v)
 	}
 	if e.counter("ozy.agent.forwarder.spool_errors") == 0 {
@@ -220,7 +233,104 @@ func TestForwarder_SpoolMetricsExistWhenEnabled(t *testing.T) {
 	e := newSpoolEnv(t)
 	f := e.forwarder(t, t.TempDir(), 1<<20)
 	defer func() { _ = f.Shutdown(context.Background()) }()
-	if v := e.reg.Gauge("ozy.agent.forwarder.spool_enabled").Value(); v != 1 {
+	if v := e.gauge("ozy.agent.forwarder.spool_enabled"); v != 1 {
 		t.Fatalf("spool_enabled = %v, want 1", v)
 	}
+}
+
+// A payload that is being sent when the memory cap needs room must not be moved
+// to disk: it would be delivered and still be spooled, and go out again.
+func TestForwarder_AnInFlightPayloadIsNotSpilled(t *testing.T) {
+	e := newSpoolEnv(t)
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		e.in.ServeHTTP(w, r)
+	}))
+	defer slow.Close()
+	e.in.up.Store(true)
+	f := New(Options{
+		URL: slow.URL, Clock: e.clk, Registry: selfmetrics.NewRegistry(), Logger: slog.New(slog.DiscardHandler),
+		Rand: rand.New(rand.NewPCG(1, 2)), BufferDir: t.TempDir(), MaxQueueBytes: 400, MaxDiskBytes: 8 << 20,
+	})
+	f.Start()
+	defer func() { _ = f.Shutdown(context.Background()) }()
+
+	f.Submit(one("first"))
+	<-entered // its request is now in flight, holding no lock
+	for i := range 8 {
+		f.Submit(one(fmt.Sprintf("later%d", i))) // overflow: the in-flight one is the oldest
+	}
+	close(release)
+	testutil.Eventually(t, 10*time.Second, func() bool {
+		e.clk.Advance(5 * time.Second)
+		return len(e.in.got()) >= 9
+	}, "delivered %v", e.in.got())
+	time.Sleep(50 * time.Millisecond) // a duplicate, if any, would arrive by now
+	n := 0
+	for _, g := range e.in.got() {
+		if g == "/v1/series first" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the in-flight payload was delivered %d times: %v", n, e.in.got())
+	}
+}
+
+// A spool that a failed fsync has stopped is as good as none, and says so.
+func TestForwarder_AStoppedSpoolReadsAsDisabled(t *testing.T) {
+	e := newSpoolEnv(t)
+	f := e.forwarder(t, t.TempDir(), 1<<20)
+	defer func() { _ = f.Shutdown(context.Background()) }()
+	if e.gauge("ozy.agent.forwarder.spool_enabled") != 1 {
+		t.Fatal("not enabled to begin with")
+	}
+	sp := f.spools["series"]
+	// Stop it the way a failed fsync does: through the spool's own latch.
+	if _, err := sp.Put(1, make([]byte, 16<<20)); err == nil {
+		t.Fatal("an oversize Put succeeded")
+	}
+	sp.Break(errors.New("injected"))
+	if e.gauge("ozy.agent.forwarder.spool_enabled") != 0 {
+		t.Fatal("spool_enabled still 1 with a stopped spool")
+	}
+	f.Submit(one("after")) // must not panic, and must not hang
+}
+
+// At shutdown, with older payloads already on disk, a newer one in memory goes
+// behind them on disk: sending it would put newer data on the wire first.
+func TestForwarder_ShutdownKeepsNewerPayloadsBehindOlderSpooledOnes(t *testing.T) {
+	e := newSpoolEnv(t)
+	dir := t.TempDir()
+	f := e.forwarder(t, dir, 1) // everything goes straight to disk
+	f.Submit(one("old"))
+	e.in.up.Store(true) // ozyd is back, but only for the final attempt
+	f.mu.Lock()
+	f.queue = append(f.queue, &payload{ep: "series", url: f.series.url, body: mustGzip(t, `{"series":[{"metric":"new"}]}`), series: 1})
+	f.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := f.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range e.in.got() {
+		if strings.HasSuffix(g, " new") {
+			t.Fatalf("a newer payload was sent from memory while an older one waited on disk: %v", e.in.got())
+		}
+	}
+}
+
+func mustGzip(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := gzipBytes([]byte(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
