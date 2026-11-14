@@ -536,6 +536,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A service row's p50, p95 and p99 could describe different data.** They are three queries; a sketch bucket
+  landing between them gave a p95 with no p50 (the flake behind #68). A request now reads each series'
+  sketches once and answers all three from that read.
+
 - **A crash while deleting a block could stop ozyd from starting.** Deletion wrote a
   tombstone and then unlinked the block's files in whatever order the filesystem
   listed them; where the tombstone came before `meta.json`, a crash between the two

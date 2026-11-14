@@ -122,3 +122,85 @@ func TestServices_LatencyWithoutRequestsMakesNoRow(t *testing.T) {
 		t.Errorf("latency without requests made a row: %v", rows)
 	}
 }
+
+// growingSketches answers each successive read of a series with one more
+// bucket, as a store does when sketches land between two of a request's reads.
+type growingSketches struct {
+	calls   int
+	buckets []sketchstore.Point
+}
+
+func (g *growingSketches) ReadEach(_ context.Context, _ tsdb.SeriesRef, _, _ int64, fn func(sketchstore.Point) error) error {
+	g.calls++
+	for _, p := range g.buckets[:min(g.calls, len(g.buckets))] {
+		if err := fn(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// TestServices_PercentilesAreOneReadOfTheSketches: a service row's p50, p95 and
+// p99 are three queries. If a bucket lands between them they describe different
+// data: p50 of the early sketches beside a p99 of the later ones. The three
+// must be answered from one read. (Found as a flake in the APM e2e: "p95 with
+// no p50"; this is the same race with the timing removed.)
+func TestServices_PercentilesAreOneReadOfTheSketches(t *testing.T) {
+	dir := t.TempDir()
+	store, err := naive.Open(filepath.Join(dir, "m.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	md, err := meta.Open(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = md.Close() })
+	ctx := context.Background()
+	const t0 = int64(1_790_000_000)
+	for name, kind := range map[string]wire.Kind{"trace.http.request.hits": wire.KindCount, "trace.http.request.duration": wire.KindDistribution} {
+		if err := md.Observe(ctx, name, kind, 10, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tags := []string{"service:shop", "env:e2e"}
+	if _, err := store.Append(ctx, []tsdb.SeriesSamples{{
+		Series: tsdb.NewSeriesRef("trace.http.request.hits", tags), Samples: []tsdb.Sample{{T: (t0 + 500) * 1000, V: 4}},
+	}, {
+		// A percentile query selects on the sketch's .count series.
+		Series:  tsdb.NewSeriesRef("trace.http.request.duration"+wire.SuffixCount, tags),
+		Samples: []tsdb.Sample{{T: (t0 + 500) * 1000, V: 10}, {T: (t0 + 510) * 1000, V: 10}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	fast, slow := sketch.NewDefault(), sketch.NewDefault()
+	for range 10 {
+		_ = fast.Add(0.010) // 10 ms
+		_ = slow.Add(5.0)   // 5 s: a later bucket far from the first
+	}
+	g := &growingSketches{buckets: []sketchstore.Point{
+		{TimeMs: (t0 + 500) * 1000, Sketch: fast}, {TimeMs: (t0 + 510) * 1000, Sketch: slow},
+	}}
+	mux := http.NewServeMux()
+	(&APM{Store: store, Types: md, Sketches: g, Clock: testutil.NewFakeClock(now)}).Register(mux)
+	_, body := call(mux, fmt.Sprintf("/api/v1/services?from=%d&to=%d", (t0+300)*1000, (t0+3900)*1000))
+	rows, _ := body["services"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("services: %v", body)
+	}
+	r := rows[0].(map[string]any)
+	p50, p95, p99 := r["p50_ms"], r["p95_ms"], r["p99_ms"]
+	for name, v := range map[string]any{"p50": p50, "p95": p95, "p99": p99} {
+		f, ok := v.(float64)
+		if !ok {
+			t.Fatalf("%s = %v, want a number", name, v)
+		}
+		if f > 50 { // every percentile from the first read: only the 10 ms sketch
+			t.Errorf("%s = %v ms: it read a bucket the others did not see", name, f)
+		}
+	}
+	if g.calls != 1 {
+		t.Errorf("the sketch store was read %d times for one series, want 1", g.calls)
+	}
+}
