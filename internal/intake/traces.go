@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/tuvo1106/ozymandias/internal/auth"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
@@ -40,6 +41,10 @@ func (in *Intake) traces(w http.ResponseWriter, r *http.Request) {
 	p, rejects, err := wire.DecodeSpans(data, wire.DecodeOptions{Now: in.opts.Clock.Now()})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if ok, retry := auth.FromContext(r.Context()).AllowSpans(len(p.Spans)); !ok {
+		auth.Refuse(w, retry)
 		return
 	}
 	for i := range p.Spans {

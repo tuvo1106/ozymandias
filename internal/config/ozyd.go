@@ -253,6 +253,45 @@ type Query struct {
 	QueueWait time.Duration `yaml:"queue_wait"`
 }
 
+// Auth configures who may talk to ozyd (M7 §5, ADR-0059). Off by default: with
+// enabled false nothing is checked and ozyd behaves as it did before auth existed.
+type Auth struct {
+	Enabled bool `yaml:"enabled"`
+	// AdminPasswordEnv names the environment variable that holds the admin
+	// password (never the password itself: config files get committed). Empty
+	// means OZYMANDIAS_ADMIN_PASSWORD (not OZY_*: that prefix is for config
+	// overrides, and ozyd warns about any OZY_ variable that matches no setting).
+	AdminPasswordEnv string `yaml:"admin_password_env"`
+	// SessionTTL is how long a login lasts. Zero means 12h.
+	SessionTTL time.Duration `yaml:"session_ttl"`
+	// SecureCookie sets the session cookie's Secure flag: turn it on behind TLS.
+	SecureCookie bool `yaml:"secure_cookie"`
+	// Defaults are the limits a key gets for each field it leaves at zero. Zero
+	// here is unlimited.
+	Defaults AuthLimits `yaml:"defaults"`
+}
+
+// AuthLimits are per-key ceilings; zero is unlimited.
+type AuthLimits struct {
+	RequestsPerSec float64 `yaml:"requests_per_sec"`
+	BytesPerSec    float64 `yaml:"bytes_per_sec"`
+	SpansPerSec    float64 `yaml:"spans_per_sec"`
+	LogBytesPerDay int64   `yaml:"log_bytes_per_day"`
+}
+
+// Validate checks the auth settings.
+func (a Auth) Validate() error {
+	var errs []error
+	if a.SessionTTL < 0 {
+		errs = append(errs, fmt.Errorf("auth.session_ttl must not be negative, got %v", a.SessionTTL))
+	}
+	d := a.Defaults
+	if d.RequestsPerSec < 0 || d.BytesPerSec < 0 || d.SpansPerSec < 0 || d.LogBytesPerDay < 0 {
+		errs = append(errs, errors.New("auth.defaults must not be negative"))
+	}
+	return errors.Join(errs...)
+}
+
 // Validate checks the query limits.
 func (q Query) Validate() error {
 	var errs []error
@@ -399,6 +438,7 @@ type Ozyd struct {
 	Traces       Traces       `yaml:"traces"`
 	Pipeline     Pipeline     `yaml:"pipeline"`
 	Query        Query        `yaml:"query"`
+	Auth         Auth         `yaml:"auth"`
 	Provisioning Provisioning `yaml:"provisioning"`
 	Monitors     Monitors     `yaml:"monitors"`
 	// Notifiers are where monitor notifications go, by name.
@@ -439,7 +479,7 @@ func DefaultOzyd() Ozyd {
 // Validate checks every section.
 func (c *Ozyd) Validate() error {
 	var errs []error
-	errs = append(errs, c.HTTP.Validate(), c.Log.Validate(), c.Storage.Validate(), c.Logs.Validate(), c.Traces.Validate(), c.Pipeline.Validate(), c.Query.Validate(), ValidateHostname(c.Hostname),
+	errs = append(errs, c.HTTP.Validate(), c.Log.Validate(), c.Storage.Validate(), c.Logs.Validate(), c.Traces.Validate(), c.Pipeline.Validate(), c.Query.Validate(), c.Auth.Validate(), ValidateHostname(c.Hostname),
 		c.Monitors.Validate(), validateNotifiers(c.Notifiers))
 	if c.DataDir == "" {
 		errs = append(errs, errors.New("data_dir must be set"))

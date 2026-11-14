@@ -287,7 +287,16 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	if opts.UI != nil {
 		mux.Handle("GET /", opts.UI)
 	}
-	s.handler = httpserve.Instrument(s.reg, Component, s.limitQueries(mux))
+	gate := s.limitQueries(mux)
+	if cfg.Auth.Enabled {
+		a, err := s.newAuth(md, opts.Getenv)
+		if err != nil {
+			return nil, err
+		}
+		a.Register(mux)
+		gate = a.Wrap(gate)
+	}
+	s.handler = httpserve.Instrument(s.reg, Component, gate)
 	return s, nil
 }
 
