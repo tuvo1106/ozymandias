@@ -92,6 +92,18 @@ func (b *bucket) give(n float64) {
 	b.mu.Unlock()
 }
 
+// sub takes back n units counted today (none if the day has turned over).
+func (c *dayCounter) sub(n int64, now time.Time) {
+	if c == nil || n <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.day == now.UTC().Format("2006-01-02") {
+		c.used = max(0, c.used-n)
+	}
+}
+
 // dayCounter admits up to limit units per UTC day.
 type dayCounter struct {
 	mu    sync.Mutex
@@ -142,7 +154,9 @@ const (
 // Reasons lists them, for registering the counters up front.
 var Reasons = [...]string{ReasonUnauthorized, ReasonRequests, ReasonBytes, ReasonSpans, ReasonLogBytesDay}
 
-// Principal is an authenticated key and its live limiters.
+// Principal is an authenticated key and its live limiters. The methods that
+// charge (Allow, AllowSpans, AllowLogBytes) are safe on a nil Principal, which
+// is what a request has when auth is off, and admit everything.
 type Principal struct {
 	ID   int64
 	Name string
@@ -168,6 +182,9 @@ func newPrincipal(id int64, name string, l Limits, clk clock.Clock) *Principal {
 
 // Allow charges one request of size bytes. reason names the limit that refused it.
 func (p *Principal) Allow(size int64) (ok bool, reason string, retry time.Duration) {
+	if p == nil {
+		return true, "", 0
+	}
 	now := p.clk.Now()
 	if ok, w := p.requests.take(1, now); !ok {
 		return false, ReasonRequests, w
@@ -177,13 +194,6 @@ func (p *Principal) Allow(size int64) (ok bool, reason string, retry time.Durati
 		return false, ReasonBytes, w
 	}
 	return true, "", 0
-}
-
-// refund returns what a request that was refused after being admitted had spent,
-// so that its retry is not charged twice.
-func (p *Principal) refund(size int64) {
-	p.requests.give(1)
-	p.bytes.give(float64(min(size, wire.MaxBodyBytes)))
 }
 
 // AllowSpans charges n spans.

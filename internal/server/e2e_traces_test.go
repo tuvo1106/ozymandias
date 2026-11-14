@@ -216,7 +216,13 @@ func TestEndToEnd_TracesStatsBeforeSamplingAndOneTraceAcrossServices(t *testing.
 	}
 
 	// The cross-service trace is one trace of two spans, and the map has the edge.
-	tr := get("/api/v1/traces/" + fmt.Sprintf("%032x", 9001))
+	// Wait for it: the agent flushes spans on its own timer, and under load the
+	// listing above can be answered before this trace has been stored.
+	var tr map[string]any
+	testutil.Eventually(t, 5*time.Second, func() bool {
+		tr = get("/api/v1/traces/" + fmt.Sprintf("%032x", 9001))
+		return tr["_code"] == float64(200)
+	}, "the cross-service trace was never stored: %v", tr)
 	if tr["_code"] != float64(200) || tr["span_count"] != float64(2) || len(arr(tr, "orphans")) != 0 {
 		t.Fatalf("trace = %v", tr)
 	}

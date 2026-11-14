@@ -7,9 +7,11 @@ import (
 	"encoding/base32"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/clock"
@@ -49,7 +51,10 @@ const touchEvery = time.Minute
 type entry struct {
 	principal *Principal
 	revoked   bool
-	touched   time.Time
+	// touched is the unix nanos of the last last_used_at write. Atomic so that
+	// authenticating stays on the read lock: a mutex here would serialize every
+	// ingest request in the process.
+	touched atomic.Int64
 }
 
 // Keyring authenticates presented keys. It holds every key in memory, so a
@@ -63,6 +68,9 @@ type Keyring struct {
 	mu     sync.RWMutex
 	byHash map[[sha256.Size]byte]*entry
 	rej    *Rejections
+
+	closed atomic.Bool
+	wg     sync.WaitGroup // in-flight last_used_at writes
 }
 
 // SetRejections gives every principal, present and future, the counters its
@@ -102,7 +110,11 @@ func (k *Keyring) add(r meta.APIKey) {
 	p.rej = k.rej
 	var h [sha256.Size]byte
 	copy(h[:], raw)
-	k.byHash[h] = &entry{revoked: !r.Active(), touched: r.LastUsedAt, principal: p}
+	e := &entry{revoked: !r.Active(), principal: p}
+	if !r.LastUsedAt.IsZero() {
+		e.touched.Store(r.LastUsedAt.UnixNano())
+	}
+	k.byHash[h] = e
 }
 
 // Authenticate returns the principal for a presented key.
@@ -130,25 +142,37 @@ func (k *Keyring) Authenticate(presented string) (*Principal, bool) {
 
 func (k *Keyring) touch(e *entry) {
 	now := k.clk.Now()
-	k.mu.Lock()
-	due := now.Sub(e.touched) >= touchEvery
-	if due {
-		e.touched = now
-	}
-	k.mu.Unlock()
-	if due {
+	last := e.touched.Load()
+	// CompareAndSwap, so that of the requests racing past the minute exactly one
+	// writes; the rest see the new time and skip.
+	if now.UnixNano()-last >= int64(touchEvery) && e.touched.CompareAndSwap(last, now.UnixNano()) && !k.closed.Load() {
 		// Off the request path: the write takes the metadata database's writer
 		// lock, which a dashboard save or a monitor evaluation may hold, and an
 		// ingest request must not wait on that. Once a minute per key, so there is
 		// no pile-up; best effort, since last_used_at is for people.
-		go func() { _ = k.store.TouchAPIKey(context.Background(), e.principal.ID, now) }()
+		k.wg.Add(1)
+		go func() {
+			defer k.wg.Done()
+			_ = k.store.TouchAPIKey(context.Background(), e.principal.ID, now)
+		}()
 	}
 }
+
+// Close waits for in-flight last_used_at writes and stops starting new ones. Call
+// it before the database is closed.
+func (k *Keyring) Close() {
+	k.closed.Store(true)
+	k.wg.Wait()
+}
+
+// ErrInvalid marks a Create refused for what the caller asked, as opposed to a
+// failure of ours.
+var ErrInvalid = errors.New("invalid key request")
 
 // Create makes a key. The returned secret is the only time it exists in the clear.
 func (k *Keyring) Create(ctx context.Context, name string, limits Limits) (secret string, row meta.APIKey, err error) {
 	if strings.TrimSpace(name) == "" {
-		return "", meta.APIKey{}, fmt.Errorf("auth: a key needs a name")
+		return "", meta.APIKey{}, fmt.Errorf("%w: a key needs a name", ErrInvalid)
 	}
 	secret, hash, err := GenerateKey()
 	if err != nil {

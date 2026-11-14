@@ -82,13 +82,13 @@ func New(o Options) (*Auth, error) {
 	return a, nil
 }
 
+// Close stops background work (the keyring's last-use writes). Call before the metadata database is closed.
+func (a *Auth) Close() { a.opts.Keys.Close() }
+
 // Rejected returns the rejection counters, so a Principal's limits can share them.
 func (a *Auth) Rejected() *Rejections { return a.rej }
 
 type ctxKey struct{}
-
-// sizeKey carries what the gate charged for the request's bytes, for a refund.
-type sizeKey struct{}
 
 // FromContext returns the key that authenticated the request, or nil (auth off,
 // or a path that takes no key). Every Principal method is safe on nil.
@@ -165,9 +165,14 @@ func (a *Auth) serveIngest(w http.ResponseWriter, r *http.Request, next http.Han
 		Refuse(w, retry)
 		return
 	}
-	ctx := context.WithValue(r.Context(), ctxKey{}, p)
-	r2 := r.WithContext(context.WithValue(ctx, sizeKey{}, size))
-	next.ServeHTTP(w, r2)
+	c := &charge{size: size}
+	ctx := context.WithValue(context.WithValue(r.Context(), ctxKey{}, p), chargeKey{}, c)
+	r2 := r.WithContext(ctx)
+	sw := &statusRecorder{ResponseWriter: w}
+	next.ServeHTTP(sw, r2)
+	if sw.status == http.StatusTooManyRequests || sw.status >= 500 {
+		p.release(c)
+	}
 	// The mux names the route on the copy it was given; the request counter
 	// reads the original, and would file every authenticated request as
 	// "unmatched".

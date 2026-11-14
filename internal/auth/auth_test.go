@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -58,6 +59,12 @@ func newEnv(t *testing.T, defaults Limits) *env {
 			return
 		}
 		w.WriteHeader(http.StatusAccepted)
+	})
+	mux.HandleFunc("POST /v1/fail", func(w http.ResponseWriter, r *http.Request) {
+		if DeniedLogBytes(w, r, 900) || DeniedSpans(w, r, 4000) {
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable) // the store failed
 	})
 	mux.HandleFunc("GET /api/v1/things", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -735,5 +742,90 @@ func TestIngest_ASpansRefusalGivesBackTheBytesToo(t *testing.T) {
 	}
 	if p.bytes.tokens < before {
 		t.Fatalf("the refused request kept its 500 bytes: %v -> %v", before, p.bytes.tokens)
+	}
+}
+
+// A request that ends in "try again" (a store failure, a full queue, a shed)
+// stored nothing, so its retry must not be charged twice. Without this a store
+// that is flapping turns the sender's 503s into its own request, byte, span and
+// log-byte 429s.
+func TestIngest_AFailedRequestGivesBackEverythingItSpent(t *testing.T) {
+	e := newEnv(t, Limits{})
+	key := e.newKey(t, Limits{RequestsPerSec: 2, BytesPerSec: 1000, SpansPerSec: 1, LogBytesPerDay: 1000})
+	hdr := map[string]string{wire.HeaderKey: key}
+	for i := range 20 {
+		if w := e.do("POST", "/v1/fail", strings.Repeat("x", 500), hdr); w.Code != 503 {
+			t.Fatalf("attempt %d: %d, want the handler's own 503 every time (it was charged again)", i, w.Code)
+		}
+	}
+	for _, reason := range []string{ReasonRequests, ReasonBytes, ReasonSpans, ReasonLogBytesDay} {
+		if got := e.counter(reason); got != 0 {
+			t.Errorf("%s refusals = %d after 20 failed attempts", reason, got)
+		}
+	}
+}
+
+// But an answer that is final (a malformed body, say) keeps its charge: the
+// sender will not retry it, and the work of reading it was done.
+func TestIngest_AFinalRefusalKeepsItsCharge(t *testing.T) {
+	e := newEnv(t, Limits{})
+	key := e.newKey(t, Limits{RequestsPerSec: 2})
+	e.h = e.a.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(400) }))
+	hdr := map[string]string{wire.HeaderKey: key}
+	codes := []int{}
+	for range 4 {
+		codes = append(codes, e.do("POST", "/v1/series", "{}", hdr).Code)
+	}
+	if codes[0] != 400 || codes[1] != 400 || codes[2] != 429 {
+		t.Fatalf("codes = %v: 400s must still cost a request", codes)
+	}
+}
+
+func TestPrincipal_NilIsSafe(t *testing.T) {
+	var p *Principal
+	if ok, _, _ := p.Allow(1 << 30); !ok {
+		t.Fatal("Allow on nil")
+	}
+	if ok, _ := p.AllowSpans(1); !ok {
+		t.Fatal("AllowSpans on nil")
+	}
+	if ok, _ := p.AllowLogBytes(1); !ok {
+		t.Fatal("AllowLogBytes on nil")
+	}
+	p.release(&charge{size: 1, spans: 1, logBytes: 1})
+	p.release(nil)
+}
+
+// A closed keyring starts no more writes, and Close waits for those in flight, so
+// the database can be closed after it.
+func TestKeyring_CloseStopsAndWaitsForLastUsedWrites(t *testing.T) {
+	e := newEnv(t, Limits{})
+	key := e.newKey(t, Limits{})
+	e.keys.Close()
+	e.keys.Authenticate(key)
+	time.Sleep(50 * time.Millisecond)
+	rows, _ := e.keys.List(context.Background())
+	if !rows[0].LastUsedAt.IsZero() {
+		t.Fatal("a closed keyring still wrote last_used_at")
+	}
+}
+
+type failingStore struct{ KeyStore }
+
+func (failingStore) CreateAPIKey(context.Context, string, string, string, time.Time) (meta.APIKey, error) {
+	return meta.APIKey{}, errors.New("meta: creating api key: database is locked")
+}
+
+// Only the caller's mistakes are 400s; our failures are 500s and do not repeat
+// the database's wording.
+func TestKeyAPI_AStoreFailureIs500AndGeneric(t *testing.T) {
+	e := newEnv(t, Limits{})
+	e.keys.store = failingStore{e.keys.store}
+	w := e.do("POST", "/api/v1/keys", `{"name":"x"}`, map[string]string{"Authorization": "Bearer hunter2"})
+	if w.Code != 500 || strings.Contains(w.Body.String(), "locked") || strings.Contains(w.Body.String(), "meta") {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	if w := e.do("POST", "/api/v1/keys", `{"name":" "}`, map[string]string{"Authorization": "Bearer hunter2"}); w.Code != 400 {
+		t.Fatalf("a blank name: %d", w.Code)
 	}
 }

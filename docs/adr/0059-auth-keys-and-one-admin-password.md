@@ -36,7 +36,11 @@ token on an admin route, goes through one gate: a wrong guess holds it for 300 m
 most 8 may wait, the rest get 429. That bounds guessing to a few per second however it is
 parallelised. It does *not* make login immune to a flood: a sustained stream of wrong guesses
 keeps the 8 places full, and a correct password then also gets 429 until the flood eases.
-A session already held is unaffected, since it never reaches the gate, and nothing locks
+The same holds on every admin route for a script sending the password as a bearer token:
+during a flood it gets 429, and a correct bearer waits behind the wrong guesses in the gate
+(up to 8 × 300 ms) before it is checked, because checking first and gating only the wrong
+ones would let an attacker run guesses unbounded in parallel. A script that needs to keep
+working through that should log in once and use the cookie. A session already held is unaffected, since it never reaches the gate, and nothing locks
 for a period after the flood (a counter that locked after N failures would). A per-address
 limit would avoid the busy answer but is no limit behind a proxy, where every client has
 the proxy's address. The public session probe answers for the cookie only, never for a
@@ -60,8 +64,11 @@ so the retry is not charged twice. Every refusal is counted in
 `ozy.intake.rejected{reason}` with a fixed reason set, registered up front.
 In a key's own limits zero means "take `auth.defaults`" and a negative value means
 unlimited, so a key can opt out of a default (in the defaults, zero is unlimited). A request
-refused for its spans or log bytes, like one refused for its size, gives back the request
-and byte tokens the gate took, so retries run into the limit that is the real cause.
+that ends in 429 or a 5xx (refused for a limit, shed, queue full, store down) gives back
+everything it spent: request, bytes, spans and log bytes. It stored nothing and its sender
+will retry it, so charging each attempt would make a flapping store look like the sender
+running into its own limits. Any other answer (a 400 for a malformed body) keeps its charge:
+nothing retries it, and reading it cost something.
 
 **Off means absent.** With `auth.enabled: false` (the default) none of this runs and the
 key endpoints are not mounted: an open endpoint that mints credentials nothing checks

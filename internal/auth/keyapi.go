@@ -55,8 +55,14 @@ func (k *keyAPI) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	secret, row, err := k.keys.Create(r.Context(), body.Name, body.Limits)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrInvalid):
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	case err != nil:
+		// Ours, not the caller's: say so, and keep the database's wording out of
+		// the response.
+		writeError(w, http.StatusInternalServerError, "could not create the key")
 		return
 	}
 	v := view(row)
@@ -67,7 +73,7 @@ func (k *keyAPI) create(w http.ResponseWriter, r *http.Request) {
 func (k *keyAPI) list(w http.ResponseWriter, r *http.Request) {
 	rows, err := k.keys.List(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "could not list keys")
 		return
 	}
 	out := make([]keyView, 0, len(rows))
@@ -87,7 +93,7 @@ func (k *keyAPI) revoke(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, meta.ErrNoAPIKey):
 		writeError(w, http.StatusNotFound, "no such key")
 	case err != nil:
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "could not revoke the key")
 	default:
 		w.WriteHeader(http.StatusNoContent)
 	}

@@ -60,6 +60,7 @@ func (l *Limiter) Wrap(h http.Handler, applies func(*http.Request) bool) http.Ha
 			// The client went away while queued. Nothing to answer, and not
 			// overload: counting it would make an abandoned tab look like a
 			// saturated server.
+			r.Pattern = "query-limit" // not "unmatched": the mux never saw it
 			w.WriteHeader(499)
 			return
 		default:

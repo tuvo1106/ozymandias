@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/api"
+	"github.com/tuvo1106/ozymandias/internal/auth"
 	"github.com/tuvo1106/ozymandias/internal/buildinfo"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/config"
@@ -93,6 +94,7 @@ type Server struct {
 	clock   clock.Clock
 	started time.Time
 	handler http.Handler
+	auth    *auth.Auth
 
 	store    tsdb.MetricStore
 	sketches *sketchstore.Store
@@ -291,8 +293,12 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	if cfg.Auth.Enabled {
 		a, err := s.newAuth(md, opts.Getenv)
 		if err != nil {
-			return nil, err
+			// Everything opened above is released: this is the path an unset
+			// password takes, and a caller that retries must not find the data
+			// directory still held.
+			return nil, errors.Join(err, s.Close())
 		}
+		s.auth = a
 		a.Register(mux)
 		gate = a.Wrap(gate)
 	}
@@ -415,6 +421,9 @@ func (s *Server) Close() error {
 	if s.pipe != nil {
 		// Before the stores: a consumer mid-apply must not find its store closed.
 		qerr = s.pipe.close()
+	}
+	if s.auth != nil {
+		s.auth.Close() // before the database its last-use writes go to
 	}
 	return errors.Join(qerr, s.traces.Close(), s.logs.Close(), s.store.Close(), s.sketches.Close(), s.meta.Close())
 }

@@ -194,3 +194,19 @@ func TestAuth_KeysSurviveARestart(t *testing.T) {
 		t.Fatalf("after a restart: %d", w.Code)
 	}
 }
+
+// The password-missing path is the one an operator hits on a first try, and it
+// must give back what it opened: a second New on the same data directory (a
+// supervisor restarting in process, a test) must not find it held.
+func TestAuth_AFailedStartReleasesTheDataDirectory(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Auth.Enabled = true
+	if _, err := New(cfg, Options{Logger: quiet, Getenv: func(string) string { return "" }}); err == nil {
+		t.Fatal("started with no password")
+	}
+	s, err := New(cfg, Options{Logger: quiet, Getenv: func(string) string { return "pw" }})
+	if err != nil {
+		t.Fatalf("the data directory was still held after a failed start: %v", err)
+	}
+	_ = s.Close()
+}
