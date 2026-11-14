@@ -729,6 +729,17 @@ type Stats struct {
 	RetentionErr error
 }
 
+// Fullness is Bytes/MaxBytes in [0, 1]: how close the topic is to refusing
+// records. Cheap (one lock, no allocation), so intake can read it per request.
+func (t *Topic) Fullness() float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.maxBytes <= 0 {
+		return 0
+	}
+	return min(1, float64(t.bytes)/float64(t.maxBytes))
+}
+
 // Stats returns a snapshot.
 func (t *Topic) Stats() Stats {
 	t.mu.Lock()

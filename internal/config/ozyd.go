@@ -241,6 +241,30 @@ func (p Pipeline) Validate() error {
 	return errors.Join(errs...)
 }
 
+// Query bounds the read side so that queries cannot starve ingest (M7 §2).
+type Query struct {
+	// MaxConcurrent is how many GET /api/v1/* requests run at once; the
+	// streaming live tail is exempt. Zero is the default, 8.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// MaxQueue is how many more may wait for a slot; past it a request is
+	// answered 503 at once. Zero is the default, 32; negative means no queue.
+	MaxQueue int `yaml:"max_queue"`
+	// QueueWait is how long one may wait. Zero is the default, 2s.
+	QueueWait time.Duration `yaml:"queue_wait"`
+}
+
+// Validate checks the query limits.
+func (q Query) Validate() error {
+	var errs []error
+	if q.MaxConcurrent < 0 {
+		errs = append(errs, fmt.Errorf("query.max_concurrent must not be negative, got %d", q.MaxConcurrent))
+	}
+	if q.QueueWait < 0 {
+		errs = append(errs, fmt.Errorf("query.queue_wait must not be negative, got %v", q.QueueWait))
+	}
+	return errors.Join(errs...)
+}
+
 // Monitors configures the monitor scheduler (M6).
 type Monitors struct {
 	// Enabled runs the scheduler. Off, monitors can still be defined and
@@ -374,6 +398,7 @@ type Ozyd struct {
 	Logs         Logs         `yaml:"logs"`
 	Traces       Traces       `yaml:"traces"`
 	Pipeline     Pipeline     `yaml:"pipeline"`
+	Query        Query        `yaml:"query"`
 	Provisioning Provisioning `yaml:"provisioning"`
 	Monitors     Monitors     `yaml:"monitors"`
 	// Notifiers are where monitor notifications go, by name.
@@ -414,7 +439,7 @@ func DefaultOzyd() Ozyd {
 // Validate checks every section.
 func (c *Ozyd) Validate() error {
 	var errs []error
-	errs = append(errs, c.HTTP.Validate(), c.Log.Validate(), c.Storage.Validate(), c.Logs.Validate(), c.Traces.Validate(), c.Pipeline.Validate(), ValidateHostname(c.Hostname),
+	errs = append(errs, c.HTTP.Validate(), c.Log.Validate(), c.Storage.Validate(), c.Logs.Validate(), c.Traces.Validate(), c.Pipeline.Validate(), c.Query.Validate(), ValidateHostname(c.Hostname),
 		c.Monitors.Validate(), validateNotifiers(c.Notifiers))
 	if c.DataDir == "" {
 		errs = append(errs, errors.New("data_dir must be set"))

@@ -1591,3 +1591,22 @@ func TestCommit_RetentionDoesNotHoldTheConsumer(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFullness_TracksBytesAgainstTheCap(t *testing.T) {
+	tp, err := Open(Options{Dir: t.TempDir(), SegmentSize: 4096, MaxBytes: 10_000, SyncInterval: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tp.Close() }()
+	if f := tp.Fullness(); f != 0 {
+		t.Fatalf("empty topic fullness %v", f)
+	}
+	for tp.Fullness() < 0.5 {
+		if _, err := tp.Produce(context.Background(), make([]byte, 200)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if f := tp.Fullness(); f < 0.5 || f > 1 {
+		t.Fatalf("fullness %v after filling past half", f)
+	}
+}

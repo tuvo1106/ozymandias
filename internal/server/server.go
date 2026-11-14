@@ -287,7 +287,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	if opts.UI != nil {
 		mux.Handle("GET /", opts.UI)
 	}
-	s.handler = httpserve.Instrument(s.reg, Component, mux)
+	s.handler = httpserve.Instrument(s.reg, Component, s.limitQueries(mux))
 	return s, nil
 }
 

@@ -35,6 +35,28 @@ type Producer interface {
 	Produce(ctx context.Context, payload []byte) (uint64, error)
 }
 
+// Shed thresholds, as a fraction of a topic's own cap (M7 §2). Each topic is
+// judged by its own fullness, so this is an early warning that is looser for
+// metrics, not a cross-signal priority: a backed-up logs topic does not make
+// room in the series topic. Logs and traces are the expensive signals and the
+// ones whose loss hurts least, so they are refused at 80%; metrics are the
+// cheapest per byte and the most valuable, so they hold on until 95%.
+const (
+	ShedExpensiveAt = 0.80
+	ShedCheapAt     = 0.95
+)
+
+// shedAt is the fullness at which a topic starts refusing.
+func shedAt(topic string) float64 {
+	if topic == TopicSeries || topic == TopicSketches {
+		return ShedCheapAt
+	}
+	return ShedExpensiveAt
+}
+
+// Fuller is implemented by producers that can say how full they are.
+type Fuller interface{ Fullness() float64 }
+
 // retryAfter is what a sender is told to wait when the queue refuses. Fixed
 // rather than computed: the queue cannot know when a consumer will catch up,
 // and a constant is something a client can reason about.
@@ -79,6 +101,26 @@ func (in *Intake) enqueue(w http.ResponseWriter, r *http.Request, topic string, 
 		}
 		return false
 	}
+	return true
+}
+
+// shed counts requests refused ahead of the cap, per topic.
+func (in *Intake) shed(topic string) *selfmetrics.Counter {
+	return in.opts.Metrics.Counter("ozy.intake.shed", "topic:"+topic)
+}
+
+// shedding refuses the request if its topic is past its shed threshold. It
+// runs first in each handler, before the body is read: a shed request must cost
+// as little as possible (no decode, no registry write for a series that is then
+// refused), or shedding saves the queue write and nothing else.
+func (in *Intake) shedding(w http.ResponseWriter, topic string) bool {
+	f, ok := in.opts.Queue[topic].(Fuller)
+	if !ok || f.Fullness() < shedAt(topic) {
+		return false
+	}
+	in.shed(topic).Add(1)
+	w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter/time.Second)))
+	writeError(w, http.StatusTooManyRequests, "shedding "+topic+": the queue is nearly full")
 	return true
 }
 

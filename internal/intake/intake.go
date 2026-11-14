@@ -90,6 +90,11 @@ func New(opts Options) *Intake {
 		spansRejected: opts.Metrics.Counter("ozy.intake.spans_rejected"),
 	}
 	in.cons = in.newConsumer()
+	if in.queued() {
+		for _, t := range Topics {
+			in.shed(t) // registered up front: a counter that appears only after the first shed reads as no shedding
+		}
+	}
 	return in
 }
 
@@ -139,6 +144,9 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 // its type against the registry, store what survives, and report per-series
 // outcomes. Only a body that can't be read at all is an HTTP error.
 func (in *Intake) series(w http.ResponseWriter, r *http.Request) {
+	if in.queued() && in.shedding(w, TopicSeries) {
+		return
+	}
 	data, err := readBody(w, r)
 	if errors.Is(err, errTooLarge) {
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())

@@ -29,6 +29,9 @@ type SketchStore interface {
 // `<metric>.count` is what a percentile query selects on, so a bucket the
 // TSDB refused could not be found anyway. See docs/adr/0015.
 func (in *Intake) sketches(w http.ResponseWriter, r *http.Request) {
+	if in.queued() && in.shedding(w, TopicSketches) {
+		return
+	}
 	data, err := readBody(w, r)
 	if errors.Is(err, errTooLarge) {
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())

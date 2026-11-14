@@ -21,6 +21,9 @@ type SpanStore interface {
 // A store error is a 503 with nothing stored, so the agent's retry resends the
 // whole batch; and the store's writes are idempotent for that reason.
 func (in *Intake) traces(w http.ResponseWriter, r *http.Request) {
+	if in.queued() && in.shedding(w, TopicTraces) {
+		return
+	}
 	data, err := readBody(w, r)
 	if errors.Is(err, errTooLarge) {
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())

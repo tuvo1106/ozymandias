@@ -144,3 +144,18 @@ func TestQueued_LagIsReportedPerTopic(t *testing.T) {
 		}
 	}
 }
+
+// Silent emptiness: the load-control signals must exist before they fire.
+func TestQueued_ShedAndQueryLimitMetricsAreRegisteredUpFront(t *testing.T) {
+	s, err := New(queuedConfig(t), Options{Logger: quiet})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	body := get(t, s.Handler(), "/debug/vars").Body.String()
+	for _, name := range []string{"ozy.query.in_flight", "ozy.query.queued", "ozy.query.rejected", "ozy.intake.shed"} {
+		if !bytes.Contains([]byte(body), []byte(`"`+name+`"`)) {
+			t.Errorf("%s is not in /debug/vars", name)
+		}
+	}
+}
