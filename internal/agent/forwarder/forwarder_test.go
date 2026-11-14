@@ -207,7 +207,8 @@ func TestForwarder_RetriesNetworkErrors(t *testing.T) {
 }
 
 func TestForwarder_GivesUpOnOtherClientErrors(t *testing.T) {
-	for _, code := range []int{400, 401, 404, 413} {
+	// 401 is not here: it is retried (key_test.go), because the key is the operator's to fix.
+	for _, code := range []int{400, 403, 404, 413} {
 		h := start(t, Options{}, status(code))
 		h.f.Submit(series(2))
 		testutil.Eventually(t, 2*time.Second, func() bool { return h.counter("ozy.agent.forwarder.payloads_rejected") == 1 }, "%d: not rejected", code)

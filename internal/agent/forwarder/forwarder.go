@@ -34,6 +34,10 @@ type Options struct {
 	Timeout time.Duration
 	// Hostname and Version go in the agent identity headers (§0).
 	Hostname, Version string
+	// Key is the ozyd API key, sent as X-Ozy-Key when not empty. It is never
+	// written to the disk buffer: payloads are stored without headers, so a
+	// rotated key applies to what is already spooled.
+	Key string
 	// MaxSeriesPerPayload and MaxPayloadBytes (uncompressed JSON) bound one
 	// request. Defaults 5000 (the intake's limit) and 2 MiB.
 	MaxSeriesPerPayload int
@@ -86,6 +90,7 @@ type Forwarder struct {
 
 	sent, dropped, rejected, retries *selfmetrics.Counter
 	seriesSent, seriesRejected       *selfmetrics.Counter
+	unauthorized                     *selfmetrics.Counter
 	queueBytes                       *selfmetrics.Gauge
 	spooled, spoolErrors             *selfmetrics.Counter
 }
@@ -175,6 +180,7 @@ func New(opts Options) *Forwarder {
 		retries:        reg.Counter("ozy.agent.forwarder.retries"),
 		seriesSent:     reg.Counter("ozy.agent.forwarder.series_sent"),
 		seriesRejected: reg.Counter("ozy.agent.forwarder.series_rejected"),
+		unauthorized:   reg.Counter("ozy.agent.forwarder.unauthorized"),
 		queueBytes:     reg.Gauge("ozy.agent.forwarder.queue_bytes"),
 		spooled:        reg.Counter("ozy.agent.forwarder.spooled"),
 		spoolErrors:    reg.Counter("ozy.agent.forwarder.spool_errors"),
@@ -659,6 +665,9 @@ func (f *Forwarder) post(ctx context.Context, p *payload) (outcome, time.Duratio
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set(wire.HeaderAgentVersion, f.opts.Version)
 	req.Header.Set(wire.HeaderHost, f.opts.Hostname)
+	if f.opts.Key != "" {
+		req.Header.Set(wire.HeaderKey, f.opts.Key)
+	}
 	resp, err := f.opts.Client.Do(req)
 	if err != nil {
 		return retry, 0, err
@@ -677,6 +686,12 @@ func (f *Forwarder) post(ctx context.Context, p *payload) (outcome, time.Duratio
 			}
 		}
 		return delivered, 0, nil
+	case code == http.StatusUnauthorized:
+		// A missing, wrong or revoked key is the operator's to fix, and the data
+		// is fine: keep it (the disk buffer holds it) and keep trying, slowly,
+		// rather than dropping what was collected while the key was wrong.
+		f.unauthorized.Inc()
+		return retry, 0, fmt.Errorf("HTTP 401: ozyd refused the API key (intake.key_env): %s", bytes.TrimSpace(body))
 	case code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= 500:
 		return retry, parseRetryAfter(resp.Header.Get("Retry-After")), fmt.Errorf("HTTP %d: %s", code, bytes.TrimSpace(body))
 	default:

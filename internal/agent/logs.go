@@ -40,6 +40,7 @@ func (a *Agent) setupLogs(opts Options) error {
 		Timeout:  a.cfg.Forwarder.Timeout,
 		Hostname: a.hostname,
 		Version:  buildinfo.Version,
+		Key:      a.intakeKey(),
 		Registry: a.reg,
 		Logger:   a.log,
 	})

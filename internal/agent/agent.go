@@ -130,6 +130,7 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		MaxDiskBytes:  cfg.Forwarder.MaxDiskBytes,
 		Hostname:      host,
 		Version:       buildinfo.Version,
+		Key:           a.intakeKey(),
 		Clock:         a.clock,
 		Registry:      a.reg,
 		Logger:        a.log,
