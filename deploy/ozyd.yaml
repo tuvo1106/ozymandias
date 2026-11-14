@@ -214,3 +214,22 @@ query:
   # max_concurrent: 8
   # max_queue: 32      # negative: no queueing, fail fast
   # queue_wait: 2s
+
+auth:
+  # Off by default: ozyd then checks nothing, and the key endpoints do not exist.
+  # On, /v1/* needs an X-Ozy-Key and /api/*, /debug/* need the admin login
+  # (docs/operations.md#securing-ozyd, ADR-0059). Starting with this on and no
+  # password is an error, not an open server.
+  enabled: false
+  # Name of the environment variable holding the admin password. Not OZY_*: that
+  # prefix is for config overrides. Empty is OZYMANDIAS_ADMIN_PASSWORD.
+  # admin_password_env: OZYMANDIAS_ADMIN_PASSWORD
+  # session_ttl: 12h
+  # Set behind TLS: the session cookie is then marked Secure.
+  # secure_cookie: false
+  # Limits a key gets for each of its own fields left at zero. Zero is unlimited.
+  # defaults:
+  #   requests_per_sec: 0
+  #   bytes_per_sec: 0
+  #   spans_per_sec: 0
+  #   log_bytes_per_day: 0

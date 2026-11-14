@@ -27,6 +27,10 @@ http:
 intake:
   # ozyd's base URL; the forwarder POSTs to /v1/* under it.
   url: http://localhost:9400
+  # Name of the environment variable holding the API key, sent as X-Ozy-Key when
+  # ozyd has auth on. Empty is OZYMANDIAS_API_KEY. Never put the key in this file.
+  # A 401 keeps the data and retries (it is not dropped).
+  # key_env: OZYMANDIAS_API_KEY
 
 statsd:
   # The extended StatsD UDP listener (docs/wire-protocol.md §A).

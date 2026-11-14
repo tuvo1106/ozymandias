@@ -9,6 +9,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **API keys and an admin login** (M7). With `auth.enabled: true`, `/v1/*` needs an `X-Ozy-Key`
+  and `/api/*`, `/debug/*` need a login (`POST /api/v1/auth/login`, a session cookie, or the
+  password as a bearer token); the UI shows a password form. Keys are created, listed and revoked
+  at `/api/v1/keys` and are shown once, stored hashed. Per-key limits (requests/s, bytes/s, spans/s,
+  log bytes/day) answer `429` with `Retry-After`, counted in `ozy.intake.rejected{reason}`. The agent
+  sends `OZYMANDIAS_API_KEY` (`intake.key_env`) and keeps data a `401` refused. Off by default.
+  ADR-0059. Not yet: per-key series limits and the tag allow/deny list.
 - **Queued intake** (M7). `pipeline.mode: queued` makes `/v1/series`, `/v1/sketches`, `/v1/logs`
   and `/v1/traces` answer `202` once the request is durable in a per-signal queue; one consumer per
   store applies it and commits afterwards, so a crash redelivers rather than loses. The default stays

@@ -9,6 +9,7 @@
  * server is a readable error rather than `undefined` inside a row renderer.
  */
 import { ApiError, getJSON } from "./metricsApi";
+import { notifyIfLoggedOut } from "./authApi";
 
 type FetchLike = typeof fetch;
 
@@ -209,6 +210,9 @@ export function openTail(
     }
   });
   src.onopen = () => handlers.onOpen();
-  src.onerror = () => handlers.onError();
+  src.onerror = () => {
+    handlers.onError();
+    void notifyIfLoggedOut();
+  };
   return () => src.close();
 }

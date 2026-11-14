@@ -25,11 +25,11 @@ import (
 // way to lose logs between the two. When ozyd is down Send fails, the tailer
 // leaves its offset where it was, and the next poll reads the same lines again.
 type LogSink struct {
-	url, host, version string
-	client             *http.Client
+	url, host, version, key string
+	client                  *http.Client
 
-	sent, rejected, refused, failed *selfmetrics.Counter
-	log                             *slog.Logger
+	sent, rejected, refused, failed, unauthorized *selfmetrics.Counter
+	log                                           *slog.Logger
 }
 
 // LogSinkOptions configures a LogSink.
@@ -41,8 +41,10 @@ type LogSinkOptions struct {
 	Timeout time.Duration // default 10s
 	// Hostname and Version go in the agent identity headers.
 	Hostname, Version string
-	Registry          *selfmetrics.Registry
-	Logger            *slog.Logger
+	// Key is the ozyd API key, sent as X-Ozy-Key when not empty.
+	Key      string
+	Registry *selfmetrics.Registry
+	Logger   *slog.Logger
 }
 
 // NewLogSink returns a sink for opts.
@@ -60,11 +62,12 @@ func NewLogSink(opts LogSinkOptions) *LogSink {
 		opts.Logger = slog.Default()
 	}
 	return &LogSink{
-		url: opts.URL + "/v1/logs", host: opts.Hostname, version: opts.Version, client: opts.Client, log: opts.Logger,
-		sent:     opts.Registry.Counter("ozy.agent.logs.sent"),
-		rejected: opts.Registry.Counter("ozy.agent.logs.rejected"),
-		refused:  opts.Registry.Counter("ozy.agent.logs.batches_refused"),
-		failed:   opts.Registry.Counter("ozy.agent.logs.send_errors"),
+		url: opts.URL + "/v1/logs", host: opts.Hostname, version: opts.Version, key: opts.Key, client: opts.Client, log: opts.Logger,
+		sent:         opts.Registry.Counter("ozy.agent.logs.sent"),
+		rejected:     opts.Registry.Counter("ozy.agent.logs.rejected"),
+		refused:      opts.Registry.Counter("ozy.agent.logs.batches_refused"),
+		failed:       opts.Registry.Counter("ozy.agent.logs.send_errors"),
+		unauthorized: opts.Registry.Counter("ozy.agent.logs.unauthorized"),
 	}
 }
 
@@ -99,6 +102,9 @@ func (s *LogSink) Send(ctx context.Context, logs []wire.Log) error {
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set(wire.HeaderAgentVersion, s.version)
 	req.Header.Set(wire.HeaderHost, s.host)
+	if s.key != "" {
+		req.Header.Set(wire.HeaderKey, s.key)
+	}
 	resp, err := s.client.Do(req)
 	if err != nil {
 		s.failed.Inc()
@@ -119,6 +125,11 @@ func (s *LogSink) Send(ctx context.Context, logs []wire.Log) error {
 		s.refused.Inc()
 		s.log.Error("logs: ozyd refused a batch; dropping it", "status", resp.StatusCode, "logs", len(logs), "body", string(bytes.TrimSpace(b)))
 		return nil
+	case resp.StatusCode == http.StatusUnauthorized:
+		// Kept, not dropped: the tailer leaves its offset and sends it again once
+		// the key is fixed. Counted apart so the cause is visible.
+		s.unauthorized.Inc()
+		return fmt.Errorf("ozyd refused the API key (intake.key_env): %s", bytes.TrimSpace(b))
 	default:
 		s.failed.Inc()
 		return fmt.Errorf("ozyd answered %d: %s", resp.StatusCode, bytes.TrimSpace(b))

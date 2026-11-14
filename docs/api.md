@@ -808,6 +808,23 @@ Rules worth knowing:
   this dashboard last change" across restarts.
 
 
+## Auth and keys
+
+Present only when ozyd runs with `auth.enabled` (ADR-0059; docs/operations.md#securing-ozyd).
+Without it these routes do not exist (404).
+
+| Route | Needs | Does |
+|---|---|---|
+| `POST /api/v1/auth/login` `{"password"}` | — | `200` and an HttpOnly `ozy_session` cookie; `401` wrong password; `429` too many guesses at once |
+| `POST /api/v1/auth/logout` | — | Ends the session and clears the cookie; `204`, also for a stale cookie |
+| `GET /api/v1/auth/session` | — | `{"enabled":true,"authenticated":bool}` (the UI's probe); answers for the cookie only, never a bearer password |
+| `POST /api/v1/keys` `{"name","limits":{…}}` | admin | `201` with the key (`"key"`, shown once) and its row; `400` for a blank name or a negative limit |
+| `GET /api/v1/keys` | admin | `{"keys":[{id,name,created_at,last_used_at,revoked_at,limits}]}`; never a secret |
+| `DELETE /api/v1/keys/{id}` | admin | Revokes; `204`, `404` unknown id |
+
+"admin" is the session cookie or `Authorization: Bearer <admin password>`. Every other `/api/*`
+route needs it too when auth is on (`401 {"status":"error","error":"login required"}`).
+
 ## Monitors
 
 A monitor watches a metric or log query and notifies when it crosses a

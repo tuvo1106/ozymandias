@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/tuvo1106/ozymandias/internal/auth"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
@@ -48,6 +49,9 @@ func (in *Intake) logs(w http.ResponseWriter, r *http.Request) {
 	valid, rejects, err := wire.DecodeLogs(data, wire.DecodeOptions{Now: in.opts.Clock.Now()})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if auth.DeniedLogBytes(w, r, len(data)) {
 		return
 	}
 	errs := make([]string, 0, min(len(rejects), wire.MaxResponseErrors))

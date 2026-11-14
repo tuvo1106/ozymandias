@@ -29,6 +29,10 @@ const EnvPrefix = "OZY_AGENT_"
 type Intake struct {
 	// URL is ozyd's base URL; the agent POSTs to /v1/* under it.
 	URL string `yaml:"url"`
+	// KeyEnv names the environment variable holding the API key ozyd asks for
+	// when its auth is on (sent as X-Ozy-Key). Empty means OZYMANDIAS_API_KEY. Unset
+	// is fine against an ozyd with auth off.
+	KeyEnv string `yaml:"key_env"`
 }
 
 // Statsd configures the extended StatsD UDP server (docs/wire-protocol.md §A).

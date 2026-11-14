@@ -59,11 +59,12 @@ dropping log lines (files are their own buffer) — statsd and traces are shed.
 - `api_keys(id, name, key_sha256, created_at, last_used_at, revoked_at, limits_json)`;
   key shown once at creation; constant-time compare on the hash.
   `auth.enabled: true` → `/v1/*` requires `X-Ozy-Key`; agent config
-  `api_key` / env `OZY_API_KEY`. `/api/v1/*` + UI protected by a single
-  admin password → session cookie (HttpOnly, SameSite=Lax); good enough for
+  `intake.key_env` naming the variable (default `OZYMANDIAS_API_KEY`, not `OZY_*`; ADR-0059). `/api/v1/*` + UI protected by a single
+  admin password → session cookie (HttpOnly, SameSite=Strict; ADR-0059); good enough for
   local/VPS, documented as not multi-user.
-- Limits per key: requests/s, bytes/s (token buckets), max series per metric,
-  max total active series, max log bytes/day, max spans/s. Exceeding →
+- Limits per key: requests/s, bytes/s (token buckets), max log bytes/day, max spans/s
+  (PR 5). **Deferred to PR 5b:** max series per metric and max total active series per key,
+  which need the key to travel in the queued record (ADR-0059). Exceeding →
   429 or item-level reject with reason; all counted under
   `ozy.intake.rejected{reason:…}`.
 - Cardinality tooling: Metric Summary gains "top growing metrics" and

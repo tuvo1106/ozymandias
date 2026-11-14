@@ -116,15 +116,19 @@ func TestLimiter_ACancelledWaiterIsNotARejection(t *testing.T) {
 	recv(t, b.enter)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	req := httptest.NewRequest("GET", "/q", nil).WithContext(ctx)
 	go func() {
 		defer close(done)
-		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/q", nil).WithContext(ctx))
+		h.ServeHTTP(httptest.NewRecorder(), req)
 	}()
 	testutil.Eventually(t, 2*time.Second, func() bool { return l.Queued() == 1 }, "never queued")
 	cancel()
 	recv(t, done)
 	if l.Rejected() != 0 {
 		t.Fatalf("a client that gave up counted as overload: rejected=%d", l.Rejected())
+	}
+	if req.Pattern != "query-limit" {
+		t.Fatalf("Pattern = %q: an abandoned request would be filed under \"unmatched\", with the 404s", req.Pattern)
 	}
 	close(b.release)
 }

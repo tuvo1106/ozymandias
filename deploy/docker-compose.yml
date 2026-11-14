@@ -71,6 +71,8 @@ services:
       # machine's name instead (`make up` exports it).
       OZY_AGENT_HOSTNAME: ${OZY_HOSTNAME:-ozymandias-host}
       OZY_AGENT_LOG_FORMAT: json
+      # Only needed when ozyd runs with auth.enabled (docs/operations.md#securing-ozyd).
+      OZYMANDIAS_API_KEY: ${OZYMANDIAS_API_KEY:-}
       # Payloads that do not fit in memory while ozyd is away, and those queued
       # at shutdown, are kept on the agent's volume (docs/formats/agent-buffer.md).
       OZY_AGENT_FORWARDER_BUFFER_PATH: /var/lib/ozymandias-agent/buffer

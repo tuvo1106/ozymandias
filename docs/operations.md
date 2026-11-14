@@ -346,6 +346,44 @@ Inside the distroless images there is no shell or curl. Each binary checks
 itself with `ozyd healthcheck` / `agent healthcheck`, which read the same
 config and probe `/healthz` over loopback. Compose's healthchecks use them.
 
+## Securing ozyd
+
+Off by default: ozyd checks nothing and the key endpoints do not exist. To turn it on
+(ADR-0059):
+
+```console
+$ export OZYMANDIAS_ADMIN_PASSWORD='something long'
+$ OZY_AUTH_ENABLED=true ozyd -config deploy/ozyd.yaml
+$ curl -s -X POST localhost:9400/api/v1/keys \
+    -H "Authorization: Bearer $OZYMANDIAS_ADMIN_PASSWORD" \
+    -d '{"name":"app-node","limits":{"requests_per_sec":50}}'
+{"id":1,"name":"app-node",...,"key":"ozy_..."}      # shown once; only its hash is stored
+$ OZYMANDIAS_API_KEY=ozy_... agent -config deploy/agent.yaml
+```
+
+- `/v1/*` needs the key in `X-Ozy-Key`. `/api/*` and `/debug/*` need the admin login: the UI
+  shows a password form, scripts send the password as `Authorization: Bearer`. `/healthz`
+  and the UI's static files stay public. An ingest key does not open `/api`.
+- A wrong password, from the login form or as a bearer token, costs the attacker 300 ms at a
+  single gate, so guessing is limited to a few per second. During a flood of wrong guesses a
+  *new* login can answer 429; a logged-in session keeps working.
+- Enabled with no password set is a startup error, so a missing variable cannot leave it open.
+- Revoke with `DELETE /api/v1/keys/{id}`; it takes effect at once. `GET /api/v1/keys` lists
+  keys with their last use and limits, never a secret. A lost key cannot be recovered: make a new one.
+- A key's limits (`requests_per_sec`, `bytes_per_sec`, `spans_per_sec`, `log_bytes_per_day`)
+  refuse with `429` and `Retry-After`. In a key, zero takes `auth.defaults` and a negative value
+  (`-1`) means unlimited, to opt out of a default. Watch
+  `ozy.intake.rejected{reason}`.
+- What the limits count: `requests_per_sec` one per request; `bytes_per_sec` the bytes on the wire
+  (the gzip'd body, or the largest body when no length is declared); `spans_per_sec` the spans that
+  decoded; `log_bytes_per_day` the decoded JSON of log batches, per UTC day.
+- An agent whose key is wrong or revoked keeps its data (in the disk buffer if configured) and
+  retries; `ozy.agent.forwarder.unauthorized` counts the refusals. Fix the key and it catches up.
+- **This is not TLS.** Over plain HTTP the password, the cookie and the keys are readable on the
+  wire. Put ozyd behind something that terminates TLS and set `auth.secure_cookie: true`. One
+  shared password means no per-user audit trail; rotate it by restarting with a new value.
+  Sessions are in memory, so a restart logs everyone out.
+
 ## Data directory
 
 `data_dir` (default `./data/ozyd`, `/data` in the container) holds all of
