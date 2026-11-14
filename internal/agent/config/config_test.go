@@ -406,3 +406,19 @@ func TestShippedDeployConfigLoadsWithLogsOn(t *testing.T) {
 		t.Error("the shipped stack must not follow every container on the host by default")
 	}
 }
+
+func TestForwarderBuffer_FromTheEnvironmentAndValidated(t *testing.T) {
+	cfg, _, err := Load("", []string{"OZY_AGENT_FORWARDER_BUFFER_PATH=/var/buf", "OZY_AGENT_FORWARDER_MAX_DISK_BYTES=33554432"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Forwarder.BufferPath != "/var/buf" || cfg.Forwarder.MaxDiskBytes != 32<<20 {
+		t.Fatalf("%+v", cfg.Forwarder)
+	}
+	if Default().Forwarder.BufferPath != "" {
+		t.Fatal("the buffer must be off by default: the agent with no config is memory only")
+	}
+	if _, _, err := Load("", []string{"OZY_AGENT_FORWARDER_MAX_DISK_BYTES=1000"}); err == nil {
+		t.Fatal("a 1000-byte disk cap was accepted")
+	}
+}

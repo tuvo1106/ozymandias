@@ -859,8 +859,8 @@ idempotency argument:
 | Hop | Guarantee | Where data can be lost, and why that is acceptable |
 |---|---|---|
 | App → agent (statsd UDP, trace POST) | at-most-once | UDP drops under load; the SDK must never slow the app |
-| Agent aggregation → forwarder | at-least-once while the agent lives | a crash loses the open 10 s bucket; the agent's retry queue is in memory until PR 4 gives it a disk buffer |
-| Agent → intake | at-least-once (retry on 408/429/5xx) | the agent drops oldest at its queue cap, counted |
+| Agent aggregation → forwarder | at-least-once; durable once spilled | a crash loses the open 10 s bucket; payloads past the memory queue, and those queued at SIGTERM, are kept in the disk buffer (`forwarder.buffer_path`, [format](docs/formats/agent-buffer.md), [ADR-0058](docs/adr/0058-agent-disk-buffer-own-spool.md)) |
+| Agent → intake | at-least-once (retry on 408/429/5xx), series first | with a disk buffer the agent drops the oldest segment at `max_disk_bytes`, counted; without one, the oldest payload at its memory cap |
 | Log files → agent | at-least-once | offsets commit after a `2xx`; the file is its own buffer |
 | Intake → queue | acknowledged only after fsync | a failed fsync stops the topic until restart; senders see 503, never a false 202 |
 | Queue → store | at-least-once | none: a full topic refuses (429), it never evicts |

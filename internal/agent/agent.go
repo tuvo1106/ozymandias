@@ -126,6 +126,8 @@ func New(cfg config.Agent, opts Options) (*Agent, error) {
 		URL:           strings.TrimSuffix(cfg.Intake.URL, "/"),
 		Timeout:       cfg.Forwarder.Timeout,
 		MaxQueueBytes: cfg.Forwarder.MaxQueueBytes,
+		BufferDir:     cfg.Forwarder.BufferPath,
+		MaxDiskBytes:  cfg.Forwarder.MaxDiskBytes,
 		Hostname:      host,
 		Version:       buildinfo.Version,
 		Clock:         a.clock,

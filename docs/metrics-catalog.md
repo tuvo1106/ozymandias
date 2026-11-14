@@ -101,6 +101,11 @@ interval's increase.
 | `ozy.intake.logs_rejected` | counter | logs | — | ozyd | Logs refused, per reason in the response's `errors` |
 | `ozy.intake.spans_accepted` | counter | spans | — | ozyd | Spans stored by POST /v1/traces |
 | `ozy.intake.spans_rejected` | counter | spans | — | ozyd | Spans refused one by one (bad ids, negative duration, start not in microseconds, …) |
+| `ozy.agent.forwarder.spooled` | counter | payloads | — | agent | Payloads moved from memory to the disk buffer (overflow, or still queued at shutdown) |
+| `ozy.agent.forwarder.spool_errors` | counter | errors | — | agent | A disk buffer that could not be opened or written; the data involved is dropped and counted in `dropped` |
+| `ozy.agent.forwarder.spool_enabled` | gauge | 0/1 | — | agent | 1 when all three endpoint spools are open; 0 is memory only, whether by config or because one could not be opened |
+| `ozy.agent.forwarder.spool_bytes` | gauge | bytes | `endpoint` | agent | A spool's size on disk |
+| `ozy.agent.forwarder.spool_payloads` | gauge | payloads | `endpoint` | agent | Payloads waiting in a spool. Grows during an ozyd outage, drains after |
 | `ozy.queue.lag_records` | gauge | records | `topic` | ozyd (queued mode) | Durable records the store's consumer has not committed. Grows while a store is down or slow |
 | `ozy.queue.lag_seconds` | gauge | seconds | `topic` | ozyd (queued mode) | Age of the oldest record the consumer holds uncommitted; 0 when caught up |
 | `ozy.queue.bytes` | gauge | bytes | `topic` | ozyd (queued mode) | A topic's size on disk; at `pipeline.queue.max_bytes` intake answers 429 |
