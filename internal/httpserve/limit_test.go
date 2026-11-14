@@ -1,6 +1,7 @@
 package httpserve
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -103,6 +104,43 @@ func TestLimiter_ExemptRequestsNeverTakeASlot(t *testing.T) {
 	}
 	if l.InFlight() != 0 {
 		t.Fatalf("an exempt request held a slot")
+	}
+	close(b.release)
+}
+
+func TestLimiter_ACancelledWaiterIsNotARejection(t *testing.T) {
+	l := NewLimiter(testutil.NewFakeClock(time.Unix(1, 0)), 1, 4, time.Hour)
+	b := newBlocker()
+	h := l.Wrap(b, isQuery)
+	go do(h, "/q")
+	recv(t, b.enter)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/q", nil).WithContext(ctx))
+	}()
+	testutil.Eventually(t, 2*time.Second, func() bool { return l.Queued() == 1 }, "never queued")
+	cancel()
+	recv(t, done)
+	if l.Rejected() != 0 {
+		t.Fatalf("a client that gave up counted as overload: rejected=%d", l.Rejected())
+	}
+	close(b.release)
+}
+
+// Instrument files a request under r.Pattern; the limiter answers before the mux
+// has set one, so a rejection would otherwise be "unmatched", beside the 404s.
+func TestLimiter_ARejectionCarriesItsOwnRoute(t *testing.T) {
+	l := NewLimiter(testutil.NewFakeClock(time.Unix(1, 0)), 1, 0, time.Second)
+	b := newBlocker()
+	h := l.Wrap(b, isQuery)
+	go do(h, "/q")
+	recv(t, b.enter)
+	req := httptest.NewRequest("GET", "/q", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if req.Pattern != "query-limit" {
+		t.Fatalf("Pattern = %q", req.Pattern)
 	}
 	close(b.release)
 }

@@ -29,6 +29,9 @@ type LogPublisher interface {
 // nothing published: the agent will resend the whole batch, and publishing now
 // would show it twice.
 func (in *Intake) logs(w http.ResponseWriter, r *http.Request) {
+	if in.queued() && in.shedding(w, TopicLogs) {
+		return
+	}
 	data, err := readBody(w, r)
 	if errors.Is(err, errTooLarge) {
 		writeError(w, http.StatusRequestEntityTooLarge, err.Error())

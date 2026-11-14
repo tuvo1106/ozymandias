@@ -353,3 +353,17 @@ func TestQueued_ExpensiveSignalsAreShedBeforeMetrics(t *testing.T) {
 		}
 	}
 }
+
+// A shed request must not be read, decoded or checked against the registry:
+// shedding that still does the work saves only the queue write.
+func TestQueued_AShedRequestIsRefusedBeforeItsBodyIsRead(t *testing.T) {
+	prod := map[string]Producer{}
+	for _, n := range Topics {
+		prod[n] = &fillProducer{fill: 0.97}
+	}
+	e := newEnv(t, Options{Queue: prod, Logs: &fakeLogs{}, Traces: &fakeSpans{}})
+	rec, _ := e.post([]byte("this is not json"), false)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("%d: the body was inspected before the shed decision", rec.Code)
+	}
+}

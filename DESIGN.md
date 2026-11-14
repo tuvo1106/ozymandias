@@ -867,7 +867,7 @@ idempotency argument:
 | Store → disk | per store (WAL fsync, then blocks) | as before M7 |
 
 **Backpressure.** A topic at 80% of `pipeline.queue.max_bytes` refuses logs and traces with `429` and
-`Retry-After: 5`; series and sketches hold on until 95%; at 100% every signal is refused and nothing
+`Retry-After: 5`; series and sketches hold on until 95% (each topic by its own fullness); at 100% every signal is refused and nothing
 is evicted ([ADR-0057](docs/adr/0057-shed-order-and-query-limit.md)). Reads are bounded separately: 8
 concurrent `GET /api/*` (the live tail excepted), 32 more queued for up to 2 s, then `503`.
 

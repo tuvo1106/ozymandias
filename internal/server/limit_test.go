@@ -46,3 +46,28 @@ func TestQueryLimit_ALiveTailDoesNotTakeASlot(t *testing.T) {
 		}
 	}
 }
+
+func TestIsQuery_SelectsReadsByRouteNotMethod(t *testing.T) {
+	for _, c := range []struct {
+		method, path string
+		want         bool
+	}{
+		{"GET", "/api/v1/metrics", true},
+		{"GET", "/api/v1/logs", true},
+		{"POST", "/api/v1/query", true},
+		{"POST", "/api/v1/query/batch", true},
+		{"POST", "/api/v1/query/sketch", true},
+		{"POST", "/api/v1/monitors/backtest", true},
+		{"GET", "/api/v1/logs/tail", false},              // the stream
+		{"GET", "/api/v1/dashboards/service/tail", true}, // merely ends in /tail
+		{"POST", "/api/v1/dashboards", false},            // a write
+		{"POST", "/api/v1/monitors", false},              // a write
+		{"POST", "/v1/series", false},                    // intake has its own backpressure
+		{"GET", "/healthz", false},
+	} {
+		r := httptest.NewRequest(c.method, c.path, nil)
+		if got := isQuery(r); got != c.want {
+			t.Errorf("%s %s: limited=%v, want %v", c.method, c.path, got, c.want)
+		}
+	}
+}

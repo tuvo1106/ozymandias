@@ -247,7 +247,7 @@ type Query struct {
 	// streaming live tail is exempt. Zero is the default, 8.
 	MaxConcurrent int `yaml:"max_concurrent"`
 	// MaxQueue is how many more may wait for a slot; past it a request is
-	// answered 503 at once. Zero is the default, 32.
+	// answered 503 at once. Zero is the default, 32; negative means no queue.
 	MaxQueue int `yaml:"max_queue"`
 	// QueueWait is how long one may wait. Zero is the default, 2s.
 	QueueWait time.Duration `yaml:"queue_wait"`
@@ -258,9 +258,6 @@ func (q Query) Validate() error {
 	var errs []error
 	if q.MaxConcurrent < 0 {
 		errs = append(errs, fmt.Errorf("query.max_concurrent must not be negative, got %d", q.MaxConcurrent))
-	}
-	if q.MaxQueue < 0 {
-		errs = append(errs, fmt.Errorf("query.max_queue must not be negative, got %d", q.MaxQueue))
 	}
 	if q.QueueWait < 0 {
 		errs = append(errs, fmt.Errorf("query.queue_wait must not be negative, got %v", q.QueueWait))

@@ -54,8 +54,19 @@ func (l *Limiter) Wrap(h http.Handler, applies func(*http.Request) bool) http.Ha
 			h.ServeHTTP(w, r)
 			return
 		}
-		if !l.acquire(r) {
+		switch l.acquire(r) {
+		case acquired:
+		case cancelled:
+			// The client went away while queued. Nothing to answer, and not
+			// overload: counting it would make an abandoned tab look like a
+			// saturated server.
+			w.WriteHeader(499)
+			return
+		default:
 			l.rejected.Add(1)
+			// The limiter runs before the mux, so no route has matched yet and
+			// Instrument would file this under "unmatched" with the real 404s.
+			r.Pattern = "query-limit"
 			w.Header().Set("Retry-After", strconv.Itoa(1))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -67,25 +78,33 @@ func (l *Limiter) Wrap(h http.Handler, applies func(*http.Request) bool) http.Ha
 	})
 }
 
-func (l *Limiter) acquire(r *http.Request) bool {
+type acquireResult int
+
+const (
+	acquired acquireResult = iota
+	full
+	cancelled
+)
+
+func (l *Limiter) acquire(r *http.Request) acquireResult {
 	select {
 	case l.slots <- struct{}{}:
-		return true
+		return acquired
 	default:
 	}
 	if l.waiting.Add(1) > l.maxQueue {
 		l.waiting.Add(-1)
-		return false
+		return full
 	}
 	defer l.waiting.Add(-1)
 	t := l.clock.NewTimer(l.wait)
 	defer t.Stop()
 	select {
 	case l.slots <- struct{}{}:
-		return true
+		return acquired
 	case <-t.C():
-		return false
+		return full
 	case <-r.Context().Done():
-		return false
+		return cancelled
 	}
 }

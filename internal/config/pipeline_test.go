@@ -37,7 +37,7 @@ func TestPipeline_ModeCanBeSetFromTheEnvironment(t *testing.T) {
 }
 
 func TestQuery_ValidateRejectsNegatives(t *testing.T) {
-	for _, q := range []Query{{MaxConcurrent: -1}, {MaxQueue: -1}, {QueueWait: -1}} {
+	for _, q := range []Query{{MaxConcurrent: -1}, {QueueWait: -1}} {
 		if err := q.Validate(); err == nil {
 			t.Errorf("%+v accepted", q)
 		}

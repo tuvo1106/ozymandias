@@ -16,13 +16,18 @@ bound on how much of the machine queries may take from ingest (M7 §2).
 
 **Shed by fraction of the cap, expensive signals first.** A topic at or above 80%
 of its cap refuses `logs` and `traces` with `429` and `Retry-After: 5`; `series` and
-`sketches` are refused only at 95%. Metrics are the cheapest per byte and the signal
-the monitors read, so they keep the last fifth of the room. The thresholds are
+`sketches` are refused only at 95%. Each topic is judged by *its own* fullness: this is an
+early warning that is looser for metrics, not a cross-signal priority, and a
+backed-up logs topic frees nothing in the series topic. Metrics are the cheapest per
+byte and what the monitors read, so their own topic is allowed to fill further
+before it pushes back. The check runs before the body is read. The thresholds are
 constants (`intake.ShedExpensiveAt`, `ShedCheapAt`), not config: they encode a
 priority, and a tunable priority is a way to configure the pipeline into dropping
 metrics first. Rejected alternative: one global threshold across topics. Topics are
 separate directories with separate caps, so one signal's backlog is not another's
-pressure; a global figure would shed metrics because logs are slow.
+pressure; a global figure would shed metrics because logs are slow. A real
+cross-signal priority (shed logs so metrics keep their room) would need a shared
+disk budget, which the per-topic caps do not give.
 
 Shedding is *ahead of* the hard cap: `ErrFull` still answers `429` at 100% and the
 queue still never evicts. Each shed request is counted in
@@ -30,9 +35,13 @@ queue still never evicts. Each shed request is counted in
 
 **Bound the read API with slots, a short queue and a fast 503.** `GET /api/*` takes one
 of `query.max_concurrent` (8) slots; up to `query.max_queue` (32) more wait up to
-`query.queue_wait` (2 s); anything beyond is `503` with `Retry-After: 1`. The live
-tail is exempt: it is a GET that stays open, and counting it would let eight open
-tabs lock out every query. Writes under `/api/` (dashboard edits) are not limited.
+`query.queue_wait` (2 s); anything beyond is `503` with `Retry-After: 1`. "A read" is chosen by route, not by method: all `GET`s
+under `/api/` except the live tail (matched exactly), plus the POSTs that only
+read (`/query`, `/query/batch`, `/query/sketch`, `/query/validate`,
+`/monitors/backtest`). The tail holds its connection for as long as the page is
+open, and counting it would let eight open tabs lock out every query. Writes
+(dashboard and monitor edits) are not limited. A request that gives up while
+queued is not counted as rejected.
 
 ## Consequences
 

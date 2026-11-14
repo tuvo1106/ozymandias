@@ -212,5 +212,5 @@ query:
   # Read-API (GET /api/*) concurrency; the live tail is exempt. Past the queue
   # a request is answered 503 at once. Zeros are the defaults.
   # max_concurrent: 8
-  # max_queue: 32
+  # max_queue: 32      # negative: no queueing, fail fast
   # queue_wait: 2s
