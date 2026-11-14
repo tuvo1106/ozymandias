@@ -26,8 +26,12 @@ agent ──(F) POST :9400/v1/traces ───► ozyd
   rely on a field being rejected. Breaking changes ship as `/v2` alongside `/v1`.
 - **HTTP bodies:** JSON, UTF-8. `Content-Type: application/json`. Agent → ozyd
   bodies are gzip'd (`Content-Encoding: gzip`); SDK → agent bodies may be.
-- **Auth:** header `X-Ozy-Key: <key>`. Ignored until M7, required after
-  when `auth.enabled: true`.
+- **Auth:** header `X-Ozy-Key: <key>` on `/v1/*`. Required when ozyd runs with
+  `auth.enabled: true` (then a missing, wrong or revoked key is `401`); ignored when it does
+  not. A key carries limits: over one, ozyd answers `429` with `Retry-After` (whole seconds,
+  rounded up) and counts it in `ozy.intake.rejected{reason}`, `reason` one of `unauthorized`,
+  `requests`, `bytes`, `spans`, `log_bytes_day`. A sender treats `401` as retryable: the
+  agent keeps the data and retries, because the key is the operator's to fix (ADR-0059).
 - **Agent identity headers** on hops C–F: `X-Ozy-Agent-Version`,
   `X-Ozy-Host`.
 - **Responses:** `202 {"status":"ok","accepted":N,"rejected":M,"errors":[…≤10 strings]}`
