@@ -346,6 +346,65 @@ Inside the distroless images there is no shell or curl. Each binary checks
 itself with `ozyd healthcheck` / `agent healthcheck`, which read the same
 config and probe `/healthz` over loopback. Compose's healthchecks use them.
 
+### Readiness
+
+`/healthz` says the process is alive; `/readyz` says whether to send it traffic. They are
+different questions and an orchestrator that is given the wrong one makes things worse.
+
+```console
+$ curl -s -o /dev/null -w '%{http_code}\n' localhost:9400/readyz
+200
+$ curl -s localhost:9400/readyz        # when it is not
+{"checks":{"consumers":"ok","draining":"ok","logstore":"wal: log is no longer writable: …","meta":"ok","tsdb":"ok"},"status":"not_ready",…}
+```
+
+`/readyz` is 503 while any of these fails: `meta` (the SQLite database does not answer), `tsdb`
+and `logstore` (the store stopped itself after a failed fsync), `queue:<topic>` (a topic
+stopped the same way, queued mode), `consumers` (queued mode: fewer consumers running than
+topics), `draining` (shutdown has begun). It is public, like `/healthz`. With `auth.enabled`, only a caller on this host sees the reason for a failure (it can name paths under `data_dir`); anyone else gets `"failed"`, and the reason is logged once per change.
+
+**A stopped store.** When an fsync of a store's write-ahead log fails, the kernel may already
+have dropped the pages, and a later fsync can report success without writing them, so ozyd does
+not retry: the log stops, every write to that store fails (a 503 at intake, a retried record in
+queued mode), `ozy.store.broken{store}` goes to 1 and `/readyz` says which. `/healthz` stays
+green: the process is fine and restarting it is the repair (replay makes the log trustworthy
+again). Point the orchestrator's *readiness* probe at `/readyz`, alert on `ozy.store.broken`,
+and restart on it.
+
+**Shutdown order.** On SIGTERM `/readyz` goes 503 at once. With `http.drain_delay` set, ozyd keeps
+serving for that long so a load balancer polling `/readyz` takes the instance out before the listener
+closes; then in-flight requests finish (`http.shutdown_timeout`), the queue consumers stop at a commit
+point (a record is applied and its offset committed, or neither: what was applied and not committed is
+delivered again on the next start), and the stores close.
+
+## Backup and restore
+
+With `backup.root` set (an absolute path outside `data_dir`), a running ozyd can back itself up:
+
+```console
+$ ozyd backup -config deploy/ozyd.yaml -name nightly
+backup written to /var/backups/ozymandias/nightly (143 files, 88103251 bytes, written by v0.1.0 at 2026-11-14T09:30:00Z)
+$ ozyd restore -verify /var/backups/ozymandias/nightly      # check it against its manifest
+$ ozyd restore -config deploy/ozyd.yaml /var/backups/ozymandias/nightly   # offline, into an EMPTY data_dir
+```
+
+- With auth off, `/api/v1/admin/backup` answers only requests from this host (which is what `ozyd backup` is); with auth on it needs the admin login from anywhere. A failed backup removes what it wrote, and shutdown waits for a running one.
+- It is online: ozyd keeps serving. Each store is snapshotted consistently under its own locks
+  (blocks hard-linked, logs cut to a length, SQLite by `VACUUM INTO`, Pebble by checkpoint). Ingest into the
+  log store waits for the copy of the log store (its write lock is held); the others take brief locks.
+- The queue is cut first and the stores after, so a restored ozyd redelivers what its stores and its queue
+  both hold, and the stores absorb it. One gap, unchanged from queued mode generally: a log sealed
+  into a chunk between the two cuts can be stored twice after a restore.
+- A backup is a directory plus `MANIFEST.json` (docs/formats/backup.md). `restore` verifies every file's
+  size and SHA-256 and that nothing extra is there, *before* it writes, and refuses a `data_dir` that is
+  not empty. It copies; it never links. Then start ozyd on it: it recovers as it does after a crash.
+- **A backup of hard links is not off-disk.** Same filesystem, it shares bytes with the live data: it
+  protects against ozyd's bugs and operator mistakes, not the loss of the disk. Put `backup.root` on another
+  volume (links then fall back to copies) or copy the directory away.
+- Monitor `ozy.backup.last_success_timestamp` (unix seconds, 0 means none since start) and `ozy.backup.runs{result}`.
+- Not supported: `metric_store: naive` (the backup says so and fails), and a restore onto a running ozyd.
+  Not yet measured: backup time and size against data size, and a backup taken during a crash.
+
 ## Securing ozyd
 
 Off by default: ozyd checks nothing and the key endpoints do not exist. To turn it on

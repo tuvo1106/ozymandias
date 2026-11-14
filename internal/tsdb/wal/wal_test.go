@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -1206,4 +1207,95 @@ func TestWAL_RollAndSyncReportIOFailures(t *testing.T) {
 	if err := clean.Close(); err != nil {
 		t.Errorf("Close is not idempotent: %v", err)
 	}
+}
+
+// Cut is a consistent copy point: the marks cover everything logged before it,
+// and copying each file's first Size bytes replays to exactly that, even though
+// the log goes on growing afterwards.
+func TestCut_MarksReplayToTheStateAtTheCut(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(Options{Dir: dir, SegmentSize: 256})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+	for i := range 40 {
+		if err := w.Log(Record{Type: 1, Data: []byte(fmt.Sprintf("before-%03d", i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marks, err := w.Cut()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 40 { // appended after the cut: must not appear in the copy
+		if err := w.Log(Record{Type: 1, Data: []byte(fmt.Sprintf("after-%03d", i))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	copyDir := t.TempDir()
+	for _, m := range marks {
+		b, err := os.ReadFile(filepath.Join(dir, m.Name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(copyDir, m.Name), b[:m.Size], 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := NewReader(copyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	var got []string
+	for r.Next() {
+		got = append(got, string(r.Record().Data))
+	}
+	if r.Err() != nil {
+		t.Fatalf("replaying the copy: %v", r.Err())
+	}
+	if len(got) != 40 || got[0] != "before-000" || got[39] != "before-039" {
+		t.Fatalf("copy replays %d records (first %q): want exactly the 40 logged before the cut", len(got), got)
+	}
+}
+
+func TestCut_RefusesABrokenOrClosedLog(t *testing.T) {
+	w, err := Open(Options{Dir: t.TempDir(), StopOnSyncError: true, SyncFile: func(*os.File) error { return errors.New("EIO") }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Cut(); !errors.Is(err, ErrSync) {
+		t.Fatalf("Cut over a failing fsync = %v", err)
+	}
+	if _, err := w.Cut(); !errors.Is(err, ErrBroken) {
+		t.Fatalf("Cut on a stopped log = %v", err)
+	}
+	_ = w.Close()
+	if _, err := w.Cut(); err == nil {
+		t.Fatal("Cut on a closed log")
+	}
+}
+
+// Broken answers while the log's lock is held across a stalled fsync: readiness
+// and the gauge ask exactly then, and must not wait behind the stall.
+func TestBroken_DoesNotWaitForTheLock(t *testing.T) {
+	w, err := Open(Options{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+	w.mu.Lock()
+	_ = w.breakLocked(errors.New("boom"))
+	got := make(chan error, 1)
+	go func() { got <- w.Broken() }()
+	select {
+	case err := <-got:
+		if !errors.Is(err, ErrBroken) {
+			t.Errorf("Broken() = %v, want ErrBroken", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("Broken() waited for the log's lock")
+	}
+	w.mu.Unlock()
 }

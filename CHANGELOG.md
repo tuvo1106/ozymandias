@@ -9,6 +9,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Operability** (M7). `GET /readyz` (public) answers 503 while a store has stopped, the queue
+  consumers are not running, or shutdown has begun; `/healthz` is unchanged. The TSDB and the log
+  store now stop for good after a failed fsync of their write-ahead log, as the queue does, and say
+  so in `/readyz` and `ozy.store.broken{store}`. `http.drain_delay` keeps serving after SIGTERM with
+  `/readyz` already 503. With `backup.root` set, `ozyd backup` makes an online, manifest-checked
+  backup of every store and `ozyd restore` verifies and restores it into an empty `data_dir`
+  (`ozy.backup.*`). A new `ozymandias self` dashboard. ADR-0060; docs/formats/backup.md.
 - **API keys and an admin login** (M7). With `auth.enabled: true`, `/v1/*` needs an `X-Ozy-Key`
   and `/api/*`, `/debug/*` need a login (`POST /api/v1/auth/login`, a session cookie, or the
   password as a bearer token); the UI shows a password form. Keys are created, listed and revoked

@@ -95,6 +95,8 @@ type Server struct {
 	started time.Time
 	handler http.Handler
 	auth    *auth.Auth
+	ready   *readiness
+	bk      backupState
 
 	store    tsdb.MetricStore
 	sketches *sketchstore.Store
@@ -226,6 +228,11 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	s.reg.GaugeFunc("ozy.process.uptime_seconds", func() float64 {
 		return s.clock.Now().Sub(s.started).Seconds()
 	}, "component:"+Component)
+	s.ready = &readiness{s: s, stores: []namedStore{{"logstore", ls}}}
+	if b, ok := store.(brokenStore); ok {
+		s.ready.stores = append([]namedStore{{"tsdb", b}}, s.ready.stores...)
+	}
+	s.registerBrokenGauges()
 	s.reg.GaugeFunc("ozy.store.series", func() float64 { return float64(store.Stats().Series) }, "store:"+engine)
 	s.reg.GaugeFunc("ozy.store.samples", func() float64 { return float64(store.Stats().Samples) }, "store:"+engine)
 	s.registerStoreMetrics(engine)
@@ -261,6 +268,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 
 	mux := http.NewServeMux()
 	mux.Handle("GET /healthz", httpserve.Health(Component, s.started, s.clock.Now, nil))
+	mux.Handle("GET /readyz", s.ready)
 	mux.Handle("GET /debug/vars", s.reg.Handler())
 	s.intake.Register(mux)
 	(&api.Metrics{
@@ -285,6 +293,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	// mounted directory must not be an outage for everybody's monitoring.
 	dashboard.Provision(context.Background(), api.ProvisionStore{DB: md},
 		cfg.Provisioning.Paths, s.clock.Now(), s.log.With("component", "dashboards"))
+	s.registerBackup(mux)
 	s.registerMonitors(mux, opts)
 	if opts.UI != nil {
 		mux.Handle("GET /", opts.UI)
@@ -417,6 +426,12 @@ func (s *Server) Handler() http.Handler { return s.handler }
 
 // Close releases the stores. Run calls it on the way out.
 func (s *Server) Close() error {
+	// A backup in progress is using every store; closing them under it would
+	// crash Pebble (a checkpoint of a closed database panics). Wait for it. A
+	// backup that starts after this is refused: closed is set before the wait ends.
+	s.bk.mu.Lock()
+	defer s.bk.mu.Unlock()
+	s.bk.closed = true
 	var qerr error
 	if s.pipe != nil {
 		// Before the stores: a consumer mid-apply must not find its store closed.
@@ -475,7 +490,30 @@ func (s *Server) Run(ctx context.Context, ln net.Listener) error {
 		}()
 	}
 
-	err := httpserve.Serve(ctx, srv, ln, s.cfg.HTTP.ShutdownTimeout)
+	// Shutdown begins with the readiness probe, not the listener: /readyz goes
+	// 503 at SIGTERM, the listener stays up for DrainDelay so a balancer that
+	// polls it can take this instance out, and only then does Serve shut down.
+	serveCtx, stopServe := context.WithCancel(context.Background())
+	defer stopServe()
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-serveCtx.Done():
+			return // Serve ended on its own: there is nothing to drain
+		}
+		s.ready.draining.Store(true)
+		if d := s.cfg.HTTP.DrainDelay; d > 0 {
+			s.log.Info("draining: /readyz is 503, still serving", "component", Component, "delay", d)
+			tm := s.clock.NewTimer(d)
+			select {
+			case <-tm.C():
+			case <-serveCtx.Done():
+			}
+			tm.Stop()
+		}
+		stopServe()
+	}()
+	err := httpserve.Serve(serveCtx, srv, ln, s.cfg.HTTP.ShutdownTimeout)
 	stopBG()
 	for range loops {
 		<-bgDone

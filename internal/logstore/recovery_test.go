@@ -403,3 +403,148 @@ func waitFor(t testing.TB, cond func() bool, msg string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// A backup taken while logs are being appended opens to a store holding every log
+// acknowledged before it began, exactly once, and no log twice, however many
+// blocks were sealed and however much was appended during the copy.
+func TestBackup_RestoresWhatWasAcknowledgedExactlyOnceDuringWrites(t *testing.T) {
+	dir := t.TempDir()
+	s := openSynced(t, dir)
+	defer func() { _ = s.Close() }()
+	base := t0.UnixMilli()
+	for i := 0; i < 6; i++ { // seals several blocks (BlockBytes is tiny) and leaves a head
+		if err := s.Append(context.Background(), batchOf("m", i*25, 25, base)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i += 5 {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = s.Append(context.Background(), batchOf("n", i, 5, base+10_000))
+			}
+		}
+	}()
+	dst := filepath.Join(t.TempDir(), "logs")
+	err := s.Backup(dst)
+	close(stop)
+	<-done
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := openSynced(t, dst)
+	defer func() { _ = r.Close() }()
+	got := everything(t, r)
+	seen := map[string]int{}
+	for _, m := range got {
+		seen[m]++
+		if seen[m] > 1 {
+			t.Fatalf("%q is in the backup twice", m)
+		}
+	}
+	for _, m := range wantMessages("m", 150) {
+		if seen[m] != 1 {
+			t.Fatalf("%q, acknowledged before the backup, is missing from it", m)
+		}
+	}
+	// And the restored store carries on.
+	if err := r.Append(context.Background(), batchOf("z", 0, 5, base+20_000)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBackup_ARefusalLeavesNothingToRestoreFrom(t *testing.T) {
+	s := openSynced(t, t.TempDir())
+	dst := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dst, "x"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Backup(dst); err == nil {
+		t.Fatal("backup into a non-empty directory")
+	}
+	_ = s.Close()
+	if err := s.Backup(filepath.Join(t.TempDir(), "d")); err == nil {
+		t.Fatal("backup of a closed store")
+	}
+}
+
+// A chunk still open for appending is copied to its last whole block, not to the
+// end of the file: a tail the writer has not vouched for is not part of the backup.
+func TestBackup_CopiesAnOpenChunkOnlyUpToItsLastBlock(t *testing.T) {
+	dir := t.TempDir()
+	s := openSynced(t, dir)
+	defer func() { _ = s.Close() }()
+	base := t0.UnixMilli()
+	for i := 0; i < 4; i++ {
+		if err := s.Append(context.Background(), batchOf("m", i*25, 25, base)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ends := map[string]int64{}
+	s.smu.RLock()
+	for _, cs := range s.chunks {
+		if cs.w == nil {
+			continue
+		}
+		rel, _ := filepath.Rel(s.dir, cs.path)
+		ends[rel] = cs.w.end
+		f, err := os.OpenFile(cs.path, os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = f.WriteString("TORN-TAIL-NOT-A-BLOCK")
+		_ = f.Close()
+	}
+	s.smu.RUnlock()
+	if len(ends) == 0 {
+		t.Fatal("no chunk was open; the test did not reach what it checks")
+	}
+	dst := filepath.Join(t.TempDir(), "logs")
+	if err := s.Backup(dst); err != nil {
+		t.Fatal(err)
+	}
+	for rel, end := range ends {
+		fi, err := os.Stat(filepath.Join(dst, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Size() != end {
+			t.Fatalf("%s is %d bytes in the backup, want its last whole block's end (%d)", rel, fi.Size(), end)
+		}
+	}
+}
+
+// A chunk that holds blocks and whose file has gone is damage, and a backup that
+// skipped it would verify cleanly while missing that day's logs.
+func TestBackup_AMissingChunkThatHoldsBlocksIsAnError(t *testing.T) {
+	s := openSynced(t, t.TempDir())
+	defer func() { _ = s.Close() }()
+	base := t0.UnixMilli()
+	if err := s.Append(context.Background(), batchOf("m", 0, 30, base)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Flush(); err != nil { // seal into a chunk
+		t.Fatal(err)
+	}
+	s.smu.RLock()
+	n := 0
+	for _, cs := range s.chunks {
+		if len(cs.blocks) > 0 {
+			_ = os.Remove(cs.path)
+			n++
+		}
+	}
+	s.smu.RUnlock()
+	if n == 0 {
+		t.Fatal("no chunk held a block; the test did not reach what it checks")
+	}
+	if err := s.Backup(filepath.Join(t.TempDir(), "logs")); err == nil {
+		t.Fatal("a backup succeeded with a chunk file missing")
+	}
+}

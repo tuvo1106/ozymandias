@@ -106,6 +106,7 @@ interval's increase.
 | `ozy.agent.forwarder.spool_enabled` | gauge | 0/1 | — | agent | 1 when all three endpoint spools are open; 0 is memory only, whether by config or because one could not be opened |
 | `ozy.agent.forwarder.spool_bytes` | gauge | bytes | `endpoint` | agent | A spool's size on disk |
 | `ozy.agent.forwarder.spool_payloads` | gauge | payloads | `endpoint` | agent | Payloads waiting in a spool. Grows during an ozyd outage, drains after |
+| `ozy.store.broken` | gauge | 0/1 | `store` | ozyd | 1 after a failed fsync stopped the store's write-ahead log (`store` is `tsdb` or `logstore`): it refuses every write until ozyd restarts, and `/readyz` says 503. Both series exist from startup |
 | `ozy.queue.lag_records` | gauge | records | `topic` | ozyd (queued mode) | Durable records the store's consumer has not committed. Grows while a store is down or slow |
 | `ozy.queue.lag_seconds` | gauge | seconds | `topic` | ozyd (queued mode) | Age of the oldest record the consumer holds uncommitted; 0 when caught up |
 | `ozy.queue.bytes` | gauge | bytes | `topic` | ozyd (queued mode) | A topic's size on disk; at `pipeline.queue.max_bytes` intake answers 429 |
@@ -114,6 +115,8 @@ interval's increase.
 | `ozy.intake.rejected` | counter | requests | `reason` | ozyd (auth on) | Intake requests refused for an API key problem or a key's limit. `reason` is one of `unauthorized`, `requests`, `bytes`, `spans`, `log_bytes_day`; all five exist from startup |
 | `ozy.agent.forwarder.unauthorized` | counter | requests | — | agent | Payload sends ozyd answered 401 (missing, wrong or revoked key). The data is kept and retried |
 | `ozy.agent.logs.unauthorized` | counter | batches | — | agent | Log batches ozyd answered 401. The tailer keeps its offset and sends them again once the key is fixed |
+| `ozy.backup.runs` | counter | backups | `result` | ozyd | Backups attempted: `ok` or `error` (one that was refused because another was running does not start and is not counted). Both series exist from startup |
+| `ozy.backup.last_success_timestamp` | gauge | unix seconds | — | ozyd | When the last successful backup started; 0 means none since this ozyd started. A monitor on `now - this` is the way to be told backups stopped |
 | `ozy.query.in_flight` | gauge | requests | — | ozyd | Read-API requests holding a slot (limit `query.max_concurrent`) |
 | `ozy.query.queued` | gauge | requests | — | ozyd | Read-API requests waiting for a slot |
 | `ozy.query.rejected` | counter | requests | — | ozyd | Read-API requests answered 503 because every slot and queue place was taken |

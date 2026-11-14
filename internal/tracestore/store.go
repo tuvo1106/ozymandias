@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/backup"
+
 	"github.com/cockroachdb/pebble"
 	"github.com/klauspost/compress/zstd"
 
@@ -181,6 +183,23 @@ func (s *Store) loadKnown() error {
 		s.known[string(it.Key())] = struct{}{}
 	}
 	return errors.Join(it.Error(), it.Close())
+}
+
+// Backup writes a consistent copy of the store into dst, which must not exist,
+// while the store keeps serving. The log is flushed first (WithFlushedWAL), so
+// a write that was acknowledged without an fsync is in the copy too. Pebble's checkpoint hard-links the immutable
+// SSTables (copying across filesystems) and copies the write-ahead log and
+// manifest at one instant, which is the one thing a plain file copy of a live
+// Pebble directory cannot do: its background compactions rewrite files while a
+// copy runs.
+func (s *Store) Backup(dst string) error {
+	if s.closed.Load() {
+		return errors.New("tracestore: backup of a closed store")
+	}
+	if err := backup.PebbleCheckpoint(s.db, dst); err != nil {
+		return fmt.Errorf("tracestore: backup: %w", err)
+	}
+	return nil
 }
 
 // Close closes the database. Operations after Close return an error.

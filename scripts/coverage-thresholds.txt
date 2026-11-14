@@ -31,3 +31,4 @@ internal/monitor            90
 internal/monitor/*          90
 internal/agent/autodiscovery 90
 internal/auth               90
+internal/backup             90

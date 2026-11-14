@@ -12,6 +12,7 @@ tests happens in the same commit.
 | [log-chunk.md](log-chunk.md) | `internal/logstore` | log search, recovery |
 | [tracestore-keys.md](tracestore-keys.md) | `internal/tracestore` | trace lookup, search, service map, retention |
 | [queue-segment.md](queue-segment.md) | `internal/queue` | the stores' consumers, recovery at startup |
+| [backup.md](backup.md) | `internal/backup` and every store's `Backup` | `ozyd restore` |
 
 Conventions used throughout:
 

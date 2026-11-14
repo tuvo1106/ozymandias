@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -641,5 +642,46 @@ func TestEdges_DuplicateKeepsItsParkedEdgesWhenTheClaimantFails(t *testing.T) {
 	}
 	if s.npend != 1 {
 		t.Errorf("parked edges = %d, want the duplicate's one", s.npend)
+	}
+}
+
+// A backup of a store in use is a Pebble checkpoint: it opens, and holds every
+// span acknowledged before it was taken.
+func TestStore_ABackupOpensAndHoldsWhatWasAcknowledged(t *testing.T) {
+	s, clk := open(t, nil)
+	var spans []wire.Span
+	for i := 1; i <= 20; i++ {
+		spans = append(spans, sp(i, i, "shop", time.Duration(i)*time.Millisecond, 5*time.Millisecond))
+	}
+	if err := s.Append(ctx, spans); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "traces")
+	if err := s.Backup(dst); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Append(ctx, []wire.Span{sp(99, 99, "shop", time.Second, time.Millisecond)}); err != nil {
+		t.Fatal(err) // written after the backup: must not be in it
+	}
+	r, err := Open(Options{Dir: dst, NoSync: true, Clock: clk})
+	if err != nil {
+		t.Fatalf("the backup did not open: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+	for i := 1; i <= 20; i++ {
+		got, err := r.Trace(ctx, tid(i))
+		if err != nil || len(got) != 1 {
+			t.Fatalf("trace %d in the backup: %v %v", i, got, err)
+		}
+	}
+	if got, _ := r.Trace(ctx, tid(99)); len(got) != 0 {
+		t.Fatal("a span written after the backup is in it")
+	}
+	if err := s.Backup(dst); err == nil {
+		t.Fatal("a backup over an existing checkpoint was allowed")
+	}
+	_ = s.Close()
+	if err := s.Backup(filepath.Join(t.TempDir(), "x")); err == nil {
+		t.Fatal("backup of a closed store")
 	}
 }

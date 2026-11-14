@@ -131,5 +131,22 @@ func (d *DB) Metric(name string) (Metric, bool) {
 	return m, ok
 }
 
+// Ping reports whether the database answers. It is what /readyz asks.
+func (d *DB) Ping(ctx context.Context) error { return d.db.PingContext(ctx) }
+
+// Backup writes a consistent copy of the database to path (which must not
+// exist) with VACUUM INTO: one transaction's view of every table, as a single
+// file, without the -wal and -shm files a plain copy of a live SQLite database
+// would need and could get wrong.
+func (d *DB) Backup(ctx context.Context, path string) error {
+	// No txMu: VACUUM INTO reads one transaction's snapshot by itself, and holding
+	// the writers' lock around it would stall every dashboard save, key change and
+	// type registration for the length of the copy for no consistency gain.
+	if _, err := d.db.ExecContext(ctx, `VACUUM INTO ?`, path); err != nil {
+		return fmt.Errorf("meta: backup: %w", err)
+	}
+	return nil
+}
+
 // Close closes the database.
 func (d *DB) Close() error { return d.db.Close() }

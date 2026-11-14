@@ -20,6 +20,10 @@ http:
   # How long in-flight requests get to finish after SIGTERM before the
   # remaining connections are cut. Must be positive.
   shutdown_timeout: 10s
+  # How long ozyd keeps serving after SIGTERM with /readyz already answering 503,
+  # so a load balancer that polls it takes this instance out before the listener
+  # closes. Zero shuts down at once. Must not be negative.
+  # drain_delay: 0s
 
 # Root of all on-disk state: meta.db (metric types; later dashboards and
 # monitors), tsdb/ (the metric store: wal/ and blocks/), and later the log
@@ -207,6 +211,14 @@ pipeline:
     # Group-commit window: how long a topic waits after the first unsynced
     # record before fsyncing. Zero is the default, 1ms; negative syncs at once.
     # sync_interval: 1ms
+
+backup:
+  # Where online backups are made, one subdirectory each: `ozyd backup` asks the
+  # running ozyd to write <root>/<name>. Absolute, and outside data_dir. On another
+  # volume if the backup should survive the loss of the disk (blocks are hard-linked
+  # where the filesystem allows, which protects against mistakes, not hardware).
+  # Empty turns backups off and removes the endpoint. See docs/operations.md#backup-and-restore.
+  # root: /var/backups/ozymandias
 
 query:
   # Read-API (GET /api/*) concurrency; the live tail is exempt. Past the queue
