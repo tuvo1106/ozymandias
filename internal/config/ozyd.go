@@ -508,7 +508,7 @@ func DefaultOzyd() Ozyd {
 		// Direct until the smoke and e2e suites run queued (M7 PR 7): a 202 in
 		// queued mode no longer means "queryable", and tests that assume it
 		// would need to wait for the consumers.
-		Pipeline: Pipeline{Mode: PipelineDirect},
+		Pipeline: Pipeline{Mode: PipelineQueued},
 		Monitors: Monitors{
 			Enabled: true, Workers: 4, EventRetention: 30 * 24 * time.Hour,
 			BaseURL: "http://localhost:9400",

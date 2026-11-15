@@ -35,6 +35,10 @@ func testConfig(t *testing.T) config.Ozyd {
 		// clock, which most of these tests fake.
 		cfg.Pipeline.Mode = config.PipelineQueued
 		cfg.Pipeline.Queue.SyncInterval = -1
+	} else {
+		// Pinned, not inherited: the shipped default is queued, and a test that meant
+		// "direct" must not change meaning when the default does.
+		cfg.Pipeline.Mode = config.PipelineDirect
 	}
 	return cfg
 }

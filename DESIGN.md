@@ -825,8 +825,8 @@ running), never as OK.
 ## 17. The queued pipeline and delivery semantics (M7)
 
 `pipeline.mode: queued` puts a durable queue (`internal/queue`, [ADR-0055](docs/adr/0055-own-queue-not-kafka-or-nats.md))
-between intake and the stores; `direct` is the pre-M7 path, kept for comparison and as the default
-until the smoke and e2e suites run queued ([ADR-0056](docs/adr/0056-queued-intake-answers-on-durability.md)).
+between intake and the stores; `direct` is the pre-M7 path, kept for comparison. Queued became the default once the smoke and e2e
+suites ran queued ([ADR-0056](docs/adr/0056-queued-intake-answers-on-durability.md), [ADR-0061](docs/adr/0061-queued-is-the-default-and-the-chaos-oracle.md)).
 
 ```
 agent ─POST─▶ intake: decode · validate · registry type check

@@ -203,7 +203,7 @@ pipeline:
   # direct: a request is stored before it is answered (the pre-M7 path).
   # queued: a request is made durable in a queue and answered; consumers feed
   # the stores. 202 then means "durable", not "queryable" (docs/wire-protocol.md).
-  mode: direct
+  mode: queued
   queue:
     # Per-topic size cap. A full topic answers 429 + Retry-After and never drops
     # what it has acknowledged. Zero is the default, 2 GiB.

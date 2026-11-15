@@ -5,9 +5,9 @@ import (
 	"testing"
 )
 
-func TestPipeline_DefaultsToDirectAndAcceptsBothModes(t *testing.T) {
-	if got := DefaultOzyd().Pipeline.Mode; got != PipelineDirect {
-		t.Fatalf("default mode %q: it changes when the e2e and smoke suites run queued (M7 PR 7), not before", got)
+func TestPipeline_DefaultsToQueuedAndAcceptsBothModes(t *testing.T) {
+	if got := DefaultOzyd().Pipeline.Mode; got != PipelineQueued {
+		t.Fatalf("default mode %q: queued became the default in M7 PR 7 (ADR-0061)", got)
 	}
 	for _, m := range []string{PipelineDirect, PipelineQueued} {
 		p := Pipeline{Mode: m}

@@ -405,6 +405,27 @@ $ ozyd restore -config deploy/ozyd.yaml /var/backups/ozymandias/nightly   # offl
 - Not supported: `metric_store: naive` (the backup says so and fails), and a restore onto a running ozyd.
   Not yet measured: backup time and size against data size, and a backup taken during a crash.
 
+## Failure runbook and the chaos drills
+
+Each drill in `scripts/chaos/` breaks one thing on purpose and asserts what must still be true
+(`make chaos` runs them all in about three minutes; `make chaos-long` at the acceptance settings,
+about 40). They run ozyd and the agent from `./bin` in a temp directory, so they never touch a real
+data dir. What an operator sees, and does, for each:
+
+| Symptom | Check | What is true, and the fix |
+|---|---|---|
+| ozyd was killed (`kill -9`, OOM, power) | `/readyz` 200 after restart; `ozy.consumer.*` counters moving | Everything answered `202` is in the queue or the stores. Restart; replay and the consumers do the rest. A request that got no answer may or may not have landed: senders retry, and the stores absorb a repeat (`kill9.sh`). |
+| ozyd is down, agents are up | agent: `ozy.agent.forwarder.spool_bytes`, `…spool_payloads` | Agent memory stays bounded; payloads spill to `forwarder.buffer_path` and drain in order after ozyd returns, about 20 s after, once the retry backoff expires. Set `buffer_path`: without it only the memory queue (64 MiB) holds data (`ozyd-down.sh`). |
+| the agent is down | app: nothing; `agent` `/healthz` | The app's statsd sends do not fail or block. Log files are caught up from the saved offsets on restart, with none repeated; metrics sent while it was down are lost (UDP) (`agent-down.sh`). |
+| UDP flood at the agent | `ozy.agent.statsd.packets_dropped`, `loadgen -scenario statsd-flood` | The agent stays up; loss is counted (queue drops) or invisible (kernel drops: raise `statsd.read_buffer` and the OS limit); traces and logs, which do not use the UDP socket, keep flowing (`udp-flood.sh`). |
+| `ozy.tsdb.ooo_rejected` or `ozy.intake.series_rejected` rising | the sender's clock (`date`, NTP) | A point more than 10 minutes ahead is refused at intake; one older than the series' newest is refused by the store. Neither corrupts anything, including across a restart. Fix the clock (`clock-jump.sh`). |
+| `ozy.tsdb.series_limit_rejected` rising | which tag carries an unbounded value | `storage.max_series_per_metric` holds, other metrics are unaffected, memory is bounded. In queued mode the sender is not told (it gets `202`): look at `ozy.consumer.series_rejected`. Drop the tag in the app (`cardinality-bomb.sh`). |
+| the data volume is full | `ozy.store.broken`, `/readyz` 503, `df` | Intake refuses what it cannot keep, nothing is acknowledged and lost, `/healthz` stays 200, no panic. Free space, restart ozyd, and everything acknowledged before and after is there (`disk-full.sh`). |
+| a store says it is broken | `/readyz`, `ozy.store.broken{store}` | A failed fsync stops the store until restart (see Readiness). Not drilled: no portable way to make a disk fail an fsync; the unit tests inject it. |
+
+Not drilled: a slow disk, a corrupt block (ozyd refuses to start; move the block aside, see
+*Recovering from a corrupt block*) and the apps' latency with ozymandias down. See ADR-0061.
+
 ## Securing ozyd
 
 Off by default: ozyd checks nothing and the key endpoints do not exist. To turn it on
