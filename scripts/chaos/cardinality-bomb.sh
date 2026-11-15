@@ -14,14 +14,14 @@ start_ozyd
 wait_ready "$OZYD_URL/readyz" || fail "ozyd never became ready"
 RSS0=$(rss_mb "$OZYD_PID")
 
-# A heartbeat on another metric, once a second, for the whole drill: it must never be refused.
+# A heartbeat on another metric, once a second, until the bomb has been applied: it must never
+# be refused. It stops when $WORK/stop exists, not after a fixed time, so it cannot end before the bomb does.
 cat >"$WORK/heartbeat.py" <<'PY'
-import json, sys, time, urllib.request
-url, dur = sys.argv[1], int(sys.argv[2])
+import json, os, sys, time, urllib.request
+url, stop = sys.argv[1], sys.argv[2]
 sent = bad = 0
-end = time.time() + dur
 t = int(time.time())
-while time.time() < end:
+while not os.path.exists(stop) or sent < 5:
     t = max(t + 1, int(time.time()))
     body = json.dumps({"series": [{"metric": "chaos.heartbeat", "type": "gauge", "interval": 0, "tags": [], "points": [[t, 1]]}]}).encode()
     try:
@@ -34,7 +34,7 @@ while time.time() < end:
     time.sleep(1)
 print(sent, bad)
 PY
-python3 "$WORK/heartbeat.py" "$OZYD_URL" $((SERIES / 20000 + 25)) >"$WORK/heartbeat.out" &
+python3 "$WORK/heartbeat.py" "$OZYD_URL" "$WORK/stop" >"$WORK/heartbeat.out" &
 HB=$!
 BG_PIDS="$BG_PIDS $HB"
 
@@ -50,15 +50,17 @@ for lo in range(0, n, 1000):
     accepted += r["accepted"]; rejected += r["rejected"]
 print("bomb: %d series accepted, %d rejected" % (accepted, rejected))
 PY
-HEAD=$(metric "$OZYD_URL" ozy.tsdb.head.series)
-LIMITED=$(metric "$OZYD_URL" ozy.tsdb.series_limit_rejected)
-# Queued mode applies after it acknowledges, so the limit shows up as the stores catch up.
+# Queued mode acknowledges the whole bomb and applies it afterwards. Judge only once the
+# consumers have drained it: the first refusal arrives when the cap is just reached, and a
+# limit that leaked later would still look held at that moment.
+eventually 300 "the bomb was never fully applied (queues still have lag)" queues_drained
 eventually 60 "the series limit never engaged (series_limit_rejected=$(metric "$OZYD_URL" ozy.tsdb.series_limit_rejected), head=$(metric "$OZYD_URL" ozy.tsdb.head.series))" \
   '[[ $(metric "$OZYD_URL" ozy.tsdb.series_limit_rejected) -gt 0 ]]'
+touch "$WORK/stop"
 HEAD=$(metric "$OZYD_URL" ozy.tsdb.head.series)
 # 10000 for the bomb's metric, plus the heartbeat and ozyd's own series.
 [[ $HEAD -le 11000 ]] || fail "the head holds $HEAD series after a bomb of $SERIES: the per-metric limit did not hold"
-ok "the series limit held: $HEAD series in the head after $SERIES were offered ($(metric "$OZYD_URL" ozy.tsdb.series_limit_rejected) refused)"
+ok "the series limit held: $HEAD series in the head after $SERIES were offered and applied ($(metric "$OZYD_URL" ozy.tsdb.series_limit_rejected) refused)"
 
 RSS1=$(rss_mb "$OZYD_PID")
 [[ $((RSS1 - RSS0)) -lt 500 ]] || fail "ozyd's RSS grew from ${RSS0}MB to ${RSS1}MB"
@@ -66,7 +68,7 @@ ok "memory stayed bounded (${RSS0}MB -> ${RSS1}MB)"
 
 wait "$HB" || true
 read -r SENT BAD <"$WORK/heartbeat.out" || fail "the heartbeat produced no result"
-[[ $SENT -gt 5 && $BAD -eq 0 ]] || fail "the heartbeat metric was refused $BAD of $SENT times while the bomb ran"
+[[ $SENT -ge 5 && $BAD -eq 0 ]] || fail "the heartbeat metric was refused $BAD of $SENT times while the bomb ran"
 ok "another metric was unaffected: $SENT heartbeats, none refused"
 eventually 30 "the heartbeats were not stored" '[[ $(stored_sum chaos.heartbeat 600 1) -ge $((SENT - 1)) ]]'
 ok "and they are stored"

@@ -505,9 +505,8 @@ func DefaultOzyd() Ozyd {
 		Log:     Log{Level: "info", Format: "text"},
 		Logs:    Logs{Retention: 7 * 24 * time.Hour},
 		Traces:  Traces{Retention: 7 * 24 * time.Hour},
-		// Direct until the smoke and e2e suites run queued (M7 PR 7): a 202 in
-		// queued mode no longer means "queryable", and tests that assume it
-		// would need to wait for the consumers.
+		// Queued since M7 PR 7 (ADR-0061): a 202 means "durable in the queue", not
+		// "queryable". Tests that mean direct pin it (internal/server's testConfig).
 		Pipeline: Pipeline{Mode: PipelineQueued},
 		Monitors: Monitors{
 			Enabled: true, Workers: 4, EventRetention: 30 * 24 * time.Hour,

@@ -4,25 +4,34 @@
 # panic or corrupt anything, and everything acknowledged is stored after recovery.
 #
 # Needs a small filesystem of its own. macOS: a 16 MB disk image (no root needed).
-# Linux: a tmpfs, which needs root (sudo); the drill skips, loudly, without it.
+# Linux: a tmpfs, which needs root (sudo); the drill skips, loudly, without it (CHAOS_NO_SKIP=1: fails).
 source "$(dirname "$0")/lib.sh"
 
 MNT=$WORK/vol
 mkdir -p "$MNT"
+# A drill that cannot run is not a drill that passed. Locally a skip is fine; CI sets
+# CHAOS_NO_SKIP so that a runner without the privilege fails instead of going quiet.
+skip() {
+  echo "SKIP: $1"
+  [[ -z ${CHAOS_NO_SKIP:-} ]] || { echo "CHAOS_NO_SKIP is set: a skipped drill is a failure" >&2; exit 1; }
+  exit 0
+}
 case "$(uname)" in
   Darwin)
+    # detach is defined before the mount that needs it, so an interrupted run still unmounts
+    # (lib.sh's cleanup calls it before removing $WORK, which contains the mount point).
+    detach() { hdiutil detach -quiet -force "$MNT" 2>/dev/null || true; }
     hdiutil create -quiet -size 16m -fs 'HFS+' -volname ozychaos "$WORK/vol.dmg" || fail "could not create a disk image"
     hdiutil attach -quiet -nobrowse -mountpoint "$MNT" "$WORK/vol.dmg" || fail "could not attach the disk image"
-    detach() { hdiutil detach -quiet -force "$MNT" 2>/dev/null || true; }
     ;;
   Linux)
-    if ! sudo -n true 2>/dev/null; then echo "SKIP: disk-full needs root to mount a tmpfs, and sudo needs a password here"; exit 0; fi
-    sudo mount -t tmpfs -o size=16m tmpfs "$MNT" && sudo chown "$(id -u)" "$MNT" || fail "could not mount a tmpfs"
+    sudo -n true 2>/dev/null || skip "disk-full needs root to mount a tmpfs, and sudo needs a password here"
     detach() { sudo umount -l "$MNT" 2>/dev/null || true; }
+    sudo mount -t tmpfs -o size=16m tmpfs "$MNT" || fail "could not mount a tmpfs"
+    sudo chown "$(id -u)" "$MNT" || fail "could not take ownership of the tmpfs"
     ;;
-  *) echo "SKIP: disk-full is not supported on $(uname)"; exit 0 ;;
+  *) skip "disk-full is not supported on $(uname)" ;;
 esac
-trap 'detach; cleanup' EXIT
 
 ACKS=$WORK/acks.txt
 DATA=$MNT/data
@@ -58,5 +67,6 @@ wait_ready "$OZYD_URL/readyz" 30 || fail "ozyd did not restart after space was f
 AFTER=$(grep -c " a " "$ACKS" || true)
 [[ $AFTER -gt $BEFORE ]] || fail "after space was freed nothing was acknowledged again ($BEFORE -> $AFTER)"
 ok "intake accepts again after space was freed"
+eventually 60 "the queues never drained (lag_records > 0)" queues_drained
 "$BIN/loadgen" -scenario verify -ozyd "$OZYD_URL" -acks "$ACKS" -settle 60s || fail "acknowledged data was lost or duplicated across the full disk"
 ok "everything acknowledged, before, and after, is stored, none twice"

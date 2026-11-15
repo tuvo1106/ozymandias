@@ -19,7 +19,10 @@ done
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/ozy-chaos.XXXXXX")
 # Ports are derived from the pid so two drills can run side by side; they are
 # loopback only.
-PORT_BASE=$((20000 + ($$ % 2000) * 10))
+# Below 32768, where Linux hands out ephemeral ports: a drill's own curl or loadgen could
+# otherwise be given the port its ozyd is about to listen on.
+PORT_BASE=$((20000 + ($$ % 1200) * 10))
+while (exec 3<>/dev/tcp/127.0.0.1/$PORT_BASE) 2>/dev/null; do PORT_BASE=$((PORT_BASE + 10)); done
 OZYD_PORT=$PORT_BASE
 AGENT_HTTP_PORT=$((PORT_BASE + 1))
 AGENT_UDP_PORT=$((PORT_BASE + 2))
@@ -28,6 +31,10 @@ AGENT_URL=http://127.0.0.1:$AGENT_HTTP_PORT
 OZYD_PID=""
 AGENT_PID=""
 BG_PIDS=""
+
+# detach: a drill that mounts something redefines this; it runs before $WORK is removed
+# (which can contain the mount point).
+detach() { :; }
 
 cleanup() {
   trap - EXIT INT TERM
@@ -39,9 +46,14 @@ cleanup() {
   for p in $BG_PIDS $AGENT_PID $OZYD_PID; do
     [[ -n $p ]] && kill -KILL "$p" 2>/dev/null || true
   done
+  detach
   if [[ -n ${CHAOS_KEEP:-} ]]; then echo "chaos: kept $WORK"; else rm -rf "$WORK"; fi
 }
-trap cleanup EXIT INT TERM
+# INT and TERM must end the script, not only clean up: bash runs a trap and then carries on
+# with the next command, which would keep asserting against a deleted $WORK.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 pass=0
 ok() { echo "✓ $1"; pass=$((pass + 1)); }
@@ -84,6 +96,18 @@ start_agent() { # [VAR=value ...]
     OZY_AGENT_COLLECTORS_DOCKER_ENABLED=false "$@" \
     "$BIN/agent" >>"$WORK/agent.log" 2>&1 &
   AGENT_PID=$!
+}
+
+# queues_drained: every queue has been drained by its consumer. verify must not judge the
+# stores while records that were replayed after a kill are still on their way to them: a
+# duplicate they would produce lands after the check.
+queues_drained() {
+  local lag
+  lag=$(curl -fsS --max-time 3 "$OZYD_URL/debug/vars" 2>/dev/null | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(int(sum(m["value"] for m in d["metrics"] if m["name"] == "ozy.queue.lag_records")))' 2>/dev/null) || return 1
+  [[ $lag = 0 ]]
 }
 
 # in_background <command...>: run something that must be stopped with the drill.

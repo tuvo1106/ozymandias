@@ -62,7 +62,19 @@ func ackIngest(ozyd, acksPath string, rate int, duration time.Duration) error {
 		return err
 	}
 	client := &http.Client{Timeout: 3 * time.Second}
+	// Seeded from the acks file, like seq: a second run into the same file must not send a lane a
+	// timestamp at or before one an earlier run already had acknowledged, which the store would drop
+	// as out of order and verify would then report as lost.
 	lastTS := make([]int64, chaosLanes)
+	prior, err := readAcks(acksPath)
+	if err != nil {
+		return err
+	}
+	for _, a := range prior {
+		if a.kind == 's' {
+			lastTS[a.seq%chaosLanes] = max(lastTS[a.seq%chaosLanes], a.tsFirst)
+		}
+	}
 	tick := time.NewTicker(time.Second / time.Duration(rate))
 	defer tick.Stop()
 	deadline := time.Now().Add(duration)
@@ -242,6 +254,7 @@ func head(s []int) []int { return s[:min(len(s), 5)] }
 func storedLogs(ozyd string, from, to int64) (stored map[int]int, dup []int, err error) {
 	stored = map[int]int{}
 	cursor := ""
+	pages := 0
 	for {
 		q := url.Values{"q": {"service:" + chaosService}, "from": {fmt.Sprint(from)}, "to": {fmt.Sprint(to)}, "limit": {"5000"}, "order": {"asc"}}
 		if cursor != "" {
@@ -261,8 +274,13 @@ func storedLogs(ozyd string, from, to int64) (stored map[int]int, dup []int, err
 				stored[n]++
 			}
 		}
-		if res.Cursor == "" || len(res.Logs) == 0 {
+		// An empty page with a cursor is a search that ran out of scan budget, not the end: only
+		// the absence of a cursor is. (Stopping on an empty page reported data that exists as missing.)
+		if res.Cursor == "" {
 			break
+		}
+		if pages++; pages > 100000 {
+			return nil, nil, errors.New("log search never ended")
 		}
 		cursor = res.Cursor
 	}

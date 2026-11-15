@@ -40,7 +40,11 @@ ok "the buffer drained after ozyd returned"
 # stored sum is the number of messages the agent received, whatever the UDP lost
 # before it. (Equal, not at least: a duplicate would be visible as an excess.)
 sleep 5
+# Absence is not an answer: `metric` reads 0 when the agent is gone, and 0 stored equals 0 received.
+kill -0 "$AGENT_PID" 2>/dev/null || fail "the agent died during the outage"
+kill -0 "$OZYD_PID" 2>/dev/null || fail "ozyd died after it came back"
 RECEIVED=$(metric "$AGENT_URL" ozy.agent.statsd.messages_received)
+[[ $RECEIVED -gt 0 ]] || fail "the agent reports no parsed messages: nothing was checked"
 eventually 60 "ozyd never stored all $RECEIVED parsed messages" '[[ $(stored_sum loadgen.flood) -ge $RECEIVED ]]' 
 STORED=$(stored_sum loadgen.flood)
 [[ $STORED -eq $RECEIVED ]] || fail "the agent parsed $RECEIVED messages but ozyd stored $STORED: $((STORED - RECEIVED)) too many (duplicates)"

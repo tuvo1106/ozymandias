@@ -14,9 +14,14 @@ fi
 
 DRILLS=${CHAOS_DRILLS:-kill9 ozyd-down agent-down udp-flood clock-jump cardinality-bomb disk-full}
 failed=""
+skipped=""
 for d in $DRILLS; do
   echo "=== $d"
-  if bash "scripts/chaos/$d.sh" 2>&1 | grep -v '^time='; [[ ${PIPESTATUS[0]} -eq 0 ]]; then :; else failed="$failed $d"; fi
+  out=$(mktemp)
+  bash "scripts/chaos/$d.sh" 2>&1 | grep -v '^time=' | tee "$out"
+  if [[ ${PIPESTATUS[0]} -ne 0 ]]; then failed="$failed $d"; elif grep -q '^SKIP:' "$out"; then skipped="$skipped $d"; fi
+  rm -f "$out"
 done
 if [[ -n $failed ]]; then echo "FAILED:$failed"; exit 1; fi
+if [[ -n $skipped ]]; then echo "passed, but SKIPPED:$skipped (not run: this is not a pass for them)"; exit 0; fi
 echo "all drills passed"

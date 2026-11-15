@@ -163,3 +163,57 @@ func TestAckIngest_ContinuesTheSequenceAndRecordsEachOutcome(t *testing.T) {
 		t.Fatalf("acked %d, unknown %d: both outcomes should have been recorded", acked, unknown)
 	}
 }
+
+// Two runs into one acks file must not reuse a lane timestamp: the second would be a point
+// the store drops as out of order, acknowledged all the same.
+func TestAckIngest_ASecondRunNeverSendsALaneAnOldTimestamp(t *testing.T) {
+	var stamps []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := make([]byte, 4096)
+		n, _ := r.Body.Read(b)
+		if strings.Contains(string(b[:n]), chaosMetric) {
+			stamps = append(stamps, string(b[:n]))
+		}
+		w.WriteHeader(202)
+		_, _ = w.Write([]byte(`{"accepted":1,"rejected":0}`))
+	}))
+	defer srv.Close()
+	// A first run that left lane 1 far ahead of the clock. Its last sequence number is 64, so
+	// this run starts at 65, which is lane 1 again: the lane that must not go backwards.
+	future := time.Now().Unix() + 1000
+	p := writeAcks(t, fmt.Sprintf("s 1 a %d", future), fmt.Sprintf("l 64 a %d", future))
+	if err := ackIngest(srv.URL, p, 100, 200*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, s := range stamps {
+		if strings.Contains(s, `"lane:1"`) {
+			seen++
+		}
+		if strings.Contains(s, `"lane:1"`) && !strings.Contains(s, fmt.Sprintf("[%d,1]", future+1)) && !strings.Contains(s, fmt.Sprintf("[%d,1]", future+2)) {
+			t.Fatalf("lane 1 was sent a timestamp at or before the earlier run's %d: %s", future, s)
+		}
+	}
+	if seen == 0 {
+		t.Fatal("the run never sent lane 1, so the test checked nothing")
+	}
+}
+
+// An empty page that still carries a cursor is not the end of the search.
+func TestStoredLogs_KeepsPagingPastAnEmptyPageWithACursor(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		switch r.URL.Query().Get("cursor") {
+		case "":
+			_, _ = w.Write([]byte(`{"logs":[],"cursor":"c1"}`))
+		case "c1":
+			_, _ = w.Write([]byte(`{"logs":[{"message":"chaos 7"}],"cursor":""}`))
+		}
+	}))
+	defer srv.Close()
+	stored, _, err := storedLogs(srv.URL, 0, 1)
+	if err != nil || stored[7] != 1 || calls != 2 {
+		t.Fatalf("stored %v after %d calls, err %v: the empty first page ended the search", stored, calls, err)
+	}
+}
