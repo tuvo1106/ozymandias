@@ -49,3 +49,17 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make soak
+
+  # Every chaos drill at the acceptance settings of docs/plan/M7-hardening.md §9: 50 kill -9s,
+  # a 15 minute outage, 500k packets/s, a million-series bomb. About 40 minutes. A failure is a
+  # report, not a blocked branch, for the reason given at the top of this file.
+  chaos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: make build
+      - run: scripts/chaos/all.sh long

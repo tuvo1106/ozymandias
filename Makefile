@@ -137,6 +137,14 @@ down-v: ## Stop the compose stack and delete its data volume
 dev: build ## Run ozyd + agent natively and the Vite dev server
 	scripts/dev.sh
 
+.PHONY: chaos
+chaos: build ## The chaos drills (scripts/chaos) at quick settings: a few kills, short outages
+	scripts/chaos/all.sh
+
+.PHONY: chaos-long
+chaos-long: build ## The chaos drills at the acceptance settings of M7 §9 (50 kills, a 15 minute outage, 500k pkt/s): about 40 minutes
+	scripts/chaos/all.sh long
+
 .PHONY: e2e
 e2e: build ## Browser e2e (Playwright) against a native ozyd + agent + Vite, seeded with synthetic traces
 	scripts/e2e.sh
