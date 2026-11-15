@@ -319,8 +319,15 @@ func TestForwarder_ShutdownKeepsNewerPayloadsBehindOlderSpooledOnes(t *testing.T
 	if err := f.Shutdown(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// The invariant is order, not absence: once ozyd is back the background loop may
+	// legitimately deliver the old payload from disk first, and then the new one. What
+	// must never happen is the new one on the wire while the old one is still on disk.
+	oldSeen := false
 	for _, g := range e.in.got() {
-		if strings.HasSuffix(g, " new") {
+		switch {
+		case strings.HasSuffix(g, " old"):
+			oldSeen = true
+		case strings.HasSuffix(g, " new") && !oldSeen:
 			t.Fatalf("a newer payload was sent from memory while an older one waited on disk: %v", e.in.got())
 		}
 	}
