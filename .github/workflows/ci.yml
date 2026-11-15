@@ -116,3 +116,7 @@ jobs:
       - name: web
         working-directory: web
         run: npm ci && npm run typecheck && npm run lint && npm run test:coverage && npm run build
+      # The three chaos drills that docs/plan/M7-hardening.md §7 (L9) asks for on every push:
+      # kill -9 and restart, the agent dying, and a full disk (a tmpfs, so it needs the
+      # runner's sudo). The other drills, and every drill at acceptance size, run nightly.
+      - run: make build && CHAOS_NO_SKIP=1 CHAOS_DRILLS="kill9 agent-down disk-full" scripts/chaos/all.sh

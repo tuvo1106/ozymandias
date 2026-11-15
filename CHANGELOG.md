@@ -9,6 +9,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Chaos drills** (M7). `scripts/chaos/` holds seven scripted drills that break ozyd, the agent or the
+  disk on purpose and assert the outcome: `kill9`, `ozyd-down`, `agent-down`, `udp-flood`, `clock-jump`,
+  `cardinality-bomb`, `disk-full`. `make chaos` runs them quickly, `make chaos-long` at acceptance size;
+  three run in CI on every push and all nightly. `loadgen` gained `ack-ingest` and `verify`, which check the
+  stores against a file of what ozyd acknowledged. Failure runbook in docs/operations.md; ADR-0061.
+
 - **Operability** (M7). `GET /readyz` (public) answers 503 while a store has stopped, the queue
   consumers are not running, or shutdown has begun; `/healthz` is unchanged. The TSDB and the log
   store now stop for good after a failed fsync of their write-ahead log, as the queue does, and say
@@ -152,6 +158,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`pipeline.mode` now defaults to `queued`.** A `202` from intake means the data is durable in the queue,
+  not that it is queryable yet. Set `pipeline.mode: direct` (or `OZY_PIPELINE_MODE=direct`) for the old behaviour.
+  `make smoke`, `make e2e` and the server's end-to-end suite all pass queued (ADR-0061).
 - The queue's default group-commit window is 1 ms, not 5 ms: measured on Linux it was faster at
   every concurrency above one producer (ADR-0056).
 - **The dashboards API answers `created_at` and `updated_at` in UTC.** They were rendered in the
