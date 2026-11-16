@@ -1,11 +1,14 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/config"
 	"github.com/tuvo1106/ozymandias/pkg/wire"
@@ -209,4 +212,129 @@ func TestAuth_AFailedStartReleasesTheDataDirectory(t *testing.T) {
 		t.Fatalf("the data directory was still held after a failed start: %v", err)
 	}
 	_ = s.Close()
+}
+
+// A key's series limits reach the intake and the sender is told, in both pipeline modes:
+// a refused series is an item-level rejection in the 202, not a counter somewhere else.
+func TestAuth_SeriesLimitsAreAnsweredAtIntake(t *testing.T) {
+	_, h := authServer(t, nil)
+	key := newKey(t, h, `{"max_series_per_metric": 3, "max_active_series": 4}`)
+	body := func(metric string, from, to int, ts int64) string {
+		var sb strings.Builder
+		sb.WriteString(`{"series":[`)
+		for i := from; i < to; i++ {
+			if i > from {
+				sb.WriteByte(',')
+			}
+			fmt.Fprintf(&sb, `{"metric":%q,"type":"count","interval":10,"tags":["user:u%d"],"points":[[%d,1]]}`, metric, i, ts)
+		}
+		sb.WriteString(`]}`)
+		return sb.String()
+	}
+	reply := func(w *httptest.ResponseRecorder) (accepted, rej int, errs []string) {
+		t.Helper()
+		var r struct {
+			Accepted, Rejected int
+			Errors             []string
+		}
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &r); err != nil {
+			t.Fatal(err)
+		}
+		return r.Accepted, r.Rejected, r.Errors
+	}
+
+	// 5 users on one metric: 3 fit.
+	a, r, errs := reply(do(h, "POST", "/v1/series", body("m.a", 0, 5, 1790000000), wire.HeaderKey, key))
+	if a != 3 || r != 2 || len(errs) != 2 || !strings.Contains(errs[0], "active series for this metric") {
+		t.Fatalf("per-metric: accepted %d rejected %d errs %v, want 3 and 2 naming the limit", a, r, errs)
+	}
+	// The same three again (a later point: a repeated one is a no-op in direct mode) are not new: all admitted.
+	if a, r, _ = reply(do(h, "POST", "/v1/series", body("m.a", 0, 3, 1790000010), wire.HeaderKey, key)); a != 3 || r != 0 {
+		t.Fatalf("resending the admitted series: accepted %d rejected %d", a, r)
+	}
+	// A second metric has room for one more series before the key's total of 4.
+	a, r, errs = reply(do(h, "POST", "/v1/series", body("m.b", 0, 3, 1790000000), wire.HeaderKey, key))
+	if a != 1 || r != 2 || !strings.Contains(strings.Join(errs, " "), "4 active series") {
+		t.Fatalf("total: accepted %d rejected %d errs %v, want 1 and 2 naming the total", a, r, errs)
+	}
+	// Another key is unaffected.
+	other := newKey(t, h, `{}`)
+	if a, r, _ = reply(do(h, "POST", "/v1/series", body("m.c", 0, 5, 1790000000), wire.HeaderKey, other)); a != 5 || r != 0 {
+		t.Fatalf("another key: accepted %d rejected %d", a, r)
+	}
+	// And the refusals are counted by reason.
+	for _, reason := range []string{"series_per_metric", "series_total"} {
+		if !strings.Contains(do(h, "GET", "/debug/vars", "", "Authorization", "Bearer s3cret").Body.String(), `"reason:`+reason+`"`) {
+			t.Errorf("ozy.intake.rejected{reason:%s} is not exposed", reason)
+		}
+	}
+}
+
+// A saved tag rule reaches the intake: the dropped tag is not in the stored series, the drop is
+// counted, the key's series limit sees the merged series, and the rules need the admin login.
+func TestTagConfig_RulesApplyAtIntakeAndNeedTheAdminLogin(t *testing.T) {
+	s, h := authServer(t, nil)
+	feedStores(t, s)
+	admin := []string{"Authorization", "Bearer s3cret"}
+	rule := `{"metric":"tc.count","mode":"deny","keys":["user"]}`
+	if w := do(h, "PUT", "/api/v1/metrics/tag-config", rule); w.Code != http.StatusUnauthorized {
+		t.Fatalf("a rule written without the admin login: %d, want 401", w.Code)
+	}
+	if w := do(h, "PUT", "/api/v1/metrics/tag-config", `{"metric":"m","mode":"nope","keys":["a"]}`, admin...); w.Code != http.StatusBadRequest {
+		t.Fatalf("an invalid rule: %d, want 400", w.Code)
+	}
+	if w := do(h, "PUT", "/api/v1/metrics/tag-config", rule, admin...); w.Code != http.StatusOK {
+		t.Fatalf("saving a rule: %d %s", w.Code, w.Body)
+	}
+	if w := do(h, "GET", "/api/v1/metrics/tag-config", "", admin...); !strings.Contains(w.Body.String(), `"tc.count"`) {
+		t.Fatalf("the rule is not listed: %s", w.Body)
+	}
+
+	key := newKey(t, h, `{"max_series_per_metric": 1}`)
+	// Three users, one real series: the rule merges them, so a limit of one series per
+	// metric admits all three points (the first creates the series, the others join it).
+	var sb strings.Builder
+	sb.WriteString(`{"series":[`)
+	for i := 0; i < 3; i++ {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, `{"metric":"tc.count","type":"count","interval":10,"tags":["env:t","user:u%d"],"points":[[%d,1]]}`, i, 1790000000+10*i)
+	}
+	sb.WriteString(`]}`)
+	w := do(h, "POST", "/v1/series", sb.String(), wire.HeaderKey, key)
+	if w.Code != http.StatusAccepted || !strings.Contains(w.Body.String(), `"rejected":0`) {
+		t.Fatalf("three users under a deny rule and a limit of one series: %d %s", w.Code, w.Body)
+	}
+	query := func(q string) string {
+		return do(h, "GET", "/api/v1/query?q="+url.QueryEscape(q)+"&from=1789999990&to=1790000100", "", admin...).Body.String()
+	}
+	var byEnv string
+	for i := 0; i < 100 && !strings.Contains(byEnv, `"env":"t"`); i++ { // queued mode applies after it answers
+		byEnv = query("sum:tc.count{*} by {env}")
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !strings.Contains(byEnv, `"env":"t"`) || strings.Count(byEnv, `"points"`) != 1 {
+		t.Fatalf("the three points did not land in the one merged series: %s", byEnv)
+	}
+	if byUser := query("sum:tc.count{*} by {user}"); strings.Contains(byUser, `"user":`) {
+		t.Fatalf("the stored series still carries the dropped tag: %s", byUser)
+	}
+	if !strings.Contains(do(h, "GET", "/debug/vars", "", admin...).Body.String(), `"ozy.intake.tags_dropped"`) {
+		t.Error("ozy.intake.tags_dropped is not exposed")
+	}
+
+	if w := do(h, "DELETE", "/api/v1/metrics/tag-config?metric=tc.count", "", admin...); w.Code != http.StatusOK {
+		t.Fatalf("deleting the rule: %d %s", w.Code, w.Body)
+	}
+	// With the rule gone the same three users are three new series (their tags differ from
+	// the merged one the key's single slot holds), and the key's limit of one refuses all three.
+	body2 := strings.ReplaceAll(sb.String(), "1790000", "1790001")
+	w = do(h, "POST", "/v1/series", body2, wire.HeaderKey, key)
+	if !strings.Contains(w.Body.String(), `"rejected":3`) {
+		t.Fatalf("after the rule was removed: %s, want all three users refused by the series limit", w.Body)
+	}
 }

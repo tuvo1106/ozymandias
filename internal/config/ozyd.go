@@ -328,6 +328,10 @@ type AuthLimits struct {
 	BytesPerSec    float64 `yaml:"bytes_per_sec"`
 	SpansPerSec    float64 `yaml:"spans_per_sec"`
 	LogBytesPerDay int64   `yaml:"log_bytes_per_day"`
+	// MaxSeriesPerMetric and MaxActiveSeries bound the distinct series a key has sent
+	// within the last hour, per metric and in all (ADR-0062).
+	MaxSeriesPerMetric int `yaml:"max_series_per_metric"`
+	MaxActiveSeries    int `yaml:"max_active_series"`
 }
 
 // Validate checks the auth settings.
@@ -337,7 +341,7 @@ func (a Auth) Validate() error {
 		errs = append(errs, fmt.Errorf("auth.session_ttl must not be negative, got %v", a.SessionTTL))
 	}
 	d := a.Defaults
-	if d.RequestsPerSec < 0 || d.BytesPerSec < 0 || d.SpansPerSec < 0 || d.LogBytesPerDay < 0 {
+	if d.RequestsPerSec < 0 || d.BytesPerSec < 0 || d.SpansPerSec < 0 || d.LogBytesPerDay < 0 || d.MaxSeriesPerMetric < 0 || d.MaxActiveSeries < 0 {
 		errs = append(errs, errors.New("auth.defaults must not be negative"))
 	}
 	return errors.Join(errs...)

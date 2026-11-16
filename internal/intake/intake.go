@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/auth"
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/meta"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
@@ -44,6 +45,9 @@ type Options struct {
 	// fed by Run. Nil is direct mode, the pre-M7 path. It must hold every
 	// topic in Topics.
 	Queue map[string]Producer
+	// Tags, if set, applies per-metric tag allow/deny rules to every series and sketch
+	// before it is type-checked, limited or queued (internal/tagcfg).
+	Tags TagFilter
 	// MaxAge rejects points older than this; 0 accepts any age.
 	MaxAge  time.Duration
 	Clock   clock.Clock           // default clock.Real()
@@ -60,6 +64,7 @@ type Intake struct {
 
 	accepted, rejected, points   *selfmetrics.Counter
 	sketchPoints                 *selfmetrics.Counter
+	tagsDropped                  *selfmetrics.Counter // tags removed by a per-metric rule (internal/tagcfg)
 	logsAccepted, logsRejected   *selfmetrics.Counter
 	spansAccepted, spansRejected *selfmetrics.Counter
 }
@@ -82,6 +87,7 @@ func New(opts Options) *Intake {
 		points:   opts.Metrics.Counter("ozy.intake.points_accepted"),
 
 		sketchPoints: opts.Metrics.Counter("ozy.intake.sketch_points_accepted"),
+		tagsDropped:  opts.Metrics.Counter("ozy.intake.tags_dropped"),
 
 		logsAccepted: opts.Metrics.Counter("ozy.intake.logs_accepted"),
 		logsRejected: opts.Metrics.Counter("ozy.intake.logs_rejected"),
@@ -222,12 +228,20 @@ func (in *Intake) ingest(ctx context.Context, valid []wire.Series, now time.Time
 func (in *Intake) admitSeries(ctx context.Context, valid []wire.Series, now time.Time, errs []string) ([]wire.Series, []string, error) {
 	kept := make([]wire.Series, 0, len(valid))
 	for _, s := range valid {
+		s.Tags = in.filterTags(s.Metric, s.Tags)
 		if err := in.opts.Registry.Observe(ctx, s.Metric, s.Type, s.Interval, now); err != nil {
 			if !errors.Is(err, meta.ErrTypeConflict) {
 				in.opts.Logger.Error("intake: metadata", "err", err)
 				return nil, nil, errors.New("metadata store unavailable")
 			}
 			errs = append(errs, fmt.Sprintf("%q: %v", s.Metric, err))
+			continue
+		}
+		// After the type check, so a series refused there takes no slot, and before the
+		// queue, so the sender hears of it in both modes. Nil principal (auth off, or ozyd's
+		// own metrics) admits everything.
+		if ok, why := auth.FromContext(ctx).AdmitSeries(s.Metric, s.Tags); !ok {
+			errs = append(errs, fmt.Sprintf("%q: %s", s.Metric, why))
 			continue
 		}
 		kept = append(kept, s)
@@ -278,4 +292,21 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, wire.ErrorResponse{Status: "error", Error: msg})
+}
+
+// TagFilter applies the saved per-metric tag rules (internal/tagcfg.Config).
+type TagFilter interface {
+	Filter(metric string, tags []string) (kept []string, dropped int)
+}
+
+// filterTags drops the tags a metric's rule says it may not have, and counts them.
+func (in *Intake) filterTags(metric string, tags []string) []string {
+	if in.opts.Tags == nil {
+		return tags
+	}
+	kept, dropped := in.opts.Tags.Filter(metric, tags)
+	if dropped > 0 {
+		in.tagsDropped.Add(int64(dropped))
+	}
+	return kept
 }

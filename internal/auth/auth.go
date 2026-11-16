@@ -90,6 +90,13 @@ func (a *Auth) Rejected() *Rejections { return a.rej }
 
 type ctxKey struct{}
 
+// ContextWith returns ctx carrying p as the request's principal, as the gate does.
+// It exists for packages that test what they do with a principal without standing up
+// the gate and a keyring.
+func ContextWith(ctx context.Context, p *Principal) context.Context {
+	return context.WithValue(ctx, ctxKey{}, p)
+}
+
 // FromContext returns the key that authenticated the request, or nil (auth off,
 // or a path that takes no key). Every Principal method is safe on nil.
 func FromContext(ctx context.Context) *Principal {

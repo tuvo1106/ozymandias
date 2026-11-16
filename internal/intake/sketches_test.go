@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tuvo1106/ozymandias/internal/auth"
+
 	"github.com/tuvo1106/ozymandias/internal/sketch"
 	"github.com/tuvo1106/ozymandias/internal/sketchstore"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
@@ -340,4 +342,80 @@ func storedTimestamps(t *testing.T, e *env, metric string) map[int64]bool {
 		}
 	}
 	return out
+}
+
+// A sketch is one series against its key's limits, and the sender is told which were refused.
+func TestSketches_AKeysSeriesLimitIsAnsweredAtIntake(t *testing.T) {
+	e, _ := newSketchEnv(t, Options{})
+	p := auth.NewPrincipal(1, "k", auth.Limits{MaxSeriesPerMetric: 2}, e.clk)
+	send := func(user int) map[string]any {
+		body := sketchPayload(t, "lat", []string{fmt.Sprintf("user:%d", user)}, 1790000000+int64(user), 1, 2, 3)
+		req := httptest.NewRequest(http.MethodPost, "/v1/sketches", bytes.NewReader([]byte(body)))
+		req = req.WithContext(auth.ContextWith(req.Context(), p))
+		rec := httptest.NewRecorder()
+		e.h.ServeHTTP(rec, req)
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return out
+	}
+	for u := 0; u < 2; u++ {
+		if out := send(u); out["rejected"] != float64(0) {
+			t.Fatalf("series %d refused under the limit: %v", u, out)
+		}
+	}
+	out := send(2)
+	if out["rejected"] != float64(1) || !strings.Contains(fmt.Sprint(out["errors"]), "active series for this metric") {
+		t.Fatalf("a third sketch series: %v, want one rejection naming the limit", out)
+	}
+}
+
+// dropUsers is a TagFilter that removes every user:* tag.
+type dropUsers struct{}
+
+func (dropUsers) Filter(_ string, tags []string) ([]string, int) {
+	var kept []string
+	for _, t := range tags {
+		if !strings.HasPrefix(t, "user:") {
+			kept = append(kept, t)
+		}
+	}
+	return kept, len(tags) - len(kept)
+}
+
+func tagsDropped(e *env) float64 {
+	for _, m := range e.reg.Snapshot() {
+		if m.Name == "ozy.intake.tags_dropped" {
+			return m.Value
+		}
+	}
+	return -1
+}
+
+// Both intake paths apply the rules, and say how much they dropped: a sketch's tags are
+// filtered like a series' (a metric's rule is about the metric, not the endpoint it came by).
+func TestTagFilter_AppliesToSeriesAndSketchesAndIsCounted(t *testing.T) {
+	e, sk := newSketchEnv(t, Options{Tags: dropUsers{}})
+	if got := tagsDropped(e); got != 0 {
+		t.Fatalf("the counter starts at %v, want a registered 0", got)
+	}
+	body := sketchPayload(t, "lat", []string{"env:t", "user:7"}, 1790000000, 1, 2, 3)
+	if rec, out := e.postSketches(body); rec.Code != http.StatusAccepted || out["rejected"] != float64(0) {
+		t.Fatalf("%d %v", rec.Code, out)
+	}
+	if got := tagsDropped(e); got != 1 {
+		t.Fatalf("after one sketch with one user tag: tags_dropped = %v, want 1", got)
+	}
+	points, err := sk.Read(context.Background(), tsdb.NewSeriesRef("lat", []string{"env:t"}), 0, 1<<42)
+	if err != nil || len(points) != 1 {
+		t.Fatalf("the sketch is not stored under the filtered tags: %v %v", points, err)
+	}
+	series := `{"series":[{"metric":"g","type":"gauge","interval":0,"tags":["user:1","user:2","a:b"],"points":[[1790000000,1]]}]}`
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/series", strings.NewReader(series)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	if got := tagsDropped(e); got != 3 {
+		t.Fatalf("after a series with two user tags: tags_dropped = %v, want 3", got)
+	}
 }

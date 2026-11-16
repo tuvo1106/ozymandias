@@ -245,3 +245,7 @@ auth:
   #   bytes_per_sec: 0
   #   spans_per_sec: 0
   #   log_bytes_per_day: 0
+  #   # Distinct series a key may have sent in the last hour: per metric name, and in all.
+  #   # Past either, a new series is refused in the response (ADR-0062).
+  #   max_series_per_metric: 0
+  #   max_active_series: 0

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/auth"
 	"github.com/tuvo1106/ozymandias/internal/meta"
 	"github.com/tuvo1106/ozymandias/internal/sketch"
 	"github.com/tuvo1106/ozymandias/internal/sketchstore"
@@ -109,6 +110,7 @@ func (in *Intake) ingestSketches(ctx context.Context, valid []wire.SketchSeries,
 // never reaches either store.
 func (in *Intake) admitSketches(ctx context.Context, valid []wire.SketchSeries, now time.Time, errs []string) (accepted []wire.SketchSeries, decoded [][]sketchstore.Point, _ []string, _ error) {
 	for _, s := range valid {
+		s.Tags = in.filterTags(s.Metric, s.Tags)
 		reason, err := in.observeSketch(ctx, s, now)
 		if err != nil {
 			return nil, nil, nil, err
@@ -120,6 +122,12 @@ func (in *Intake) admitSketches(ctx context.Context, valid []wire.SketchSeries, 
 		points, reason := decodeSketchPoints(s)
 		if reason != "" {
 			errs = append(errs, fmt.Sprintf("%q: %s", s.Metric, reason))
+			continue
+		}
+		// One sketch is one series against the key's limits, though it is stored as
+		// several (the percentiles' .count, .sum and so on).
+		if ok, why := auth.FromContext(ctx).AdmitSeries(s.Metric, s.Tags); !ok {
+			errs = append(errs, fmt.Sprintf("%q: %s", s.Metric, why))
 			continue
 		}
 		accepted = append(accepted, s)

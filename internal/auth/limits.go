@@ -16,6 +16,10 @@ type Limits struct {
 	BytesPerSec    float64 `json:"bytes_per_sec"`
 	SpansPerSec    float64 `json:"spans_per_sec"`
 	LogBytesPerDay int64   `json:"log_bytes_per_day"`
+	// MaxSeriesPerMetric and MaxActiveSeries bound the distinct series a key has sent
+	// within the last hour, per metric name and in all (ADR-0062).
+	MaxSeriesPerMetric int `json:"max_series_per_metric"`
+	MaxActiveSeries    int `json:"max_active_series"`
 }
 
 // withDefaults fills l's zero fields from d, and turns a negative field into
@@ -33,6 +37,14 @@ func (l Limits) withDefaults(d Limits) Limits {
 	if l.LogBytesPerDay == 0 {
 		l.LogBytesPerDay = d.LogBytesPerDay
 	}
+	if l.MaxSeriesPerMetric == 0 {
+		l.MaxSeriesPerMetric = d.MaxSeriesPerMetric
+	}
+	if l.MaxActiveSeries == 0 {
+		l.MaxActiveSeries = d.MaxActiveSeries
+	}
+	l.MaxSeriesPerMetric = max(l.MaxSeriesPerMetric, 0)
+	l.MaxActiveSeries = max(l.MaxActiveSeries, 0)
 	l.RequestsPerSec = max(l.RequestsPerSec, 0)
 	l.BytesPerSec = max(l.BytesPerSec, 0)
 	l.SpansPerSec = max(l.SpansPerSec, 0)
@@ -144,15 +156,17 @@ func (c *dayCounter) add(n int64, now time.Time) (bool, time.Duration) {
 // Reason values for ozy.intake.rejected. A fixed set, in code: nothing a client
 // sends becomes a tag.
 const (
-	ReasonUnauthorized = "unauthorized"
-	ReasonRequests     = "requests"
-	ReasonBytes        = "bytes"
-	ReasonSpans        = "spans"
-	ReasonLogBytesDay  = "log_bytes_day"
+	ReasonUnauthorized    = "unauthorized"
+	ReasonRequests        = "requests"
+	ReasonBytes           = "bytes"
+	ReasonSpans           = "spans"
+	ReasonLogBytesDay     = "log_bytes_day"
+	ReasonSeriesPerMetric = "series_per_metric"
+	ReasonSeriesTotal     = "series_total"
 )
 
 // Reasons lists them, for registering the counters up front.
-var Reasons = [...]string{ReasonUnauthorized, ReasonRequests, ReasonBytes, ReasonSpans, ReasonLogBytesDay}
+var Reasons = [...]string{ReasonUnauthorized, ReasonRequests, ReasonBytes, ReasonSpans, ReasonLogBytesDay, ReasonSeriesPerMetric, ReasonSeriesTotal}
 
 // Principal is an authenticated key and its live limiters. The methods that
 // charge (Allow, AllowSpans, AllowLogBytes) are safe on a nil Principal, which
@@ -166,7 +180,13 @@ type Principal struct {
 	bytes    *bucket
 	spans    *bucket
 	logBytes *dayCounter
+	series   *seriesTracker
 	rej      *Rejections // set per request by the middleware; nil counts nothing
+}
+
+// NewPrincipal builds a principal with live limiters, for tests of code that charges one.
+func NewPrincipal(id int64, name string, l Limits, clk clock.Clock) *Principal {
+	return newPrincipal(id, name, l, clk)
 }
 
 func newPrincipal(id int64, name string, l Limits, clk clock.Clock) *Principal {
@@ -177,6 +197,7 @@ func newPrincipal(id int64, name string, l Limits, clk clock.Clock) *Principal {
 		bytes:    newBucket(l.BytesPerSec, wire.MaxBodyBytes, now),
 		spans:    newBucket(l.SpansPerSec, wire.MaxSpansPerRequest, now),
 		logBytes: newDayCounter(l.LogBytesPerDay),
+		series:   newSeriesTracker(l.MaxSeriesPerMetric, l.MaxActiveSeries),
 	}
 }
 
