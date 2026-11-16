@@ -112,11 +112,12 @@ interval's increase.
 | `ozy.queue.bytes` | gauge | bytes | `topic` | ozyd (queued mode) | A topic's size on disk; at `pipeline.queue.max_bytes` intake answers 429 |
 | `ozy.queue.broken` | gauge | 0/1 | `topic` | ozyd (queued mode) | 1 after a failed fsync stopped the topic: intake answers 503 until restart |
 | `ozy.intake.shed` | counter | requests | `topic` | ozyd (queued mode) | Requests refused with 429 ahead of the cap: logs and traces at 80% of a topic, series and sketches at 95% |
-| `ozy.intake.rejected` | counter | requests | `reason` | ozyd (auth on) | Intake requests refused for an API key problem or a key's limit. `reason` is one of `unauthorized`, `requests`, `bytes`, `spans`, `log_bytes_day`; all five exist from startup |
+| `ozy.intake.rejected` | counter | requests | `reason` | ozyd (auth on) | Intake requests refused for an API key problem or a key's limit. `reason` is one of `unauthorized`, `requests`, `bytes`, `spans`, `log_bytes_day`, `series_per_metric`, `series_total` (the last two count refused *series* in an accepted request, not requests); all seven exist from startup |
 | `ozy.agent.forwarder.unauthorized` | counter | requests | — | agent | Payload sends ozyd answered 401 (missing, wrong or revoked key). The data is kept and retried |
 | `ozy.agent.logs.unauthorized` | counter | batches | — | agent | Log batches ozyd answered 401. The tailer keeps its offset and sends them again once the key is fixed |
 | `ozy.backup.runs` | counter | backups | `result` | ozyd | Backups attempted: `ok` or `error` (one that was refused because another was running does not start and is not counted). Both series exist from startup |
 | `ozy.backup.last_success_timestamp` | gauge | unix seconds | — | ozyd | When the last successful backup started; 0 means none since this ozyd started. A monitor on `now - this` is the way to be told backups stopped |
+| `ozy.intake.tags_dropped` | counter | tags | — | ozyd | Tags removed from points by a per-metric allow/deny rule (`/api/v1/metrics/tag-config`). Rising with no rule you wrote means nothing; rising after one means the rule is biting, and series that differed only by that tag are now one |
 | `ozy.query.in_flight` | gauge | requests | — | ozyd | Read-API requests holding a slot (limit `query.max_concurrent`) |
 | `ozy.query.queued` | gauge | requests | — | ozyd | Read-API requests waiting for a slot |
 | `ozy.query.rejected` | counter | requests | — | ozyd | Read-API requests answered 503 because every slot and queue place was taken |

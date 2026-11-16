@@ -63,13 +63,15 @@ dropping log lines (files are their own buffer) — statsd and traces are shed.
   admin password → session cookie (HttpOnly, SameSite=Strict; ADR-0059); good enough for
   local/VPS, documented as not multi-user.
 - Limits per key: requests/s, bytes/s (token buckets), max log bytes/day, max spans/s
-  (PR 5). **Deferred to PR 5b:** max series per metric and max total active series per key,
-  which need the key to travel in the queued record (ADR-0059). Exceeding →
+  (PR 5), and max series per metric and max total active series (PR 5b, ADR-0062: counted at
+  intake, in front of the queue, so the sender hears of a refusal in queued mode too; the plan
+  first put it at the consumer with the key in the queued record). Exceeding →
   429 or item-level reject with reason; all counted under
   `ozy.intake.rejected{reason:…}`.
 - Cardinality tooling: Metric Summary gains "top growing metrics" and
   tag-key cardinality; an optional per-metric **tag allowlist/denylist**
-  (`metric_tag_config`) applied at the consumer to drop high-cardinality tags.
+  (`metric_tag_config`) to drop high-cardinality tags, applied at intake (ADR-0062). The "top growing"
+  view is not built.
 
 ## 5. Operability
 

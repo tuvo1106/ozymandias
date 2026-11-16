@@ -457,6 +457,19 @@ $ OZYMANDIAS_API_KEY=ozy_... agent -config deploy/agent.yaml
 - What the limits count: `requests_per_sec` one per request; `bytes_per_sec` the bytes on the wire
   (the gzip'd body, or the largest body when no length is declared); `spans_per_sec` the spans that
   decoded; `log_bytes_per_day` the decoded JSON of log batches, per UTC day.
+- **Series limits.** `max_series_per_metric` and `max_active_series` bound the distinct series a key
+  has sent in the last hour, per metric name and in all. They answer *inside* the response: the
+  request is `202`, a series past the limit is a rejection with the reason
+  (`"this key already has N active series for this metric"`), counted in
+  `ozy.intake.rejected{reason:series_per_metric|series_total}`, and the sender (an agent) does not retry it.
+  A series already counted is never refused, an idle one ages out after an hour, and the tracker never holds
+  more entries than its limit. It is process memory: after a restart it relearns from traffic. It counts what *this
+  key* sent, not what the store holds, so it sits beside, not in place of, `storage.max_series_per_metric`.
+- **Tag rules.** When one tag is the bomb (`user_id`, a URL), drop it at intake instead of refusing the series:
+  `PUT /api/v1/metrics/tag-config {"metric":"http.requests","mode":"deny","keys":["user_id"]}` (docs/api.md).
+  Applied before the queue and the key's series limits, so the limit sees the merged series; counted in
+  `ozy.intake.tags_dropped`. Points that now collide on a timestamp are kept first-wins and counted in
+  `ozy.tsdb.ooo_rejected`. Not applied to what is stored, and exact metric names only.
 - An agent whose key is wrong or revoked keeps its data (in the disk buffer if configured) and
   retries; `ozy.agent.forwarder.unauthorized` counts the refusals. Fix the key and it catches up.
 - **This is not TLS.** Over plain HTTP the password, the cookie and the keys are readable on the
