@@ -2,6 +2,7 @@ package tagcfg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
@@ -104,6 +105,8 @@ func TestValidate_RefusesWhatCouldNeverMatchOrCouldHurt(t *testing.T) {
 		"a key:value":     {"m", Deny, []string{"user:1"}},
 		"a key with junk": {"m", Deny, []string{"us er"}},
 		"an empty key":    {"m", Deny, []string{""}},
+		"upper case":      {"m", Deny, []string{"User"}},
+		"digit first":     {"m", Deny, []string{"1user"}},
 	} {
 		if Validate(c.metric, c.mode, c.keys) == nil {
 			t.Errorf("%s was accepted", name)
@@ -134,5 +137,31 @@ func TestConfig_ConcurrentReadsAndWritesAreSafe(t *testing.T) {
 		if _, dropped := c.Filter(fmt.Sprintf("m%d", i), []string{"user:1"}); dropped != 1 {
 			t.Errorf("rule m%d was lost", i)
 		}
+	}
+}
+
+func TestSet_DeduplicatesKeysAndBoundsTheNumberOfRules(t *testing.T) {
+	ctx := context.Background()
+	c, _ := Open(ctx, openMeta(t))
+	if err := c.Set(ctx, "m", Deny, []string{"user", "user", "id"}, time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ := c.List(ctx)
+	if len(rules) != 1 || !reflect.DeepEqual(rules[0].Keys, []string{"id", "user"}) {
+		t.Fatalf("duplicate keys were stored: %+v", rules)
+	}
+	for i := 1; i < MaxRules; i++ {
+		if err := c.Set(ctx, fmt.Sprint("m", i), Deny, []string{"k"}, time.Unix(1, 0)); err != nil {
+			t.Fatalf("rule %d: %v", i, err)
+		}
+	}
+	if err := c.Set(ctx, "one-too-many", Deny, []string{"k"}, time.Unix(1, 0)); !errors.Is(err, ErrTooManyRules) {
+		t.Fatalf("a rule past the bound: %v, want ErrTooManyRules", err)
+	}
+	if err := c.Set(ctx, "m", Allow, []string{"env"}, time.Unix(2, 0)); err != nil {
+		t.Fatalf("replacing a rule at the bound must still work: %v", err)
+	}
+	if err := c.Delete(ctx, "  "); err == nil {
+		t.Fatal("deleting a blank metric name was accepted")
 	}
 }

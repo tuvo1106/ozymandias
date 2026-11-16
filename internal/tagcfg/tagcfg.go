@@ -2,14 +2,16 @@ package tagcfg
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/meta"
+	"github.com/tuvo1106/ozymandias/pkg/wire"
 )
 
 // Modes.
@@ -23,9 +25,12 @@ const (
 const (
 	MaxKeys      = 64
 	maxKeyLength = 200
+	// MaxRules bounds the saved rules: each is a row and an entry copied by every write.
+	MaxRules = 1000
 )
 
-var keyPattern = regexp.MustCompile(`^[A-Za-z0-9_./-]+$`)
+// ErrTooManyRules is Set's refusal of a new rule past MaxRules.
+var ErrTooManyRules = errors.New("too many tag rules")
 
 // Store is the persistence the rules need.
 type Store interface {
@@ -81,8 +86,11 @@ func Validate(metric, mode string, keys []string) error {
 		return fmt.Errorf("keys: want 1-%d tag keys", MaxKeys)
 	}
 	for _, k := range keys {
-		if len(k) > maxKeyLength || !keyPattern.MatchString(k) {
-			return fmt.Errorf("key %q: want letters, digits, and _ . / - only (a key, not a key:value)", k)
+		// The wire's own grammar for a tag, so that every key a sender can use is a key a rule
+		// can name (a rule that cannot name the tag that is exploding is no use), and a bare
+		// key: `user`, not `user:1`.
+		if strings.Contains(k, ":") || !wire.ValidTag(k) {
+			return fmt.Errorf("key %q: want a bare tag key (lowercase letter first, then letters, digits and _ . / -), not a key:value", k)
 		}
 	}
 	return nil
@@ -132,6 +140,10 @@ func (c *Config) Set(ctx context.Context, metric, mode string, keys []string, no
 	defer func() { <-c.write }()
 	keys = append([]string(nil), keys...)
 	sort.Strings(keys)
+	keys = slices.Compact(keys)
+	if _, exists := (*c.rules.Load())[metric]; !exists && len(*c.rules.Load()) >= MaxRules {
+		return fmt.Errorf("%w: at most %d", ErrTooManyRules, MaxRules)
+	}
 	if err := c.store.SetTagConfig(ctx, meta.TagConfig{Metric: metric, Mode: mode, Keys: keys}, now); err != nil {
 		return err
 	}
@@ -141,6 +153,9 @@ func (c *Config) Set(ctx context.Context, metric, mode string, keys []string, no
 
 // Delete removes a rule.
 func (c *Config) Delete(ctx context.Context, metric string) error {
+	if strings.TrimSpace(metric) == "" || len(metric) > maxKeyLength {
+		return fmt.Errorf("metric must be 1-%d characters", maxKeyLength)
+	}
 	if err := c.lock(ctx); err != nil {
 		return err
 	}

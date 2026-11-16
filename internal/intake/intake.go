@@ -229,19 +229,23 @@ func (in *Intake) admitSeries(ctx context.Context, valid []wire.Series, now time
 	kept := make([]wire.Series, 0, len(valid))
 	for _, s := range valid {
 		s.Tags = in.filterTags(s.Metric, s.Tags)
+		// The key's limit first, before the registry: a series refused here must not have
+		// registered its metric name, or a key at its limit could still mint metric names
+		// without bound, which is the bomb the limit is for. Before the queue, so the sender
+		// hears of it in both modes. A nil principal (auth off, or ozyd's own metrics)
+		// admits everything.
+		p := auth.FromContext(ctx)
+		if ok, why := p.AdmitSeries(s.Metric, s.Tags); !ok {
+			errs = append(errs, fmt.Sprintf("%q: %s", s.Metric, why))
+			continue
+		}
 		if err := in.opts.Registry.Observe(ctx, s.Metric, s.Type, s.Interval, now); err != nil {
+			p.ForgetSeries(s.Metric, s.Tags) // refused after all: it takes no slot
 			if !errors.Is(err, meta.ErrTypeConflict) {
 				in.opts.Logger.Error("intake: metadata", "err", err)
 				return nil, nil, errors.New("metadata store unavailable")
 			}
 			errs = append(errs, fmt.Sprintf("%q: %v", s.Metric, err))
-			continue
-		}
-		// After the type check, so a series refused there takes no slot, and before the
-		// queue, so the sender hears of it in both modes. Nil principal (auth off, or ozyd's
-		// own metrics) admits everything.
-		if ok, why := auth.FromContext(ctx).AdmitSeries(s.Metric, s.Tags); !ok {
-			errs = append(errs, fmt.Sprintf("%q: %s", s.Metric, why))
 			continue
 		}
 		kept = append(kept, s)

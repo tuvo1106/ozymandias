@@ -465,6 +465,10 @@ $ OZYMANDIAS_API_KEY=ozy_... agent -config deploy/agent.yaml
   A series already counted is never refused, an idle one ages out after an hour, and the tracker never holds
   more entries than its limit. It is process memory: after a restart it relearns from traffic. It counts what *this
   key* sent, not what the store holds, so it sits beside, not in place of, `storage.max_series_per_metric`.
+  In a key, `0` means "take `auth.defaults`" and `-1` means unlimited, as for the other limits: to exempt a trusted
+  key from a default series limit, give it `-1`. A refused series registers no metric name, and a series refused after
+  the limit check (a type conflict) gives its slot back; a request that then fails on the queue or the store (a 5xx the
+  sender retries) does not, so a failing store seeing many *distinct* series can use up a key's limit for the hour.
 - **Tag rules.** When one tag is the bomb (`user_id`, a URL), drop it at intake instead of refusing the series:
   `PUT /api/v1/metrics/tag-config {"metric":"http.requests","mode":"deny","keys":["user_id"]}` (docs/api.md).
   Applied before the queue and the key's series limits, so the limit sees the merged series; counted in

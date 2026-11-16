@@ -130,3 +130,34 @@ func TestLimits_SeriesFieldsTakeDefaultsAndANegativeMeansUnlimited(t *testing.T)
 		t.Fatalf("a key's own values: %+v", got)
 	}
 }
+
+// A refusal is never made on the strength of a series that has already expired: a key that
+// rotated a tag must recover within the hour, not within the hour plus a sweep interval.
+func TestAdmitSeries_ARefusalSweepsFirstSoAnExpiredSeriesNeverBlocksANewOne(t *testing.T) {
+	p, clk, _ := trackerPrincipal(t, 0, 2)
+	p.AdmitSeries("m", []string{"a"}) // t0
+	p.AdmitSeries("m", []string{"b"})
+	clk.Advance(50 * time.Minute)
+	p.AdmitSeries("m", []string{"a"}) // keeps a alive and runs the periodic sweep at t=50m
+	clk.Advance(11 * time.Minute)     // t=61m: b is over an hour idle; the periodic sweep ran 11m ago and is not yet due
+	if ok, why := p.AdmitSeries("m", []string{"c"}); !ok {
+		t.Fatalf("a new series was refused for the sake of one idle over an hour: %s", why)
+	}
+}
+
+func TestForgetSeries_GivesBackTheSlotOfASeriesRefusedForAnotherReason(t *testing.T) {
+	p, _, _ := trackerPrincipal(t, 1, 0)
+	if ok, _ := p.AdmitSeries("m", []string{"a"}); !ok {
+		t.Fatal("first series refused")
+	}
+	if ok, _ := p.AdmitSeries("m", []string{"b"}); ok {
+		t.Fatal("over the limit")
+	}
+	p.ForgetSeries("m", []string{"a"})
+	if ok, _ := p.AdmitSeries("m", []string{"b"}); !ok {
+		t.Fatal("the forgotten series still held its slot")
+	}
+	p.ForgetSeries("m", []string{"never-admitted"}) // not an error
+	var none *Principal
+	none.ForgetSeries("m", nil) // nor on a nil principal
+}

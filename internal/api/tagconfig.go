@@ -76,7 +76,11 @@ func (t *TagConfig) put(w http.ResponseWriter, r *http.Request) {
 		Mode   string   `json:"mode"`
 		Keys   []string `json:"keys"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&body); err != nil {
+	// Strict: a typo'd field ("key" for "keys") must be an error naming the shape, not a rule
+	// with no keys, and a body with something after it is not the body that was meant.
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil || dec.More() {
 		writeError(w, http.StatusBadRequest, errBadBody)
 		return
 	}
@@ -85,6 +89,10 @@ func (t *TagConfig) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := t.Store.Set(r.Context(), body.Metric, body.Mode, body.Keys, t.Clock.Now()); err != nil {
+		if errors.Is(err, tagcfg.ErrTooManyRules) {
+			writeError(w, http.StatusConflict, err)
+			return
+		}
 		t.Logger.Error("tag config: saving", "err", err)
 		writeError(w, http.StatusInternalServerError, errUnavailable)
 		return
@@ -95,6 +103,10 @@ func (t *TagConfig) put(w http.ResponseWriter, r *http.Request) {
 func (t *TagConfig) remove(w http.ResponseWriter, r *http.Request) {
 	metric := r.URL.Query().Get("metric")
 	if metric == "" {
+		writeError(w, http.StatusBadRequest, errNeedMetric)
+		return
+	}
+	if len(metric) > 200 {
 		writeError(w, http.StatusBadRequest, errNeedMetric)
 		return
 	}

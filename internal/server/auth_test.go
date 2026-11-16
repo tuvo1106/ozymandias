@@ -338,3 +338,59 @@ func TestTagConfig_RulesApplyAtIntakeAndNeedTheAdminLogin(t *testing.T) {
 		t.Fatalf("after the rule was removed: %s, want all three users refused by the series limit", w.Body)
 	}
 }
+
+// A key at its series limit cannot mint metric names either: a refused series registers nothing.
+func TestAuth_ARefusedSeriesRegistersNoMetricName(t *testing.T) {
+	s, h := authServer(t, nil)
+	key := newKey(t, h, `{"max_active_series": 2}`)
+	send := func(metric string) {
+		body := fmt.Sprintf(`{"series":[{"metric":%q,"type":"count","interval":10,"tags":[],"points":[[1790000000,1]]}]}`, metric)
+		if w := do(h, "POST", "/v1/series", body, wire.HeaderKey, key); w.Code != http.StatusAccepted {
+			t.Fatalf("%d %s", w.Code, w.Body)
+		}
+	}
+	send("name.first")
+	send("name.second")
+	for i := 0; i < 20; i++ {
+		send(fmt.Sprintf("name.flood%d", i))
+	}
+	if _, ok := s.meta.Metric("name.first"); !ok {
+		t.Fatal("the admitted series' metric was not registered")
+	}
+	for i := 0; i < 20; i++ {
+		if _, ok := s.meta.Metric(fmt.Sprintf("name.flood%d", i)); ok {
+			t.Fatalf("name.flood%d was refused by the key's limit and registered anyway", i)
+		}
+	}
+	// A type conflict is refused after the limit check and must give the slot back.
+	// Another key with two slots, one used: three different new series, each refused for its
+	// type. If each kept its slot, the second would hit the limit instead of the conflict.
+	key2 := newKey(t, h, `{"max_active_series": 2}`)
+	if w := do(h, "POST", "/v1/series", `{"series":[{"metric":"name.other","type":"count","interval":10,"tags":[],"points":[[1790000000,1]]}]}`, wire.HeaderKey, key2); w.Code != http.StatusAccepted {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	for i := 0; i < 3; i++ {
+		conflict := fmt.Sprintf(`{"series":[{"metric":"name.first","type":"gauge","interval":0,"tags":["x:%d"],"points":[[1790000001,1]]}]}`, i)
+		if w := do(h, "POST", "/v1/series", conflict, wire.HeaderKey, key2); !strings.Contains(w.Body.String(), "conflict") {
+			t.Fatalf("series %d: expected a type conflict, got %s", i, w.Body)
+		}
+	}
+}
+
+func TestTagConfig_PutIsStrictAboutItsBody(t *testing.T) {
+	_, h := authServer(t, nil)
+	admin := []string{"Authorization", "Bearer s3cret"}
+	for name, body := range map[string]string{
+		"a misspelt field": `{"metric":"m","mode":"deny","key":["user"]}`,
+		"an extra field":   `{"metric":"m","mode":"deny","keys":["user"],"extra":1}`,
+		"trailing data":    `{"metric":"m","mode":"deny","keys":["user"]} {"x":1}`,
+		"upper-case key":   `{"metric":"m","mode":"deny","keys":["User"]}`,
+	} {
+		if w := do(h, "PUT", "/api/v1/metrics/tag-config", body, admin...); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", name, w.Code)
+		}
+	}
+	if w := do(h, "DELETE", "/api/v1/metrics/tag-config?metric="+strings.Repeat("x", 300), "", admin...); w.Code != http.StatusBadRequest {
+		t.Errorf("an over-long metric on DELETE: %d, want 400", w.Code)
+	}
+}

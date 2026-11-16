@@ -40,6 +40,14 @@ be stored, and redelivery stays exactly idempotent.
 - Dropping a tag merges series. At one timestamp the store keeps the first point and counts the rest in
   `ozy.tsdb.ooo_rejected`; a count split by the dropped tag is not summed back together. A rule is for the tag that is
   a bomb. It does not rewrite stored data.
+- Known and left: a series admitted and then lost to a failing queue or store (a 503 the sender retries) keeps its slot
+  for the hour. Refunding it would need the request to know which of its series were new to the tracker; for a retry of the
+  same series it is harmless, and a failing store is the larger problem.
+- Series and sketch tags arrive canonicalised (sorted, deduplicated) by the wire decoder, so the tracker's hash is order-sensitive
+  on purpose and a reordered series is not a second series. The hash is 64-bit FNV: a collision would count two series as one,
+  an undercount of one in about 2^32 pairs.
+- A deny rule applied to two points of one request that then share a series and a timestamp keeps the first and drops the
+  second without a word in the response (it is counted in `ozy.tsdb.ooo_rejected`). A count split by the dropped tag is not summed.
 - A sketch counts as one series against a key's limits though it is stored as several.
 - Not built: the Metric Summary's "top growing metrics" view from M7 §4 (the existing cardinality view and
   `ozy.intake.rejected` are what an operator has), rules by metric prefix, and a per-key tag rule.

@@ -42,7 +42,7 @@ type seriesTracker struct {
 	mu        sync.Mutex
 	seen      map[uint64]seriesEntry
 	count     map[string]int // active series per metric
-	nextSweep time.Time
+	lastSweep time.Time
 }
 
 type seriesEntry struct {
@@ -80,11 +80,18 @@ func (t *seriesTracker) admit(metric string, tags []string, now time.Time) (ok b
 	id := seriesHash(metric, tags)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.sweepLocked(now)
+	t.sweepLocked(now, activeWindow/4)
 	if e, hit := t.seen[id]; hit {
 		e.at = now
 		t.seen[id] = e
 		return true, "", ""
+	}
+	if t.perMetric > 0 && t.count[metric] >= t.perMetric || len(t.seen) >= t.total {
+		// About to refuse: make sure it is not on the strength of series that expired since
+		// the last sweep, or a key that rotated a tag would stay refused for up to a quarter
+		// window longer than the hour the docs promise. At most once a minute, so a flood of
+		// refusals does not turn every request into a pass over the whole set.
+		t.sweepLocked(now, time.Minute)
 	}
 	if t.perMetric > 0 && t.count[metric] >= t.perMetric {
 		return false, ReasonSeriesPerMetric,
@@ -98,13 +105,13 @@ func (t *seriesTracker) admit(metric string, tags []string, now time.Time) (ok b
 	return true, "", ""
 }
 
-// sweepLocked forgets series not sent within activeWindow. It runs at most once a
-// quarter-window, and costs one pass over at most `total` entries.
-func (t *seriesTracker) sweepLocked(now time.Time) {
-	if now.Before(t.nextSweep) {
+// sweepLocked forgets series not sent within activeWindow, if the last pass was at least
+// `every` ago. A pass costs one walk over at most `total` entries, under the lock.
+func (t *seriesTracker) sweepLocked(now time.Time, every time.Duration) {
+	if now.Sub(t.lastSweep) < every {
 		return
 	}
-	t.nextSweep = now.Add(activeWindow / 4)
+	t.lastSweep = now
 	for id, e := range t.seen {
 		if now.Sub(e.at) >= activeWindow {
 			delete(t.seen, id)
@@ -127,4 +134,29 @@ func (p *Principal) AdmitSeries(metric string, tags []string) (ok bool, why stri
 		p.rej.Inc(reason)
 	}
 	return ok, why
+}
+
+// forget gives back the slot of a series that was admitted and then turned out not to be
+// stored (a type conflict found after the limit check).
+func (t *seriesTracker) forget(metric string, tags []string) {
+	if t == nil {
+		return
+	}
+	id := seriesHash(metric, tags)
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if e, ok := t.seen[id]; ok {
+		delete(t.seen, id)
+		if t.count[e.metric]--; t.count[e.metric] <= 0 {
+			delete(t.count, e.metric)
+		}
+	}
+}
+
+// ForgetSeries undoes an AdmitSeries for a series that was then refused for another reason.
+// Safe on a nil Principal.
+func (p *Principal) ForgetSeries(metric string, tags []string) {
+	if p != nil {
+		p.series.forget(metric, tags)
+	}
 }
