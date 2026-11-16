@@ -29,6 +29,7 @@ import (
 	qeval "github.com/tuvo1106/ozymandias/internal/query/metricql/eval"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 	"github.com/tuvo1106/ozymandias/internal/sketchstore"
+	"github.com/tuvo1106/ozymandias/internal/tagcfg"
 	"github.com/tuvo1106/ozymandias/internal/tracestore"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/db"
@@ -213,7 +214,12 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		}
 		producers = s.pipe.producers()
 	}
+	tags, err := tagcfg.Open(context.Background(), md)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("tag config: %w", err), md.Close(), store.Close(), sk.Close(), ls.Close(), ts.Close())
+	}
 	s.intake = intake.New(intake.Options{
+		Tags:  tags,
 		Store: store, Sketches: sk, Registry: md, Logs: ls, LogHub: s.logHub, Traces: ts,
 		Queue: producers,
 		Clock: s.clock, Metrics: s.reg, Logger: s.log,
@@ -275,6 +281,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		Store: store, Types: md, Sketches: sk, Clock: s.clock,
 		Logger: s.log.With("component", "query"),
 	}).Register(mux)
+	(&api.TagConfig{Store: tags, Clock: s.clock, Logger: s.log.With("component", "tag-config")}).Register(mux)
 	(&api.Logs{
 		Store: ls, Hub: s.logHub, Clock: s.clock, ScanBudget: cfg.Logs.ScanBudget,
 		Logger: s.log.With("component", "logs-api"),

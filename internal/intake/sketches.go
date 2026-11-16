@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/auth"
 	"github.com/tuvo1106/ozymandias/internal/meta"
 	"github.com/tuvo1106/ozymandias/internal/sketch"
 	"github.com/tuvo1106/ozymandias/internal/sketchstore"
@@ -109,16 +110,28 @@ func (in *Intake) ingestSketches(ctx context.Context, valid []wire.SketchSeries,
 // never reaches either store.
 func (in *Intake) admitSketches(ctx context.Context, valid []wire.SketchSeries, now time.Time, errs []string) (accepted []wire.SketchSeries, decoded [][]sketchstore.Point, _ []string, _ error) {
 	for _, s := range valid {
+		s.Tags = in.filterTags(s.Metric, s.Tags)
+		// The key's limit first, as for series: a refused sketch registers no metric names.
+		// One sketch is one series against the limits, though it is stored as several
+		// (the percentiles' .count, .sum and so on).
+		p := auth.FromContext(ctx)
+		if ok, why := p.AdmitSeries(s.Metric, s.Tags); !ok {
+			errs = append(errs, fmt.Sprintf("%q: %s", s.Metric, why))
+			continue
+		}
 		reason, err := in.observeSketch(ctx, s, now)
 		if err != nil {
+			p.ForgetSeries(s.Metric, s.Tags)
 			return nil, nil, nil, err
 		}
 		if reason != "" {
+			p.ForgetSeries(s.Metric, s.Tags)
 			errs = append(errs, fmt.Sprintf("%q: %s", s.Metric, reason))
 			continue
 		}
 		points, reason := decodeSketchPoints(s)
 		if reason != "" {
+			p.ForgetSeries(s.Metric, s.Tags)
 			errs = append(errs, fmt.Sprintf("%q: %s", s.Metric, reason))
 			continue
 		}

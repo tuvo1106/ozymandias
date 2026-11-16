@@ -21,6 +21,7 @@ func (s *Server) newAuth(md *meta.DB, getenv func(string) string) (*auth.Auth, e
 	keys, err := auth.NewKeyring(context.Background(), md, s.clock, auth.Limits{
 		RequestsPerSec: c.Defaults.RequestsPerSec, BytesPerSec: c.Defaults.BytesPerSec,
 		SpansPerSec: c.Defaults.SpansPerSec, LogBytesPerDay: c.Defaults.LogBytesPerDay,
+		MaxSeriesPerMetric: c.Defaults.MaxSeriesPerMetric, MaxActiveSeries: c.Defaults.MaxActiveSeries,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("loading api keys: %w", err)

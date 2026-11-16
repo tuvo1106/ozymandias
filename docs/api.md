@@ -836,6 +836,22 @@ Present only when `backup.root` is set (ADR-0060); otherwise 404.
 Use `ozyd backup` rather than calling it by hand. `GET /readyz` is not under `/api`: see
 docs/operations.md#readiness.
 
+## Tag rules
+
+Per-metric tag allow/deny rules, for a metric whose series count is exploding because of one tag
+(ADR-0062). Admin only when auth is on. A rule applies from the next intake request and never rewrites
+what is already stored.
+
+| Route | Does |
+|---|---|
+| `GET /api/v1/metrics/tag-config` | `{"rules":[{"metric","mode","keys","updated_at"}]}` |
+| `PUT /api/v1/metrics/tag-config` `{"metric","mode":"deny\|allow","keys":[...]}` | Creates or replaces the metric's rule. `deny` drops those tag keys, `allow` keeps only them. Keys are bare (`user`, not `user:1`), 1-64 of `[A-Za-z0-9_./-]`. `400` on an invalid rule. |
+| `DELETE /api/v1/metrics/tag-config?metric=NAME` | Removes it. A metric with no rule is not an error. |
+
+Dropping a key merges series that differed only by it, and at one timestamp the store keeps the first
+point and counts the rest in `ozy.tsdb.ooo_rejected`: a rule is for a tag that is a bomb, not one that
+splits real series.
+
 ## Monitors
 
 A monitor watches a metric or log query and notifies when it crosses a
