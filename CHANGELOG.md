@@ -9,6 +9,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Intake benchmarks** (M7 L12). `loadgen -scenario intake-latency|intake-throughput` and `scripts/bench/` (`make bench-intake`) compare
+  `pipeline.mode` direct and queued, and sweep the queue's group-commit window; results in `docs/benchmarks.md`.
 - **Per-key series limits and per-metric tag rules** (M7). A key's `max_series_per_metric` and `max_active_series`
   (and `auth.defaults`) bound the distinct series it has sent in the last hour; a series past the limit is a
   rejection in the `202`, counted in `ozy.intake.rejected{reason:series_per_metric|series_total}`. `PUT
