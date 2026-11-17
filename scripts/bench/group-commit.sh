@@ -23,7 +23,8 @@ for si in ${BENCH_INTERVALS:--1ms 1ms 5ms 20ms}; do
   CHAOS_MODE=queued start_ozyd OZY_PIPELINE_QUEUE_SYNC_INTERVAL="$si"
   wait_ready "$OZYD_URL/readyz" 30 || fail "ozyd did not become ready at sync_interval=$si"
   "$BIN/loadgen" -scenario intake-latency -ozyd "$OZYD_URL" -n "$N" | grep acknowledged || fail "latency run failed ($si)"
-  throughput_run -signal series -workers "$WORKERS" -batch "$BATCH" -duration "$DURATION" | grep -E "acknowledged \(|request latency|drained|NOT drained|first failure"
+  out=$(throughput_run -signal series -workers "$WORKERS" -batch "$BATCH" -duration "$DURATION")
+  grep -E "acknowledged \(|request latency|drained|NOT drained|first failure" <<<"$out" || echo "$out"
   kill -TERM "$OZYD_PID" 2>/dev/null || true
   wait "$OZYD_PID" 2>/dev/null || true
   OZYD_PID=""
