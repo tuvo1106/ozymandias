@@ -29,7 +29,7 @@ func main() {
 	rate := flag.Int("rate", 50000, "messages per second")
 	duration := flag.Duration("duration", 60*time.Second, "how long to send")
 	contexts := flag.Int("contexts", 100, "distinct series (route tag values)")
-	batch := flag.Int("batch", 20, "messages per datagram")
+	batch := flag.Int("batch", 20, "messages per datagram (statsd-flood); items per request (intake-throughput)")
 	ozyd := flag.String("ozyd", "http://127.0.0.1:9400", "ozyd base URL (ack-ingest, verify)")
 	acks := flag.String("acks", "", "acks file (ack-ingest appends, verify reads)")
 	settle := flag.Duration("settle", 60*time.Second, "verify: how long to wait for the stores to catch up with the acks")
@@ -39,6 +39,10 @@ func main() {
 	flag.Parse()
 	switch *scenario {
 	case "intake-latency", "intake-throughput":
+		if err := checkIntakeFlags(*workers, *batch, *count, *duration); err != nil {
+			fmt.Fprintln(os.Stderr, "loadgen:", err)
+			os.Exit(2)
+		}
 		var err error
 		if *scenario == "intake-latency" {
 			err = intakeLatency(os.Stdout, *ozyd, *count)

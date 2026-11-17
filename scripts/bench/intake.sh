@@ -9,6 +9,7 @@
 #
 # Reuses the chaos drills' setup (own ports, own data dir, cleanup on exit).
 source "$(dirname "${BASH_SOURCE[0]}")/../chaos/lib.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 N=${BENCH_N:-300}
 DURATION=${BENCH_DURATION:-15s}
@@ -24,17 +25,7 @@ for mode in direct queued; do
   wait_ready "$OZYD_URL/readyz" 30 || fail "ozyd did not become ready in $mode mode"
   "$BIN/loadgen" -scenario intake-latency -ozyd "$OZYD_URL" -n "$N" || fail "latency run failed ($mode)"
   for signal in series logs; do
-    "$BIN/loadgen" -scenario intake-throughput -ozyd "$OZYD_URL" -signal "$signal" \
-      -workers "$WORKERS" -batch "$BATCH" -duration "$DURATION" || fail "$signal throughput run failed ($mode)"
-    # A 202 in queued mode is "durably queued", not "stored": the rate above is only sustainable
-    # if the consumers kept up. How long the backlog took to drain is the other half of it.
-    ticks=0
-    until queues_drained; do
-      sleep 0.2
-      ticks=$((ticks + 1))
-      if ((ticks > 600)); then echo "  queues had NOT drained 120s after the run ended"; break; fi
-    done
-    ((ticks > 600)) || echo "  queues drained $((ticks / 5)).$(((ticks % 5) * 2))s after the run ended"
+    throughput_run -signal "$signal" -workers "$WORKERS" -batch "$BATCH" -duration "$DURATION"
   done
   kill -TERM "$OZYD_PID" 2>/dev/null || true
   wait "$OZYD_PID" 2>/dev/null || true

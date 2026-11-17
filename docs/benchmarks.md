@@ -328,39 +328,46 @@ what an unbounded queue does when it takes the process down with it.
 
 `make build && scripts/bench/intake.sh` (`BENCH_N=300 BENCH_DURATION=30s`), run on one machine back to back, each mode on a fresh
 data directory over loopback with auth off. 8 concurrent senders, 100 items per request, timestamps three days back and strictly
-increasing per series. Recorded 2026-11-17 at commit `b6294ca`, on the machine above.
+increasing per series. Recorded on 2026-11-16 (local time) at commit `b6294ca` plus the harness, on the machine above. **One run per cell: run-to-run spread was not
+measured**, so small differences between cells are unresolved, not findings.
 
 | | direct | queued |
 |---|---|---|
-| Single point, request → 202, p50 / p99 | 3.8 ms / 5.7 ms | 12.3 ms / 17.3 ms |
-| Single point, request → queryable, p50 / p99 | 4.0 ms / 6.1 ms | 18.9 ms / 30.9 ms |
-| Series points acknowledged per second | 24 300 | 45 100 |
-| Series points *stored* per second (derived, below) | 24 300 | about 21 500 |
-| Log lines acknowledged per second | 22 100 | 46 600 |
-| Log lines *stored* per second (derived) | 22 100 | about 20 400 |
-| 100-item request latency, p50 / p99 (series) | 32 ms / 45 ms | 16 ms / 35 ms |
-| Backlog left when the 30 s run ended, as time to drain | none | 33 s (series), 39 s (logs) |
+| Single point, request → 202, p50 / p99 | 3.8 ms / 7.9 ms | 13.1 ms / 17.2 ms |
+| Single point, request → queryable, p50 / p99 | 4.0 ms / 8.2 ms | 18.0 ms / 24.7 ms |
+| Series points acknowledged per second | 24 500 | 44 900 |
+| Series points *stored* per second (acknowledged over run + drain) | 24 400 | 18 800 |
+| Log lines acknowledged per second | 21 800 | 47 100 |
+| Log lines *stored* per second | 21 800 | 17 800 |
+| 100-item request latency, p50 / p99 (series) | 32 ms / 41 ms | 16 ms / 32 ms |
+| Time for the queues to drain after a 30 s run | none | 41.6 s (series), 49.5 s (logs) |
 
-**What the table says.** A 202 in queued mode is "durably queued", so the acknowledged rate is not a capacity: the 30 s run left a
-backlog that took 33 s to drain, which puts the rate the consumers sustain at (acknowledged points × 30 s) / (30 s + drain) =
-about 21.5k points/s and 20.4k lines/s, 8-12% *below* direct. The queue buys two things: it takes a burst at twice the rate the
-stores can write (and so answers each request faster under load), and an acknowledged point survives a kill. It does not raise
-what the stores sustain, and a point is queryable 15 ms later at p50 and, after a long burst, minutes later. The sender's view
-is what ADR-0061 chose; this is the cost.
+**What the table says.** A 202 in queued mode is "durably queued", so the acknowledged rate is the front door's speed, not a capacity:
+after 30 s at 45k/s the queue held about 800 000 records and took 42-50 s to empty. Counting from the first request to the last record
+stored, queued sustained **23% less than direct for series and 18% less for logs**. What the queue buys is that it takes a burst at
+twice the rate the stores can write, answers each request in half the time while it does, and that an acknowledged point survives a kill.
+It does not raise what the stores sustain, and a point is queryable after the backlog ahead of it, which for this burst was up to
+about 50 s. That is the trade ADR-0061 made for durability; nothing here supports a claim that queued is faster.
 
-**Why a lone queued request takes 12 ms.** It waits for an fsync. `scripts/bench/group-commit.sh` (10 s runs, series):
+**Why a lone queued request takes 13 ms.** It waits for an fsync. `scripts/bench/group-commit.sh` (30 s runs, series, 200 lone
+requests for the latency column), with the same stored-rate arithmetic:
 
-| `pipeline.queue.sync_interval` | single point → 202, p50 | points acknowledged per second |
-|---|---|---|
-| -1ms (fsync as soon as the syncer wakes) | 7.4 ms | 16 800 |
-| 1ms (the default) | 11.3 ms | 47 800 |
-| 5ms | 12.4 ms | 46 400 |
-| 20ms | 28.3 ms | 25 000 |
+| `pipeline.queue.sync_interval` | lone point → 202, p50 | points acknowledged per second | points *stored* per second | drain after the run |
+|---|---|---|---|---|
+| -1ms (fsync as soon as the syncer wakes) | 6.7 ms | 15 100 | 12 800 | 5.4 s |
+| 1ms (the default) | 13.1 ms | 44 100 | 18 600 | 41.0 s |
+| 5ms | 13.1 ms | 46 400 | 20 200 | 38.8 s |
+| 20ms | 29.0 ms | 24 600 | 19 900 | 7.1 s |
 
-One fsync on this Mac's SSD costs about 7 ms, so with no window every request pays it alone and eight senders serialise behind
-it; a 1-5 ms window lets one fsync cover all of them, and past that the wait itself becomes the latency. The default is right
-for this machine. A Linux server on NVMe fsyncs faster and would shift every row down; the shape (a window of a few ms, not
-none, not tens) should hold, but this has not been measured there.
+One fsync on this Mac's SSD costs about 6-7 ms: with no window every request pays it alone and eight senders serialise behind it, which
+costs about a third of what the stores sustain (12.8k against 19-20k) and two thirds of the front door. From 1 ms up the stores
+sustain about the same 19-20k points/s, which is the consumers' ceiling (about 20k/s, whichever window), and a window past a few ms only
+adds latency (29 ms at 20 ms). The first version of this table ranked the windows by the front door alone and called 1-5 ms the plateau;
+the stored rate shows the front door peaks where the backlog is longest. 1 ms and 5 ms are not distinguishable here (stored 18.6k
+against 20.2k is inside the noise and the lone-request latency is the same), so the default stands because nothing here argues for
+changing it, not because it won. A Linux server on NVMe fsyncs faster and would shift the latency column down; that is not measured.
 
-**Not measured.** The plan's "statsd packet → queryable" (this is HTTP intake → queryable; the agent's flush interval would add
-to both columns equally), the maximum per signal for spans (only series and logs), and anything on Linux.
+**Not measured.** The plan's "statsd packet → queryable" (this is HTTP intake → queryable; the agent's flush interval would add to both
+columns equally), spans (only series and logs), Linux, run-to-run variance, and **what limits the consumers at about 20k/s**: that is
+now the number that matters for queued mode, and nothing here says whether it is the store's write lock, the consumers' batch size, or
+CPU shared with intake.

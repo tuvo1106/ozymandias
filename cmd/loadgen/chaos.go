@@ -112,20 +112,33 @@ func ackIngest(ozyd, acksPath string, rate int, duration time.Duration) error {
 	return nil
 }
 
-func post(c *http.Client, url, body string) bool {
+// post reports whether ozyd acknowledged body: a 202 that accepted something and rejected nothing.
+func post(c *http.Client, url, body string) bool { return postWhy(c, url, body) == nil }
+
+// postWhy is post with the reason it was not an acknowledgement: a transport error, a status
+// other than 202, or a 202 that rejected items, each with what the server said.
+//
+// A 202 whose body says something was rejected is not a promise about that something: the
+// first version of the chaos drills sent a type ozyd refuses, got 202s and "verified" nothing
+// was lost because it believed 2428 acks that were refusals.
+func postWhy(c *http.Client, url, body string) error {
 	resp, err := c.Post(url, "application/json", strings.NewReader(body)) //nolint:gosec,noctx // operator-supplied URL; a CLI run
 	if err != nil {
-		return false
+		return err
 	}
 	defer resp.Body.Close()
-	// A 202 whose body says something was rejected is not a promise about that
-	// something: the first version of this drill sent a type ozyd refuses, got 202s
-	// and "verified" nothing was lost because it believed 2428 acks that were refusals.
-	var reply struct{ Accepted, Rejected int }
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&reply); err != nil {
-		return false
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusAccepted {
+		return fmt.Errorf("%s: %.200s", resp.Status, strings.TrimSpace(string(raw)))
 	}
-	return resp.StatusCode == http.StatusAccepted && reply.Rejected == 0 && reply.Accepted > 0
+	var reply struct{ Accepted, Rejected int }
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		return fmt.Errorf("202 with an unreadable body: %.200s", raw)
+	}
+	if reply.Rejected != 0 || reply.Accepted == 0 {
+		return fmt.Errorf("202 with accepted=%d rejected=%d: %.200s", reply.Accepted, reply.Rejected, raw)
+	}
+	return nil
 }
 
 func readAcks(path string) ([]ackLine, error) {
