@@ -124,6 +124,8 @@ dropping log lines (files are their own buffer) — statsd and traces are shed.
   agent down, disk full on tmpfs — on every push).
 - **L12** end-to-end latency (statsd packet → queryable) p50/p99 in direct vs
   queued mode; max sustained ingest per signal; fsync group-commit sweep.
+  Measured for HTTP intake (not the agent's statsd leg), series and logs, in
+  `docs/benchmarks.md` (`scripts/bench/`); spans and Linux are not.
 
 ## 8. Docs deliverables
 `docs/formats/queue-segment.md`, `docs/formats/agent-buffer.md`; DESIGN.md:

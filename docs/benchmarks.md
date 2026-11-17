@@ -322,3 +322,45 @@ backoff caps at 60 s: a 2-minute outage at this rate buffers ten kilobytes,
 not megabytes. The queue is capped at 64 MiB and drops oldest-first, so a long
 enough outage loses the *oldest* data rather than the newest — the opposite of
 what an unbounded queue does when it takes the process down with it.
+
+
+## M7: intake, direct vs queued
+
+`make build && scripts/bench/intake.sh` (`BENCH_N=300 BENCH_DURATION=30s`), run on one machine back to back, each mode on a fresh
+data directory over loopback with auth off. 8 concurrent senders, 100 items per request, timestamps three days back and strictly
+increasing per series. Recorded 2026-11-17 at commit `b6294ca`, on the machine above.
+
+| | direct | queued |
+|---|---|---|
+| Single point, request → 202, p50 / p99 | 3.8 ms / 5.7 ms | 12.3 ms / 17.3 ms |
+| Single point, request → queryable, p50 / p99 | 4.0 ms / 6.1 ms | 18.9 ms / 30.9 ms |
+| Series points acknowledged per second | 24 300 | 45 100 |
+| Series points *stored* per second (derived, below) | 24 300 | about 21 500 |
+| Log lines acknowledged per second | 22 100 | 46 600 |
+| Log lines *stored* per second (derived) | 22 100 | about 20 400 |
+| 100-item request latency, p50 / p99 (series) | 32 ms / 45 ms | 16 ms / 35 ms |
+| Backlog left when the 30 s run ended, as time to drain | none | 33 s (series), 39 s (logs) |
+
+**What the table says.** A 202 in queued mode is "durably queued", so the acknowledged rate is not a capacity: the 30 s run left a
+backlog that took 33 s to drain, which puts the rate the consumers sustain at (acknowledged points × 30 s) / (30 s + drain) =
+about 21.5k points/s and 20.4k lines/s, 8-12% *below* direct. The queue buys two things: it takes a burst at twice the rate the
+stores can write (and so answers each request faster under load), and an acknowledged point survives a kill. It does not raise
+what the stores sustain, and a point is queryable 15 ms later at p50 and, after a long burst, minutes later. The sender's view
+is what ADR-0061 chose; this is the cost.
+
+**Why a lone queued request takes 12 ms.** It waits for an fsync. `scripts/bench/group-commit.sh` (10 s runs, series):
+
+| `pipeline.queue.sync_interval` | single point → 202, p50 | points acknowledged per second |
+|---|---|---|
+| -1ms (fsync as soon as the syncer wakes) | 7.4 ms | 16 800 |
+| 1ms (the default) | 11.3 ms | 47 800 |
+| 5ms | 12.4 ms | 46 400 |
+| 20ms | 28.3 ms | 25 000 |
+
+One fsync on this Mac's SSD costs about 7 ms, so with no window every request pays it alone and eight senders serialise behind
+it; a 1-5 ms window lets one fsync cover all of them, and past that the wait itself becomes the latency. The default is right
+for this machine. A Linux server on NVMe fsyncs faster and would shift every row down; the shape (a window of a few ms, not
+none, not tens) should hold, but this has not been measured there.
+
+**Not measured.** The plan's "statsd packet → queryable" (this is HTTP intake → queryable; the agent's flush interval would add
+to both columns equally), the maximum per signal for spans (only series and logs), and anything on Linux.
