@@ -9,6 +9,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`scripts/bench/wal-sync.sh`** (M7 L12): the series throughput with `storage.wal_sync_on_append` on and off, in both pipeline modes, which
+  shows the stores' ceiling is one fsync per `Append` (docs/benchmarks.md). Measurement only; no behaviour change.
 - **Intake benchmarks** (M7 L12). `loadgen -scenario intake-latency|intake-throughput` and `scripts/bench/` (`make bench-intake`) compare
   `pipeline.mode` direct and queued, and sweep the queue's group-commit window; results in `docs/benchmarks.md`.
 - **Per-key series limits and per-metric tag rules** (M7). A key's `max_series_per_metric` and `max_active_series`

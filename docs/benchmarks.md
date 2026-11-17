@@ -361,13 +361,44 @@ requests for the latency column), with the same stored-rate arithmetic:
 
 One fsync on this Mac's SSD costs about 6-7 ms: with no window every request pays it alone and eight senders serialise behind it, which
 costs about a third of what the stores sustain (12.8k against 19-20k) and two thirds of the front door. From 1 ms up the stores
-sustain about the same 19-20k points/s, which is the consumers' ceiling (about 20k/s, whichever window), and a window past a few ms only
+sustain about the same 19-20k points/s, which is the store's one-fsync-per-`Append` ceiling (below), not the window, and a window past a few ms only
 adds latency (29 ms at 20 ms). The first version of this table ranked the windows by the front door alone and called 1-5 ms the plateau;
 the stored rate shows the front door peaks where the backlog is longest. 1 ms and 5 ms are not distinguishable here (stored 18.6k
 against 20.2k is inside the noise and the lone-request latency is the same), so the default stands because nothing here argues for
 changing it, not because it won. A Linux server on NVMe fsyncs faster and would shift the latency column down; that is not measured.
 
 **Not measured.** The plan's "statsd packet → queryable" (this is HTTP intake → queryable; the agent's flush interval would add to both
-columns equally), spans (only series and logs), Linux, run-to-run variance, and **what limits the consumers at about 20k/s**: that is
-now the number that matters for queued mode, and nothing here says whether it is the store's write lock, the consumers' batch size, or
-CPU shared with intake.
+columns equally), spans (only series and logs), Linux, and run-to-run variance. What limits the stored rate is answered below.
+
+### What bounds the stored rate: one fsync per `Append`
+
+`scripts/bench/wal-sync.sh` (15 s runs, series, 8 senders, 100 per request; recorded 2026-11-16 local, same machine) runs the series throughput
+with `storage.wal_sync_on_append` on, which is the default, and off:
+
+| | `wal_sync_on_append: true` | `false` |
+|---|---|---|
+| direct, points per second | 24 400 | 1 246 000 |
+| queued, points acknowledged per second | 46 000 | 90 900 |
+| queued, points *stored* per second (run + drain) | 19 000 (21.4 s drain) | 89 000 (0.3 s drain) |
+
+And with it on, the rate is a rate of calls, not of points (`BENCH_BATCH=n`, direct and queued, points per second):
+
+| series per request | 10 | 100 | 500 |
+|---|---|---|---|
+| direct | 2 470 | 24 400 | 122 500 |
+| queued, stored | 1 960 | 19 200 | 89 700 |
+
+Requests per second do not move with their size: about 246 per second in direct (4.1 ms each) and about 196 per second through the queue's
+consumer (5.1 ms each). That is one `fsync` per `Store.Append`, and it is the ceiling for both modes. During a drain ozyd used 18% of one core and the
+one thread in `fcntl` (macOS's full fsync) was in it for 85% of a 5 s sample: the consumers are not busy, they are waiting on the disk. The stores
+themselves take 1.2 million points per second without the sync, fifty times the default.
+
+So the 18-23% by which the stores behind the queue trail direct is not a cost of the queue's design but of its consumer applying one record at a
+time, each with its own fsync, while direct's eight handlers overlap their requests (and still serialise on the fsync). `wal_sync_on_append: false`
+is not a fix: a crash loses what the WAL had not synced, and in queued mode the consumer has by then committed it. It is in the script to measure the
+fsync, not to run with.
+
+**Not built, and a decision for the owner**: in queued mode the consumer already holds a batch of up to 64 records; applying the batch and syncing
+the WAL once before committing the offset would keep the rule that nothing is acknowledged or committed before it is on disk, with up to 64x fewer
+fsyncs. In direct mode the same rule could hold with concurrent appenders sharing one fsync. Both change the commit path of durability-critical
+code and want an ADR and the chaos drills run against them first.
