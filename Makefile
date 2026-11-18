@@ -145,6 +145,7 @@ chaos: build ## The chaos drills (scripts/chaos) at quick settings: a few kills,
 bench-intake: build ## L12: intake latency and throughput, pipeline.mode direct vs queued (scripts/bench/intake.sh)
 	scripts/bench/intake.sh
 	scripts/bench/group-commit.sh
+	scripts/bench/wal-sync.sh
 
 .PHONY: chaos-long
 chaos-long: build ## The chaos drills at the acceptance settings of M7 §9 (50 kills, a 15 minute outage, 500k pkt/s): about 40 minutes
