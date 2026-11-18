@@ -31,7 +31,7 @@ type queuedEnv struct {
 	pending map[string]*atomic.Int64
 }
 
-func newQueuedEnv(t *testing.T) *queuedEnv {
+func newQueuedEnv(t *testing.T, mods ...func(*Options)) *queuedEnv {
 	t.Helper()
 	q := &queuedEnv{topics: map[string]*queue.Topic{}, cons: map[string]*queue.Consumer{}, pending: map[string]*atomic.Int64{},
 		logs: &fakeLogs{}, hub: &fakeHub{}, spans: &fakeSpans{}}
@@ -49,7 +49,11 @@ func newQueuedEnv(t *testing.T) *queuedEnv {
 		q.topics[name], q.cons[name], prod[name] = tp, c, tp
 		q.pending[name] = new(atomic.Int64)
 	}
-	q.env = newEnv(t, Options{Queue: prod, Logs: q.logs, LogHub: q.hub, Traces: q.spans})
+	o := Options{Queue: prod, Logs: q.logs, LogHub: q.hub, Traces: q.spans}
+	for _, m := range mods {
+		m(&o)
+	}
+	q.env = newEnv(t, o)
 	return q
 }
 

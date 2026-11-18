@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/queue"
+	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
 )
 
 // Consumer pacing. A batch is the unit of commit: one offset-file fsync per
@@ -20,16 +21,34 @@ const (
 	consumerPrefix = "store"
 )
 
+// Syncer is a store that can leave its fsync out of Append: Append returns once the data is
+// written, and Sync makes everything appended before the call durable. The consumer syncs once
+// per batch instead of once per record.
+type Syncer interface{ Sync() error }
+
 // ConsumerName is the queue consumer name for a topic's store.
 func ConsumerName(topic string) string { return consumerPrefix + "-" + topic }
 
 // RunConsumer drains one topic into its store until ctx ends: poll, apply
-// each record, then commit the batch's last offset. It returns nil on a clean
-// stop.
+// each record, sync the stores that deferred their fsync, then commit the
+// batch's last offset. It returns nil on a clean stop.
 //
 // The order is the whole point. Commit comes after apply, so a crash between
 // them redelivers the batch (at-least-once) and idempotent stores make that
 // invisible; commit-before-apply would turn the same crash into silent loss.
+// The same goes for the sync: a store that left its fsync out of Append has
+// only written the batch into the operating system's cache, so committing the
+// offset before Sync would let a power cut take records the queue has already
+// let go of. Sync comes after the whole batch, so one fsync covers up to
+// consumeBatch records (ADR-0063).
+//
+// A failed Sync is retried with the whole batch applied again first. After a
+// failed fsync the kernel may have dropped the dirty pages it could not write, so
+// a second fsync can succeed for data that is no longer there; rewriting the
+// batch (every store is idempotent) is how a store that is not fail-stop
+// recovers. The WALs ozyd writes are fail-stop (wal.Options.StopOnSyncError): after
+// a failed fsync they refuse everything until restart, the retry fails, the topic
+// backs up, and the restart redelivers the uncommitted batch from the queue.
 //
 // pending is set to the produce time of each batch's first record; the server
 // reads it for ozy.queue.lag_seconds, which is 0 when nothing is uncommitted.
@@ -43,13 +62,22 @@ func ConsumerName(topic string) string { return consumerPrefix + "-" + topic }
 func (in *Intake) RunConsumer(ctx context.Context, topic string, c *queue.Consumer, pending *atomic.Int64) error {
 	poisoned := in.opts.Metrics.Counter("ozy.consumer.poison_records", "topic:"+topic)
 	failures := in.opts.Metrics.Counter("ozy.consumer.queue_errors", "topic:"+topic)
-	// pause waits out a queue-side failure (a Poll read error, a Commit fsync
-	// error). Giving up would leave intake answering 202 for a store nobody
-	// feeds, with every health signal green until the topic fills.
+	// Registered only for a topic that has something to sync: in direct-sync mode a
+	// counter that can never move would read as a zero that means health.
+	syncers := in.opts.CommitSync[topic]
+	var syncs, syncFailures *selfmetrics.Counter
+	if len(syncers) > 0 {
+		syncs = in.opts.Metrics.Counter("ozy.consumer.syncs", "topic:"+topic)
+		syncFailures = in.opts.Metrics.Counter("ozy.consumer.sync_errors", "topic:"+topic)
+	}
+	// pause waits out a failure of the queue (a Poll read error, a Commit fsync
+	// error) or of a store's sync, and counts it. Giving up would leave intake
+	// answering 202 for a store nobody feeds, with every health signal green
+	// until the topic fills.
 	delay := retryMin
-	pause := func(op string, err error) bool {
-		failures.Add(1)
-		in.opts.Logger.Warn("consumer: queue "+op+" failed; retrying", "topic", topic, "err", err, "after", delay)
+	pause := func(op string, err error, count *selfmetrics.Counter) bool {
+		count.Add(1)
+		in.opts.Logger.Warn("consumer: "+op+" failed; retrying", "topic", topic, "err", err, "after", delay)
 		t := in.opts.Clock.NewTimer(delay)
 		defer t.Stop()
 		select {
@@ -68,22 +96,30 @@ func (in *Intake) RunConsumer(ctx context.Context, topic string, c *queue.Consum
 			}
 			// A broken topic never recovers until restart; polling it again is
 			// harmless and keeps the failure counted.
-			if !pause("poll", err) {
+			if !pause("queue poll", err, failures) {
 				return nil
 			}
 			continue
 		}
 		delay = retryMin
 		pending.Store(recs[0].Time.UnixNano())
-		for _, rec := range recs {
-			if err := in.applyWithRetry(ctx, topic, rec.Payload); err != nil {
-				if errors.Is(err, errPoison) {
-					poisoned.Add(1)
-					in.opts.Logger.Error("consumer: skipping an undecodable record",
-						"topic", topic, "offset", rec.Offset, "err", err)
-					continue
-				}
+		for {
+			skipped, ok := in.applyBatch(ctx, topic, recs)
+			if !ok {
 				return nil // ctx ended mid-retry: nothing of this batch is committed
+			}
+			if len(syncers) == 0 {
+				poisoned.Add(skipped)
+				break
+			}
+			err := syncAll(syncers)
+			if err == nil {
+				syncs.Add(1)
+				poisoned.Add(skipped)
+				break
+			}
+			if !pause("store sync", err, syncFailures) {
+				return nil
 			}
 		}
 		for {
@@ -94,7 +130,7 @@ func (in *Intake) RunConsumer(ctx context.Context, topic string, c *queue.Consum
 			if errors.Is(err, queue.ErrClosed) || ctx.Err() != nil {
 				return nil
 			}
-			if !pause("commit", err) {
+			if !pause("queue commit", err, failures) {
 				return nil
 			}
 		}
@@ -103,6 +139,36 @@ func (in *Intake) RunConsumer(ctx context.Context, topic string, c *queue.Consum
 		// nothing is uncommitted, and between batches of a backlog the last
 		// batch's age is the best available answer, where 0 would be wrong.
 	}
+}
+
+// applyBatch applies a polled batch record by record. It returns how many records were
+// poison (counted by the caller once the batch is committed to, so a re-applied batch does not
+// count them twice), and false if ctx ended before the batch was applied.
+func (in *Intake) applyBatch(ctx context.Context, topic string, recs []queue.Record) (poison int64, ok bool) {
+	for _, rec := range recs {
+		if err := in.applyWithRetry(ctx, topic, rec.Payload); err != nil {
+			if errors.Is(err, errPoison) {
+				poison++
+				in.opts.Logger.Error("consumer: skipping an undecodable record",
+					"topic", topic, "offset", rec.Offset, "err", err)
+				continue
+			}
+			return poison, false
+		}
+	}
+	return poison, true
+}
+
+// syncAll syncs every store of a topic, all of them even when one fails, so a store that can
+// flush is not left unflushed behind one that cannot.
+func syncAll(syncers []Syncer) error {
+	var errs []error
+	for _, s := range syncers {
+		if err := s.Sync(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // applyWithRetry retries a store failure until it succeeds or ctx ends.
