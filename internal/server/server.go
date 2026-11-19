@@ -153,6 +153,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		return nil, fmt.Errorf("data_dir: %w", err)
 	}
 	s := &Server{cfg: cfg, log: opts.Logger, reg: opts.Registry, clock: opts.Clock, started: opts.Clock.Now()}
+	plan := planSync(cfg)
 
 	md, err := meta.Open(filepath.Join(cfg.DataDir, metaFile))
 	if err != nil {
@@ -172,10 +173,12 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		// The TSDB drops blocks, not samples, so a count can outlive the
 		// cutoff by a block range. Let the sketches lag by the same amount
 		// rather than expiring first — see sketchstore.Options.Grace.
-		Grace:    cfg.Storage.BlockRange,
-		Clock:    s.clock,
-		Logger:   s.log.With("component", "sketchstore"),
-		Registry: s.reg,
+		Grace: cfg.Storage.BlockRange,
+		// Deferred when a queue consumer syncs it before committing (ADR-0063); see syncPlan.
+		DeferSync: plan.sketches,
+		Clock:     s.clock,
+		Logger:    s.log.With("component", "sketchstore"),
+		Registry:  s.reg,
 	})
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close())
@@ -185,6 +188,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		Clock:     s.clock,
 		Retention: cfg.Logs.Retention,
 		NoSync:    cfg.Logs.NoSync,
+		DeferSync: plan.logs,
 		// Only a queue consumer redelivers; see logstore.Options.DedupeHead.
 		DedupeHead: cfg.Pipeline.Mode == config.PipelineQueued,
 		MaxStreams: cfg.Logs.MaxStreams,
@@ -198,6 +202,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		Clock:     s.clock,
 		Retention: cfg.Traces.Retention,
 		NoSync:    cfg.Traces.NoSync,
+		DeferSync: plan.traces,
 		Logger:    s.log.With("component", "tracestore"),
 		Registry:  s.reg,
 	})
@@ -205,6 +210,10 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 		return nil, errors.Join(fmt.Errorf("data_dir: %w", err), md.Close(), store.Close(), sk.Close(), ls.Close())
 	}
 	s.meta, s.store, s.sketches, s.logs, s.logHub, s.traces = md, store, sk, ls, loghub.New(0), ts
+	commitSync, err := plan.syncers(store, sk, ls, ts)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("pipeline: %w", err), md.Close(), store.Close(), sk.Close(), ls.Close(), ts.Close())
+	}
 	var producers map[string]intake.Producer
 	if cfg.Pipeline.Mode == config.PipelineQueued {
 		// After the stores, so a queue that cannot open does not leave them
@@ -221,7 +230,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	s.intake = intake.New(intake.Options{
 		Tags:  tags,
 		Store: store, Sketches: sk, Registry: md, Logs: ls, LogHub: s.logHub, Traces: ts,
-		Queue: producers,
+		Queue: producers, CommitSync: commitSync,
 		Clock: s.clock, Metrics: s.reg, Logger: s.log,
 	})
 	if s.pipe != nil {
@@ -373,10 +382,12 @@ func openStore(cfg config.Ozyd, opts Options) (tsdb.MetricStore, string, error) 
 			MaxBytes:           cfg.Storage.MaxBytes,
 			MaxBlockRange:      cfg.Storage.MaxBlockRange,
 			MaxSeriesPerMetric: cfg.Storage.MaxSeriesPerMetric,
-			SyncOnAppend:       cfg.Storage.WALSyncOnAppend,
-			SyncInterval:       cfg.Storage.WALSyncInterval,
-			Clock:              opts.Clock,
-			Logger:             opts.Logger.With("component", "tsdb"),
+			// When a queue consumer syncs the WAL before it commits (syncPlan), Append does not:
+			// one fsync then covers a whole batch of records instead of one.
+			SyncOnAppend: cfg.Storage.WALSyncOnAppend && !planSync(cfg).tsdb,
+			SyncInterval: cfg.Storage.WALSyncInterval,
+			Clock:        opts.Clock,
+			Logger:       opts.Logger.With("component", "tsdb"),
 		})
 		return store, "tsdb", err
 	}

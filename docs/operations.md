@@ -545,7 +545,7 @@ grows with distribution cardinality, not with traffic.
 | `storage.max_bytes` | `0` | Disk cap; oldest blocks deleted when exceeded. 0 disables |
 | `storage.max_block_range` | `54h` | Widest a compacted block may become |
 | `storage.max_series_per_metric` | `10000` | Cardinality limit per metric name |
-| `storage.wal_sync_on_append` | `true` | fsync the log before acknowledging an intake request |
+| `storage.wal_sync_on_append` | `true` | fsync the log before the data is let go of: before the 202 in direct mode; before the consumer commits the batch's queue offset in queued mode, once per batch (ADR-0063) |
 | `storage.wal_sync_interval` | `100ms` | Group-commit period when the above is off |
 
 Each has a `OZY_STORAGE_*` environment override, e.g.

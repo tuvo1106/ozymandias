@@ -938,6 +938,10 @@ func (s *Store) Backup(dst string) error {
 	return nil
 }
 
+// DeferSync reports whether Append leaves its fsync to Sync (the DeferSync option), so a caller that
+// owns durability, and a test of how the server opened its stores, can ask.
+func (s *Store) DeferSync() bool { return s.opts.DeferSync }
+
 // Sync makes every log appended before the call durable: one fsync of the WAL, however many
 // Appends it covers. It is what a DeferSync store owes its caller before the caller forgets
 // the batch; for any other store it is a redundant fsync. With NoSync it does nothing, as

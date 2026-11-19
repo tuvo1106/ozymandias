@@ -108,6 +108,11 @@ func (db *DB) Sync() error {
 	return nil
 }
 
+// SyncOnAppend reports whether Append fsyncs the WAL before it returns. False means the caller owns
+// durability: it must Sync before it lets go of what it appended (the queue consumer does, before
+// it commits an offset: ADR-0063), or accept the SyncInterval window.
+func (db *DB) SyncOnAppend() bool { return db.opts.SyncOnAppend }
+
 // Syncs reports how many times the write-ahead log has been flushed since
 // startup, for the ozy.tsdb.wal_syncs gauge.
 //
