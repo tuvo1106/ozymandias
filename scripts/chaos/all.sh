@@ -12,7 +12,7 @@ if [[ ${1:-} = long ]]; then
   export CHAOS_KILLS=50 CHAOS_DOWN=900 CHAOS_RATE=500000 CHAOS_FLOOD=60 CHAOS_SERIES=1000000
 fi
 
-DRILLS=${CHAOS_DRILLS:-kill9 ozyd-down agent-down udp-flood clock-jump cardinality-bomb disk-full}
+DRILLS=${CHAOS_DRILLS:-kill9 ozyd-down agent-down udp-flood clock-jump cardinality-bomb disk-full slow-disk}
 failed=""
 skipped=""
 for d in $DRILLS; do
