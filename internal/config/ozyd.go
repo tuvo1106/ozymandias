@@ -117,9 +117,14 @@ type Storage struct {
 	MaxSeriesPerMetric int `yaml:"max_series_per_metric"`
 	// MaxBlockRange caps how wide a compacted block may become.
 	MaxBlockRange time.Duration `yaml:"max_block_range"`
-	// WALSyncOnAppend fsyncs the log before an intake request is acknowledged.
-	// On means a crash loses nothing that was acknowledged; off trades a
-	// WALSyncInterval-wide window of exposure for throughput.
+	// WALSyncOnAppend makes the metric log durable before the data is let go of.
+	// In direct mode that is before an intake request is acknowledged: every
+	// Append fsyncs. In queued mode it is before the consumer commits the
+	// batch's queue offset: Append does not, and the consumer fsyncs once per
+	// batch of up to 64 records (ADR-0063). Either way on means a crash loses
+	// nothing that was acknowledged; off trades a WALSyncInterval-wide window of
+	// exposure for throughput, and in queued mode nothing is synced before the
+	// commit.
 	WALSyncOnAppend bool `yaml:"wal_sync_on_append"`
 	// WALSyncInterval is the group-commit period when WALSyncOnAppend is off.
 	WALSyncInterval time.Duration `yaml:"wal_sync_interval"`

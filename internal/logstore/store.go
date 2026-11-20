@@ -73,6 +73,12 @@ type Options struct {
 	// the catalog). A crash can then lose batches the store acknowledged: for
 	// benchmarks and tests of everything but durability, never for production.
 	NoSync bool
+	// DeferSync leaves the WAL fsync out of Append: Append returns once the logs are written to
+	// the WAL, and Sync makes everything appended before the call durable. It is for a caller
+	// that syncs before it lets go of the batch (a queue consumer, before it commits the offset:
+	// ADR-0063), where one fsync then covers many Appends. Everything else about durability is
+	// unchanged: sealed blocks and the catalog still fsync. NoSync wins when both are set.
+	DeferSync bool
 	// DedupeHead makes Append drop a log that the stream's head already holds
 	// (same timestamp and encoded body), so a queue consumer's redelivered batch
 	// is stored once. Off by default: with it a sender's two genuine, identical
@@ -617,7 +623,7 @@ func (s *Store) Append(ctx context.Context, batch []wire.Log) error {
 	// and recovery's "already sealed" test. A failed sync can repeat logs after a
 	// restart (the caller was told to retry); it can never confuse two of them.
 	s.seq = base + uint64(len(batch)) - 1
-	if !s.opts.NoSync {
+	if !s.opts.NoSync && !s.opts.DeferSync {
 		if err := s.wal.Sync(); err != nil {
 			return fmt.Errorf("logstore: syncing WAL: %w", err)
 		}
@@ -928,6 +934,25 @@ func (s *Store) Backup(dst string) error {
 			}
 			return fmt.Errorf("logstore: backup: chunk: %w", err)
 		}
+	}
+	return nil
+}
+
+// DeferSync reports whether Append leaves its fsync to Sync (the DeferSync option), so a caller that
+// owns durability, and a test of how the server opened its stores, can ask.
+func (s *Store) DeferSync() bool { return s.opts.DeferSync }
+
+// Sync makes every log appended before the call durable: one fsync of the WAL, however many
+// Appends it covers. It is what a DeferSync store owes its caller before the caller forgets
+// the batch; for any other store it is a redundant fsync. With NoSync it does nothing, as
+// Append does. After a failed fsync the WAL is stopped for good (see [Store.Broken]) and every
+// later Append or Sync reports that, so a retry cannot succeed over pages the kernel dropped.
+func (s *Store) Sync() error {
+	if s.opts.NoSync {
+		return nil
+	}
+	if err := s.wal.Sync(); err != nil {
+		return fmt.Errorf("logstore: syncing WAL: %w", err)
 	}
 	return nil
 }

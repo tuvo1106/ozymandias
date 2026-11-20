@@ -490,3 +490,85 @@ func TestStore_AFailedFsyncStopsTheStoreAndSaysSo(t *testing.T) {
 		t.Fatalf("an append after the fsync recovered = %v, want it refused", err)
 	}
 }
+
+// walSyncs counts the WAL's fsyncs through the same hook the failed-fsync test uses.
+func walSyncs(n *atomic.Int64, fail *atomic.Bool) func(*os.File) error {
+	return func(f *os.File) error {
+		n.Add(1)
+		if fail != nil && fail.Load() {
+			return errors.New("injected EIO")
+		}
+		return f.Sync()
+	}
+}
+
+// DeferSync moves the WAL fsync out of Append and into Sync: five appends cost no fsync, and one
+// Sync covers all five. The default, an fsync per Append, is what direct mode acknowledges on.
+func TestStore_DeferSyncLeavesTheWALFsyncToSync(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name                       string
+		deferSync, noSync          bool
+		wantAfterAppends, wantSync int64 // WAL fsyncs added by 5 Appends, then by one Sync
+	}{
+		{"default: every Append syncs", false, false, 5, 1},
+		{"deferred: Append does not, Sync does", true, false, 0, 1},
+		{"NoSync alone: nothing syncs", false, true, 0, 0},
+		{"NoSync wins over deferred: nothing syncs", true, true, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var n atomic.Int64
+			s, _ := openStore(t, t.TempDir(), func(o *Options) {
+				o.NoSync, o.DeferSync = tc.noSync, tc.deferSync
+				o.walSyncFile = walSyncs(&n, nil)
+			})
+			defer func() { _ = s.Close() }()
+			base := n.Load()
+			for i := 0; i < 5; i++ {
+				if err := s.Append(ctx, batchOf(fmt.Sprint("svc", i), 0, 2, t0.UnixMilli())); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := n.Load() - base; got != tc.wantAfterAppends {
+				t.Fatalf("5 Appends caused %d WAL fsyncs, want %d", got, tc.wantAfterAppends)
+			}
+			base = n.Load()
+			if err := s.Sync(); err != nil {
+				t.Fatal(err)
+			}
+			if got := n.Load() - base; got != tc.wantSync {
+				t.Fatalf("Sync caused %d WAL fsyncs, want %d", got, tc.wantSync)
+			}
+		})
+	}
+}
+
+// A Sync that fails stops the store as a failed Append fsync does: the owner is told, and nothing
+// later succeeds over pages the kernel may have dropped.
+func TestStore_AFailedSyncStopsTheStoreAndSaysSo(t *testing.T) {
+	var n atomic.Int64
+	var failing atomic.Bool
+	s, _ := openStore(t, t.TempDir(), func(o *Options) {
+		o.NoSync, o.DeferSync = false, true
+		o.walSyncFile = walSyncs(&n, &failing)
+	})
+	defer func() { _ = s.Close() }()
+	ctx := context.Background()
+	if err := s.Append(ctx, batchOf("a", 0, 3, t0.UnixMilli())); err != nil {
+		t.Fatal(err)
+	}
+	failing.Store(true)
+	if err := s.Sync(); !errors.Is(err, wal.ErrSync) {
+		t.Fatalf("Sync over a failing fsync = %v, want wal.ErrSync", err)
+	}
+	if !errors.Is(s.Broken(), wal.ErrBroken) {
+		t.Fatalf("Broken() = %v after a failed Sync", s.Broken())
+	}
+	failing.Store(false)
+	if err := s.Sync(); !errors.Is(err, wal.ErrBroken) {
+		t.Fatalf("a Sync after the fsync recovered = %v, want it refused", err)
+	}
+	if err := s.Append(ctx, batchOf("b", 0, 3, t0.UnixMilli())); !errors.Is(err, wal.ErrBroken) {
+		t.Fatalf("an Append after a failed Sync = %v, want it refused", err)
+	}
+}

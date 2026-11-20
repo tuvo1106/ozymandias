@@ -14,6 +14,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/backup"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/vfs"
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/tuvo1106/ozymandias/internal/clock"
@@ -43,7 +44,14 @@ type Options struct {
 	PendingTTL time.Duration
 	// NoSync skips the fsync on Append, for tests and benchmarks. A store with it
 	// set must not be what acknowledges an intake request.
-	NoSync   bool
+	NoSync bool
+	// DeferSync leaves the fsync out of Append: Append returns once the spans are written to
+	// Pebble's WAL, and Sync makes everything appended before the call durable. It is for a
+	// caller that syncs before it lets go of the batch (a queue consumer, before it commits the
+	// offset: ADR-0063), where one fsync then covers many Appends. NoSync wins when both are set.
+	DeferSync bool
+	// fs replaces Pebble's filesystem, for the tests that cut the power.
+	fs       vfs.FS
 	Clock    clock.Clock
 	Logger   *slog.Logger
 	Registry *selfmetrics.Registry
@@ -80,6 +88,7 @@ type Store struct {
 	retention time.Duration
 	pendTTL   time.Duration
 	noSync    bool
+	deferSync bool
 	clock     clock.Clock
 	log       *slog.Logger
 
@@ -138,7 +147,7 @@ func Open(opts Options) (*Store, error) {
 	if opts.PendingTTL <= 0 {
 		opts.PendingTTL = DefaultPendingTTL
 	}
-	db, err := pebble.Open(opts.Dir, &pebble.Options{Logger: pebbleLogger{opts.Logger}, Merger: edgeMerger})
+	db, err := pebble.Open(opts.Dir, &pebble.Options{Logger: pebbleLogger{opts.Logger}, Merger: edgeMerger, FS: opts.fs})
 	if err != nil {
 		return nil, fmt.Errorf("tracestore: opening %s: %w", opts.Dir, err)
 	}
@@ -152,7 +161,7 @@ func Open(opts Options) (*Store, error) {
 	}
 	r := opts.Registry
 	s := &Store{
-		db: db, retention: opts.Retention, pendTTL: opts.PendingTTL, noSync: opts.NoSync, clock: opts.Clock, log: opts.Logger,
+		db: db, retention: opts.Retention, pendTTL: opts.PendingTTL, noSync: opts.NoSync, deferSync: opts.DeferSync, clock: opts.Clock, log: opts.Logger,
 		enc: enc, dec: dec, known: map[string]struct{}{}, pending: map[string][]pendingEdge{}, inflight: map[string]*claim{},
 		spansAppended:  r.Counter("ozy.tracestore.spans_appended"),
 		entriesIndexed: r.Counter("ozy.tracestore.entries_indexed"),
@@ -212,11 +221,47 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// writeOpts is for everything but Append: the retention sweeps, which delete a trace in one batch
+// and whose "first seen" key goes last so that a crash repeats the sweep harmlessly. They keep their
+// own fsync even when Append defers its own: nothing would sync them afterwards, and a power cut
+// would bring swept traces back.
 func (s *Store) writeOpts() *pebble.WriteOptions {
 	if s.noSync {
 		return pebble.NoSync
 	}
 	return pebble.Sync
+}
+
+// appendOpts is writeOpts for Append, which a DeferSync store leaves to Sync.
+func (s *Store) appendOpts() *pebble.WriteOptions {
+	if s.noSync || s.deferSync {
+		return pebble.NoSync
+	}
+	return pebble.Sync
+}
+
+// DeferSync reports whether Append leaves its fsync to Sync (the DeferSync option), so a caller that
+// owns durability, and a test of how the server opened its stores, can ask.
+func (s *Store) DeferSync() bool { return s.deferSync }
+
+// Sync makes every span appended before the call durable: one fsync of Pebble's WAL, however
+// many Appends it covers. It is what a DeferSync store owes its caller before the caller
+// forgets the batch; for any other store it is a redundant fsync. With NoSync it does nothing,
+// as Append does.
+//
+// It writes an empty marker record with the Sync option. Pebble's WAL is one ordered file, so
+// the fsync that makes the marker durable makes everything before it durable too.
+func (s *Store) Sync() error {
+	if s.noSync {
+		return nil
+	}
+	if s.closed.Load() {
+		return errors.New("tracestore: closed")
+	}
+	if err := s.db.LogData(nil, pebble.Sync); err != nil {
+		return fmt.Errorf("tracestore: syncing WAL: %w", err)
+	}
+	return nil
 }
 
 // Append stores spans. It returns nil only once they are durable (fsynced, unless
@@ -402,7 +447,7 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 		err = s.failCommit()
 	}
 	if err == nil {
-		err = b.Commit(s.writeOpts())
+		err = b.Commit(s.appendOpts())
 	}
 	if err != nil {
 		// The agent will resend the batch; the children it had been waiting on must

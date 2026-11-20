@@ -16,6 +16,7 @@ import (
 	"github.com/tuvo1106/ozymandias/internal/backup"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/vfs"
 
 	"github.com/tuvo1106/ozymandias/internal/clock"
 	"github.com/tuvo1106/ozymandias/internal/selfmetrics"
@@ -118,7 +119,15 @@ type Options struct {
 	// else. The other way round is a visible wrong answer — the count chart
 	// draws a line and p95 returns null over the same minutes. So set this
 	// to the TSDB's block range and let the sketches lag.
-	Grace    time.Duration
+	Grace time.Duration
+	// DeferSync leaves the fsync out of Append: Append returns once the sketches are written to
+	// Pebble's WAL, and Sync makes everything appended before the call durable. It is for a
+	// caller that syncs before it lets go of the batch (a queue consumer, before it commits the
+	// offset: ADR-0063), where one fsync then covers many Appends. The retention sweep keeps
+	// syncing its own commits, which it reads back.
+	DeferSync bool
+	// fs replaces Pebble's filesystem, for the tests that cut the power.
+	fs       vfs.FS
 	Clock    clock.Clock
 	Logger   *slog.Logger
 	Registry *selfmetrics.Registry
@@ -136,6 +145,7 @@ type Options struct {
 // Safe for concurrent use.
 type Store struct {
 	db        *pebble.DB
+	deferSync bool
 	retention time.Duration
 	grace     time.Duration
 	clock     clock.Clock
@@ -183,12 +193,13 @@ func Open(opts Options) (*Store, error) {
 	if opts.Grace < 0 {
 		opts.Grace = 0
 	}
-	db, err := pebble.Open(opts.Dir, &pebble.Options{Logger: pebbleLogger{opts.Logger}})
+	db, err := pebble.Open(opts.Dir, &pebble.Options{Logger: pebbleLogger{opts.Logger}, FS: opts.fs})
 	if err != nil {
 		return nil, fmt.Errorf("sketchstore: opening %s: %w", opts.Dir, err)
 	}
 	s := &Store{
 		db:         db,
+		deferSync:  opts.DeferSync,
 		retention:  opts.Retention,
 		grace:      opts.Grace,
 		clock:      opts.Clock,
@@ -299,7 +310,11 @@ func (s *Store) Append(ctx context.Context, entries []Entry) (res AppendResult, 
 		res.Series++
 		res.Points += len(kvs)
 	}
-	if err := batch.Commit(pebble.Sync); err != nil {
+	write := pebble.Sync
+	if s.deferSync {
+		write = pebble.NoSync
+	}
+	if err := batch.Commit(write); err != nil {
 		return AppendResult{}, fmt.Errorf("sketchstore: committing %d series: %w", res.Series, err)
 	}
 	s.mu.Lock()
@@ -597,6 +612,26 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return err
+}
+
+// DeferSync reports whether Append leaves its fsync to Sync (the DeferSync option), so a caller that
+// owns durability, and a test of how the server opened its stores, can ask.
+func (s *Store) DeferSync() bool { return s.deferSync }
+
+// Sync makes every sketch appended before the call durable: one fsync of Pebble's WAL, however
+// many Appends it covers. It is what a DeferSync store owes its caller before the caller forgets
+// the batch; for any other store it is a redundant fsync.
+//
+// It writes an empty marker record with the Sync option. Pebble's WAL is one ordered file, so
+// the fsync that makes the marker durable makes everything before it durable too.
+func (s *Store) Sync() error {
+	if s.closed.Load() {
+		return errors.New("sketchstore: closed")
+	}
+	if err := s.db.LogData(nil, pebble.Sync); err != nil {
+		return fmt.Errorf("sketchstore: syncing WAL: %w", err)
+	}
+	return nil
 }
 
 // pebbleLogger sends Pebble's own chatter to the server's structured logger,

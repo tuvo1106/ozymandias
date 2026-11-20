@@ -81,10 +81,13 @@ storage:
   # to make deliberately.
   # max_series_per_metric: 10000
 
-  # fsync the write-ahead log before acknowledging an intake request. On by
-  # default: agent batches are large and infrequent, so the fsync is amortized
-  # over thousands of samples, and the alternative is telling a client its
-  # data is safe before it is.
+  # fsync the write-ahead log before the data is let go of. Direct mode: before
+  # acknowledging an intake request. Queued mode: before the consumer commits the
+  # batch's queue offset, once per batch of up to 64 records, so a queued ozyd pays
+  # one fsync per batch where a direct one pays one per request (ADR-0063). On by
+  # default: the alternative is telling a client its data is safe before it is.
+  # Off trades the window below for throughput and, queued, syncs nothing before
+  # the commit.
   # wal_sync_on_append: true
 
   # Group-commit period when wal_sync_on_append is off: how long an

@@ -167,6 +167,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Queued mode syncs each store once per consumer batch, before the offset commit** (ADR-0063). The metric, log, trace and sketch
+  stores no longer fsync inside every `Append` there; the consumer applies its batch (up to 64 records), syncs, then commits.
+  Sustained stored ingest in queued mode rises from about 19k to about 81k points/s and from 18k to 80k log lines/s on the machine
+  in docs/benchmarks.md, and the post-burst backlog goes from 42-50 s to 0-6 s. Nothing leaves the queue before it is on disk, as
+  before; direct mode is unchanged. `storage.wal_sync_on_append` keeps its meaning (off is still a bounded window). New metrics
+  `ozy.consumer.syncs` and `ozy.consumer.sync_errors`.
 - **`pipeline.mode` now defaults to `queued`.** A `202` from intake means the data is durable in the queue,
   not that it is queryable yet. Set `pipeline.mode: direct` (or `OZY_PIPELINE_MODE=direct`) for the old behaviour.
   `make smoke`, `make e2e` and the server's end-to-end suite all pass queued (ADR-0061).

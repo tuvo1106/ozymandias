@@ -45,6 +45,11 @@ type Options struct {
 	// fed by Run. Nil is direct mode, the pre-M7 path. It must hold every
 	// topic in Topics.
 	Queue map[string]Producer
+	// CommitSync lists, per topic, the stores a queue consumer syncs after it has applied a
+	// batch and before it commits the batch's offset (ADR-0063). A store is listed exactly when
+	// it was opened to leave its fsync out of Append; one that syncs inside Append needs no
+	// entry. A topic with no entry commits as soon as its batch is applied.
+	CommitSync map[string][]Syncer
 	// Tags, if set, applies per-metric tag allow/deny rules to every series and sketch
 	// before it is type-checked, limited or queued (internal/tagcfg).
 	Tags TagFilter

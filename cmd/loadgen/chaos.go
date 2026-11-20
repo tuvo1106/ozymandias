@@ -306,9 +306,37 @@ func storedLogs(ozyd string, from, to int64) (stored map[int]int, dup []int, err
 	return stored, dup, nil
 }
 
+// queryWindow is the most seconds one storedPoints query covers: one bucket each at interval 1,
+// under the API's limit of 1500 buckets. A drill that acknowledges faster runs over more seconds
+// (the first version of this oracle asked for the whole range at once and failed at 1541).
+const queryWindow = 1000
+
 // storedPoints is how many chaos points are stored: the sum of a gauge that is 1
-// at every point, over every lane.
+// at every point, over every lane, for the seconds from..to inclusive. It asks in windows of at
+// most queryWindow seconds that tile the range exactly (the API's from and to are both inclusive,
+// so a window starts the second after the last one ended), and never in a window of one second,
+// which the API refuses.
 func storedPoints(ozyd string, from, to int64) (float64, error) {
+	if to <= from {
+		return 0, fmt.Errorf("storedPoints: %d..%d is not a range", from, to)
+	}
+	var sum float64
+	for a := from; a <= to; {
+		b := min(a+queryWindow-1, to)
+		if to-b == 1 { // the next window would be one second wide
+			b--
+		}
+		n, err := storedPointsIn(ozyd, a, b)
+		if err != nil {
+			return 0, err
+		}
+		sum += n
+		a = b + 1
+	}
+	return sum, nil
+}
+
+func storedPointsIn(ozyd string, from, to int64) (float64, error) {
 	q := url.Values{"metric": {chaosMetric}, "agg": {"sum"}, "from": {fmt.Sprint(from)}, "to": {fmt.Sprint(to)}, "interval": {"1"}}
 	var res struct {
 		Series []struct {
