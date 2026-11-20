@@ -342,7 +342,7 @@ measured**, so small differences between cells are unresolved, not findings.
 | 100-item request latency, p50 / p99 (series) | 32 ms / 41 ms | 16 ms / 32 ms |
 | Time for the queues to drain after a 30 s run | none | 41.6 s (series), 49.5 s (logs) |
 
-**What the table says.** A 202 in queued mode is "durably queued", so the acknowledged rate is the front door's speed, not a capacity:
+**What the table says** (before ADR-0063, which changed it: see the last section). A 202 in queued mode is "durably queued", so the acknowledged rate is the front door's speed, not a capacity:
 after 30 s at 45k/s the queue held about 800 000 records and took 42-50 s to empty. Counting from the first request to the last record
 stored, queued sustained **23% less than direct for series and 18% less for logs**. What the queue buys is that it takes a burst at
 twice the rate the stores can write, answers each request in half the time while it does, and that an acknowledged point survives a kill.
@@ -413,8 +413,31 @@ cache: the same bounded window, but now for points the queue had promised were d
 (the written bytes are in the page cache), so the `kill -9` chaos drills would not notice. Whether that trade is acceptable is a decision; it is
 not made by this document, and the script runs it to measure the fsync, not as a recommendation.
 
-**Not built, and a decision for the owner.** In queued mode the consumer already holds a batch of up to 64 records: applying the batch and syncing
-the WAL once before committing the offset would keep "durable before committed" with at most one fsync per batch where there are 64 today (a
-bound on the count; the apply cost per record is unmeasured). In direct mode, concurrent appenders could share one fsync (a real group commit,
-which the M2 section already names). Both change the commit path of durability-critical code and want an ADR and the chaos drills first, and a
-way to test the ordering that a process kill cannot (power loss does not happen to a test process).
+**The queued half of this was then built** (ADR-0063, next section). In direct mode, concurrent appenders could still share one fsync (a real group
+commit, which the M2 section already names); that is not built.
+
+### After ADR-0063: one sync per consumer batch
+
+The consumer applies its batch (up to 64 records), syncs the stores it wrote once, then commits the offset (ADR-0063), where each record had its
+own fsync. `scripts/bench/intake.sh` (30 s runs, `BENCH_N=300`, same machine and settings as the M7 table above, recorded 2026-11-20 at commit
+`11b72fd`), one run per cell:
+
+| | direct | queued before | queued after |
+|---|---|---|---|
+| Series points acknowledged per second | 22 100 | 44 900 | 81 700 |
+| Series points *stored* per second (run + drain) | 22 100 | 18 800 | **81 500** |
+| Log lines acknowledged per second | 19 800 | 47 100 | 95 000 |
+| Log lines *stored* per second | 19 800 | 17 800 | **80 300** |
+| Time for the queues to drain after a 30 s run | none | 41.6 s / 49.5 s | 0.0 s / 5.5 s |
+| 100-item series request, p50 / p99 | 36 ms / 47 ms | 16 ms / 32 ms | 8.8 ms / 25 ms |
+| Lone point, request → 202, p50 / p99 | 3.9 ms / 8.0 ms | 13.1 ms / 17.2 ms | 11.7 ms / 15.4 ms |
+| Lone point, request → queryable, p50 / p99 | 4.0 ms / 8.7 ms | 18.0 ms / 24.7 ms | 16.8 ms / 25.3 ms |
+
+Direct is the same code in both runs and measured 24 500 and 21 800 in the earlier one against 22 100 and 19 800 here: about 10% run-to-run
+spread, so differences under that are not findings. The change is far outside it: stored ingest in queued mode is 4.3x (series) and 4.5x (logs)
+what it was and about 3.7x and 4.1x direct, with no backlog to speak of. The consumers no longer limit it (acknowledged and stored rates agree);
+what does now was not measured. A lone request is no faster, as expected: it still waits for the queue's own fsync.
+
+The chaos drills pass against it (kill -9, 3 runs of 5 kills each, with the acks oracle: nothing acknowledged lost, nothing stored twice), as do the
+other six at quick settings. They cannot see page-cache loss; the Pebble-backed stores are tested against a filesystem that discards unsynced writes
+(ADR-0063). A real power cut on the TSDB and log WALs was not tested.

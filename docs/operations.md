@@ -374,7 +374,7 @@ and restart on it.
 **Shutdown order.** On SIGTERM `/readyz` goes 503 at once. With `http.drain_delay` set, ozyd keeps
 serving for that long so a load balancer polling `/readyz` takes the instance out before the listener
 closes; then in-flight requests finish (`http.shutdown_timeout`), the queue consumers stop at a commit
-point (a record is applied and its offset committed, or neither: what was applied and not committed is
+point (a batch is applied, its stores synced, and its offset committed, or none of them: what was applied and not committed is
 delivered again on the next start), and the stores close.
 
 ## Backup and restore
@@ -419,6 +419,7 @@ data dir. What an operator sees, and does, for each:
 | the agent is down | app: nothing; `agent` `/healthz` | The app's statsd sends do not fail or block. Log files are caught up from the saved offsets on restart, with none repeated; metrics sent while it was down are lost (UDP) (`agent-down.sh`). |
 | UDP flood at the agent | `ozy.agent.statsd.packets_dropped`, `loadgen -scenario statsd-flood` | The agent stays up; loss is counted (queue drops) or invisible (kernel drops: raise `statsd.read_buffer` and the OS limit); traces and logs, which do not use the UDP socket, keep flowing (`udp-flood.sh`). |
 | `ozy.tsdb.ooo_rejected` or `ozy.intake.series_rejected` rising | the sender's clock (`date`, NTP) | A point more than 10 minutes ahead is refused at intake; one older than the series' newest is refused by the store. Neither corrupts anything, including across a restart. Fix the clock (`clock-jump.sh`). |
+| `ozy.consumer.sync_errors` rising, `ozy.queue.lag_*` growing (queued mode) | `ozyd.log` for `consumer: store sync failed`; `/readyz` (the log store or TSDB reports it stopped) | A store's fsync failed. The WALs are fail-stop: the store refuses writes until restart, so the topic backs up behind it and intake answers 429 when it fills. Fix the disk, restart: the uncommitted batch is redelivered from the queue and stored again (ADR-0063). |
 | `ozy.tsdb.series_limit_rejected` rising | which tag carries an unbounded value | `storage.max_series_per_metric` holds, other metrics are unaffected, memory is bounded. In queued mode the sender is not told (it gets `202`): look at `ozy.consumer.series_rejected`. Drop the tag in the app (`cardinality-bomb.sh`). |
 | the data volume is full | `ozy.store.broken`, `/readyz` 503, `df` | Intake refuses what it cannot keep, nothing is acknowledged and lost, `/healthz` stays 200, no panic. Free space, restart ozyd, and everything acknowledged before and after is there (`disk-full.sh`). |
 | a store says it is broken | `/readyz`, `ozy.store.broken{store}` | A failed fsync stops the store until restart (see Readiness). Not drilled: no portable way to make a disk fail an fsync; the unit tests inject it. |

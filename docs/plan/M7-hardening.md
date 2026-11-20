@@ -126,6 +126,9 @@ dropping log lines (files are their own buffer) — statsd and traces are shed.
   queued mode; max sustained ingest per signal; fsync group-commit sweep.
   Measured for HTTP intake (not the agent's statsd leg), series and logs, in
   `docs/benchmarks.md` (`scripts/bench/`); spans and Linux are not.
+  The first measurement found the stores behind the queue 18-23% under direct (one
+  fsync per record); ADR-0063 syncs once per consumer batch and queued now stores
+  about 4x what direct does.
 
 ## 8. Docs deliverables
 `docs/formats/queue-segment.md`, `docs/formats/agent-buffer.md`; DESIGN.md:
