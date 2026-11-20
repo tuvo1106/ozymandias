@@ -440,4 +440,5 @@ what does now was not measured. A lone request is no faster, as expected: it sti
 
 The chaos drills pass against it (kill -9, 3 runs of 5 kills each, with the acks oracle: nothing acknowledged lost, nothing stored twice), as do the
 other six at quick settings. They cannot see page-cache loss; the Pebble-backed stores are tested against a filesystem that discards unsynced writes
-(ADR-0063). A real power cut on the TSDB and log WALs was not tested.
+(ADR-0063). The TSDB and log WALs are tested the same way, by cutting each file back to its last fsync (`testutil.SyncTracker`); what that does
+not model is in docs/notes/M7.md.

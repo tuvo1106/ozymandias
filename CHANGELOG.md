@@ -9,6 +9,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Power-cut tests for the TSDB and log WALs** (M7): `testutil.SyncTracker` records each WAL file's length at its last fsync and builds the directory a
+  power cut would leave, which the stores are then opened on. Shows that `Sync` makes what was appended durable, that appends after it are lost, that a
+  partly kept tail never costs what was synced, and that rolled-past segments are covered. Tests only; no change to ozyd.
 - **`scripts/bench/wal-sync.sh`** (M7 L12): the series throughput with `storage.wal_sync_on_append` on and off, in both pipeline modes, which
   shows the stores' ceiling is one fsync per `Append` (docs/benchmarks.md). Measurement only; no behaviour change.
 - **Intake benchmarks** (M7 L12). `loadgen -scenario intake-latency|intake-throughput` and `scripts/bench/` (`make bench-intake`) compare
