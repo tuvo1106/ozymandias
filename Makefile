@@ -82,6 +82,7 @@ lint: ## golangci-lint + no-app-coupling check
 			echo "warning: linting with golangci-lint $$got; CI uses $$want (.golangci-lint-version)"; \
 		fi
 	golangci-lint run ./...
+	golangci-lint run --build-tags faultinject ./internal/tsdb/wal/... # the slow-disk fault hook is compiled only with the tag
 	scripts/check-no-app-coupling.sh
 
 .PHONY: docs-check

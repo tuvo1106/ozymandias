@@ -14,7 +14,7 @@ import (
 // OZY_FAULT_FSYNC_FILE in an environment slows nothing.
 func TestFaultEnvIsIgnoredWithoutTheBuildTag(t *testing.T) {
 	faults := filepath.Join(t.TempDir(), "faults")
-	if err := os.WriteFile(faults, []byte("all 2s\n"), 0o644); err != nil {
+	if err := os.WriteFile(faults, []byte("all 30s\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("OZY_FAULT_FSYNC_FILE", faults)
@@ -30,7 +30,7 @@ func TestFaultEnvIsIgnoredWithoutTheBuildTag(t *testing.T) {
 	if err := w.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	if d := time.Since(start); d > time.Second {
+	if d := time.Since(start); d > 15*time.Second { // 30 s if the production build read the fault file
 		t.Fatalf("a Sync took %v with the fault file set: the production build reads it", d)
 	}
 }

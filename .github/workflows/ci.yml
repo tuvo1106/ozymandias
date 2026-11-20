@@ -105,6 +105,12 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           version-file: .golangci-lint-version
+      # The slow-disk fault hook (internal/tsdb/wal/faultinject.go) is compiled only with this tag, so
+      # the run above never sees it.
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version-file: .golangci-lint-version
+          args: --build-tags faultinject ./internal/tsdb/wal/...
       - run: scripts/check-no-app-coupling.sh
       - run: make docs-check
       - run: make test
