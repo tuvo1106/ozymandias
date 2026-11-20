@@ -9,6 +9,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`scripts/chaos/slow-disk.sh`** (M7): the slow-disk drill, with a fault hook in the `wal` package compiled only under `-tags faultinject` (the shipped ozyd
+  has none). It shows that an ack waits for the queue's fsync, that slow stores build a backlog while the queue keeps acknowledging, that ozyd stays ready,
+  that the backlog drains by itself, and that a kill during it loses nothing acknowledged. In `all.sh` and so in the nightly run.
 - **Power-cut tests for the TSDB and log WALs** (M7): `testutil.SyncTracker` records each WAL file's length at its last fsync and builds the directory a
   power cut would leave, which the stores are then opened on. Shows that `Sync` makes what was appended durable, that appends after it are lost, that a
   partly kept tail never costs what was synced, and that rolled-past segments are covered (the log store also: `NoSync` loses all). Tests only; no change to ozyd.
