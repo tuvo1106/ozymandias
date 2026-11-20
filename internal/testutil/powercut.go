@@ -22,23 +22,33 @@ import (
 // may keep some of the unsynced bytes: PowerCut's extra says how many.
 type SyncTracker struct {
 	mu     sync.Mutex
-	synced map[string]int64 // by file name, which is unique within one log's directory
+	synced map[string]int64 // by the file's path as it was opened
+
+	// betweenStatAndSync runs after the length is read and before the fsync, so a test can write
+	// at the one moment that matters (see SyncFile).
+	betweenStatAndSync func()
 }
 
 // NewSyncTracker returns a tracker with nothing synced.
 func NewSyncTracker() *SyncTracker { return &SyncTracker{synced: map[string]int64{}} }
 
-// SyncFile fsyncs f and, if that worked, records its length as durable.
+// SyncFile fsyncs f and, if that worked, records its length as durable. The length is read before
+// the fsync: what the fsync covers is at least what was written before it began, and a write that
+// lands while it runs may or may not be covered, so only the earlier length is safe to claim. Read
+// after, a concurrent writer's bytes would count as durable that a power cut could take.
 func (st *SyncTracker) SyncFile(f *os.File) error {
-	if err := f.Sync(); err != nil {
-		return err
-	}
 	info, err := f.Stat()
 	if err != nil {
 		return err
 	}
+	if st.betweenStatAndSync != nil {
+		st.betweenStatAndSync()
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
 	st.mu.Lock()
-	st.synced[filepath.Base(f.Name())] = info.Size()
+	st.synced[f.Name()] = info.Size()
 	st.mu.Unlock()
 	return nil
 }
@@ -60,6 +70,9 @@ func (st *SyncTracker) Syncs() int {
 // Take the copy from a running store. Close syncs, and a store closed first has nothing to lose.
 func (st *SyncTracker) PowerCut(t testing.TB, src, logDir string, extra int64) string {
 	t.Helper()
+	if extra < 0 {
+		t.Fatalf("PowerCut: extra is %d; it is a number of bytes kept, not negative", extra)
+	}
 	dst := t.TempDir()
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -77,7 +90,7 @@ func (st *SyncTracker) PowerCut(t testing.TB, src, logDir string, extra int64) s
 			return err
 		}
 		if inDir(path, logDir) {
-			keep := st.synced[d.Name()] + extra // never synced: nothing durable
+			keep := st.synced[path] + extra // never synced: nothing durable
 			if keep < int64(len(b)) {
 				b = b[:keep]
 			}

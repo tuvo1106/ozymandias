@@ -83,6 +83,72 @@ func TestPowerCut_KeepsOnlyWhatWasSynced(t *testing.T) {
 	}
 }
 
+// A write that lands while the fsync runs is not claimed as durable: the length is read first.
+func TestSyncTracker_ABytesWrittenDuringTheFsyncIsNotClaimed(t *testing.T) {
+	src := t.TempDir()
+	seg, err := os.Create(filepath.Join(src, "1.wal"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = seg.Close() }()
+	st := NewSyncTracker()
+	st.betweenStatAndSync = func() { write(t, seg, "-late") }
+	write(t, seg, "early")
+	if err := st.SyncFile(seg); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, filepath.Join(st.PowerCut(t, src, src, 0), "1.wal")); got != "early" {
+		t.Fatalf("a power cut kept %q, want only what was written before the fsync began", got)
+	}
+}
+
+// Two files with one name in different directories are tracked apart.
+func TestSyncTracker_KeysByPathNotName(t *testing.T) {
+	src := t.TempDir()
+	if err := os.Mkdir(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := os.Create(filepath.Join(src, "1.wal"))
+	b, _ := os.Create(filepath.Join(src, "sub", "1.wal"))
+	defer func() { _ = a.Close(); _ = b.Close() }()
+	st := NewSyncTracker()
+	write(t, a, "aaaa")
+	write(t, b, "bb")
+	if err := st.SyncFile(a); err != nil { // only the outer one is synced
+		t.Fatal(err)
+	}
+	cut := st.PowerCut(t, src, src, 0)
+	if got := read(t, filepath.Join(cut, "1.wal")); got != "aaaa" {
+		t.Errorf("the synced file = %q", got)
+	}
+	if got := read(t, filepath.Join(cut, "sub", "1.wal")); got != "" {
+		t.Errorf("a same-named file that was never synced kept %q", got)
+	}
+}
+
+// fatalRecorder is a testing.TB that records Fatalf and panics out of it, as FailNow would leave the caller.
+type fatalRecorder struct {
+	testing.TB
+	fatal bool
+}
+
+func (f *fatalRecorder) Helper() {}
+func (f *fatalRecorder) Fatalf(string, ...any) {
+	f.fatal = true
+	panic("fatal")
+}
+
+func TestPowerCut_RefusesANegativeExtra(t *testing.T) {
+	ft := &fatalRecorder{}
+	func() {
+		defer func() { _ = recover() }()
+		NewSyncTracker().PowerCut(ft, t.TempDir(), t.TempDir(), -1)
+	}()
+	if !ft.fatal {
+		t.Fatal("a negative extra was accepted")
+	}
+}
+
 func TestInDir(t *testing.T) {
 	for _, tc := range []struct {
 		path, dir string

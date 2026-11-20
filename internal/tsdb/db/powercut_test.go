@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/tuvo1106/ozymandias/internal/testutil"
@@ -21,6 +22,26 @@ func openTracked(t *testing.T, opts Options) (*DB, *testutil.SyncTracker, string
 	return db, st, dir
 }
 
+// cutOf is the power cut at this instant, after checking that the test has kept to the one thing
+// this model covers: the WAL. PowerCut keeps every file outside the WAL whole, so a block cut or a
+// compaction during a test would be a file the store gets credit for without having synced it.
+func cutOf(t *testing.T, st *testutil.SyncTracker, dir string, extra int64) string {
+	t.Helper()
+	es, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range es {
+		if e.Name() != walDirName && e.Name() != "blocks" {
+			t.Fatalf("%s holds %q: this test models only the WAL", dir, e.Name())
+		}
+	}
+	if bs, _ := os.ReadDir(filepath.Join(dir, "blocks")); len(bs) != 0 {
+		t.Fatalf("a block was written (%d entries): this test models only the WAL", len(bs))
+	}
+	return st.PowerCut(t, dir, filepath.Join(dir, walDirName), extra)
+}
+
 // appendN appends n batches, each one sample of its own series m<from+i>, one Append each.
 func appendN(t *testing.T, db *DB, from, n int) {
 	t.Helper()
@@ -33,6 +54,7 @@ func appendN(t *testing.T, db *DB, from, n int) {
 func survivors(t *testing.T, cutDir string, n int) []int {
 	t.Helper()
 	db, _, _ := open(t, Options{Dir: cutDir, SyncOnAppend: true})
+	defer func() { _ = db.Close() }()
 	var got []int
 	for i := 0; i < n; i++ {
 		set, err := db.Select(ctx, tsdb.Selector{Metric: fmt.Sprint("m", i)}, math.MinInt64, math.MaxInt64)
@@ -53,8 +75,6 @@ func upTo(n int) []int {
 	}
 	return out
 }
-
-func sameInts(a, b []int) bool { return fmt.Sprint(a) == fmt.Sprint(b) }
 
 // What a power cut leaves of the metric WAL, for each way of syncing it. The queued consumer
 // relies on the third row: Append writes without an fsync, Sync makes everything appended so far
@@ -85,8 +105,8 @@ func TestPowerCut_WhatSurvivesInTheMetricWAL(t *testing.T) {
 				}
 			}
 			appendN(t, db, tc.beforeSync, tc.afterSync)
-			cut := st.PowerCut(t, dir, filepath.Join(dir, walDirName), 0)
-			if got := survivors(t, cut, tc.beforeSync+tc.afterSync); !sameInts(got, tc.want) {
+			cut := cutOf(t, st, dir, 0)
+			if got := survivors(t, cut, tc.beforeSync+tc.afterSync); !slices.Equal(got, tc.want) {
 				t.Fatalf("after a power cut, series %v came back, want %v", got, tc.want)
 			}
 		})
@@ -105,12 +125,12 @@ func TestPowerCut_APartlyKeptTailNeverCostsWhatWasSynced(t *testing.T) {
 				t.Fatal(err)
 			}
 			appendN(t, db, 3, 4)
-			cut := st.PowerCut(t, dir, filepath.Join(dir, walDirName), extra)
+			cut := cutOf(t, st, dir, extra)
 			got := survivors(t, cut, 7)
 			if len(got) < 3 {
 				t.Fatalf("a synced series was lost: %v", got)
 			}
-			if !sameInts(got, upTo(len(got))) {
+			if !slices.Equal(got, upTo(len(got))) {
 				t.Fatalf("what came back is not a prefix of what was appended: %v", got)
 			}
 		})
@@ -147,11 +167,11 @@ func TestPowerCut_SyncCoversSegmentsTheLogRolledPast(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendN(t, db, 12, 2)
-	cut := st.PowerCut(t, dir, filepath.Join(dir, walDirName), 0)
+	cut := cutOf(t, st, dir, 0)
 	// More than the 12 synced may come back: rolling into a new segment fsynced the old one. What
 	// came back must be a prefix of what was appended.
 	got := survivors(t, cut, 14)
-	if len(got) < 12 || !sameInts(got, upTo(len(got))) {
+	if len(got) < 12 || !slices.Equal(got, upTo(len(got))) {
 		t.Fatalf("after a power cut, series %v came back, want a prefix with the 12 appended before the Sync", got)
 	}
 }

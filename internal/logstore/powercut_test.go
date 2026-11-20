@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
+	"sync/atomic"
 	"testing"
 
 	"github.com/tuvo1106/ozymandias/internal/testutil"
@@ -21,13 +23,14 @@ func pcStore(t *testing.T, tune ...func(*Options)) (*Store, *testutil.SyncTracke
 		o.BlockBytes = 8 << 20 // nothing here is meant to seal
 		o.walSyncFile = st.SyncFile
 	}}, tune...)...)
-	armed := true
+	var armed atomic.Bool
+	armed.Store(true)
 	s.afterBlock = func() {
-		if armed {
+		if armed.Load() {
 			t.Error("a block was sealed: this test models only the WAL")
 		}
 	}
-	t.Cleanup(func() { armed = false; _ = s.Close() }) // Close seals the head, which is fine
+	t.Cleanup(func() { armed.Store(false); _ = s.Close() }) // Close seals the head, which is fine
 	return s, st, dir
 }
 
@@ -51,32 +54,25 @@ func pcMessages(n int) []string {
 }
 
 // pcSurvivors reopens what a power cut left and returns the messages it holds.
-func pcSurvivors(t *testing.T, cutDir string) map[string]bool {
+func pcSurvivors(t *testing.T, cutDir string) []string {
 	t.Helper()
 	s := openSynced(t, cutDir)
 	defer func() { _ = s.Close() }()
-	got := map[string]bool{}
-	for _, m := range everything(t, s) {
-		got[m] = true
-	}
-	return got
+	return everything(t, s)
 }
 
-func pcWant(t *testing.T, got map[string]bool, want []string) {
+func pcWant(t *testing.T, got []string, want []string) {
 	t.Helper()
-	if len(got) != len(want) {
-		t.Fatalf("after a power cut %d logs came back, want %d (%v)", len(got), len(want), got)
-	}
-	for _, m := range want {
-		if !got[m] {
-			t.Fatalf("after a power cut %q is missing (%v)", m, got)
-		}
+	want = append([]string(nil), want...)
+	sort.Strings(want)
+	if !equal(got, want) {
+		t.Fatalf("after a power cut %d logs came back, want %d\n got  %v\n want %v", len(got), len(want), got, want)
 	}
 }
 
 // pcPrefixOf checks that what came back is the first k messages of all, in order with no gap and
 // nothing invented, and that k is at least synced.
-func pcPrefixOf(t *testing.T, got map[string]bool, all []string, synced int) {
+func pcPrefixOf(t *testing.T, got []string, all []string, synced int) {
 	t.Helper()
 	k := len(got)
 	if k < synced {
