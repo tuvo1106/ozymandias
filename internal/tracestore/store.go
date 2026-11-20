@@ -221,7 +221,19 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// writeOpts is for everything but Append: the retention sweeps, which delete a trace in one batch
+// and whose "first seen" key goes last so that a crash repeats the sweep harmlessly. They keep their
+// own fsync even when Append defers its own: nothing would sync them afterwards, and a power cut
+// would bring swept traces back.
 func (s *Store) writeOpts() *pebble.WriteOptions {
+	if s.noSync {
+		return pebble.NoSync
+	}
+	return pebble.Sync
+}
+
+// appendOpts is writeOpts for Append, which a DeferSync store leaves to Sync.
+func (s *Store) appendOpts() *pebble.WriteOptions {
 	if s.noSync || s.deferSync {
 		return pebble.NoSync
 	}
@@ -435,7 +447,7 @@ func (s *Store) Append(ctx context.Context, spans []wire.Span) error {
 		err = s.failCommit()
 	}
 	if err == nil {
-		err = b.Commit(s.writeOpts())
+		err = b.Commit(s.appendOpts())
 	}
 	if err != nil {
 		// The agent will resend the batch; the children it had been waiting on must

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 // probeSyncer stands in for a store that left its fsync out of Append. It reports what the
@@ -170,5 +171,40 @@ func TestSyncAll_RunsEveryStoreAndReportsEveryFailure(t *testing.T) {
 	}
 	if err := syncAll(nil); err != nil {
 		t.Fatalf("nothing to sync: %v", err)
+	}
+}
+
+// The stores of a topic are synced at once, not one after another: each Sync here waits until
+// all of them have started, so a serial syncAll never gets past the first.
+func TestSyncAll_SyncsTheStoresConcurrently(t *testing.T) {
+	const n = 3
+	var started sync.WaitGroup
+	started.Add(n)
+	gate := make(chan struct{})
+	go func() { started.Wait(); close(gate) }()
+	var syncers []Syncer
+	for i := 0; i < n; i++ {
+		syncers = append(syncers, &probeSyncer{onSync: func(int) {
+			started.Done()
+			select {
+			case <-gate:
+			case <-time.After(5 * time.Second):
+			}
+		}})
+	}
+	done := make(chan error, 1)
+	go func() { done <- syncAll(syncers) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("syncAll never finished")
+	}
+	select {
+	case <-gate:
+	default:
+		t.Fatal("the stores were synced one after another: the second never started while the first ran")
 	}
 }

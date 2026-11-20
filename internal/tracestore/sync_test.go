@@ -2,6 +2,7 @@ package tracestore
 
 import (
 	"testing"
+	"time"
 
 	"github.com/cockroachdb/pebble/vfs"
 
@@ -120,5 +121,24 @@ func TestSync_AClosedStoreReportsItInsteadOfPretending(t *testing.T) {
 	}
 	if err := s.Sync(); err == nil {
 		t.Fatal("Sync on a closed store returned nil: a caller would commit what is not durable")
+	}
+}
+
+// The retention sweep keeps its own fsync when Append defers: nothing syncs it afterwards, so a
+// sweep that did not would bring swept traces back after a power cut.
+func TestSync_ADeferredStoresSweepIsStillDurable(t *testing.T) {
+	s, fs, o := openOnStrictFS(t, func(o *Options) { o.DeferSync = true; o.Retention = time.Hour })
+	if err := s.Append(ctx, []wire.Span{sp(1, 1, "api", 0, 5_000_000)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	o.Clock.(*testutil.FakeClock).Advance(3 * time.Hour)
+	if n, err := s.Sweep(ctx); err != nil || n != 1 {
+		t.Fatalf("Sweep = %d, %v; want 1 trace swept", n, err)
+	}
+	if traceHeld(t, powerCut(t, fs, s, o), 1) {
+		t.Fatal("a swept trace came back after a power cut: the sweep's commit was not synced")
 	}
 }

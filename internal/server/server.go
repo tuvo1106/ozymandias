@@ -159,7 +159,7 @@ func New(cfg config.Ozyd, opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("data_dir: %w", err)
 	}
-	store, engine, err := openStore(cfg, opts)
+	store, engine, err := openStore(cfg, opts, plan)
 	if err != nil {
 		_ = md.Close()
 		return nil, fmt.Errorf("data_dir: %w", err)
@@ -369,7 +369,7 @@ func (s *Server) registerMonitors(mux *http.ServeMux, opts Options) {
 // oracle M2's differential tests hold the TSDB to, and leaving it reachable
 // from config means an operator hitting a storage bug has somewhere to stand
 // while it is fixed.
-func openStore(cfg config.Ozyd, opts Options) (tsdb.MetricStore, string, error) {
+func openStore(cfg config.Ozyd, opts Options, plan syncPlan) (tsdb.MetricStore, string, error) {
 	switch cfg.Storage.MetricStore {
 	case "naive":
 		store, err := naive.Open(filepath.Join(cfg.DataDir, naiveFile))
@@ -384,7 +384,7 @@ func openStore(cfg config.Ozyd, opts Options) (tsdb.MetricStore, string, error) 
 			MaxSeriesPerMetric: cfg.Storage.MaxSeriesPerMetric,
 			// When a queue consumer syncs the WAL before it commits (syncPlan), Append does not:
 			// one fsync then covers a whole batch of records instead of one.
-			SyncOnAppend: cfg.Storage.WALSyncOnAppend && !planSync(cfg).tsdb,
+			SyncOnAppend: cfg.Storage.WALSyncOnAppend && !plan.tsdb,
 			SyncInterval: cfg.Storage.WALSyncInterval,
 			Clock:        opts.Clock,
 			Logger:       opts.Logger.With("component", "tsdb"),

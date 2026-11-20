@@ -37,11 +37,15 @@ records, where there were 64.
   by the batch sync. Off: the same bounded window as before, and nothing is synced before the commit. The
   log, trace and sketch stores have no window to choose: `logs.no_sync` and `traces.no_sync` still give up
   the fsync entirely, and the sketch store always syncs.
-- **A failed sync** is retried after a backoff, applying the batch again first (every store is idempotent), and
-  is counted in `ozy.consumer.sync_errors`; successful syncs in `ozy.consumer.syncs`. The WALs are fail-stop on
-  a failed fsync (`StopOnSyncError`): after one the store refuses everything until restart, the topic backs
-  up, and the restart redelivers the uncommitted batch from the queue. Re-applying matters only for a store
-  that is not fail-stop, where a second fsync could report success over pages the kernel dropped.
+- **A failed sync** is retried after a backoff, applying the batch again first, and is counted in
+  `ozy.consumer.sync_errors`; successful syncs in `ozy.consumer.syncs`. The WALs are fail-stop on a failed fsync
+  (`StopOnSyncError`): after one the store refuses everything until restart, so the retry's re-apply fails before
+  it writes anything, the topic backs up, and the restart redelivers the uncommitted batch from the queue.
+  Re-applying matters for a store that is not fail-stop, where a second fsync could report success over pages the
+  kernel dropped. It is safe for the trace and sketch stores (a repeat overwrites by key) and the TSDB (a repeated
+  point is a no-op). **It is not invisible for the log store beyond its head:** its dedupe drops a log the stream's
+  head already holds, so a batch re-applied after a block sealed mid-batch could repeat logs, exactly as a
+  redelivery after a crash already can. Because that WAL is fail-stop, a failed sync does not reach that case.
 - A sketch batch writes the sketch store and, for its exact aggregates, the TSDB, so that topic syncs both.
 
 Rejected alternatives:
@@ -72,6 +76,12 @@ Rejected alternatives:
 - **A record is queryable before it is durable**, as in direct mode (the head is in memory before the WAL is
   synced). A crash in that window loses nothing: the offset was not committed, so the batch is redelivered and
   stored again. Live tail may show a log twice for the same reason (it already could).
+- **The TSDB's own periodic sync keeps running** (`wal_sync_interval`, 100 ms), because the metric store is opened
+  with `SyncOnAppend` off: about ten extra fsyncs a second in queued mode, and it is the first thing to see a disk
+  failure. It stays because it also bounds the exposure of anything written outside the consumers (ozyd's own
+  metrics). The consequence for an operator: after a failed fsync the consumer may report `consumer: store failed;
+  retrying` (its `Append` found the WAL stopped) rather than `store sync failed`, and `ozy.consumer.sync_errors`
+  may stay 0; `/readyz` names the stopped store either way.
 - **A slow or failing sync stalls the whole topic**, where a per-record fsync stalled one record at a time. The
   topic backs up behind it and intake turns that into 429s as before.
 - **What is tested, and what is not.** Pebble-backed stores (traces, sketches) are tested against a filesystem that

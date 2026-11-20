@@ -3,6 +3,7 @@ package intake
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,8 +46,8 @@ func ConsumerName(topic string) string { return consumerPrefix + "-" + topic }
 // A failed Sync is retried with the whole batch applied again first. After a
 // failed fsync the kernel may have dropped the dirty pages it could not write, so
 // a second fsync can succeed for data that is no longer there; rewriting the
-// batch (every store is idempotent) is how a store that is not fail-stop
-// recovers. The WALs ozyd writes are fail-stop (wal.Options.StopOnSyncError): after
+// batch (every store absorbs a repeat, within the limits ADR-0063 notes) is how a
+// store that is not fail-stop recovers. The WALs ozyd writes are fail-stop (wal.Options.StopOnSyncError): after
 // a failed fsync they refuse everything until restart, the retry fails, the topic
 // backs up, and the restart redelivers the uncommitted batch from the queue.
 //
@@ -159,15 +160,23 @@ func (in *Intake) applyBatch(ctx context.Context, topic string, recs []queue.Rec
 	return poison, true
 }
 
-// syncAll syncs every store of a topic, all of them even when one fails, so a store that can
-// flush is not left unflushed behind one that cannot.
+// syncAll syncs every store of a topic at once, and all of them even when one fails, so a store
+// that can flush is not left unflushed behind one that cannot. The stores are independent files, so
+// a topic that writes two (sketches) pays one fsync's latency, not two.
 func syncAll(syncers []Syncer) error {
-	var errs []error
-	for _, s := range syncers {
-		if err := s.Sync(); err != nil {
-			errs = append(errs, err)
-		}
+	if len(syncers) == 1 {
+		return syncers[0].Sync()
 	}
+	errs := make([]error, len(syncers))
+	var wg sync.WaitGroup
+	for i, s := range syncers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = s.Sync()
+		}()
+	}
+	wg.Wait()
 	return errors.Join(errs...)
 }
 
