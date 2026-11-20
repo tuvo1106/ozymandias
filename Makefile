@@ -62,8 +62,10 @@ web: ## Build the web UI into the Go embed dir
 
 # --- quality gates -----------------------------------------------------------
 .PHONY: test
-test: ## go test -race + coverage gates
+test: ## go test -race + coverage gates, and the slow-disk fault hook's own tests (build tag faultinject)
 	scripts/check-coverage.sh
+	go vet -tags faultinject ./internal/tsdb/wal
+	go test -race -count=1 -tags faultinject ./internal/tsdb/wal
 
 .PHONY: test-queued
 test-queued: ## The server end-to-end suite again with intake in front of the queue (M7)

@@ -96,6 +96,11 @@ type Options struct {
 	SyncFile func(*os.File) error
 }
 
+// defaultSyncFile is the fsync a log uses when its Options name none: the file's own. It is a variable
+// so that a build with the faultinject tag can wrap it for the slow-disk chaos drill
+// (faultinject.go); nothing else assigns it, and a normal build has no code that does.
+var defaultSyncFile = (*os.File).Sync
+
 // WAL is an append-only log. It is safe for concurrent use; writes are
 // serialized, because ordering is the point.
 type WAL struct {
@@ -137,7 +142,7 @@ func Open(opts Options) (*WAL, error) {
 		return nil, fmt.Errorf("wal: creating %s: %w", opts.Dir, err)
 	}
 	if opts.SyncFile == nil {
-		opts.SyncFile = (*os.File).Sync
+		opts.SyncFile = defaultSyncFile
 	}
 	w := &WAL{dir: opts.Dir, segmentSize: opts.SegmentSize, stopOnSync: opts.StopOnSyncError, syncFile: opts.SyncFile}
 
