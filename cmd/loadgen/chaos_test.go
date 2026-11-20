@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -215,5 +216,70 @@ func TestStoredLogs_KeepsPagingPastAnEmptyPageWithACursor(t *testing.T) {
 	stored, _, err := storedLogs(srv.URL, 0, 1)
 	if err != nil || stored[7] != 1 || calls != 2 {
 		t.Fatalf("stored %v after %d calls, err %v: the empty first page ended the search", stored, calls, err)
+	}
+}
+
+// A fake query API with the real one's two limits on a window: at most 1500 buckets, and `to`
+// after `from`. Both bounds are inclusive, as in the real API, and every second holds one point.
+func fakeQueryAPI(t *testing.T, windows *[][2]int64) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		from, _ := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
+		to, _ := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
+		if to <= from {
+			http.Error(w, `{"error":"to must be after from"}`, http.StatusBadRequest)
+			return
+		}
+		if to-from+1 > 1500 {
+			http.Error(w, fmt.Sprintf(`{"error":"%d buckets at 1s; the limit is 1500"}`, to-from+1), http.StatusBadRequest)
+			return
+		}
+		*windows = append(*windows, [2]int64{from, to})
+		var pts []string
+		for ts := from; ts <= to; ts++ {
+			pts = append(pts, fmt.Sprintf("[%d,1]", ts))
+		}
+		fmt.Fprintf(w, `{"series":[{"points":[%s]}]}`, strings.Join(pts, ","))
+	}))
+}
+
+// The drill's time range grows with how fast ozyd acknowledges; the oracle must not depend on it
+// fitting in one query. The windows must tile the range: nothing counted twice, nothing skipped,
+// and none the API would refuse.
+func TestStoredPoints_AsksInWindowsThatTileTheRangeExactly(t *testing.T) {
+	for _, tc := range []struct{ from, to int64 }{
+		{100, 340},      // fits in one window
+		{100, 4099},     // several, ends on a boundary
+		{0, 1541 + 239}, // the range that failed the drill
+		{50, 50 + 2000}, // a remainder of exactly one second: that window must shrink the one before
+		{7, 7 + 999},    // exactly one full window
+		{7, 7 + 1000},   // one second over
+	} {
+		var windows [][2]int64
+		srv := fakeQueryAPI(t, &windows)
+		got, err := storedPoints(srv.URL, tc.from, tc.to)
+		srv.Close()
+		if err != nil {
+			t.Fatalf("%d..%d: %v", tc.from, tc.to, err)
+		}
+		if want := float64(tc.to - tc.from + 1); got != want {
+			t.Errorf("%d..%d: counted %v points, want %v (windows %v)", tc.from, tc.to, got, want, windows)
+		}
+		next := tc.from
+		for _, w := range windows {
+			if w[0] != next {
+				t.Errorf("%d..%d: window %v does not start where the last ended (%d): %v", tc.from, tc.to, w, next, windows)
+			}
+			if w[1]-w[0]+1 > queryWindow {
+				t.Errorf("%d..%d: window %v is wider than %d seconds", tc.from, tc.to, w, queryWindow)
+			}
+			next = w[1] + 1
+		}
+		if next != tc.to+1 {
+			t.Errorf("%d..%d: windows end at %d: %v", tc.from, tc.to, next-1, windows)
+		}
+	}
+	if _, err := storedPoints("http://127.0.0.1:1", 5, 5); err == nil || !strings.Contains(err.Error(), "not a range") {
+		t.Errorf("an empty range was not refused as one before any request: %v", err)
 	}
 }
