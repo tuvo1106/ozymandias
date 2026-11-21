@@ -555,17 +555,34 @@ func (s *Store) Append(ctx context.Context, batch []wire.Log) error {
 		}
 		bodies[i] = b
 	}
+	owed, err := s.write(batch, bodies)
+	if err != nil {
+		return err
+	}
+	// Outside the write lock, so the next appender can write while this fsync runs and the fsync that
+	// follows answers both (group commit, ADR-0065). The logs are readable from the moment write
+	// returns and durable only after this; Append does not return before that.
+	if owed && !s.opts.NoSync && !s.opts.DeferSync {
+		if err := s.wal.Sync(); err != nil {
+			return fmt.Errorf("logstore: syncing WAL: %w", err)
+		}
+	}
+	return nil
+}
 
+// write is the part of [Store.Append] that runs under the write lock: dedupe, log, make visible, seal.
+// owed reports whether the caller must sync the WAL before it may say the batch is stored.
+func (s *Store) write(batch []wire.Log, bodies [][]byte) (owed bool, err error) {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 	if s.closed {
-		return ErrClosed
+		return false, ErrClosed
 	}
 	streams := make([]*stream, len(batch))
 	for i := range batch {
 		st, err := s.streamFor(&batch[i])
 		if err != nil {
-			return err
+			return false, err
 		}
 		streams[i] = st
 	}
@@ -598,7 +615,10 @@ func (s *Store) Append(ctx context.Context, batch []wire.Log) error {
 		batch, bodies, streams, keys = fresh, freshBodies, freshStreams, freshKeys
 	}
 	if len(batch) == 0 {
-		return nil
+		// Every log was already here. They may be here because an earlier Append wrote them and has not
+		// synced yet (or its sync failed and this is the retry), so this call is owed a sync too: saying
+		// "stored" for logs a power cut could still take would be the ack-before-fsync bug.
+		return true, nil
 	}
 
 	// One WAL record per ~8 MiB of bodies, numbered consecutively from the
@@ -615,7 +635,7 @@ func (s *Store) Append(ctx context.Context, batch []wire.Log) error {
 		from = to
 	}
 	if err := s.wal.Log(recs...); err != nil {
-		return fmt.Errorf("logstore: WAL: %w", err)
+		return false, fmt.Errorf("logstore: WAL: %w", err)
 	}
 	// The numbers are spent from here on, whether or not the sync below succeeds:
 	// the records may be on disk, and a retry that reused them would put two
@@ -623,11 +643,6 @@ func (s *Store) Append(ctx context.Context, batch []wire.Log) error {
 	// and recovery's "already sealed" test. A failed sync can repeat logs after a
 	// restart (the caller was told to retry); it can never confuse two of them.
 	s.seq = base + uint64(len(batch)) - 1
-	if !s.opts.NoSync && !s.opts.DeferSync {
-		if err := s.wal.Sync(); err != nil {
-			return fmt.Errorf("logstore: syncing WAL: %w", err)
-		}
-	}
 	seg := s.wal.Segment()
 	now := s.clk.Now()
 
@@ -652,7 +667,7 @@ func (s *Store) Append(ctx context.Context, batch []wire.Log) error {
 			s.log.Error("sealing block", "stream", st.id, "error", err)
 		}
 	}
-	return nil
+	return true, nil
 }
 
 func dayOf(ms int64) string { return time.UnixMilli(ms).UTC().Format(dayLayout) }

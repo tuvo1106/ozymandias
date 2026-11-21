@@ -359,6 +359,9 @@ func (db *DB) Append(ctx context.Context, batch []tsdb.SeriesSamples) (tsdb.Appe
 	if len(samples) == 0 {
 		return res, nil
 	}
+	// An Index -1 rejection means the batch is not acknowledged: either the log write failed and nothing
+	// was applied, or (SyncOnAppend) the fsync failed after the samples were applied. The caller retries
+	// either way, and a retry that finds them already held counts them as stored nothing (ADR-0065).
 	stored, rejected := db.head.Append(refs, samples)
 
 	// One entry per series, however many of its samples were refused: the

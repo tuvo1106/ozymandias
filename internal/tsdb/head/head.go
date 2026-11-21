@@ -53,6 +53,11 @@ type Sample struct {
 // Logger is the write-ahead log the head records to. It is an interface so a
 // head can run without durability in tests, and so the same head works over
 // M7's queue-backed log.
+//
+// Sync is called outside the head's commit lock (ADR-0065), so it runs
+// concurrently with other appenders' Log calls and with other Syncs, and must make
+// everything logged before the call durable. [wal.WAL] is the implementation that
+// does this safely; a Logger whose Sync assumed it ran serialized would not be.
 type Logger interface {
 	Log(recs ...wal.Record) error
 	Sync() error
@@ -157,16 +162,45 @@ type Rejection struct {
 // but it stored nothing, and a caller counting what it wrote must be able to
 // tell the difference. It is nil when the whole batch failed.
 //
-// The batch is written to the WAL (and synced, if configured) *before* the
-// samples become visible, so nothing can be read that would not survive a
-// crash. Per-sample rejections are returned alongside rather than failing the
-// batch: one bad series must not discard another's data. An error that is not
-// a per-sample rejection — a failed log write — comes back with Index -1, and
-// nothing in the batch was applied.
+// The batch is written to the WAL *before* the samples become visible, so a
+// reader never sees what the log does not hold. With SyncOnAppend the fsync
+// comes after, outside the commit lock, and Append returns only once it has
+// shared one with the appenders that were committing at the same time (group
+// commit, ADR-0065). So a sample can be read for the few milliseconds before
+// its fsync completes, and a crash in that window loses it; what Append never
+// does is report a sample stored that a crash would take. If the fsync fails
+// the batch is reported failed (Index -1) although its samples are already in
+// the head: the caller was told to retry, a retry of a log that stops on a
+// failed fsync is refused, and a retry of one that does not logs the batch
+// again and syncs that.
+//
+// Per-sample rejections are returned alongside rather than failing the batch:
+// one bad series must not discard another's data. An error that is not a
+// per-sample rejection comes back with Index -1 and stored nil, which means one
+// of two things the caller cannot tell apart and need not: the log write failed
+// and nothing in the batch was applied, or the fsync failed and the samples were
+// applied but are not known durable. Either way the batch is not acknowledged and
+// the caller retries; per-sample accounting for that call is not returned, and a
+// retry that finds the samples already held reports them as stored nothing.
 func (h *Head) Append(refs []tsdb.SeriesRef, samples []Sample) (stored []bool, rejected []Rejection) {
+	stored, rejected, logged := h.commit(refs, samples)
+	if !logged || !h.opts.SyncOnAppend {
+		return stored, rejected
+	}
+	// Outside the commit lock, so the next appender can log and apply while this fsync runs, and the
+	// fsync that follows answers both.
+	if err := h.opts.WAL.Sync(); err != nil {
+		return nil, append(rejected, Rejection{Index: -1, Err: fmt.Errorf("head: syncing: %w", err)})
+	}
+	return stored, rejected
+}
+
+// commit is the critical section of [Head.Append]: resolve, log, apply. logged is true once the batch
+// is in the log, which is when it is owed a sync.
+func (h *Head) commit(refs []tsdb.SeriesRef, samples []Sample) (stored []bool, rejected []Rejection, logged bool) {
 	if len(refs) != len(samples) {
 		return nil, []Rejection{{Index: -1,
-			Err: fmt.Errorf("head: %d refs for %d samples", len(refs), len(samples))}}
+			Err: fmt.Errorf("head: %d refs for %d samples", len(refs), len(samples))}}, false
 	}
 	// Resolving, logging and applying are one critical section: the commit.
 	//
@@ -180,12 +214,11 @@ func (h *Head) Append(refs []tsdb.SeriesRef, samples []Sample) (stored []bool, r
 	// removed from every index, so the samples would be stored where no query
 	// can reach them.
 	//
-	// What this costs is that appends to the head are serial. They already
-	// were, in every configuration that matters: with a WAL the fsync inside
-	// this section dwarfs everything else, and a batch amortizes it over
-	// thousands of samples. The 256 stripes still earn their place on the read
-	// path and by spreading the map, just not by letting two appends commit at
-	// once.
+	// What this costs is that appends to the head are serial. The fsync is not
+	// in this section any more (ADR-0065), so what is serial is a log write and
+	// a memory update, and concurrent appenders share the fsync that follows.
+	// The 256 stripes still earn their place on the read path and by spreading
+	// the map, just not by letting two appends commit at once.
 	h.logMu.Lock()
 	defer h.logMu.Unlock()
 
@@ -250,7 +283,7 @@ func (h *Head) Append(refs []tsdb.SeriesRef, samples []Sample) (stored []bool, r
 		}
 	}
 	if len(valid) == 0 {
-		return make([]bool, len(samples)), rejected
+		return make([]bool, len(samples)), rejected, false
 	}
 	if h.opts.WAL != nil {
 		// Which series still need a definition record is decided here and not
@@ -275,8 +308,9 @@ func (h *Head) Append(refs []tsdb.SeriesRef, samples []Sample) (stored []bool, r
 			for _, ms := range pending {
 				ms.logged = false
 			}
-			return nil, append(rejected, Rejection{Index: -1, Err: err})
+			return nil, append(rejected, Rejection{Index: -1, Err: err}), false
 		}
+		logged = true
 	}
 	// Only now make them visible.
 	stored = make([]bool, len(samples))
@@ -294,7 +328,7 @@ func (h *Head) Append(refs []tsdb.SeriesRef, samples []Sample) (stored []bool, r
 		}
 		stored[i] = wrote
 	}
-	return stored, rejected
+	return stored, rejected, logged
 }
 
 // byRejectionIndex orders rejections by sample index, batch-wide ones last.
@@ -359,11 +393,6 @@ func (h *Head) logLocked(series []seriesRecord, samples []Sample) error {
 	}
 	if err := h.opts.WAL.Log(recs...); err != nil {
 		return fmt.Errorf("head: logging: %w", err)
-	}
-	if h.opts.SyncOnAppend {
-		if err := h.opts.WAL.Sync(); err != nil {
-			return fmt.Errorf("head: syncing: %w", err)
-		}
 	}
 	return nil
 }

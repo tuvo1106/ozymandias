@@ -6,7 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/tuvo1106/ozymandias/internal/testutil"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
@@ -173,5 +176,48 @@ func TestPowerCut_SyncCoversSegmentsTheLogRolledPast(t *testing.T) {
 	got := survivors(t, cut, 14)
 	if len(got) < 12 || !slices.Equal(got, upTo(len(got))) {
 		t.Fatalf("after a power cut, series %v came back, want a prefix with the 12 appended before the Sync", got)
+	}
+}
+
+// Concurrent appenders share WAL fsyncs (ADR-0065). Every Append that returned nil must be in what a
+// power cut leaves, however the fsyncs were shared; a Sync answered by an fsync that began before the
+// record was written, or returned early, loses a series here.
+func TestPowerCut_EveryAcknowledgedConcurrentAppendSurvives(t *testing.T) {
+	st := testutil.NewSyncTracker()
+	var fsyncs atomic.Int64
+	db, _, dir := open(t, Options{SyncOnAppend: true, walSyncFile: func(f *os.File) error {
+		fsyncs.Add(1)
+		time.Sleep(3 * time.Millisecond)
+		return st.SyncFile(f)
+	}})
+
+	const goroutines, each = 12, 10
+	var mu sync.Mutex
+	var acked []int
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				n := g*each + i
+				if _, err := db.Append(ctx, []tsdb.SeriesSamples{ss(fmt.Sprint("m", n), nil, sm(epoch.UnixMilli(), float64(n)))}); err != nil {
+					t.Error(err)
+					return
+				}
+				mu.Lock()
+				acked = append(acked, n)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if n := fsyncs.Load(); n*2 > goroutines*each {
+		t.Errorf("%d fsyncs for %d Appends: they were not shared", n, goroutines*each)
+	}
+	got := survivors(t, cutOf(t, st, dir, 0), goroutines*each)
+	slices.Sort(acked)
+	if !slices.Equal(got, acked) {
+		t.Fatalf("a power cut left %d series, %d were acknowledged\n got  %v\n want %v", len(got), len(acked), got, acked)
 	}
 }

@@ -14,7 +14,9 @@
 // nothing else to narrow it reads everything in range; per-block bloom filters
 // (the format's v2) exist to skip blocks that cannot contain a word.
 //
-//	Append ──► WAL (fsync) ──► head block (per stream, in memory)
+//	Append ──► WAL (written) ──► head block (per stream, in memory) ──► fsync, shared with
+//	                                                                    concurrent Appends; Append
+//	                                                                    returns after it (ADR-0065)
 //	                                │ sealed at 256 KiB or 5 minutes
 //	                                ▼
 //	                  chunk file  <day>/<stream>.chunk : zstd blocks + footer
