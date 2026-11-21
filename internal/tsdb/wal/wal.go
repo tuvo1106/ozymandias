@@ -119,6 +119,32 @@ type WAL struct {
 	// stalled fsync, which is exactly when it matters.
 	brokenView atomic.Pointer[error]
 	hdr        [headerSize]byte // scratch, reused per record under mu
+
+	// Group commit (see Sync). fmu is held shared by an fsync that runs outside mu, and exclusively by
+	// everything that closes or syncs the segment under mu (a rollover, Cut, Close), so a segment is never
+	// closed under a running fsync and two fsyncs of one file never overlap with one of them hidden from
+	// the failure policy. The order is always mu, then fmu.
+	fmu sync.RWMutex
+	// failedSync is set, before fmu is released, by a group fsync that failed on a log that stops on
+	// failure. Whatever takes fmu next (a rollover, Cut, Close) sees it and fails instead of fsyncing:
+	// a second fsync of pages the first one failed to write can succeed over data the kernel dropped.
+	failedSync atomic.Bool
+	// gmu guards syncing and next. syncing is true while one goroutine is running a group's fsync; next
+	// collects the callers that arrived meanwhile, and is run by one of them when that fsync ends.
+	gmu     sync.Mutex
+	syncing bool
+	next    *syncGroup
+}
+
+// syncGroup is the callers of Sync that one fsync answers.
+type syncGroup struct {
+	done chan struct{} // closed once the fsync has finished and err is set
+	lead chan struct{} // holds one token: whoever takes it runs the fsync
+	err  error
+}
+
+func newSyncGroup() *syncGroup {
+	return &syncGroup{done: make(chan struct{}), lead: make(chan struct{}, 1)}
 }
 
 // Open opens or creates the log in opts.Dir, appending to the newest segment.
@@ -271,6 +297,11 @@ func (w *WAL) breakLocked(cause error) error {
 // policy to judge. A failed close or open stops the log: w.f then points at
 // a closed file, which no later write can use.
 func (w *WAL) roll() error {
+	w.fmu.Lock() // waits out a group fsync of the segment about to be closed
+	defer w.fmu.Unlock()
+	if w.failedSync.Load() {
+		return w.syncFailedLocked(fmt.Errorf("%w before rollover: an earlier fsync failed", ErrSync))
+	}
 	if err := w.syncFile(w.f); err != nil {
 		return w.syncFailedLocked(fmt.Errorf("%w before rollover: %w", ErrSync, err))
 	}
@@ -313,8 +344,8 @@ func (w *WAL) Cut() ([]Mark, error) {
 	if w.broken != nil {
 		return nil, w.broken
 	}
-	if err := w.syncFile(w.f); err != nil {
-		return nil, w.syncFailedLocked(fmt.Errorf("%w: %w", ErrSync, err))
+	if err := w.syncExclusiveLocked(); err != nil {
+		return nil, err
 	}
 	es, err := os.ReadDir(w.dir)
 	if err != nil {
@@ -334,16 +365,90 @@ func (w *WAL) Cut() ([]Mark, error) {
 	return out, nil
 }
 
-// Sync flushes the current segment to stable storage. Until it returns, a
-// power cut can lose anything Log has written.
+// Sync makes everything Log has written before the call durable. Until it
+// returns, a power cut can lose any of it.
+//
+// Concurrent callers share fsyncs (group commit). One caller runs the fsync;
+// the ones that arrive while it is running wait and are answered together by
+// the next, which starts when the first ends. The fsync does not hold the log's
+// lock, so Log goes on while one is in flight and those records join the next
+// group. Every caller's records were written before it called Sync, and the
+// fsync that answers it starts after that, so each returns only once its own
+// records are durable. A failed fsync fails every caller in its group (none is
+// told its records are safe), and on a log that stops on failure it stops the
+// log before the next group can run.
 func (w *WAL) Sync() error {
+	w.gmu.Lock()
+	if !w.syncing {
+		w.syncing = true
+		w.gmu.Unlock()
+		g := newSyncGroup()
+		w.runGroup(g)
+		return g.err
+	}
+	if w.next == nil {
+		w.next = newSyncGroup()
+	}
+	g := w.next
+	w.gmu.Unlock()
+	select {
+	case <-g.lead:
+		w.runGroup(g)
+	case <-g.done:
+	}
+	return g.err
+}
+
+// runGroup runs one group's fsync, answers its callers, and hands the next group, if one formed, to one
+// of its callers.
+func (w *WAL) runGroup(g *syncGroup) {
+	g.err = w.syncOnce()
+	close(g.done)
+	w.gmu.Lock()
+	if n := w.next; n != nil {
+		w.next = nil
+		n.lead <- struct{}{} // syncing stays true: the group just handed over is now the one running
+	} else {
+		w.syncing = false
+	}
+	w.gmu.Unlock()
+}
+
+// syncOnce fsyncs the current segment outside mu, and applies the failure policy under it.
+func (w *WAL) syncOnce() error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.closed {
+		w.mu.Unlock()
 		return errors.New("wal: log is closed")
 	}
 	if w.broken != nil {
-		return w.broken
+		err := w.broken
+		w.mu.Unlock()
+		return err
+	}
+	f := w.f
+	w.fmu.RLock() // taken before mu is released, so no rollover can close f first
+	w.mu.Unlock()
+	err := w.syncFile(f)
+	if err != nil && w.stopOnSync {
+		w.failedSync.Store(true) // before the unlock: see failedSync
+	}
+	w.fmu.RUnlock()
+	if err == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.syncFailedLocked(fmt.Errorf("%w: %w", ErrSync, err))
+}
+
+// syncExclusiveLocked fsyncs the current segment with no group fsync in flight, for the callers that
+// already hold mu (Cut). A log whose group fsync has failed does not fsync again: see failedSync.
+func (w *WAL) syncExclusiveLocked() error {
+	w.fmu.Lock()
+	defer w.fmu.Unlock()
+	if w.failedSync.Load() {
+		return w.syncFailedLocked(fmt.Errorf("%w: an earlier fsync failed", ErrSync))
 	}
 	if err := w.syncFile(w.f); err != nil {
 		return w.syncFailedLocked(fmt.Errorf("%w: %w", ErrSync, err))
@@ -368,6 +473,8 @@ func (w *WAL) Close() error {
 		return nil
 	}
 	w.closed = true
+	w.fmu.Lock() // waits out a group fsync still running on the segment
+	defer w.fmu.Unlock()
 	if w.broken != nil {
 		// A stopped log may hold a file a failed rollover already closed;
 		// syncing it would report a made-up fsync failure over the real cause.
@@ -375,7 +482,9 @@ func (w *WAL) Close() error {
 		return w.broken
 	}
 	var err error
-	if serr := w.syncFile(w.f); serr != nil {
+	if w.failedSync.Load() {
+		err = fmt.Errorf("%w: an earlier fsync failed", ErrSync)
+	} else if serr := w.syncFile(w.f); serr != nil {
 		err = fmt.Errorf("%w: %w", ErrSync, serr)
 	}
 	if cerr := w.f.Close(); err == nil {
