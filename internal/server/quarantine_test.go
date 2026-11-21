@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tuvo1106/ozymandias/internal/testutil"
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/block"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/db"
@@ -124,6 +126,18 @@ func TestServer_StartsWithADamagedBlockAndSaysSo(t *testing.T) {
 	defer func() { _ = s.Close() }()
 
 	// Ready, and says so: a damaged block is data missing, not a store that has stopped.
+	// In queued mode readiness waits for the consumers, which only Run starts; what must hold at once, and
+	// always, is that the tsdb check itself is ok.
+	if _, body := readyz(s.Handler()); checkOf(body, "tsdb") != "ok" {
+		t.Fatalf("a damaged block failed the tsdb readiness check: %v", body)
+	}
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.Run(ctx, ln) }()
+	defer func() { cancel(); <-done }()
+	testutil.Eventually(t, 10*time.Second, func() bool { code, _ := readyz(s.Handler()); return code == 200 },
+		"a damaged block kept the server from becoming ready")
 	if code, body := readyz(s.Handler()); code != 200 || body["status"] != "ready" {
 		t.Errorf("/readyz = %d %v, want 200 ready", code, body)
 	}
