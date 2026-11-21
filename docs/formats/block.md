@@ -25,9 +25,12 @@ timestamp — two blocks written in the same millisecond must not collide.
 `<ULID>/`; rename is atomic, so a block either appears complete or does not
 appear. A directory ending in `.tmp` is therefore never a block *whatever it
 contains* — a crash in the window between the meta write and the rename leaves
-one that is complete in every other respect — and neither is one without a
-`meta.json`. Both are the wreckage of an interrupted write and are deleted at
-startup.
+one that is complete in every other respect. It is the wreckage of an interrupted
+write and is deleted at startup, and so is an *empty* directory without a
+`meta.json`. A directory that is not `.tmp`, has files in it and no `meta.json` is
+not an interrupted write (those are `.tmp` until the rename) and not an
+interrupted delete (those are tombstoned and finished first): it is a block that
+lost its `meta.json`, and is quarantined (below), not deleted.
 
 Deletion runs the argument backwards: a `tombstone` file is written and fsynced
 *before* anything is unlinked, so an interrupted delete is finished at startup
@@ -36,6 +39,26 @@ and the directory fsynced before anything else, so from that point the remains
 are not a block and startup removes them. The order is set in code, never left to
 the filesystem's listing order: a delete that removed the tombstone before
 `meta.json` would leave exactly the broken block this prevents.
+
+## Damage and quarantine
+
+Opening a block reads `meta.json`, the whole of `index.dat` (checksummed, then
+decoded, so every chunk's offset and length is known), the header of `chunks.dat`,
+and checks that `chunks.dat` is at least as long as the furthest chunk the index
+names. It does not read the chunks. A block that fails any of that, or whose
+files have gone missing, is **damaged** (`block.ErrCorrupt`): at startup its
+directory is renamed to `<ULID>.corrupt-<unix seconds>`, the rest of the store is
+opened, and ozyd says so (ADR-0064). The files are never edited or deleted.
+Nothing opens, cleans, compacts or expires a `.corrupt-` directory; an operator
+restores it (fix the files, take the suffix off the name, restart) or removes it.
+
+Not damage, so never quarantined: a block of a version this build does not read,
+and an I/O error opening a file. Both stop the start, because the block may be
+perfectly healthy.
+
+A flipped bit *inside a chunk* is not seen at open. The query that reads that
+chunk fails its checksum and gets an error (`block.ErrCorrupt`), never a wrong
+sample.
 
 ## meta.json
 
@@ -175,4 +198,4 @@ not from the order the series were written.
 - Every series in the index has at least one chunk.
 - `minTime`/`maxTime` in `meta.json` bound every sample in the block.
 - Series keys are unique within a block, and sorted.
-- A block is complete or absent; there is no third state a reader can observe.
+- A block is complete or absent to a reader; a finished block that turns out to be damaged is set aside under a `.corrupt-` name and is never opened.

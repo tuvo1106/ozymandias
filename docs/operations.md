@@ -421,12 +421,15 @@ data dir. What an operator sees, and does, for each:
 | `ozy.tsdb.ooo_rejected` or `ozy.intake.series_rejected` rising | the sender's clock (`date`, NTP) | A point more than 10 minutes ahead is refused at intake; one older than the series' newest is refused by the store. Neither corrupts anything, including across a restart. Fix the clock (`clock-jump.sh`). |
 | `ozy.queue.lag_*` growing with `ozy.consumer.sync_errors` rising or `consumer: store failed` / `store sync failed` in `ozyd.log` (queued mode) | `/readyz`: it names the store whose log stopped (`tsdb`, `logstore`). The sync counter can stay 0 if the TSDB's own periodic sync hit the failure first | A store's fsync failed. The WALs are fail-stop: the store refuses writes until restart, so the topic backs up behind it and intake answers 429 when it fills. Fix the disk, restart: the uncommitted batch is redelivered from the queue and stored again (ADR-0063). |
 | `ozy.tsdb.series_limit_rejected` rising | which tag carries an unbounded value | `storage.max_series_per_metric` holds, other metrics are unaffected, memory is bounded. In queued mode the sender is not told (it gets `202`): look at `ozy.consumer.series_rejected`. Drop the tag in the app (`cardinality-bomb.sh`). |
+| `ozy.tsdb.blocks_quarantined` > 0, or `block quarantined` (ERROR) in `ozyd.log` | the log line: the block, where it moved, why, and the time range it covered (`min_time`..`max_time`) | A block of the metric store was damaged (a bad index, a missing or short file, a lost `meta.json`) and ozyd started without it (ADR-0064). Nothing was deleted: it is `blocks/<ulid>.corrupt-<unix>`. **Queries over that time range return less than was stored, and the API does not say so.** Fix the cause (the disk) first. To restore it: repair or copy back the damaged file, rename the directory to `<ulid>` (drop `.corrupt-<unix>`), restart. To give up on it: delete the directory; the gauge falls at the next start. `/readyz` stays 200 on purpose. A version mismatch or an I/O error is *not* quarantined: ozyd refuses to start and names the block. |
+| `ozy.tsdb.corrupt_reads` climbing, `a query read a damaged block` (ERROR), queries over one time range failing | the log line names the block directory | A chunk inside a block fails its checksum. Opening does not read chunks, so this is not quarantined, and a restart does not find it either: **every query over that block's range fails until you move the block aside by hand** (`mv blocks/<ulid> blocks/<ulid>.corrupt-$(date +%s)`, restart). ozyd then treats it like any quarantined block. |
 | the disk is slow (fsyncs take seconds) | `ozy.queue.lag_seconds` and `ozy.queue.lag_records` growing; acknowledged requests slow down; `ozy.tsdb.wal_syncs` | Nothing is lost and ozyd stays ready: an ack waits for the queue's fsync, and the stores' consumers wait for theirs, so the queue absorbs the backlog on disk. Fix the disk; the backlog drains by itself. A kill during the backlog loses nothing acknowledged (`slow-disk.sh`, which does not fill the queue). A full queue is a separate condition: at `pipeline.queue.max_bytes` (at least 64 MiB) intake answers 429, covered by its own tests. |
 | the data volume is full | `ozy.store.broken`, `/readyz` 503, `df` | Intake refuses what it cannot keep, nothing is acknowledged and lost, `/healthz` stays 200, no panic. Free space, restart ozyd, and everything acknowledged before and after is there (`disk-full.sh`). |
 | a store says it is broken | `/readyz`, `ozy.store.broken{store}` | A failed fsync stops the store until restart (see Readiness). Not drilled: no portable way to make a disk fail an fsync; the unit tests inject it. |
 
-Not drilled: a slow disk, a corrupt block (ozyd refuses to start; move the block aside, see
-*Recovering from a corrupt block*) and the apps' latency with ozymandias down. See ADR-0061.
+Not drilled: the apps' latency with ozymandias down (it needs the private app repos). A slow disk has a drill (`slow-disk.sh`, ADR-0063's notes); a
+damaged block is covered by tests and not by a drill, because making one needs a block, which takes wall-clock hours to cut (see *Recovering from a corrupt block*).
+See ADR-0061.
 
 ## Securing ozyd
 
@@ -581,22 +584,62 @@ unless you are deliberately exercising the cut path.
 | `ozy.tsdb.series_limit_rejected` | A metric hit `max_series_per_metric`. Almost always a tag carrying an unbounded value |
 | `ozy.tsdb.head.series` / `.head.chunks` | The in-memory window. Grows until a block is cut, then drops |
 | `ozy.tsdb.blocks` | Open blocks. Should fall when compaction runs |
+| `ozy.tsdb.blocks_quarantined` | Damaged blocks set aside as `<ULID>.corrupt-<unix>`. **Not zero means a time range is missing from answers**: alert on it (see *Recovering from a corrupt block*) |
+| `ozy.tsdb.corrupt_reads` | Reads that found a damaged chunk (a failed query each). Opening does not see these |
 | `ozy.tsdb.disk_bytes` | Total on disk, including the log |
 
 ### Recovering from a corrupt block
 
-A block that fails its checksum stops startup, loudly, naming the directory:
-serving a database with a silent hole in it is worse than not starting. The
-data in that block is gone; the rest is fine. Move the directory aside and
-restart:
+**A damaged block no longer stops ozyd** (ADR-0064). At startup a block whose
+`meta.json`, `index.dat` or `chunks.dat` is damaged (a bad checksum or structure, a
+missing or short file, a `chunks.dat` shorter than its index says, a directory
+that lost its `meta.json`) is moved aside, never deleted, and ozyd starts without
+it. The rest of the store is fine.
+
+**What you see.** One `ERROR` log line, `block quarantined: its data is not served`,
+with the block, where it went (`<ULID>.corrupt-<unix>` in the same `blocks/`
+directory), the cause, and `min_time`..`max_time`, the time range that is now missing.
+`ozy.tsdb.blocks_quarantined` is not zero and stays so across restarts until you act.
+`/readyz` stays 200 on purpose: new data is accepted and stored correctly.
+**Queries over the missing range return less than was stored, and the API does not
+say so.** Alert on the gauge; do not rely on noticing.
+
+**What to do.** Find the cause first (the disk). Then either:
 
 ```
-mv data/ozyd/tsdb/blocks/<ULID> /tmp/
+# give it up: the data in it is gone for good
+rm -r data/ozyd/tsdb/blocks/<ULID>.corrupt-<unix>
+
+# or restore it: put a good copy of the damaged file back (from a backup), take the
+# ".corrupt-<unix>" off the name, and restart
+mv data/ozyd/tsdb/blocks/<ULID>.corrupt-<unix> data/ozyd/tsdb/blocks/<ULID>
 ```
 
-A directory with no `meta.json`, or one ending in `.tmp`, is the wreckage of an
-interrupted write and is deleted automatically at startup — those are expected
-after a hard kill and need no action.
+Nothing opens, cleans or expires a `.corrupt-` directory, so it can stay as long as
+you like (it counts against the disk, not against `storage.max_bytes`).
+
+**What still stops the start, and should.** A block written by a different version
+of ozyd (the message names the versions): it is whole, and quarantining it would hide
+good data; run the matching build. An I/O error reading a block (`EIO`, too many open
+files, permissions): it says nothing about the block, which may be healthy; fix the
+cause and restart. A damaged block that cannot be moved aside (a read-only volume):
+ozyd will not carry on as if it had been. In all three the error names the block.
+
+**A flipped bit inside a chunk is the case this does not catch.** Opening does not read
+chunks, so the block opens; the first query that reads the damaged chunk fails with an
+error and no samples (never a wrong value), `ozy.tsdb.corrupt_reads` climbs, and the log
+names the block directory once. A restart does not find it either. Until you move that
+block aside by hand, every query over its range fails:
+
+```
+mv data/ozyd/tsdb/blocks/<ULID> data/ozyd/tsdb/blocks/<ULID>.corrupt-$(date +%s)   # then restart
+```
+
+ozyd then treats it like any quarantined block.
+
+A directory ending in `.tmp`, or an empty one, is the wreckage of an interrupted write
+and is deleted automatically at startup. Those are expected after a hard kill and need
+no action.
 
 ## Colima: UDP from the Mac doesn't reach containers
 
