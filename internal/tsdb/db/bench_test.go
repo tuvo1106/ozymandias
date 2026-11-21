@@ -41,6 +41,8 @@ func BenchmarkDB_Append(b *testing.B) {
 	shapes := []shape{
 		{true, 100, 1}, {true, 1000, 1}, {true, 10_000, 1},
 		{true, 1000, 8}, {true, 1000, 64},
+		// Many small concurrent senders: the shape group commit is for.
+		{true, 1, 1}, {true, 1, 8}, {true, 1, 64},
 		{false, 1000, 1}, {false, 1000, 8}, {false, 1000, 64},
 	}
 	for _, sh := range shapes {
