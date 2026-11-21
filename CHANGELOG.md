@@ -9,6 +9,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Direct-mode appenders share the WAL fsync** (M7, ADR-0065). `WAL.Sync` is a group commit: concurrent callers share one fsync, and the head and the log store
+  now fsync outside their commit locks. One-sample appends went from 4.5 ms at any concurrency to 0.28-0.88 ms (5-16x); large batches gain 1.3-2.2x. An `Append` still
+  returns only once its data is durable, but **a sample is now readable for a few milliseconds before it is**: a crash in that window loses a sample a query may have
+  shown and nobody was told was stored. A failed fsync fails every caller in its group and stops the log (no fsync of it runs again, including from a rollover, `Cut` or
+  `Close`).
 - **A damaged TSDB block is quarantined at startup instead of stopping ozyd** (M7, ADR-0064; reverses the old refusal, on the owner's decision). A block whose
   `meta.json`, `index.dat` or `chunks.dat` is damaged (bad checksum or structure, missing or short file, a `chunks.dat` shorter than the index needs, a lost
   `meta.json`) is renamed to `<ulid>.corrupt-<unix>`, never deleted, and ozyd starts and serves the rest. A block of another version and an I/O error still stop

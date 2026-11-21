@@ -346,9 +346,13 @@ flowchart TB
 Three ideas carry it, and each is a trade someone else made first.
 
 1. **The log is for durability, the head is for reading, blocks are for both.**
-   A write is appended to the log and fsynced *before* it becomes visible, so
-   nothing can be read that would not survive a crash. The head is what makes
-   it queryable, and is lost on a crash — replay is how it comes back. Blocks
+   A write is appended to the log *before* it becomes visible, so nothing can be
+   read that the log does not hold, and an `Append` returns only once the log is
+   fsynced, so nothing acknowledged can be lost. Between the two there is a window
+   of a few milliseconds in which a sample is readable and not yet durable
+   (ADR-0065: the fsync moved out of the commit lock so concurrent appenders share
+   it). The head is what makes it queryable, and is lost on a crash — replay is how
+   it comes back. Blocks
    are written only in large batches, because that is the only way to produce a
    file that is compact, indexed and immutable.
 
@@ -356,10 +360,11 @@ Three ideas carry it, and each is a trade someone else made first.
    section, so appends to the head are serial. That is what makes the log's
    order the head's order — replay must reconstruct what was visible, not
    something else — and what keeps a block cut from forgetting a series an
-   appender is still holding. An fsync inside that section costs four orders of
-   magnitude more than the lock, so the throughput lever is batch size, not
-   concurrency; `docs/notes/M2.md` has the measurements and the three bugs that
-   established the rule.
+   appender is still holding. The fsync used to sit inside that section, and cost
+   four orders of magnitude more than the lock, so the only throughput lever was
+   batch size; it is outside it now, and appenders that arrive while one fsync runs
+   share the next (`docs/notes/M7.md`, ADR-0065). `docs/notes/M2.md` has the
+   measurements and the three bugs that established the rule.
 
 2. **Compression is delta-of-delta on time, XOR on value** (Facebook's Gorilla,
    `internal/tsdb/chunkenc`). Samples arrive at a fixed interval and change

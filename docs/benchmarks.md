@@ -194,6 +194,9 @@ a large batch every 10 seconds it does not matter; with sixty agents it would,
 and the workaround today is `wal_sync_on_append: false`, which is group commit
 with a bounded window of loss. (In queued mode the same setting trades something different: see the M7 section below.)
 
+*Superseded for direct mode by ADR-0065: the fsync is outside the commit lock now, and concurrent appenders share it. The numbers above stand as
+what the old design measured; the new ones are in "After ADR-0065" below.*
+
 Restart cost, measured rather than extrapolated (`OZY_BIG_REPLAY=1`):
 
 | | |
@@ -442,3 +445,25 @@ The chaos drills pass against it (kill -9, 3 runs of 5 kills each, with the acks
 other six at quick settings. They cannot see page-cache loss; the Pebble-backed stores are tested against a filesystem that discards unsynced writes
 (ADR-0063). The TSDB and log WALs are tested the same way, by cutting each file back to its last fsync (`testutil.SyncTracker`); what that does
 not model is in docs/notes/M7.md.
+
+### After ADR-0065: direct-mode appenders share the fsync
+
+`BenchmarkDB_Append/sync=true`, `-benchtime 3s`, the same machine and the same command before and after (an fsync is about 4 ms; two other
+processes were using 40-60% of a core each throughout, which the fsync-bound numbers barely feel, but this is not a quiet-machine measurement).
+`goroutines=N` is `SetParallelism(N)`, which means N x GOMAXPROCS (10) goroutines.
+
+| batch | goroutines | before (ms/append) | after (ms/append) | |
+|---:|---:|---:|---:|---|
+| 1 | 1 | 4.50 | 0.88 | 5x |
+| 1 | 8 | 4.45 | 0.28 | 16x |
+| 1 | 64 | 4.45 | 0.32 | 14x |
+| 100 | 1 | 4.50 | 1.61 | 2.8x |
+| 1 000 | 1 | 4.95 | 2.22 | 2.2x |
+| 1 000 | 8 | 5.06 | 4.04 | 1.3x |
+| 1 000 | 64 | 5.85 | 3.89 | 1.5x |
+| 10 000 | 1 | 6.43 | 4.60 | 1.4x |
+
+Small concurrent senders gain the most (before: one fsync per append whatever the concurrency; after: the appends that arrive during one fsync
+share the next). Large batches gain least, because each already amortized its own fsync and its own cost is the encode and the copy. Not
+measured: Linux, a quiet machine, the log store (the same change, no benchmark of its own), and mixed readers and writers.
+
