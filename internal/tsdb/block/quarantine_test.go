@@ -79,13 +79,14 @@ func TestOpenAll_QuarantinesEachKindOfDamage(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		damage   func(t *testing.T, dir string)
-		hasRange bool // whether meta.json is still readable, so the quarantine can say what time was lost
+		hasRange bool // whether meta.json still parses, so the quarantine can say what time it claimed
+		min, max int64
 	}{
 		{"meta.json is not JSON", func(t *testing.T, d string) {
 			if err := os.WriteFile(filepath.Join(d, MetaFilename), []byte("{not json"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-		}, false},
+		}, false, 0, 0},
 		{"meta.json ends before it starts", func(t *testing.T, d string) {
 			m, err := ReadMeta(d)
 			if err != nil {
@@ -95,28 +96,28 @@ func TestOpenAll_QuarantinesEachKindOfDamage(t *testing.T) {
 			if err := writeMeta(d, m); err != nil {
 				t.Fatal(err)
 			}
-		}, false},
-		{"index.idx has a flipped bit", func(t *testing.T, d string) { flipByte(t, filepath.Join(d, IndexFilename), 40) }, true},
-		{"index.idx is cut short", func(t *testing.T, d string) { truncateTo(t, filepath.Join(d, IndexFilename), 10) }, true},
+		}, true, 500, 100}, // the numbers are the damage, and are still reported as what it claimed
+		{"index.idx has a flipped bit", func(t *testing.T, d string) { flipByte(t, filepath.Join(d, IndexFilename), 40) }, true, 0, 30_000},
+		{"index.idx is cut short", func(t *testing.T, d string) { truncateTo(t, filepath.Join(d, IndexFilename), 10) }, true, 0, 30_000},
 		{"index.idx is missing", func(t *testing.T, d string) {
 			if err := os.Remove(filepath.Join(d, IndexFilename)); err != nil {
 				t.Fatal(err)
 			}
-		}, true},
+		}, true, 0, 30_000},
 		{"chunks.dat is missing", func(t *testing.T, d string) {
 			if err := os.Remove(filepath.Join(d, ChunksFilename)); err != nil {
 				t.Fatal(err)
 			}
-		}, true},
-		{"chunks.dat has the wrong magic", func(t *testing.T, d string) { flipByte(t, filepath.Join(d, ChunksFilename), 0) }, true},
-		{"chunks.dat is shorter than its header", func(t *testing.T, d string) { truncateTo(t, filepath.Join(d, ChunksFilename), 2) }, true},
+		}, true, 0, 30_000},
+		{"chunks.dat has the wrong magic", func(t *testing.T, d string) { flipByte(t, filepath.Join(d, ChunksFilename), 0) }, true, 0, 30_000},
+		{"chunks.dat is shorter than its header", func(t *testing.T, d string) { truncateTo(t, filepath.Join(d, ChunksFilename), 2) }, true, 0, 30_000},
 		{"chunks.dat is cut short, which only the index can say", func(t *testing.T, d string) {
 			info, err := os.Stat(filepath.Join(d, ChunksFilename))
 			if err != nil {
 				t.Fatal(err)
 			}
 			truncateTo(t, filepath.Join(d, ChunksFilename), info.Size()-3)
-		}, true},
+		}, true, 0, 30_000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parent, victim, neighbour, want := twoBlocks(t)
@@ -145,8 +146,8 @@ func TestOpenAll_QuarantinesEachKindOfDamage(t *testing.T) {
 			if q.HasRange != tc.hasRange {
 				t.Errorf("HasRange = %v, want %v", q.HasRange, tc.hasRange)
 			}
-			if tc.hasRange && (q.MinTime != 0 || q.MaxTime != 30_000) {
-				t.Errorf("the time lost is %d..%d, want 0..30000", q.MinTime, q.MaxTime)
+			if tc.hasRange && (q.MinTime != tc.min || q.MaxTime != tc.max) {
+				t.Errorf("the time lost is %d..%d, want %d..%d", q.MinTime, q.MaxTime, tc.min, tc.max)
 			}
 			if _, err := os.Stat(victim); !os.IsNotExist(err) {
 				t.Errorf("the damaged block is still at its own name: %v", err)
@@ -403,4 +404,63 @@ func TestOpenAll_PassesOverAnEmptyDirectory(t *testing.T) {
 		t.Fatalf("OpenAll over %d entries: %d blocks, %d quarantined, err %v", len(entries), len(blocks), len(quarantined), err)
 	}
 	_ = blocks[0].Close()
+}
+
+// Two quarantines of the same directory in the same second (a restored block damaged again) must not stop
+// the start by renaming onto a directory that exists.
+func TestQuarantine_ASecondOneInTheSameSecondGetsAFreeName(t *testing.T) {
+	parent, victim, _, _ := twoBlocks(t)
+	first, err := Quarantine(victim, ErrCorrupt, epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "Restore" it under its old name and damage it again, then set it aside in the same second.
+	if err := os.Rename(first.MovedTo, victim); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(first.MovedTo, 0o755); err != nil { // the name the first one took is in use again
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(first.MovedTo, "x"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := Quarantine(victim, ErrCorrupt, epoch)
+	if err != nil {
+		t.Fatalf("a name already in use stopped the quarantine: %v", err)
+	}
+	if second.MovedTo == first.MovedTo || !strings.HasPrefix(second.MovedTo, victim+QuarantineMark) {
+		t.Errorf("the second went to %q, the first to %q", second.MovedTo, first.MovedTo)
+	}
+	if list, _ := ListQuarantined(parent); len(list) != 2 {
+		t.Errorf("ListQuarantined = %v, want both", list)
+	}
+}
+
+// A read that finds damage says which block it was, so that whoever counts it does not have to know.
+func TestBlock_ADamagedReadNamesTheBlock(t *testing.T) {
+	parent := t.TempDir()
+	if _, err := Write(parent, fixture(4), WriterOptions{Now: epoch}); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := os.ReadDir(parent)
+	dir := filepath.Join(parent, entries[0].Name())
+	flipByte(t, filepath.Join(dir, ChunksFilename), -8)
+	blocks, _, err := OpenAll(parent, epoch)
+	if err != nil || len(blocks) != 1 {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocks[0].Close() }()
+	_, err = blocks[0].Select(tsdb.Selector{}, math.MinInt64, math.MaxInt64)
+	var damaged *DamagedError
+	if !errors.As(err, &damaged) {
+		t.Fatalf("err %v is not a *DamagedError", err)
+	}
+	if damaged.Block != blocks[0].Meta().ULID || damaged.Dir != dir || !errors.Is(err, ErrCorrupt) {
+		t.Errorf("the error names %v at %q, want %v at %q (and wrap ErrCorrupt)", damaged.Block, damaged.Dir, blocks[0].Meta().ULID, dir)
+	}
+	// An error that is not damage is passed through as it is, not dressed up as one.
+	plain := errors.New("plain")
+	if got := blocks[0].damaged(plain); !errors.Is(got, plain) || errors.As(got, new(*DamagedError)) {
+		t.Errorf("a plain error became %v", got)
+	}
 }

@@ -44,13 +44,15 @@
 // Everything is written into `<ULID>.tmp/`, fsynced, and only then renamed
 // into place; the parent directory is fsynced after the rename. Rename is
 // atomic, so a block either appears complete or does not appear. A crash
-// leaves a `.tmp` directory, or a directory with no meta.json, and
-// [CleanTmp] removes both at startup. Deletion runs the same argument
-// backwards: a tombstone file goes down first, so an interrupted delete is
-// finished by [CleanCondemned] rather than leaving a block missing files; then
-// meta.json is unlinked and the directory fsynced before anything else goes,
-// so what is left is no longer a block. The order is set in code, never left
-// to the filesystem's listing order.
+// leaves a `.tmp` directory, which [CleanTmp] removes at startup. Deletion
+// runs the same argument backwards: a tombstone file goes down first, so an
+// interrupted delete is finished by [CleanCondemned] rather than leaving a
+// block missing files; then meta.json is unlinked and the directory fsynced
+// before anything else goes, so what is left is no longer a block; the
+// tombstone is the last file to go, after another fsync, so that no state
+// has files, no meta.json and no tombstone. A directory that is in that state
+// is a damaged block, and is quarantined, not deleted ([OpenAll], ADR-0064).
+// The order is set in code, never left to the filesystem's listing order.
 //
 // Corruption is caught, not guessed at: every chunk record carries a CRC32C
 // over its own bytes, and index.dat carries one over the whole file. The

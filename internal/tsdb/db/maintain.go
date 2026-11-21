@@ -281,6 +281,7 @@ func (db *DB) Compact() (bool, error) {
 	blocksDir := filepath.Join(db.dir, blocksDirName)
 	meta, err := compact.Run(blocksDir, plan, db.opts.Clock.Now())
 	if err != nil {
+		db.noteCorruptRead(err) // a source with a bad chunk fails every plan that includes it
 		return false, err
 	}
 	mergedDir := filepath.Join(blocksDir, meta.ULID.String())
@@ -396,7 +397,7 @@ func (db *DB) applySizeCap() error {
 	if db.opts.MaxBytes <= 0 {
 		return nil
 	}
-	used, err := db.DiskUsage()
+	used, err := db.capUsage()
 	if err != nil || used <= db.opts.MaxBytes {
 		return err
 	}
@@ -487,22 +488,61 @@ func dirSize(root string) (int64, error) {
 // QuarantinedBlocks is how many block directories are set aside as damaged: the ones this start moved and
 // the ones an earlier start did, which stay until an operator deals with them. While it is not zero, the
 // time those blocks covered is missing from every answer. See [block.Quarantine].
-func (db *DB) QuarantinedBlocks() int { return int(db.quarantined.Load()) }
+//
+// It reads the directory each time, so it follows an operator who removes or restores one while ozyd runs.
+// If the directory cannot be read it reports the count from the last time it could.
+func (db *DB) QuarantinedBlocks() int {
+	names, err := block.ListQuarantined(filepath.Join(db.dir, blocksDirName))
+	if err != nil {
+		return int(db.quarantined.Load())
+	}
+	db.quarantined.Store(int64(len(names)))
+	return len(names)
+}
 
 // CorruptReads is how many times a read of a block found damage the open did not (a chunk that fails its
 // checksum), each of which failed that query with an error rather than answering with a wrong sample.
 func (db *DB) CorruptReads() uint64 { return db.corruptReads.Load() }
 
-// noteCorruptRead counts a failed block read if it was damage, and logs the first for each block: a
-// query that keeps failing would otherwise write the same line for every request.
-func (db *DB) noteCorruptRead(b *block.Block, err error) {
-	if !errors.Is(err, block.ErrCorrupt) {
+// noteCorruptRead counts a failed block read if it was damage, wherever it came from (a query, the metadata
+// lookup, a compaction), and logs the first for each block: a query that keeps failing would otherwise write
+// the same line for every request. An error that is not damage is not counted.
+func (db *DB) noteCorruptRead(err error) {
+	if err == nil || !errors.Is(err, block.ErrCorrupt) {
 		return
 	}
 	db.corruptReads.Add(1)
-	id := b.Meta().ULID.String()
-	if _, seen := db.reportedCorrupt.LoadOrStore(id, struct{}{}); !seen {
-		db.opts.Logger.Error("a query read a damaged block; it fails with an error until the block is restored or removed (it is not quarantined while ozyd runs)",
-			"block", id, "dir", b.Dir(), "error", err)
+	id, dir := "unknown", ""
+	var damaged *block.DamagedError
+	if errors.As(err, &damaged) {
+		id, dir = damaged.Block.String(), damaged.Dir
 	}
+	if _, seen := db.reportedCorrupt.LoadOrStore(id, struct{}{}); !seen {
+		db.opts.Logger.Error("a read found a damaged block; reads and compactions that reach it fail with an error until it is restored or moved aside (it is not quarantined while ozyd runs)",
+			"block", id, "dir", dir, "error", err)
+	}
+}
+
+// capUsage is the disk the size cap is measured against: everything under the data directory except the
+// quarantined blocks. The cap can only free live blocks, so counting bytes it cannot free would make it
+// delete healthy blocks chasing a target it can never reach (ADR-0064: a quarantined block is the
+// operator's to remove, and does not count against storage.max_bytes).
+func (db *DB) capUsage() (int64, error) {
+	used, err := dirSize(db.dir)
+	if err != nil {
+		return used, err
+	}
+	blocksDir := filepath.Join(db.dir, blocksDirName)
+	names, err := block.ListQuarantined(blocksDir)
+	if err != nil {
+		return used, err
+	}
+	for _, name := range names {
+		n, err := dirSize(filepath.Join(blocksDir, name))
+		if err != nil {
+			return used, err
+		}
+		used -= n
+	}
+	return used, nil
 }

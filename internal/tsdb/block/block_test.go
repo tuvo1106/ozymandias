@@ -483,11 +483,17 @@ func TestBlock_ADeletionStoppedAnywhereIsFinishedAtStartup(t *testing.T) {
 }
 
 // TestBlock_ADeletionKeepsGoingPastAnEntryItCannotRemove: one entry that will
-// not go does not leave the others behind, as with os.RemoveAll.
+// not go does not leave the others behind, as with os.RemoveAll. The tombstone
+// stays with it: a directory with files, no meta.json and no tombstone reads as
+// a damaged block (and is quarantined), so the mark that says "this is a
+// deletion" must outlive every file it is about. The next start finishes the job.
 func TestBlock_ADeletionKeepsGoingPastAnEntryItCannotRemove(t *testing.T) {
-	_, b, _ := writeFixture(t, 2)
+	parent, b, _ := writeFixture(t, 2)
 	dir := b.Dir()
 	_ = b.Close()
+	if err := writeFileSync(filepath.Join(dir, tombstoneFilename), []byte("deleted\n")); err != nil {
+		t.Fatal(err)
+	}
 	stuck := errors.New("stuck")
 	err := removeCondemned(dir, func(path string) error {
 		if filepath.Base(path) == "chunks.dat" {
@@ -498,9 +504,57 @@ func TestBlock_ADeletionKeepsGoingPastAnEntryItCannotRemove(t *testing.T) {
 	if !errors.Is(err, stuck) {
 		t.Fatalf("err = %v, want the stuck entry reported", err)
 	}
+	var left []string
 	entries, _ := os.ReadDir(dir)
-	if len(entries) != 1 || entries[0].Name() != "chunks.dat" {
-		t.Errorf("left %v, want only the stuck chunks.dat", entries)
+	for _, e := range entries {
+		left = append(left, e.Name())
+	}
+	if len(left) != 2 || left[0] != "chunks.dat" || left[1] != tombstoneFilename {
+		t.Fatalf("left %v, want the stuck chunks.dat and the tombstone", left)
+	}
+	if !Condemned(dir) {
+		t.Fatal("what is left is not marked as a deletion")
+	}
+	// A start finishes it, and does not take it for a damaged block.
+	if removed, err := CleanCondemned(parent); err != nil || len(removed) != 1 {
+		t.Fatalf("CleanCondemned removed %v, err %v", removed, err)
+	}
+	if _, quarantined, err := OpenAll(parent, epoch); err != nil || len(quarantined) != 0 {
+		t.Fatalf("OpenAll quarantined %d after a finished deletion, err %v", len(quarantined), err)
+	}
+}
+
+// The tombstone is the last file to go, and the directory is fsynced between everything else and it, so
+// that no power cut can persist its removal ahead of the files it explains.
+func TestBlock_TheTombstoneIsUnlinkedLastAfterAnFsync(t *testing.T) {
+	_, b, _ := writeFixture(t, 2)
+	dir := b.Dir()
+	_ = b.Close()
+	if err := writeFileSync(filepath.Join(dir, tombstoneFilename), []byte("deleted\n")); err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	err := removeCondemned(dir, func(path string) error {
+		events = append(events, "rm "+filepath.Base(path))
+		return os.RemoveAll(path)
+	}, func(d string) error {
+		events = append(events, "sync")
+		return syncDir(d)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := len(events)
+	if n < 6 || events[n-1] != "rm "+filepath.Base(dir) || events[n-2] != "rm "+tombstoneFilename || events[n-3] != "sync" {
+		t.Fatalf("the tombstone must be the last file unlinked, right after an fsync, then the directory: %v", events)
+	}
+	for _, e := range events[:n-3] {
+		if e == "rm "+tombstoneFilename {
+			t.Fatalf("the tombstone was unlinked before the other files: %v", events)
+		}
+	}
+	if events[0] != "rm "+MetaFilename || events[1] != "sync" {
+		t.Fatalf("meta.json must go first, followed by an fsync: %v", events)
 	}
 }
 

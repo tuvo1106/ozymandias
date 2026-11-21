@@ -202,7 +202,7 @@ func TestDB_ADamagedChunkFailsTheQueryLoudlyNotWithAWrongAnswer(t *testing.T) {
 			t.Errorf("after %d failed queries CorruptReads = %d", i, n)
 		}
 	}
-	if n := strings.Count(journal.all(), "a query read a damaged block"); n != 1 {
+	if n := strings.Count(journal.all(), "a read found a damaged block"); n != 1 {
 		t.Errorf("the damaged block was logged %d times for 3 queries, want once:\n%s", n, journal.all())
 	}
 	// A range that never touches the damaged block is unaffected, and does not count.
@@ -215,21 +215,144 @@ func TestDB_ADamagedChunkFailsTheQueryLoudlyNotWithAWrongAnswer(t *testing.T) {
 }
 
 // Only damage is counted as damage: a read that fails for any other reason (a cancelled query, an
-// I/O error) must not move a gauge that an operator alerts on.
+// I/O error) must not move a gauge that an operator alerts on. Damage is counted wherever it comes
+// from, and the block it names is logged once.
 func TestDB_OnlyDamageIsCountedAsCorruptRead(t *testing.T) {
 	dir, _ := threeBlocks(t)
 	db, journal := openLogged(t, dir)
-	b := db.Blocks()[0]
-	db.noteCorruptRead(b, errors.New("read tcp: i/o timeout"))
-	db.noteCorruptRead(b, context.Canceled)
+	db.noteCorruptRead(errors.New("read tcp: i/o timeout"))
+	db.noteCorruptRead(context.Canceled)
+	db.noteCorruptRead(nil)
 	if n := db.CorruptReads(); n != 0 {
 		t.Fatalf("errors that are not damage moved CorruptReads to %d", n)
 	}
-	if strings.Contains(journal.all(), "a query read a damaged block") {
+	if strings.Contains(journal.all(), "a read found a damaged block") {
 		t.Errorf("an error that is not damage was logged as damage:\n%s", journal.all())
 	}
-	db.noteCorruptRead(b, fmt.Errorf("block: %w: a chunk", block.ErrCorrupt))
-	if n := db.CorruptReads(); n != 1 {
-		t.Errorf("a damaged read moved CorruptReads to %d, want 1", n)
+	named := &block.DamagedError{Block: db.Blocks()[0].Meta().ULID, Dir: "/x/blocks/y", Err: fmt.Errorf("block: %w: a chunk", block.ErrCorrupt)}
+	db.noteCorruptRead(named)
+	db.noteCorruptRead(named)
+	if n := db.CorruptReads(); n != 2 {
+		t.Errorf("two damaged reads moved CorruptReads to %d, want 2", n)
+	}
+	log := journal.all()
+	if n := strings.Count(log, "a read found a damaged block"); n != 1 || !strings.Contains(log, "dir=/x/blocks/y") || !strings.Contains(log, "block="+named.Block.String()) {
+		t.Errorf("want one line naming the block and its directory:\n%s", log)
+	}
+	// Damage with no block named is still counted, and reported under a name that says so.
+	db.noteCorruptRead(fmt.Errorf("elsewhere: %w", block.ErrCorrupt))
+	if n := db.CorruptReads(); n != 3 || !strings.Contains(journal.all(), "block=unknown") {
+		t.Errorf("an unnamed damaged read: CorruptReads %d, log:\n%s", n, journal.all())
+	}
+}
+
+// A compaction that reads a block with a damaged chunk fails every time it plans that run. It must show
+// up where the runbook tells an operator to look (the counter and the log line), not only as a failed
+// compaction nobody watches.
+func TestDB_ACompactionThatReadsADamagedChunkIsCountedAndLogged(t *testing.T) {
+	dir, blocks := threeBlocks(t)
+	chunks := filepath.Join(blocks[1], block.ChunksFilename)
+	b, err := os.ReadFile(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b[len(b)-8] ^= 0xFF
+	if err := os.WriteFile(chunks, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db, journal := openLogged(t, dir)
+	if n := db.QuarantinedBlocks(); n != 0 {
+		t.Fatalf("a chunk-level flip was quarantined at open (%d)", n)
+	}
+	for i := 1; i <= 2; i++ {
+		ran, err := db.Compact()
+		if ran || !errors.Is(err, block.ErrCorrupt) {
+			t.Fatalf("compaction %d: ran %v, err %v; want a failure wrapping ErrCorrupt", i, ran, err)
+		}
+		if n := db.CorruptReads(); n != uint64(i) {
+			t.Errorf("after %d failed compactions CorruptReads = %d", i, n)
+		}
+	}
+	if n := strings.Count(journal.all(), "a read found a damaged block"); n != 1 {
+		t.Errorf("the damaged block was logged %d times for 2 compactions, want once:\n%s", n, journal.all())
+	}
+	if !strings.Contains(journal.all(), "block="+filepath.Base(blocks[1])) {
+		t.Errorf("the log does not name the damaged block %s:\n%s", filepath.Base(blocks[1]), journal.all())
+	}
+}
+
+// The gauge is what an operator alerts on and clears: it follows the directory on disk, so removing a
+// quarantined block while ozyd runs clears it without a restart.
+func TestDB_TheQuarantineCountFollowsTheDirectoryWhileRunning(t *testing.T) {
+	dir, blocks := threeBlocks(t)
+	flip := filepath.Join(blocks[1], block.IndexFilename)
+	b, err := os.ReadFile(flip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b[40] ^= 0xFF
+	if err := os.WriteFile(flip, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db, _ := openLogged(t, dir)
+	if n := db.QuarantinedBlocks(); n != 1 {
+		t.Fatalf("QuarantinedBlocks = %d, want 1", n)
+	}
+	set, _ := filepath.Glob(blocks[1] + block.QuarantineMark + "*")
+	if len(set) != 1 {
+		t.Fatalf("%d quarantined directories", len(set))
+	}
+	if err := os.RemoveAll(set[0]); err != nil {
+		t.Fatal(err)
+	}
+	if n := db.QuarantinedBlocks(); n != 0 {
+		t.Errorf("after the operator removed it QuarantinedBlocks = %d, want 0 without a restart", n)
+	}
+}
+
+// The size cap can only free live blocks. Bytes in a quarantined block are the operator's, not the
+// cap's: counting them made the cap delete healthy blocks chasing a target it could never reach.
+func TestDB_QuarantinedBytesDoNotCountAgainstTheSizeCap(t *testing.T) {
+	dir, blocks := threeBlocks(t)
+	flip := filepath.Join(blocks[1], block.IndexFilename)
+	b, err := os.ReadFile(flip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b[40] ^= 0xFF
+	if err := os.WriteFile(flip, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A large file in the damaged block, so that its bytes dwarf what the healthy ones weigh.
+	if err := os.WriteFile(filepath.Join(blocks[1], "evidence"), make([]byte, 1<<20), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	db, _ := openLogged(t, dir)
+	total, err := db.DiskUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	capped, err := db.capUsage()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total-capped < 1<<20 {
+		t.Fatalf("DiskUsage %d and capUsage %d: the quarantined megabyte is still counted against the cap", total, capped)
+	}
+	// A cap the healthy data fits in deletes nothing, however much sits in quarantine.
+	db.opts.MaxBytes = capped + 1
+	before := len(db.Blocks())
+	if err := db.applySizeCap(); err != nil {
+		t.Fatal(err)
+	}
+	if after := len(db.Blocks()); after != before {
+		t.Errorf("the size cap deleted %d healthy blocks to make room for a quarantined one", before-after)
+	}
+	if _, err := os.Stat(blocks[1] + block.QuarantineMark + "0"); err == nil {
+		t.Log("unexpected: the mark name is unix-time based, not 0")
+	}
+	set, _ := filepath.Glob(blocks[1] + block.QuarantineMark + "*")
+	if len(set) != 1 {
+		t.Errorf("the quarantined block did not survive the cap: %v", set)
 	}
 }

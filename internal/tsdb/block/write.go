@@ -257,15 +257,12 @@ func CleanTmp(parent string) (removed []string, err error) {
 			continue
 		}
 		if filepath.Ext(e.Name()) != tmpSuffix {
-			if _, statErr := os.Stat(filepath.Join(dir, MetaFilename)); statErr == nil {
-				continue
+			state, serr := classifyDir(dir)
+			if serr != nil {
+				return removed, fmt.Errorf("block: looking at %s: %w", dir, serr)
 			}
-			inside, rerr := os.ReadDir(dir)
-			if rerr != nil {
-				return removed, fmt.Errorf("block: reading %s: %w", dir, rerr)
-			}
-			if len(inside) > 0 {
-				continue // a block that lost its meta.json: OpenAll quarantines it
+			if state != dirEmpty {
+				continue // a block, or one that lost its meta.json: OpenAll opens or quarantines it
 			}
 		}
 		if err := os.RemoveAll(dir); err != nil {

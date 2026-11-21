@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/oklog/ulid/v2"
+
 	"github.com/tuvo1106/ozymandias/internal/tsdb"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/chunkenc"
 	"github.com/tuvo1106/ozymandias/internal/tsdb/index"
@@ -90,6 +92,53 @@ func Open(dir string) (*Block, error) {
 	return &Block{dir: dir, meta: m, ix: ix, chunks: cr}, nil
 }
 
+// DamagedError is a read of a block that found it damaged: it wraps an error that wraps [ErrCorrupt] and
+// names the block, so that whoever sees it (a query, a compaction) can count and report the damage
+// without having to know which block it came from.
+type DamagedError struct {
+	Block ulid.ULID
+	Dir   string
+	Err   error
+}
+
+func (e *DamagedError) Error() string { return e.Err.Error() }
+func (e *DamagedError) Unwrap() error { return e.Err }
+
+// damaged names this block in err if err is damage, and leaves every other error alone.
+func (b *Block) damaged(err error) error {
+	if err != nil && errors.Is(err, ErrCorrupt) {
+		return &DamagedError{Block: b.meta.ULID, Dir: b.dir, Err: err}
+	}
+	return err
+}
+
+// dirState is what a directory under the blocks directory is, by whether it has a meta.json and anything in it.
+type dirState int
+
+const (
+	dirBlock    dirState = iota // has a meta.json: a block to open
+	dirEmpty                    // no meta.json and nothing in it
+	dirLostMeta                 // no meta.json and files in it
+)
+
+// classifyDir is the one place that decides what a directory without a meta.json is, so that [CleanTmp]
+// (which removes the empty one) and [OpenAll] (which quarantines the one with files) cannot disagree.
+func classifyDir(dir string) (dirState, error) {
+	if _, err := os.Stat(filepath.Join(dir, MetaFilename)); err == nil {
+		return dirBlock, nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return dirBlock, err
+	}
+	inside, err := os.ReadDir(dir)
+	if err != nil {
+		return dirBlock, err
+	}
+	if len(inside) == 0 {
+		return dirEmpty, nil
+	}
+	return dirLostMeta, nil
+}
+
 // QuarantineMark is in the name of a block directory that was set aside as damaged:
 // "<ulid>.corrupt-<unix seconds>". Nothing opens, compacts, expires or deletes such a directory. It is the
 // operator's to inspect, restore (rename it back and restart) or remove.
@@ -108,6 +157,8 @@ type Quarantined struct {
 	// still be read. They say what data is no longer served.
 	MinTime, MaxTime int64
 	HasRange         bool
+	// SyncErr is set if the parent directory could not be fsynced after the move.
+	SyncErr error
 }
 
 // Quarantine moves a damaged block directory aside, to "<dir>.corrupt-<unix seconds of now>", and makes
@@ -115,17 +166,29 @@ type Quarantined struct {
 // cannot be moved, that is an error, and the caller must not carry on as if it had been.
 func Quarantine(dir string, cause error, now time.Time) (Quarantined, error) {
 	q := Quarantined{Name: filepath.Base(dir), Cause: cause}
-	if m, err := ReadMeta(dir); err == nil {
+	// The range is read without judging the meta: a meta whose own numbers are the damage should still
+	// say what it claimed to cover, so an operator can see what time is missing.
+	if m, err := peekMeta(dir); err == nil {
 		q.MinTime, q.MaxTime, q.HasRange = m.MinTime, m.MaxTime, true
 	}
+	// A name that is free: restoring a block and having it damaged again within the same second would
+	// otherwise be a rename onto a directory that exists, which would stop the start.
 	to := fmt.Sprintf("%s%s%d", dir, QuarantineMark, now.Unix())
+	for n := 2; ; n++ {
+		if _, err := os.Lstat(to); os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return q, fmt.Errorf("block: quarantining %s: %w", dir, err)
+		}
+		to = fmt.Sprintf("%s%s%d-%d", dir, QuarantineMark, now.Unix(), n)
+	}
 	if err := os.Rename(dir, to); err != nil {
 		return q, fmt.Errorf("block: quarantining %s: %w", dir, err)
 	}
 	q.MovedTo = to
-	if err := syncDir(filepath.Dir(dir)); err != nil {
-		return q, fmt.Errorf("block: syncing after quarantining %s: %w", dir, err)
-	}
+	// Not fatal: the block is already out of the way. A failed sync only means the move might not survive a
+	// power cut, and then the next start finds the same damage and does it again.
+	q.SyncErr = syncDir(filepath.Dir(dir))
 	return q, nil
 }
 
@@ -182,19 +245,16 @@ func OpenAll(parent string, now time.Time) (blocks []*Block, quarantined []Quara
 		}
 		dir := filepath.Join(parent, e.Name())
 		var cause error
-		if _, err := os.Stat(filepath.Join(dir, MetaFilename)); err != nil {
-			if !errors.Is(err, fs.ErrNotExist) {
-				return fail(fmt.Errorf("block: looking for the meta of %s: %w", e.Name(), err))
-			}
-			inside, err := os.ReadDir(dir)
-			if err != nil {
-				return fail(fmt.Errorf("block: reading %s: %w", e.Name(), err))
-			}
-			if len(inside) == 0 {
-				continue // nothing in it to lose
-			}
+		state, err := classifyDir(dir)
+		if err != nil {
+			return fail(fmt.Errorf("block: looking at %s: %w", e.Name(), err))
+		}
+		switch state {
+		case dirEmpty:
+			continue // nothing in it to lose
+		case dirLostMeta:
 			cause = fmt.Errorf("%w: %s has files and no %s", ErrCorrupt, e.Name(), MetaFilename)
-		} else {
+		default:
 			b, err := Open(dir)
 			if err == nil {
 				blocks = append(blocks, b)
@@ -300,8 +360,8 @@ func (b *Block) Select(sel tsdb.Selector, from, to int64) ([]tsdb.SeriesSamples,
 	out := make([]tsdb.SeriesSamples, 0, len(ids))
 	for _, id := range ids {
 		if id >= uint64(len(b.ix.series)) {
-			return nil, fmt.Errorf("block: %s: postings name series %d of %d",
-				b.meta.ULID, id, len(b.ix.series))
+			return nil, b.damaged(fmt.Errorf("%w: block %s: postings name series %d of %d",
+				ErrCorrupt, b.meta.ULID, id, len(b.ix.series)))
 		}
 		s := b.ix.series[id]
 		samples, err := b.samples(s, from, to)
@@ -325,7 +385,7 @@ func (b *Block) samples(s blockSeries, from, to int64) ([]tsdb.Sample, error) {
 		}
 		enc, data, err := b.chunks.at(cr.off, cr.recLen)
 		if err != nil {
-			return nil, fmt.Errorf("block: %s: %s: %w", b.meta.ULID, s.ref.Key(), err)
+			return nil, b.damaged(fmt.Errorf("block: %s: %s: %w", b.meta.ULID, s.ref.Key(), err))
 		}
 		if enc != EncodingGorilla {
 			return nil, fmt.Errorf("block: %s: %s: chunk encoding %d is not supported",
@@ -402,16 +462,21 @@ func Delete(dir string) error {
 	return syncDir(filepath.Dir(dir))
 }
 
-// removeCondemned removes a tombstoned block directory, meta.json first.
+// removeCondemned removes a tombstoned block directory: meta.json first, the
+// tombstone last.
 //
 // meta.json is what makes a directory a block: OpenAll opens only directories
-// that have one, and CleanTmp removes those that do not. So it goes first, and
-// the directory is fsynced before anything else is unlinked. From then on a
-// crash leaves a directory startup removes whatever else is still in it;
-// before then the block is whole and tombstoned. The rest can go in any order.
-// The fsync is what carries that across a power cut, where unlinks can reach
-// the disk out of order; the tests check it is called in that place, but no
-// test can cut the power.
+// that have one. So it goes first, and the directory is fsynced before anything
+// else is unlinked; from then on the remains are no longer a block. The
+// tombstone is what tells startup that what is left is a half-deleted block to
+// finish removing ([CleanCondemned]), and a directory with files in it, no
+// meta.json and no tombstone is read as a damaged block and quarantined
+// (ADR-0064), not deleted. So the tombstone must outlive every other file: it is
+// unlinked only after everything else is gone and the directory has been fsynced
+// again, which is what carries that order across a power cut, where unlinks can
+// reach the disk out of order. If any other entry will not go, the tombstone
+// stays, and startup finishes the job. The tests check the order and where the
+// fsyncs fall; no test can cut the power.
 //
 // Not os.RemoveAll on its own: that unlinks in the order the filesystem lists
 // entries. Where the tombstone was listed before meta.json, a crash between
@@ -440,12 +505,24 @@ func removeCondemned(dir string, remove, sync func(string) error) error {
 	}
 	var errs []error
 	for _, e := range entries {
+		if e.Name() == tombstoneFilename {
+			continue // last, below
+		}
 		if err := remove(filepath.Join(dir, e.Name())); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	if len(errs) > 0 {
-		return errors.Join(errs...)
+		return errors.Join(errs...) // the tombstone stays, so startup finishes the job
+	}
+	if err := sync(dir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := remove(filepath.Join(dir, tombstoneFilename)); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 	return remove(dir)
 }
@@ -504,7 +581,7 @@ func (b *Block) SeriesOf(metric string) ([]tsdb.SeriesRef, error) {
 	out := make([]tsdb.SeriesRef, 0, len(ids))
 	for _, id := range ids {
 		if id >= uint64(len(b.ix.series)) {
-			return nil, fmt.Errorf("block: %s: postings name series %d of %d", b.meta.ULID, id, len(b.ix.series))
+			return nil, b.damaged(fmt.Errorf("%w: block %s: postings name series %d of %d", ErrCorrupt, b.meta.ULID, id, len(b.ix.series)))
 		}
 		out = append(out, b.ix.series[id].ref)
 	}

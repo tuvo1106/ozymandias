@@ -29,8 +29,11 @@ store is served.
   with the block where it was: moving a good block aside because of a transient fault is the one mistake a
   quarantine cannot afford.
 - **The move.** The directory is renamed to `<ulid>.corrupt-<unix seconds>` in the same `blocks/` directory and the
-  parent is synced. **Nothing is deleted or edited**: the files are exactly as found. If the move fails, that is an
-  error and ozyd does not start; carrying on as if it had succeeded would serve a hole and say nothing.
+  parent is synced. **Nothing is deleted or edited**: the files are exactly as found. A numeric suffix is added if that name is
+  taken, so restoring a block and having it damaged again in the same second cannot stop the start. If the move fails, that is an
+  error and ozyd does not start; carrying on as if it had succeeded would serve a hole and say nothing. A failed *sync* after a
+  successful move is only a warning: the block is already out of the way, and if the move is lost the next start finds the same
+  damage and does it again.
 - **A quarantined directory is nobody's to touch.** `OpenAll` skips it, `CleanTmp` skips it (it would otherwise
   remove an empty or meta-less one), compaction and retention work from the list of open blocks and never see it.
   It is the operator's to inspect, restore (put the files right, take `.corrupt-<unix>` off the name, restart) or
@@ -38,22 +41,28 @@ store is served.
 - **A block that lost its `meta.json` is quarantined, not deleted.** `CleanTmp` used to remove any directory without
   one on the reasoning that it was an interrupted write. It is not: a write is a `.tmp` directory until the rename
   that publishes it, and deletion writes a tombstone first, removes `meta.json` second, and `CleanCondemned` finishes
-  tombstoned directories before `CleanTmp` runs. By the time `CleanTmp` looks, nothing but damage explains a final-named
-  directory with files and no `meta.json`. An empty one is still removed (there is nothing in it to lose).
+  tombstoned directories before `CleanTmp` runs. For that to leave nothing but damage behind, **the tombstone must be the
+  last file deletion unlinks**, so `removeCondemned` now unlinks it only after every other entry is gone and the directory
+  has been fsynced again (before this it went in directory-listing order, which put it last only by the accident of
+  sorting, and removed it even when another entry would not go, leaving files, no `meta.json` and no tombstone). If any
+  entry will not go, the tombstone stays and the next start finishes the deletion. An empty directory without a
+  `meta.json` is still removed (there is nothing in it to lose). One function decides this for both `CleanTmp` and `OpenAll`.
 - **Loud, in three places.** Each quarantined block is one `ERROR` log line with the block, where it went, the cause
-  and the time range it covered (`min_time`, `max_time`, when `meta.json` could still be read). The gauge
-  `ozy.tsdb.blocks_quarantined` counts the quarantined directories **on disk**, so it survives a restart and falls only
-  when an operator restores or removes one. `ozy.tsdb.corrupt_reads` counts reads that found damage the open cannot
-  see (next point).
+  and the time range it covered (`min_time`, `max_time`: whatever `meta.json` claimed, even when those numbers are what is
+  wrong). The gauge `ozy.tsdb.blocks_quarantined` counts the quarantined directories **on disk each time it is read**, so it
+  survives a restart and follows an operator who removes or restores one while ozyd runs. `ozy.tsdb.corrupt_reads` counts
+  reads that found damage the open cannot see (next point).
 - **`/readyz` stays 200.** A quarantined block is data missing from old time ranges, not a store that stopped: new data
   is accepted and stored correctly. Failing readiness would take the instance out of rotation and stop intake to
   protect reads of data that is already gone, and an operator who wants ozyd to stop on corruption can alert on the
   gauge. The signal is the metric and the log.
 - **What opening does not read.** A flipped bit inside a chunk's body is found by the query that reads that chunk,
-  whose checksum fails: the query returns an error wrapping `ErrCorrupt` and **no samples**, never a wrong value. The
-  failure is counted (`corrupt_reads`) and logged once per block, not once per request. **It is not quarantined while ozyd
-  runs, and a restart does not find it either**, because opening still does not read the chunk. Until an operator moves
-  that block aside by hand (the log names its directory), every query over its time range fails. See Consequences.
+  whose checksum fails: the read returns an error wrapping `ErrCorrupt` and **no samples**, never a wrong value. Such an error
+  carries the block's identity (`block.DamagedError`), so it is counted (`corrupt_reads`) and logged once per block, not once per
+  request, **whether it came from a query, a metadata lookup or a compaction**. **It is not quarantined while ozyd runs, and a
+  restart does not find it either**, because opening still does not read the chunk. Until an operator moves that block aside by
+  hand (the log names its directory), every query over its time range fails, and so does every compaction that includes it.
+  See Consequences.
 
 Rejected alternatives:
 
@@ -76,8 +85,18 @@ Rejected alternatives:
   block. A runtime quarantine (take the block out of the live list while queries hold it, and while compaction might be
   reading it) is a larger change with races to get right, and is not done. Compaction reading such a block fails the same
   way each time it plans the run; that predates this ADR.
-- **Quarantined directories take disk that nothing reclaims.** They do not count toward `storage.max_bytes` and never
-  expire. Backups hard-link the whole `blocks/` directory, so a restored backup brings them back, still quarantined.
+- **Quarantined directories take disk that nothing reclaims.** They never expire. They are **excluded from the
+  `storage.max_bytes` measurement**, because the cap can only delete live blocks: counting bytes it cannot free made it delete
+  healthy blocks chasing a target it could never reach (`ozy.tsdb.disk_bytes` still reports the whole directory). Backups
+  hard-link the whole `blocks/` directory, so a restored backup brings them back, still quarantined.
+- **The lost range can be refilled, and a restore then overlaps.** The head's lower bound follows the blocks that are open,
+  so with the newest block quarantined, points for its range are accepted again (a sender resending, a late point) and are
+  cut into a new block. If the original is restored later the two overlap; that is a supported state (`Select` dedupes it and
+  compaction collapses duplicate timestamps). The gauge counts directories, not missing seconds, so it stays above zero until
+  the directory is dealt with even if the range has been refilled.
+- **A damaged source block of an interrupted compaction is counted too.** If a crash left a merged block *and* its sources
+  (`dropSuperseded` normally deletes the sources), and one of those sources is damaged, it is quarantined and counted although
+  the merged block holds its data. The gauge then over-reports; removing the directory clears it.
 - **Not covered.** The Pebble-backed stores (traces, sketches) have their own corruption handling and this does not touch
   it. **A real bit-rot was not observed**: the tests damage files the way a test can (flipped bytes, truncation, removal),
   and the durability of the rename itself has no crash-simulating filesystem here (the parent is synced; a power cut

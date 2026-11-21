@@ -84,6 +84,20 @@ func NewULID(now time.Time) ulid.ULID {
 	return ulid.MustNew(ulid.Timestamp(now), entropy)
 }
 
+// peekMeta parses meta.json and nothing more: no version check, no sanity check. It is for reporting what a
+// block that is already being set aside claimed to cover.
+func peekMeta(dir string) (Meta, error) {
+	b, err := os.ReadFile(filepath.Join(dir, MetaFilename))
+	if err != nil {
+		return Meta{}, err
+	}
+	var m Meta
+	if err := json.Unmarshal(b, &m); err != nil {
+		return Meta{}, err
+	}
+	return m, nil
+}
+
 // ReadMeta loads the meta.json of the block directory dir.
 func ReadMeta(dir string) (Meta, error) {
 	b, err := os.ReadFile(filepath.Join(dir, MetaFilename))

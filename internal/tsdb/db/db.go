@@ -188,6 +188,10 @@ func Open(opts Options) (*DB, error) {
 		// Error, not Warn: data that was there is no longer served. The block is not deleted;
 		// docs/operations.md says what to do with it.
 		opts.Logger.Error("block quarantined: its data is not served; ozyd started without it", attrs...)
+		if q.SyncErr != nil {
+			opts.Logger.Warn("could not sync the blocks directory after quarantining a block; if the move is lost in a power cut, the next start will find the same damage and do it again",
+				"block", q.Name, "error", q.SyncErr)
+		}
 	}
 	setAside, err := block.ListQuarantined(blocksDir)
 	if err != nil {
