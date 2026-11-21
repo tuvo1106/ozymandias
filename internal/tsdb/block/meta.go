@@ -14,8 +14,9 @@ import (
 )
 
 // MetaFilename is written last, and its presence is what makes a block real.
-// A directory without it is the wreckage of a crashed write and is deleted at
-// startup; see [Write].
+// A ".tmp" directory without it is the wreckage of a crashed write and is
+// deleted at startup; a finished block's directory that has lost it is damage,
+// and is quarantined; see [Write] and [OpenAll].
 const MetaFilename = "meta.json"
 
 // MetaVersion is the block layout version. A reader refuses anything else
@@ -83,6 +84,20 @@ func NewULID(now time.Time) ulid.ULID {
 	return ulid.MustNew(ulid.Timestamp(now), entropy)
 }
 
+// peekMeta parses meta.json and nothing more: no version check, no sanity check. It is for reporting what a
+// block that is already being set aside claimed to cover.
+func peekMeta(dir string) (Meta, error) {
+	b, err := os.ReadFile(filepath.Join(dir, MetaFilename))
+	if err != nil {
+		return Meta{}, err
+	}
+	var m Meta
+	if err := json.Unmarshal(b, &m); err != nil {
+		return Meta{}, err
+	}
+	return m, nil
+}
+
 // ReadMeta loads the meta.json of the block directory dir.
 func ReadMeta(dir string) (Meta, error) {
 	b, err := os.ReadFile(filepath.Join(dir, MetaFilename))
@@ -91,11 +106,17 @@ func ReadMeta(dir string) (Meta, error) {
 	}
 	var m Meta
 	if err := json.Unmarshal(b, &m); err != nil {
-		return Meta{}, fmt.Errorf("block: parsing %s: %w", filepath.Join(dir, MetaFilename), err)
+		return Meta{}, fmt.Errorf("%w: parsing %s: %w", ErrCorrupt, filepath.Join(dir, MetaFilename), err)
 	}
+	// A version this build does not read is not damage: the block is fine and a different
+	// build wrote it, so it is not [ErrCorrupt] and is never quarantined.
 	if m.Version != MetaVersion {
 		return Meta{}, fmt.Errorf("block: %s has version %d, this build reads %d",
 			dir, m.Version, MetaVersion)
+	}
+	if m.MaxTime < m.MinTime {
+		return Meta{}, fmt.Errorf("%w: %s covers %d to %d, which ends before it starts",
+			ErrCorrupt, filepath.Join(dir, MetaFilename), m.MinTime, m.MaxTime)
 	}
 	return m, nil
 }

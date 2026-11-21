@@ -138,6 +138,13 @@ type DB struct {
 
 	// syncs counts successful WAL flushes; see [DB.Syncs].
 	syncs atomic.Uint64
+
+	// quarantined is how many block directories are set aside as damaged, those found at this start
+	// and those left by an earlier one; see [DB.QuarantinedBlocks]. corruptReads counts the reads of a
+	// block that found damage, and reportedCorrupt remembers which blocks were already logged for it.
+	quarantined     atomic.Int64
+	corruptReads    atomic.Uint64
+	reportedCorrupt sync.Map // block ULID string -> struct{}
 }
 
 var _ tsdb.MetricStore = (*DB)(nil)
@@ -169,8 +176,26 @@ func Open(opts Options) (*DB, error) {
 	} else if len(removed) > 0 {
 		opts.Logger.Warn("removed incomplete blocks", "blocks", removed)
 	}
-	blocks, err := block.OpenAll(blocksDir)
+	blocks, quarantined, err := block.OpenAll(blocksDir, opts.Clock.Now())
 	if err != nil {
+		return nil, err
+	}
+	for _, q := range quarantined {
+		attrs := []any{"block", q.Name, "moved_to", q.MovedTo, "error", q.Cause}
+		if q.HasRange {
+			attrs = append(attrs, "min_time", time.UnixMilli(q.MinTime).UTC().Format(time.RFC3339), "max_time", time.UnixMilli(q.MaxTime).UTC().Format(time.RFC3339))
+		}
+		// Error, not Warn: data that was there is no longer served. The block is not deleted;
+		// docs/operations.md says what to do with it.
+		opts.Logger.Error("block quarantined: its data is not served; ozyd started without it", attrs...)
+		if q.SyncErr != nil {
+			opts.Logger.Warn("could not sync the blocks directory after quarantining a block; if the move is lost in a power cut, the next start will find the same damage and do it again",
+				"block", q.Name, "error", q.SyncErr)
+		}
+	}
+	setAside, err := block.ListQuarantined(blocksDir)
+	if err != nil {
+		closeBlocks(blocks)
 		return nil, err
 	}
 	blocks, err = dropSuperseded(blocks, opts.Logger)
@@ -205,6 +230,7 @@ func Open(opts Options) (*DB, error) {
 		blocks: blocks,
 		closed: make(chan struct{}),
 	}
+	db.quarantined.Store(int64(len(setAside)))
 	db.head = head.New(head.Options{
 		WAL:                w,
 		BlockRange:         opts.BlockRange.Milliseconds(),

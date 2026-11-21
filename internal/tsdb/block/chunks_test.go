@@ -2,6 +2,7 @@ package block
 
 import (
 	"encoding/binary"
+	"errors"
 	"hash/crc32"
 	"math"
 	"os"
@@ -56,6 +57,8 @@ func TestChunkReader_ALengthPrefixCannotWrapPastTheRecord(t *testing.T) {
 		_, _, err := r.at(chunksHeaderLen, recLen)
 		if err == nil {
 			t.Errorf("recLen %d: a record claiming %d payload bytes was accepted", recLen, claimed)
+		} else if !errors.Is(err, ErrCorrupt) {
+			t.Errorf("recLen %d: %v is not reported as ErrCorrupt, so a read of it would not be counted", recLen, err)
 		}
 	}
 }
@@ -70,6 +73,8 @@ func TestChunkReader_AnOffsetCannotWrapIntoTheFile(t *testing.T) {
 	for _, off := range []uint64{math.MaxUint64 - 10, math.MaxUint64, 1 << 63} {
 		if _, _, err := r.at(off, 16); err == nil {
 			t.Errorf("offset %d was accepted against a %d-byte file", off, r.size)
+		} else if !errors.Is(err, ErrCorrupt) {
+			t.Errorf("offset %d: %v is not reported as ErrCorrupt", off, err)
 		}
 	}
 }

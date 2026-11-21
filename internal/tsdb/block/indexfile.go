@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -234,43 +235,43 @@ type tableEntry struct{ keySym, valSym, off uint64 }
 func openIndexReader(dir string) (*indexReader, error) {
 	b, err := os.ReadFile(filepath.Join(dir, IndexFilename))
 	if err != nil {
-		return nil, err
+		return nil, missingIsCorrupt(err, filepath.Join(dir, IndexFilename))
 	}
 	if len(b) < indexHeadLen+tocLen+4 {
-		return nil, fmt.Errorf("block: %s is too short to be an index", dir)
+		return nil, fmt.Errorf("%w: %s is too short to be an index", ErrCorrupt, dir)
 	}
 	if got := binary.BigEndian.Uint32(b); got != indexMagic {
-		return nil, fmt.Errorf("block: %s is not an index file (magic %#x)", dir, got)
+		return nil, fmt.Errorf("%w: %s is not an index file (magic %#x)", ErrCorrupt, dir, got)
 	}
 	if b[4] != indexVersion {
 		return nil, fmt.Errorf("block: index version %d, this build reads %d", b[4], indexVersion)
 	}
 	body, sum := b[:len(b)-4], binary.BigEndian.Uint32(b[len(b)-4:])
 	if got := crc32.Checksum(body, castagnoli); got != sum {
-		return nil, fmt.Errorf("block: %s/%s is corrupt (crc %#x, want %#x)",
-			dir, IndexFilename, got, sum)
+		return nil, fmt.Errorf("%w: %s/%s fails its checksum (crc %#x, want %#x)",
+			ErrCorrupt, dir, IndexFilename, got, sum)
 	}
 	toc := body[len(body)-tocLen:]
 	offs := make([]uint64, 4)
 	for i := range offs {
 		offs[i] = binary.BigEndian.Uint64(toc[i*8:])
 		if offs[i] > uint64(len(body)) {
-			return nil, fmt.Errorf("block: index TOC points outside the file")
+			return nil, fmt.Errorf("%w: index TOC points outside the file", ErrCorrupt)
 		}
 	}
 	r := &indexReader{postings: body}
 
 	d := &decoder{b: body[offs[0]:]}
 	if err := r.readSymbols(d); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrCorrupt, err)
 	}
 	d = &decoder{b: body[offs[1]:]}
 	if err := r.readSeries(d); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrCorrupt, err)
 	}
 	d = &decoder{b: body[offs[3]:]}
 	if err := r.readTable(d); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: %w", ErrCorrupt, err)
 	}
 	r.all = make([]uint64, len(r.series))
 	for i := range r.all {
@@ -501,4 +502,22 @@ func (r *indexReader) TagKeys() []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// chunksEnd is the furthest byte of chunks.dat that any chunk the index describes would read: the
+// size the file must have at least. It is read off the index alone, without touching the chunks, so a
+// chunks.dat that was cut short is caught when the block is opened and not by the first query that
+// reaches the missing part. A claim too large to add up is reported as the largest value, which is
+// past any file.
+func (r *indexReader) chunksEnd() uint64 {
+	var end uint64
+	for _, s := range r.series {
+		for _, c := range s.chunks {
+			if c.off > math.MaxUint64-c.recLen {
+				return math.MaxUint64
+			}
+			end = max(end, c.off+c.recLen)
+		}
+	}
+	return end
 }

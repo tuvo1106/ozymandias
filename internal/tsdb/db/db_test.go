@@ -510,7 +510,9 @@ func TestDB_OpenErrors(t *testing.T) {
 	if _, err := Open(Options{}); err == nil {
 		t.Error("Open without a Dir succeeded")
 	}
-	t.Run("a corrupt block stops startup", func(t *testing.T) {
+	// A block of another version is not damage: it is whole, a different build wrote it, and moving
+	// it aside would hide good data. It still stops startup, loudly, with the block where it was.
+	t.Run("a block of a version this build does not read stops startup", func(t *testing.T) {
 		dir := t.TempDir()
 		db, _, _ := open(t, Options{Dir: dir, BlockRange: time.Minute})
 		fill(t, db, ref("m", "env:prod"), 0, 1000, 95)
@@ -521,12 +523,14 @@ func TestDB_OpenErrors(t *testing.T) {
 		if err := db.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(bdir, block.IndexFilename), []byte("broken"), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(bdir, block.MetaFilename), []byte(`{"ulid":"01ARZ3NDEKTSV4RRFFQ69G5FAV","version":99,"minTime":0,"maxTime":1}`), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		// Loudly, not by quietly serving a database with a hole in it.
 		if _, err := Open(Options{Dir: dir}); err == nil {
-			t.Error("a database with a corrupt block opened")
+			t.Error("a database with a block of another version opened")
+		}
+		if _, err := os.Stat(bdir); err != nil {
+			t.Errorf("the block of another version was moved: %v", err)
 		}
 	})
 }

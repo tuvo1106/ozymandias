@@ -9,6 +9,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A damaged TSDB block is quarantined at startup instead of stopping ozyd** (M7, ADR-0064; reverses the old refusal, on the owner's decision). A block whose
+  `meta.json`, `index.dat` or `chunks.dat` is damaged (bad checksum or structure, missing or short file, a `chunks.dat` shorter than the index needs, a lost
+  `meta.json`) is renamed to `<ulid>.corrupt-<unix>`, never deleted, and ozyd starts and serves the rest. A block of another version and an I/O error still stop
+  the start: they say nothing about the block. Loud: an `ERROR` log line with the time range lost, `ozy.tsdb.blocks_quarantined` (counts the directories on disk, so
+  it survives a restart), `ozy.tsdb.corrupt_reads` for a chunk that fails its checksum when read. `/readyz` stays 200. Queries over the missing range return less,
+  with no marker in the API: alert on the gauge. `CleanTmp` no longer deletes a block that lost its `meta.json`.
 - **`scripts/chaos/slow-disk.sh`** (M7): the slow-disk drill, with a fault hook in the `wal` package compiled only under `-tags faultinject` (the shipped ozyd
   has none). It shows that an ack waits for the queue's fsync, that slow stores build a backlog while the queue keeps acknowledging, that ozyd stays ready,
   that the backlog drains by itself, and that a kill during it loses nothing acknowledged. In `all.sh` and so in the nightly run.

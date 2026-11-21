@@ -95,7 +95,7 @@ dropping log lines (files are their own buffer) — statsd and traces are shed.
 | UDP flood 500k pkt/s for 60s | agent stays up, drops counted, other pipelines (logs, traces) keep flowing |
 | slow disk (fsync delay injected via fault FS / `dm-delay` optional) | backpressure engages; acks never precede durability |
 | 1M-series cardinality bomb from one key | series limit holds; other metrics unaffected; memory bounded |
-| Pebble/TSDB block corruption (bit-flip a file) | detected, block quarantined, rest served, loud self-metric + log |
+| Pebble/TSDB block corruption (bit-flip a file) | detected, block quarantined, rest served, loud self-metric + log (TSDB blocks done, ADR-0064; Pebble stores not) |
 | clock jump ±1h on the agent host | future/ancient points rejected and counted; no head corruption |
 | all three apps' test suites with ozymandias in each failure state | green (app-ruby has no runtime dependency on ozymandias at all until M8 — assert its `/metrics` latency is unaffected by a hung scraper) |
 

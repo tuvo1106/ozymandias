@@ -223,8 +223,14 @@ func Write(parent string, series []tsdb.SeriesSamples, opts WriterOptions) (Meta
 }
 
 // CleanTmp removes the leftovers of interrupted writes: any directory whose
-// name carries the .tmp suffix, and any directory without a meta.json. Both
-// mean a process died mid-block. It runs at startup, before blocks are opened.
+// name carries the .tmp suffix, and any empty directory without a meta.json. It
+// runs at startup, before blocks are opened.
+//
+// A directory that is not ".tmp" and has files in it but no meta.json is not an
+// interrupted write (those are ".tmp" until the rename that publishes them) and
+// not an interrupted deletion ([CleanCondemned] has finished those by now): it is
+// a block that lost its meta.json, which is damage, so it is left for [OpenAll]
+// to quarantine and is not deleted here. A quarantined directory is never touched.
 //
 // The suffix has to be enough on its own. meta.json is written last *inside*
 // the temporary directory, so a crash in the window between that write and the
@@ -247,9 +253,16 @@ func CleanTmp(parent string) (removed []string, err error) {
 			continue
 		}
 		dir := filepath.Join(parent, e.Name())
+		if IsQuarantined(e.Name()) {
+			continue
+		}
 		if filepath.Ext(e.Name()) != tmpSuffix {
-			if _, statErr := os.Stat(filepath.Join(dir, MetaFilename)); statErr == nil {
-				continue
+			state, serr := classifyDir(dir)
+			if serr != nil {
+				return removed, fmt.Errorf("block: looking at %s: %w", dir, serr)
+			}
+			if state != dirEmpty {
+				continue // a block, or one that lost its meta.json: OpenAll opens or quarantines it
 			}
 		}
 		if err := os.RemoveAll(dir); err != nil {

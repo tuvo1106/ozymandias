@@ -2,6 +2,7 @@ package block
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -98,7 +99,7 @@ type chunkReader struct {
 func openChunkReader(dir string) (*chunkReader, error) {
 	f, err := os.Open(filepath.Join(dir, ChunksFilename))
 	if err != nil {
-		return nil, err
+		return nil, missingIsCorrupt(err, filepath.Join(dir, ChunksFilename))
 	}
 	info, err := f.Stat()
 	if err != nil {
@@ -108,11 +109,14 @@ func openChunkReader(dir string) (*chunkReader, error) {
 	hdr := make([]byte, chunksHeaderLen)
 	if _, err := io.ReadFull(f, hdr); err != nil {
 		_ = f.Close()
-		return nil, fmt.Errorf("block: reading chunks header: %w", err)
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("%w: %s is too short to be a chunks file", ErrCorrupt, dir)
+		}
+		return nil, fmt.Errorf("block: reading chunks header: %w", err) // an I/O error, not damage
 	}
 	if got := binary.BigEndian.Uint32(hdr); got != chunksMagic {
 		_ = f.Close()
-		return nil, fmt.Errorf("block: %s is not a chunks file (magic %#x)", dir, got)
+		return nil, fmt.Errorf("%w: %s is not a chunks file (magic %#x)", ErrCorrupt, dir, got)
 	}
 	if hdr[4] != chunksVersion {
 		_ = f.Close()
@@ -131,13 +135,13 @@ const maxChunkLen = 1 << 20
 // repair and for `tsdb inspect`), not what a normal read depends on.
 func (r *chunkReader) at(off, recLen uint64) (uint8, []byte, error) {
 	if recLen < 6 || recLen > maxChunkLen { // uvarint + encoding + crc at minimum
-		return 0, nil, fmt.Errorf("block: chunk at %d claims a record of %d bytes", off, recLen)
+		return 0, nil, fmt.Errorf("%w: chunk at %d claims a record of %d bytes", ErrCorrupt, off, recLen)
 	}
 	// Subtraction, not addition: off comes from index.dat and an off near the
 	// top of the range makes off+recLen wrap back into the file, so the sum
 	// form passes and int64(off) then goes negative for ReadAt.
 	if off > uint64(r.size) || recLen > uint64(r.size)-off {
-		return 0, nil, fmt.Errorf("block: chunk at %d claims %d bytes, past the end (%d)", off, recLen, r.size)
+		return 0, nil, fmt.Errorf("%w: chunk at %d claims %d bytes, past the end (%d)", ErrCorrupt, off, recLen, r.size)
 	}
 	rec := make([]byte, recLen)
 	if _, err := r.f.ReadAt(rec, int64(off)); err != nil {
@@ -151,12 +155,12 @@ func (r *chunkReader) at(off, recLen uint64) (uint8, []byte, error) {
 	// happily supplied. Checking that the uvarint and the crc leave at least
 	// one payload byte first is what makes the subtraction safe.
 	if used <= 0 || uint64(used)+4 >= recLen || length != recLen-4-uint64(used) {
-		return 0, nil, fmt.Errorf("block: chunk at %d has a corrupt length prefix", off)
+		return 0, nil, fmt.Errorf("%w: chunk at %d has a corrupt length prefix", ErrCorrupt, off)
 	}
 	body := rec[used : uint64(used)+length]
 	want := binary.BigEndian.Uint32(rec[uint64(used)+length:])
 	if got := crc32.Checksum(body, castagnoli); got != want {
-		return 0, nil, fmt.Errorf("block: chunk at %d is corrupt (crc %#x, want %#x)", off, got, want)
+		return 0, nil, fmt.Errorf("%w: chunk at %d fails its checksum (crc %#x, want %#x)", ErrCorrupt, off, got, want)
 	}
 	return body[0], body[1:], nil
 }

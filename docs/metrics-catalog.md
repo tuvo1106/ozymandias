@@ -165,6 +165,8 @@ interval's increase.
 | `ozy.tsdb.ooo_rejected` | gauge | samples | `store` | ozyd | **Samples dropped** as out of order or older than the oldest writable block range. Non-zero means data is being lost — see `docs/operations.md` |
 | `ozy.tsdb.series_limit_rejected` | gauge | series | `store` | ozyd | Series refused because a metric hit `max_series_per_metric` |
 | `ozy.tsdb.blocks` | gauge | blocks | `store` | ozyd | Immutable blocks on disk; falls when compaction runs |
+| `ozy.tsdb.blocks_quarantined` | gauge | blocks | `store` | ozyd | Damaged blocks set aside as `<ulid>.corrupt-<unix>` (ADR-0064): those found at this start and those left by an earlier one. Not zero means the time they covered is missing from every answer and ozyd started without them anyway; it falls only when an operator restores or removes one. **Alert on it** |
+| `ozy.tsdb.corrupt_reads` | gauge | reads | `store` | ozyd | Reads of a block that found damage opening cannot see (a chunk that fails its checksum). Each failed a query with an error and no samples. Monotonic; climbs while such a block is queried. The log names the block once |
 | `ozy.tsdb.disk_bytes` | gauge | bytes | `store` | ozyd | Total size of the store on disk, log included |
 | `ozy.tsdb.wal_syncs` | gauge | syncs | `store` | ozyd | Write-ahead log flushes since startup (monotonic). Its *rate* is the check: ~1/`wal_sync_interval` while anything is being written, and a flat stretch means acknowledged samples are staying in the page cache longer than that |
 | `ozy.intake.sketch_points_accepted` | count | points | | ozyd | Sketches accepted by `POST /v1/sketches`, one per series per bucket |

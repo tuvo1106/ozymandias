@@ -101,6 +101,7 @@ func (db *DB) Select(ctx context.Context, sel tsdb.Selector, fromMs, toMs int64)
 		}
 		got, err := b.Select(sel, fromMs, toMs)
 		if err != nil {
+			db.noteCorruptRead(err)
 			return nil, err
 		}
 		add(got)
@@ -302,6 +303,7 @@ func (db *DB) eachSeries(ctx context.Context, metric string, visit func(key stri
 	for _, b := range blocks {
 		refs, err := b.SeriesOf(metric)
 		if err != nil {
+			db.noteCorruptRead(err)
 			return err
 		}
 		for _, ref := range refs {
