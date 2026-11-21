@@ -92,7 +92,7 @@ jobs:
       # pyproject: uv enforces required-version on *itself*, so pinning there
       # does not pin CI, it stops anyone whose uv differs from running the
       # test suite at all. `make sdk-check` warns on a mismatch instead.
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           version-file: sdk/python/.tool-versions
           enable-cache: true
