@@ -137,7 +137,7 @@ func Open(opts Options) (*WAL, error) {
 		return nil, fmt.Errorf("wal: creating %s: %w", opts.Dir, err)
 	}
 	if opts.SyncFile == nil {
-		opts.SyncFile = (*os.File).Sync
+		opts.SyncFile = defaultSyncFile()
 	}
 	w := &WAL{dir: opts.Dir, segmentSize: opts.SegmentSize, stopOnSync: opts.StopOnSyncError, syncFile: opts.SyncFile}
 

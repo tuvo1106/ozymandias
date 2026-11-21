@@ -65,12 +65,12 @@ fail() {
   exit 1
 }
 
-# start_ozyd [VAR=value ...]: ozyd on its own data dir, queued unless a caller says
+# start_ozyd [VAR=value ...]: ozyd (OZYD_BIN, default ./bin/ozyd) on its own data dir, queued unless a caller says
 # otherwise. Config is the environment's, so a drill states exactly what it changes.
 start_ozyd() {
   env OZY_HTTP_ADDR=127.0.0.1:$OZYD_PORT OZY_DATA_DIR="$WORK/data" OZY_HOSTNAME=chaos \
     OZY_HTTP_SHUTDOWN_TIMEOUT=5s OZY_PIPELINE_MODE=${CHAOS_MODE:-queued} "$@" \
-    "$BIN/ozyd" >>"$WORK/ozyd.log" 2>&1 &
+    "${OZYD_BIN:-$BIN/ozyd}" >>"$WORK/ozyd.log" 2>&1 &
   OZYD_PID=$!
 }
 
