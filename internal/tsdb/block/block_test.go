@@ -45,7 +45,7 @@ func writeFixture(t *testing.T, samplesPerSeries int) (parent string, b *Block, 
 	if _, err := Write(parent, want, WriterOptions{Now: epoch}); err != nil {
 		t.Fatal(err)
 	}
-	blocks, err := OpenAll(parent)
+	blocks, _, err := OpenAll(parent, epoch)
 	if err != nil || len(blocks) != 1 {
 		t.Fatalf("OpenAll gave %d blocks, err %v", len(blocks), err)
 	}
@@ -263,7 +263,7 @@ func TestWriter_AHalfWrittenBlockIsNeverVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The process dies here: the temp directory exists, meta.json does not.
-	blocks, err := OpenAll(parent)
+	blocks, _, err := OpenAll(parent, epoch)
 	if err != nil || len(blocks) != 0 {
 		t.Fatalf("OpenAll saw %d blocks mid-write, err %v", len(blocks), err)
 	}
@@ -279,9 +279,11 @@ func TestWriter_AHalfWrittenBlockIsNeverVisible(t *testing.T) {
 	}
 }
 
-func TestWriter_ADirectoryWithoutMetaIsGarbage(t *testing.T) {
-	// Not only .tmp: a directory that looks like a block but has no meta.json
-	// is the wreckage of a crash between the index write and the meta write.
+func TestWriter_ABlockThatLostItsMetaIsQuarantinedNotDeleted(t *testing.T) {
+	// Not a crashed write: those are ".tmp" until the rename that publishes them, and a crashed
+	// deletion is tombstoned and finished by CleanCondemned. A directory that is not .tmp, has
+	// files in it and no meta.json is a block that lost its meta, which is damage. It used to be
+	// deleted here; it is set aside, with its files as they were.
 	parent, _, _ := writeFixture(t, 2)
 	broken := filepath.Join(parent, "01JXXXXXXXXXXXXXXXXXXXXXXX")
 	if err := os.MkdirAll(broken, 0o755); err != nil {
@@ -290,9 +292,31 @@ func TestWriter_ADirectoryWithoutMetaIsGarbage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(broken, ChunksFilename), []byte("junk"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	removed, err := CleanTmp(parent)
-	if err != nil || len(removed) != 1 {
-		t.Errorf("CleanTmp removed %v, err %v", removed, err)
+	if removed, err := CleanTmp(parent); err != nil || len(removed) != 0 {
+		t.Fatalf("CleanTmp removed %v, err %v: it must leave a block with files in it alone", removed, err)
+	}
+	blocks, quarantined, err := OpenAll(parent, epoch)
+	if err != nil || len(blocks) != 1 || len(quarantined) != 1 {
+		t.Fatalf("OpenAll: %d blocks, %d quarantined, err %v; want the good block and the meta-less one set aside", len(blocks), len(quarantined), err)
+	}
+	t.Cleanup(func() { _ = blocks[0].Close() })
+	if !errors.Is(quarantined[0].Cause, ErrCorrupt) || quarantined[0].HasRange {
+		t.Errorf("cause %v, has range %v", quarantined[0].Cause, quarantined[0].HasRange)
+	}
+	kept, err := os.ReadFile(filepath.Join(quarantined[0].MovedTo, ChunksFilename))
+	if err != nil || string(kept) != "junk" {
+		t.Fatalf("the quarantined directory does not hold what was found: %q, %v", kept, err)
+	}
+}
+
+func TestWriter_AnEmptyDirectoryWithoutMetaIsStillRemoved(t *testing.T) {
+	parent, _, _ := writeFixture(t, 2)
+	empty := filepath.Join(parent, "01JEMPTYEMPTYEMPTYEMPTYEMP")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := CleanTmp(parent); err != nil || len(removed) != 1 {
+		t.Fatalf("CleanTmp removed %v, err %v: nothing in it to lose, so it goes", removed, err)
 	}
 }
 
@@ -374,14 +398,14 @@ func TestBlock_DeleteIsCrashSafe(t *testing.T) {
 	if err != nil || len(removed) != 1 {
 		t.Fatalf("CleanCondemned removed %v, err %v", removed, err)
 	}
-	if blocks, err := OpenAll(parent); err != nil || len(blocks) != 0 {
+	if blocks, _, err := OpenAll(parent, epoch); err != nil || len(blocks) != 0 {
 		t.Errorf("OpenAll gave %d blocks after the cleanup, err %v", len(blocks), err)
 	}
 	// And the ordinary path works too.
 	if _, err := Write(parent, fixture(2), WriterOptions{Now: epoch}); err != nil {
 		t.Fatal(err)
 	}
-	blocks, _ := OpenAll(parent)
+	blocks, _, _ := OpenAll(parent, epoch)
 	if len(blocks) != 1 {
 		t.Fatalf("expected one block, got %d", len(blocks))
 	}
@@ -439,7 +463,7 @@ func TestBlock_ADeletionStoppedAnywhereIsFinishedAtStartup(t *testing.T) {
 		if _, err := CleanTmp(parent); err != nil {
 			t.Fatalf("stopped after %v: CleanTmp: %v", events, err)
 		}
-		blocks, openErr := OpenAll(parent)
+		blocks, _, openErr := OpenAll(parent, epoch)
 		if openErr != nil {
 			t.Fatalf("stopped after %v: startup cannot open what is left: %v", events, openErr)
 		}
@@ -612,7 +636,7 @@ func TestOpenAll_SortsByTimeAndSkipsIncomplete(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(parent, "01JUNK.tmp"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	blocks, err := OpenAll(parent)
+	blocks, _, err := OpenAll(parent, epoch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,7 +653,7 @@ func TestOpenAll_SortsByTimeAndSkipsIncomplete(t *testing.T) {
 			t.Errorf("blocks are not in time order: %v", blocks)
 		}
 	}
-	if _, err := OpenAll(filepath.Join(parent, "does-not-exist")); err != nil {
+	if _, _, err := OpenAll(filepath.Join(parent, "does-not-exist"), epoch); err != nil {
 		t.Errorf("OpenAll of a missing directory should be empty, not an error: %v", err)
 	}
 }

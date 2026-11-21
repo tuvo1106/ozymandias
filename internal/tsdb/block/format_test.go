@@ -393,7 +393,7 @@ func TestBlock_StringOfTheIDIsStableAcrossAReopen(t *testing.T) {
 	parent, b, _ := writeFixture(t, 2)
 	first := b.Meta().ULID
 	_ = b.Close()
-	blocks, err := OpenAll(parent)
+	blocks, _, err := OpenAll(parent, epoch)
 	if err != nil || len(blocks) != 1 {
 		t.Fatalf("OpenAll gave %d blocks, err %v", len(blocks), err)
 	}
@@ -406,17 +406,21 @@ func TestBlock_StringOfTheIDIsStableAcrossAReopen(t *testing.T) {
 	}
 }
 
-func TestOpenAll_ReportsABrokenBlock(t *testing.T) {
+// A block whose index is damaged is set aside and the rest are opened; it is no longer an error.
+// The dedicated quarantine tests (quarantine_test.go) cover every kind of damage and what is not.
+func TestOpenAll_SetsAsideABrokenBlock(t *testing.T) {
 	parent, b, _ := writeFixture(t, 2)
 	dir := b.Dir()
 	_ = b.Close()
 	if err := os.WriteFile(filepath.Join(dir, IndexFilename), []byte("broken"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenAll(parent); err == nil {
-		t.Error("OpenAll ignored a block it could not read")
-	} else if !strings.Contains(err.Error(), filepath.Base(dir)) {
-		t.Errorf("the error does not name the block: %v", err)
+	blocks, quarantined, err := OpenAll(parent, epoch)
+	if err != nil || len(blocks) != 0 || len(quarantined) != 1 {
+		t.Fatalf("OpenAll: %d blocks, %d quarantined, err %v", len(blocks), len(quarantined), err)
+	}
+	if quarantined[0].Name != filepath.Base(dir) {
+		t.Errorf("the quarantine does not name the block: %+v", quarantined[0])
 	}
 }
 
@@ -530,7 +534,7 @@ func TestBlock_DiskFailures(t *testing.T) {
 			t.Error("Close succeeded although the index could not be written")
 		}
 		// Whatever happened, no half-block is visible.
-		blocks, err := OpenAll(parent)
+		blocks, _, err := OpenAll(parent, epoch)
 		if err != nil || len(blocks) != 0 {
 			t.Errorf("OpenAll gave %d blocks, err %v", len(blocks), err)
 		}
