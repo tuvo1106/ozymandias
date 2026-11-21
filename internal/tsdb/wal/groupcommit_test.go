@@ -381,3 +381,164 @@ func TestSync_CutAndCloseDoNotFsyncAfterAFailedGroupFsync(t *testing.T) {
 		})
 	}
 }
+
+// An fsync that panics (a test's hook; nothing in the standard library does) must not wedge the log:
+// its group is told it failed, the lock it held is released, and the next Sync runs.
+func TestSync_APanickingFsyncDoesNotWedgeTheLog(t *testing.T) {
+	p := &syncProbe{}
+	p.onCall = func(n int64) error {
+		if n == 1 {
+			panic("boom")
+		}
+		return nil
+	}
+	// Opened by hand: if the log is wedged, the usual Close in a cleanup would hang the test instead of
+	// failing it, so it is closed here with a deadline.
+	w, err := Open(Options{Dir: t.TempDir(), SegmentSize: 64, SyncFile: p.fn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		closed := make(chan struct{})
+		go func() { _ = w.Close(); close(closed) }()
+		select {
+		case <-closed:
+		case <-time.After(2 * time.Second):
+		}
+	}()
+	if err := w.Log(rec(1, "a")); err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the panic was swallowed")
+			}
+		}()
+		_ = w.Sync()
+	}()
+	done := make(chan error, 1)
+	go func() {
+		if err := w.Log(rec(1, "b")); err != nil {
+			done <- err
+			return
+		}
+		done <- w.Sync()
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the Sync after the panic = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a Sync after a panicking fsync never returned: the group was left running")
+	}
+	// A rollover must not wait on a lock the panic left held.
+	rolled := make(chan error, 1)
+	go func() { rolled <- w.Log(rec(1, strings.Repeat("x", 80))) }()
+	select {
+	case err := <-rolled:
+		if err != nil {
+			t.Fatalf("rollover after the panic: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a rollover after a panicking fsync never returned: the segment lock was left held")
+	}
+}
+
+// When the fsync of a group that has followers panics, the followers are told it failed, not that their
+// records are durable, and the log goes on. (The leader's own caller sees the panic.)
+func TestSync_FollowersOfAPanickingFsyncAreToldItFailed(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	open := func() { once.Do(func() { close(release) }) }
+	defer open()
+	p := &syncProbe{}
+	p.onCall = func(n int64) error {
+		switch n {
+		case 1:
+			close(entered)
+			<-release
+		case 2:
+			panic("boom")
+		}
+		return nil
+	}
+	w, err := Open(Options{Dir: t.TempDir(), SyncFile: p.fn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		closed := make(chan struct{})
+		go func() { _ = w.Close(); close(closed) }()
+		select {
+		case <-closed:
+		case <-time.After(2 * time.Second):
+		}
+	}()
+
+	type result struct {
+		err      error
+		panicked bool
+	}
+	results := make(chan result, 3)
+	run := func(s string) {
+		var r result
+		defer func() {
+			if recover() != nil {
+				r.panicked = true
+			}
+			results <- r
+		}()
+		if err := w.Log(rec(1, s)); err != nil {
+			r.err = err
+			return
+		}
+		r.err = w.Sync()
+	}
+	go run("leader")
+	<-entered
+	go run("b")
+	go run("c")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		w.gmu.Lock()
+		formed := w.next != nil
+		w.gmu.Unlock()
+		if formed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the followers never queued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	open()
+
+	var panicked, failed, ok int
+	for i := 0; i < 3; i++ {
+		select {
+		case r := <-results:
+			switch {
+			case r.panicked:
+				panicked++
+			case r.err != nil:
+				failed++
+			default:
+				ok++
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("a caller never returned: the group was left running")
+		}
+	}
+	// The leader's fsync (call 1) succeeded. In the second group one caller ran the panicking fsync and
+	// the other must have been told it failed; if b and c were split across groups, the later one ran
+	// call 3 and succeeded, so only the first two outcomes are required.
+	if panicked != 1 {
+		t.Errorf("%d callers saw the panic, want exactly the one that ran the fsync", panicked)
+	}
+	if failed+ok != 2 || ok > 1 {
+		t.Errorf("outcomes: %d panicked, %d failed, %d ok", panicked, failed, ok)
+	}
+}

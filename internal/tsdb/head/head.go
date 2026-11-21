@@ -53,6 +53,11 @@ type Sample struct {
 // Logger is the write-ahead log the head records to. It is an interface so a
 // head can run without durability in tests, and so the same head works over
 // M7's queue-backed log.
+//
+// Sync is called outside the head's commit lock (ADR-0065), so it runs
+// concurrently with other appenders' Log calls and with other Syncs, and must make
+// everything logged before the call durable. [wal.WAL] is the implementation that
+// does this safely; a Logger whose Sync assumed it ran serialized would not be.
 type Logger interface {
 	Log(recs ...wal.Record) error
 	Sync() error
@@ -167,10 +172,16 @@ type Rejection struct {
 // the batch is reported failed (Index -1) although its samples are already in
 // the head: the caller was told to retry, a retry of a log that stops on a
 // failed fsync is refused, and a retry of one that does not logs the batch
-// again and syncs that. Per-sample rejections are returned alongside rather than failing the
-// batch: one bad series must not discard another's data. An error that is not
-// a per-sample rejection — a failed log write — comes back with Index -1, and
-// nothing in the batch was applied.
+// again and syncs that.
+//
+// Per-sample rejections are returned alongside rather than failing the batch:
+// one bad series must not discard another's data. An error that is not a
+// per-sample rejection comes back with Index -1 and stored nil, which means one
+// of two things the caller cannot tell apart and need not: the log write failed
+// and nothing in the batch was applied, or the fsync failed and the samples were
+// applied but are not known durable. Either way the batch is not acknowledged and
+// the caller retries; per-sample accounting for that call is not returned, and a
+// retry that finds the samples already held reports them as stored nothing.
 func (h *Head) Append(refs []tsdb.SeriesRef, samples []Sample) (stored []bool, rejected []Rejection) {
 	stored, rejected, logged := h.commit(refs, samples)
 	if !logged || !h.opts.SyncOnAppend {

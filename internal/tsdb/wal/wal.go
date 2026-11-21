@@ -382,7 +382,7 @@ func (w *WAL) Sync() error {
 	if !w.syncing {
 		w.syncing = true
 		w.gmu.Unlock()
-		g := newSyncGroup()
+		g := &syncGroup{} // nobody else is in it: no channels until someone is
 		w.runGroup(g)
 		return g.err
 	}
@@ -401,17 +401,26 @@ func (w *WAL) Sync() error {
 
 // runGroup runs one group's fsync, answers its callers, and hands the next group, if one formed, to one
 // of its callers.
+//
+// The hand-over is deferred so that an fsync that panics (a test's SyncFile, say) still releases its
+// followers, with an error and not a false success, and still passes the lead on: otherwise every later
+// Sync would wait forever on a group nobody runs.
 func (w *WAL) runGroup(g *syncGroup) {
+	g.err = errors.New("wal: fsync did not complete")
+	defer func() {
+		if g.done != nil {
+			close(g.done)
+		}
+		w.gmu.Lock()
+		if n := w.next; n != nil {
+			w.next = nil
+			n.lead <- struct{}{} // syncing stays true: the group just handed over is now the one running
+		} else {
+			w.syncing = false
+		}
+		w.gmu.Unlock()
+	}()
 	g.err = w.syncOnce()
-	close(g.done)
-	w.gmu.Lock()
-	if n := w.next; n != nil {
-		w.next = nil
-		n.lead <- struct{}{} // syncing stays true: the group just handed over is now the one running
-	} else {
-		w.syncing = false
-	}
-	w.gmu.Unlock()
 }
 
 // syncOnce fsyncs the current segment outside mu, and applies the failure policy under it.
@@ -429,11 +438,14 @@ func (w *WAL) syncOnce() error {
 	f := w.f
 	w.fmu.RLock() // taken before mu is released, so no rollover can close f first
 	w.mu.Unlock()
-	err := w.syncFile(f)
-	if err != nil && w.stopOnSync {
-		w.failedSync.Store(true) // before the unlock: see failedSync
-	}
-	w.fmu.RUnlock()
+	err := func() error {
+		defer w.fmu.RUnlock() // also on a panic, or a rollover would wait on it forever
+		err := w.syncFile(f)
+		if err != nil && w.stopOnSync {
+			w.failedSync.Store(true) // before the unlock: see failedSync
+		}
+		return err
+	}()
 	if err == nil {
 		return nil
 	}
