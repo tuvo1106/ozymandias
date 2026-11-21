@@ -483,3 +483,26 @@ func dirSize(root string) (int64, error) {
 	}
 	return total, nil
 }
+
+// QuarantinedBlocks is how many block directories are set aside as damaged: the ones this start moved and
+// the ones an earlier start did, which stay until an operator deals with them. While it is not zero, the
+// time those blocks covered is missing from every answer. See [block.Quarantine].
+func (db *DB) QuarantinedBlocks() int { return int(db.quarantined.Load()) }
+
+// CorruptReads is how many times a read of a block found damage the open did not (a chunk that fails its
+// checksum), each of which failed that query with an error rather than answering with a wrong sample.
+func (db *DB) CorruptReads() uint64 { return db.corruptReads.Load() }
+
+// noteCorruptRead counts a failed block read if it was damage, and logs the first for each block: a
+// query that keeps failing would otherwise write the same line for every request.
+func (db *DB) noteCorruptRead(b *block.Block, err error) {
+	if !errors.Is(err, block.ErrCorrupt) {
+		return
+	}
+	db.corruptReads.Add(1)
+	id := b.Meta().ULID.String()
+	if _, seen := db.reportedCorrupt.LoadOrStore(id, struct{}{}); !seen {
+		db.opts.Logger.Error("a query read a damaged block; it fails with an error until the block is restored or removed (it is not quarantined while ozyd runs)",
+			"block", id, "dir", b.Dir(), "error", err)
+	}
+}

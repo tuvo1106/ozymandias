@@ -430,6 +430,17 @@ func (s *Server) registerStoreMetrics(engine string) {
 	s.reg.GaugeFunc("ozy.tsdb.wal_syncs", func() float64 {
 		return float64(real.Syncs())
 	}, tag)
+	// Not zero means the time a damaged block covered is missing from every answer and ozyd started
+	// without it anyway (see docs/operations.md). It counts the quarantined directories on disk, so it
+	// survives a restart and falls only when an operator restores or removes one.
+	s.reg.GaugeFunc("ozy.tsdb.blocks_quarantined", func() float64 {
+		return float64(real.QuarantinedBlocks())
+	}, tag)
+	// Reads that found damage the open cannot see (a chunk that fails its checksum): each failed a
+	// query. It climbs for as long as such a block is queried.
+	s.reg.GaugeFunc("ozy.tsdb.corrupt_reads", func() float64 {
+		return float64(real.CorruptReads())
+	}, tag)
 	s.reg.GaugeFunc("ozy.tsdb.disk_bytes", func() float64 {
 		n, err := real.DiskUsage()
 		if err != nil {

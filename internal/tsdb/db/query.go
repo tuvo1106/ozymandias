@@ -101,6 +101,7 @@ func (db *DB) Select(ctx context.Context, sel tsdb.Selector, fromMs, toMs int64)
 		}
 		got, err := b.Select(sel, fromMs, toMs)
 		if err != nil {
+			db.noteCorruptRead(b, err)
 			return nil, err
 		}
 		add(got)
